@@ -5,6 +5,7 @@ export type {
   ProgressCallback,
   LogCallback,
 } from './constants';
+export type { ParserInitOptions } from './bindings';
 export { Edit } from './edit';
 export {
   type ParseOptions,

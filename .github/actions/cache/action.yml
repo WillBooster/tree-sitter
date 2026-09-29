@@ -2,6 +2,11 @@ name: Cache
 
 description: This action caches fixtures
 
+inputs:
+  variant:
+    description: Distinguishes fixture sets built differently, such as with Wasm grammars, within the same matrix leg
+    default: native
+
 outputs:
   cache-hit:
     description: Cache hit
@@ -16,12 +21,13 @@ runs:
         path: |
           test/fixtures/grammars
           target/release/tree-sitter-*.wasm
-        key: fixtures-${{ join(matrix.*, '_') }}-${{ hashFiles(
+        key: fixtures-${{ inputs.variant }}-${{ join(matrix.*, '_') }}-${{ hashFiles(
           'crates/generate/src/**',
           'lib/src/parser.h',
           'lib/src/array.h',
           'lib/src/alloc.h',
           'lib/src/wasm-stdlib/external_scanner_stdlib.h',
+          'crates/loader/src/**',
           'crates/loader/wasi-sdk-version',
           'crates/loader/binaryen-version',
           'test/fixtures/grammars/*/**/src/*.c',

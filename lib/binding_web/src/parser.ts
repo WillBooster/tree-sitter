@@ -1,7 +1,7 @@
 import { C, INTERNAL, LogCallback, ParseCallback, Range, SIZE_OF_INT, SIZE_OF_RANGE, setModule } from './constants';
 import { Language } from './language';
 import { marshalRange, unmarshalRange } from './marshal';
-import { checkModule, initializeBinding } from './bindings';
+import { checkModule, initializeBinding, type ParserInitOptions } from './bindings';
 import { Tree } from './tree';
 import { newFinalizer } from './finalization_registry';
 
@@ -109,10 +109,11 @@ export class Parser {
    * This must always be called before creating a Parser.
    *
    * You can optionally pass in options to configure the Wasm module, the most common
-   * one being `locateFile` to help the module find the `.wasm` file.
+   * one being `locateFile` to help the module find the `.wasm` file. In Cloudflare Workers,
+   * pass the imported `web-tree-sitter.wasm` module as `wasmModule` instead.
    */
-  static async init(moduleOptions?: Partial<EmscriptenModule>) {
-    setModule(await initializeBinding(moduleOptions));
+  static async init(options?: ParserInitOptions) {
+    setModule(await initializeBinding(options));
     TRANSFER_BUFFER = C._ts_init();
     LANGUAGE_VERSION = C.getValue(TRANSFER_BUFFER, 'i32');
     MIN_COMPATIBLE_VERSION = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
