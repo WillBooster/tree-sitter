@@ -13,6 +13,7 @@
     "lint": "bun wb lint",
     "lint-fix": "bun wb lint --fix",
     "prepare": "(bun lefthook install || true) && (test ! -f .lefthook/normalize-bun-lockfile.sh || bash .lefthook/normalize-bun-lockfile.sh)",
+    "release": "wb release",
     "test": "bun wb test",
     "test/ci": "bun wb test-on-ci",
     "verify": "bun wb verify",
@@ -20,11 +21,14 @@
   },
   "prettier": "@willbooster/prettier-config",
   "devDependencies": {
+    "@semantic-release/exec": "7.1.0",
     "@willbooster/prettier-config": "10.4.0",
     "@willbooster/wb": "22.11.0",
+    "conventional-changelog-conventionalcommits": "10.4.0",
     "lefthook": "2.1.14",
     "prettier": "3.9.8",
     "prettier-plugin-java": "2.10.4",
+    "semantic-release": "25.0.9",
     "sort-package-json": "4.0.0"
   }
 }
