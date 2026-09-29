@@ -1,8 +1,9 @@
 // The release entry point. It runs semantic-release (through `wb release`) unless a failed run left a release pending
 // at an older commit: the reusable workflow skips re-runs of a run whose commit is no longer the branch head, and
 // semantic-release would compute the pending version again for the newer commit. The pending release is then
-// completed first, in a run of this workflow dispatched on its tag, because both registries attest the commit of
-// the publishing run; that run dispatches the workflow on the branch again to release the newer commits.
+// completed first, in a run of this workflow dispatched on a temporary branch at its commit, because both registries
+// attest the commit of the publishing run and the version tag must not exist before both hold the version; that run
+// dispatches the workflow on the release branch again to release the newer commits.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -20,9 +21,13 @@ const github = createGitHubClient(env);
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8' }).trim();
 // The registries trust this workflow file for publishing.
 const dispatch = (ref) => github('POST', 'actions/workflows/release.yml/dispatches', { ref });
+const pendingBranchPrefix = 'release-pending/';
 
-if (env.GITHUB_REF_TYPE === 'tag') {
-  await completePendingRelease(env.GITHUB_REF_NAME);
+if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
+  await completePendingRelease(env.GITHUB_REF_NAME.slice(pendingBranchPrefix.length));
+  await dispatch(releaseConfig.branches[0]);
+  // After the dispatch, since the reusable workflow skips re-runs on a deleted branch.
+  await github('DELETE', `git/refs/heads/${env.GITHUB_REF_NAME}`);
 } else if (!(await deferToPendingRelease())) {
   execFileSync('wb', ['release', ...process.argv.slice(2)], { cwd: rootDir, stdio: 'inherit' });
 }
@@ -37,10 +42,9 @@ async function completePendingRelease(tag) {
     execFileSync(path.join(rootDir, 'script', 'build-release'), [version], { cwd: rootDir, stdio: 'inherit' });
     await publishRelease({ ...pluginConfig, cwd: rootDir, env, logger: console, draft, version });
   } else {
+    // A previous attempt of this run published it; this attempt still hands over to the release branch.
     console.info(`The release ${tag} is not pending.`);
   }
-  // Also without a draft, so that re-running this run hands over to the branch when a previous attempt failed to.
-  await dispatch(releaseConfig.branches[0]);
 }
 
 /** Returns whether a pending release of an older commit must be completed before releasing this commit. */
@@ -61,19 +65,20 @@ async function deferToPendingRelease() {
       continue;
     }
 
-    await createTag(draft.tag_name, commit);
-    await dispatch(draft.tag_name);
-    console.info(`Dispatched a run on ${draft.tag_name} to complete its release; that run releases this commit next.`);
+    const branch = `${pendingBranchPrefix}${draft.tag_name}`;
+    await createBranch(branch, commit);
+    await dispatch(branch);
+    console.info(`Dispatched a run on ${branch} to complete the release; that run releases this commit next.`);
     return true;
   }
   return false;
 }
 
-async function createTag(tag, commit) {
+async function createBranch(branch, commit) {
   try {
-    await github('POST', 'git/refs', { ref: `refs/tags/${tag}`, sha: commit });
+    await github('POST', 'git/refs', { ref: `refs/heads/${branch}`, sha: commit });
   } catch (error) {
-    const existing = await github('GET', `git/ref/tags/${tag}`);
+    const existing = await github('GET', `git/ref/heads/${branch}`);
     if (existing.object.sha !== commit) throw error;
   }
 }
