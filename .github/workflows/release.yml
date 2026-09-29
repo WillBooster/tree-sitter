@@ -3,6 +3,8 @@ name: Release
   push:
     branches:
       - main
+  # script/release.mjs dispatches runs to complete a release that a failed run left pending.
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -10,7 +12,8 @@ concurrency:
 permissions:
   id-token: write
   contents: write
-  actions: read
+  # for script/release.mjs to dispatch runs, and for the reusable workflow to list runs
+  actions: write
 jobs:
   release:
     uses: WillBooster/reusable-workflows/.github/workflows/release.yml@main

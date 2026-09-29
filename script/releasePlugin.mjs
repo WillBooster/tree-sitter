@@ -3,8 +3,7 @@
 // tag behind, and a re-run would find no new commits and never complete the release. Here the tag is created last, by
 // publishing a draft GitHub Release that records the version, the commit, and the notes before any registry receives
 // the version. A re-run of a failed release computes the same version and skips each registry that already holds it
-// from the same commit; a release left incomplete when a newer commit reaches the branch is completed from its draft
-// by script/completePendingRelease.mjs.
+// from the same commit; script/release.mjs completes a release left pending when a newer commit reaches the branch.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
