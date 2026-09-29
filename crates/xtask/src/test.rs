@@ -166,7 +166,7 @@ pub fn run_rust_wasm_web() -> Result<()> {
     let manifest_path = Path::new("test/fixtures/rust_wasm_web/Cargo.toml");
     let target_dir = Path::new("target/rust-wasm-web-test");
     let target = "wasm32-unknown-unknown";
-    let wasm_headers_dir = wasm_headers_dir()?;
+    let wasm_headers_dir = wasm_headers_dir(manifest_path)?;
     std::fs::create_dir_all(target_dir)?;
 
     let mut language_paths = Vec::new();
