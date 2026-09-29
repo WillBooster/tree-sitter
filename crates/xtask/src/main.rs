@@ -1,6 +1,5 @@
 mod benchmark;
 mod build_wasm;
-mod bump;
 mod check_wasm_exports;
 mod clippy;
 mod embed_sources;
@@ -8,14 +7,12 @@ mod fetch;
 mod generate;
 mod test;
 mod test_schema;
-mod upgrade_wasmtime;
 
 use std::{path::Path, process::Command};
 
 use anstyle::{AnsiColor, Color, Style};
 use anyhow::Result;
 use clap::{Args, FromArgMatches as _, Subcommand, crate_authors};
-use semver::Version;
 
 #[derive(Subcommand)]
 #[command(about="Run various tasks", author=crate_authors!("\n"), styles=get_styles())]
@@ -27,8 +24,6 @@ enum Commands {
     BuildWasm(BuildWasm),
     /// Compile the Tree-sitter Wasm standard library.
     BuildWasmStdlib,
-    /// Bumps the version of the workspace.
-    BumpVersion(BumpVersion),
     /// Checks that Wasm exports are synced.
     CheckWasmExports(CheckWasmExports),
     /// Runs `cargo clippy`.
@@ -51,8 +46,6 @@ enum Commands {
     TestWasm,
     /// Test the Rust binding in a WebAssembly web environment.
     TestRustWasmWeb,
-    /// Upgrade the wasmtime dependency.
-    UpgradeWasmtime(UpgradeWasmtime),
     /// Refresh the vendored Wasm standard-library sources.
     VendorWasmStdlib,
 }
@@ -99,13 +92,6 @@ struct BuildWasm {
     /// Generate `CommonJS` modules instead of ES modules.
     #[arg(long, short, env = "CJS")]
     cjs: bool,
-}
-
-#[derive(Args)]
-struct BumpVersion {
-    /// The version to bump to.
-    #[arg(index = 1, required = true)]
-    version: Version,
 }
 
 #[derive(Args)]
@@ -168,13 +154,6 @@ struct Test {
     wasm: bool,
 }
 
-#[derive(Args)]
-struct UpgradeWasmtime {
-    /// The version to upgrade to.
-    #[arg(long, short)]
-    version: Version,
-}
-
 const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_SHA: Option<&str> = option_env!("BUILD_SHA");
 const EMSCRIPTEN_VERSION: &str = include_str!("../../loader/emscripten-version").trim_ascii();
@@ -228,7 +207,6 @@ fn run() -> Result<()> {
         Commands::Benchmark(benchmark_options) => benchmark::run(&benchmark_options)?,
         Commands::BuildWasm(build_wasm_options) => build_wasm::run_wasm(&build_wasm_options)?,
         Commands::BuildWasmStdlib => build_wasm::run_wasm_stdlib()?,
-        Commands::BumpVersion(bump_options) => bump::run(bump_options)?,
         Commands::CheckWasmExports(check_options) => check_wasm_exports::run(&check_options)?,
         Commands::Clippy(clippy_options) => clippy::run(&clippy_options)?,
         Commands::FetchEmscripten => fetch::run_emscripten()?,
@@ -244,9 +222,6 @@ fn run() -> Result<()> {
         Commands::Test(test_options) => test::run(&test_options)?,
         Commands::TestWasm => test::run_wasm()?,
         Commands::TestRustWasmWeb => test::run_rust_wasm_web()?,
-        Commands::UpgradeWasmtime(upgrade_wasmtime_options) => {
-            upgrade_wasmtime::run(&upgrade_wasmtime_options)?;
-        }
         Commands::VendorWasmStdlib => build_wasm::vendor_wasm_stdlib()?,
     }
 

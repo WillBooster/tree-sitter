@@ -1,14 +1,14 @@
 [package]
-name = "tree-sitter"
+name = "willbooster-tree-sitter"
 version.workspace = true
-description = "Rust bindings to the Tree-sitter parsing library"
+description = "WillBooster's fork of the Tree-sitter parsing library, with Rust bindings"
 authors.workspace = true
 edition.workspace = true
 rust-version = "1.90"
 readme = "binding_rust/README.md"
 homepage.workspace = true
 repository.workspace = true
-documentation = "https://docs.rs/tree-sitter"
+documentation = "https://docs.rs/willbooster-tree-sitter"
 license.workspace = true
 keywords.workspace = true
 categories = [ "api-bindings", "external-ffi-bindings", "parsing", "text-editors" ]
@@ -59,4 +59,5 @@ cc.workspace = true
 serde_json.workspace = true
 
 [lib]
+name = "tree_sitter"
 path = "binding_rust/lib.rs"

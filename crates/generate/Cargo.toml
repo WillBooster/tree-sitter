@@ -1,5 +1,6 @@
 [package]
 name = "tree-sitter-generate"
+publish = false
 version.workspace = true
 description = "Library for generating C source code from a tree-sitter grammar"
 authors.workspace = true

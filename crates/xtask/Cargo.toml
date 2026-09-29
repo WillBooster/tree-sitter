@@ -25,7 +25,6 @@ notify = "8.2.0"
 notify-debouncer-full = "0.7.0"
 regex.workspace = true
 schemars.workspace = true
-semver.workspace = true
 serde_json.workspace = true
 tree-sitter-cli = { path = "../cli/" }
 tree-sitter-loader = { path = "../loader/" }
