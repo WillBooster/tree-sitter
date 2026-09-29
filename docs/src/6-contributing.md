@@ -89,8 +89,9 @@ npm install # or your JS package manager of choice
 npm run build
 ```
 
-> [!NOTE]
-> If using a local Emscripten installation, the version must match the one [pinned by this repository][emscripten-version].
+```admonish note
+If using a local Emscripten installation, the version must match the one [pinned by this repository][emscripten-version].
+```
 
 Build the Rust libraries and the CLI:
 
@@ -300,8 +301,9 @@ edit and hit the edit icon at the top right of the page.
 
 ### Prerequisites for Local Development
 
-> [!NOTE]
-> We're assuming you have `cargo` installed, the Rust package manager.
+```admonish note
+We're assuming you have `cargo` installed, the Rust package manager.
+```
 
 To run and iterate on the docs locally, the
 [`mdbook`][mdbook cli] CLI tool is required, which can be installed with
@@ -311,13 +313,15 @@ cargo install mdbook
 ```
 
 You might have noticed we have some fancy admonitions sprinkled throughout the documentation, like the note above.
-These are built into `mdBook`, and are written as a blockquote whose first line names the kind, one of `NOTE`, `TIP`,
-`IMPORTANT`, `WARNING`, or `CAUTION`. See the [reference][admonitions] for more information.
+These are created using [`mdbook-admonish`][admonish], a [preprocessor][preprocessor] for `mdBook`. As such, this is also
+a requirement for developing the documentation locally. To install it, run:
 
-```md
-> [!NOTE]
-> Something worth pointing out.
+```sh
+cargo install mdbook-admonish
 ```
+
+Once you've installed it, you can begin using admonitions in your markdown files. See the [reference][admonish reference]
+for more information.
 
 ### Spinning it up
 
@@ -339,7 +343,8 @@ at [`docs/src/assets/css/playground.css`][playground css]. The editor of choice 
 and the tree-sitter module is fetched from [here][js url]. This, along with the Wasm module and Wasm parsers, live in the
 [.github.io repo][gh.io repo].
 
-[admonitions]: https://rust-lang.github.io/mdBook/format/markdown.html#admonitions
+[admonish]: https://github.com/tommilligan/mdbook-admonish
+[admonish reference]: https://tommilligan.github.io/mdbook-admonish/reference.html
 [binaryen]: https://github.com/WebAssembly/binaryen
 [binaryen-releases]: https://github.com/WebAssembly/binaryen/releases
 [config crate]: https://crates.io/crates/tree-sitter-config
@@ -370,6 +375,7 @@ and the tree-sitter module is fetched from [here][js url]. This, along with the 
 [playground]: https://github.com/tree-sitter/tree-sitter/blob/master/docs/src/assets/js/playground.js
 [playground css]: https://github.com/tree-sitter/tree-sitter/blob/master/docs/src/assets/css/playground.css
 [podman]: https://podman.io
+[preprocessor]: https://rust-lang.github.io/mdBook/for_developers/preprocessors.html
 [py package]: https://pypi.org/project/tree-sitter
 [py ts]: https://github.com/tree-sitter/py-tree-sitter
 [pypi]: https://pypi.org

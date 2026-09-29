@@ -5,10 +5,7 @@ use thiserror::Error;
 use crate::{
     grammars::{LexicalGrammar, LexicalVariable},
     nfa::{CharacterSet, Nfa, NfaState},
-    prepare_grammar::{
-        LexicalToken,
-        pattern::{self, RegexError},
-    },
+    prepare_grammar::{extract_tokens::LexicalToken, pattern},
     rules::{Precedence, Rule, RuleId, RulePool, Symbol},
 };
 
@@ -28,7 +25,7 @@ Tree-sitter does not support syntactic rules that match the empty string
 unless they are used only as the grammar's start rule.
 "
     )]
-    EmptyString(Box<str>),
+    EmptyString(String),
     #[error(transparent)]
     Processing(ExpandTokensProcessingError),
     #[error(transparent)]
@@ -37,7 +34,7 @@ unless they are used only as the grammar's start rule.
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExpandTokensProcessingError {
-    rule: Box<str>,
+    rule: String,
     error: ExpandRuleError,
 }
 
@@ -89,7 +86,7 @@ pub fn expand_tokens(
     for (i, variable) in lexical_variables.iter().enumerate() {
         if pool.subtree_matches_empty_str(variable.root) {
             Err(ExpandTokensError::EmptyString(
-                pool.resolve(variable.name).to_string().into(),
+                pool.resolve(variable.name).to_string(),
             ))?;
         }
         let is_immediate_token = match pool.node(variable.root) {
@@ -107,7 +104,7 @@ pub fn expand_tokens(
             .expand_rule(pool, variable.root, last_state_id)
             .map_err(|e| {
                 ExpandTokensError::Processing(ExpandTokensProcessingError {
-                    rule: pool.resolve(variable.name).to_string().into(),
+                    rule: pool.resolve(variable.name).to_string(),
                     error: e,
                 })
             })?;
@@ -164,15 +161,15 @@ pub enum ExpandRuleError {
     #[error("unexpected symbol {0:?}")]
     UnexpectedSymbol(Symbol),
     #[error("unexpected reserved-word context {0}")]
-    UnexpectedReserved(Box<str>),
+    UnexpectedReserved(String),
     #[error(
         "`eof()` cannot be used inside a token. \
         A lexical rule cannot check for end of input, \
         so use `eof()` only at the end of a syntactic rule."
     )]
     UnexpectedEof,
-    #[error(transparent)]
-    Parse(#[from] Box<RegexError>),
+    #[error("{0}")]
+    Parse(String),
     #[error(transparent)]
     ExpandRegex(ExpandRegexError),
 }
@@ -182,7 +179,7 @@ pub type ExpandRegexResult<T> = Result<T, ExpandRegexError>;
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ExpandRegexError {
     #[error("{0}")]
-    Utf8(Box<str>),
+    Utf8(String),
     #[error("Regex error: Assertions are not supported")]
     Assertion,
     #[error(transparent)]
@@ -233,7 +230,8 @@ impl NfaBuilder {
                 // Parse WITHOUT case folding and fold ourselves (see
                 // `case_fold_ascii_safe`). Letting `regex_syntax` fold would pull the
                 // long s `ſ` and Kelvin sign `K` into ASCII `s`/`k`.
-                let hir = pattern::parse(&s, pool.resolve(f).contains('i'))?;
+                let hir = pattern::parse(&s, pool.resolve(f).contains('i'))
+                    .map_err(|e| ExpandRuleError::Parse(e.to_string()))?;
                 self.expand_regex(&hir, next_state_id)
                     .map_err(ExpandRuleError::ExpandRegex)
             }
@@ -306,9 +304,11 @@ impl NfaBuilder {
             }
             Rule::Blank => Ok(false),
             Rule::Eof => Err(ExpandRuleError::UnexpectedEof)?,
-            Rule::Sym(symbol) => Err(ExpandRuleError::UnexpectedSymbol(symbol))?,
+            Rule::Sym { kind, index } => {
+                Err(ExpandRuleError::UnexpectedSymbol(Symbol { kind, index }))?
+            }
             Rule::Reserved { ctx, .. } => Err(ExpandRuleError::UnexpectedReserved(
-                pool.resolve(ctx).to_string().into(),
+                pool.resolve(ctx).to_string(),
             ))?,
             // `NamedSymbol` is interned to `Sym` by intern_symbols
             Rule::NamedSymbol(_) => unreachable!(),
@@ -320,7 +320,7 @@ impl NfaBuilder {
             HirKind::Empty => Ok(false),
             HirKind::Literal(literal) => {
                 for character in std::str::from_utf8(&literal.0)
-                    .map_err(|e| ExpandRegexError::Utf8(e.to_string().into()))?
+                    .map_err(|e| ExpandRegexError::Utf8(e.to_string()))?
                     .chars()
                     .rev()
                 {
@@ -1183,7 +1183,7 @@ mod tests {
         assert_eq!(
             expand_tokens(&mut pool, &vars, &[]).unwrap_err(),
             ExpandTokensError::Processing(ExpandTokensProcessingError {
-                rule: "tok".into(),
+                rule: "tok".to_string(),
                 error: ExpandRuleError::ExpandRegex(ExpandRegexError::NonAsciiByteClass(
                     NonAsciiByteClassError {
                         start: 0xa9,

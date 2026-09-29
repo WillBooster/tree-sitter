@@ -224,10 +224,11 @@ array macros from `tree_sitter/array.h`.
 There are quite a few of them provided for you, but here's how you could get started tracking some state. Check out the header
 itself for more detailed documentation.
 
-> [!WARNING]
-> Do not use any of the array functions or macros that are prefixed with an underscore and have comments saying
-> that it is not what you are looking for. These are internal functions used as helpers by other macros that are public.
-> They are not meant to be used directly, nor are they what you want.
+```admonish attention
+Do not use any of the array functions or macros that are prefixed with an underscore and have comments saying
+that it is not what you are looking for. These are internal functions used as helpers by other macros that are public.
+They are not meant to be used directly, nor are they what you want.
+```
 
 ```c
 #include "tree_sitter/parser.h"
@@ -369,12 +370,13 @@ However, when you use rule references (like `$.if_keyword`) in the externals arr
 in the grammar, Tree-sitter cannot fall back to its internal lexer. In this case, the external scanner is solely responsible
 for recognizing these tokens.
 
-> [!CAUTION]
-> - External scanners can easily create infinite loops
->
-> - Be extremely careful when emitting zero-width tokens
->
-> - Always use the `eof` function when looping through characters
+```admonish danger
+- External scanners can easily create infinite loops
+
+- Be extremely careful when emitting zero-width tokens
+
+- Always use the `eof` function when looping through characters
+```
 
 [ejs]: https://ejs.co
 [enum]: https://en.wikipedia.org/wiki/Enumerated_type#C

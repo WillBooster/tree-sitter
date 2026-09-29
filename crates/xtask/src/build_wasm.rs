@@ -580,15 +580,7 @@ fn download_tool(
         .arg(&temp_tar_path)
         .arg(url)
         .status()
-        .map_err(|e| {
-            LoaderError::Curl(
-                url.to_string(),
-                IoError {
-                    error: e,
-                    path: None,
-                },
-            )
-        })?;
+        .map_err(|e| LoaderError::Curl(url.to_string(), e))?;
 
     if !status.success() {
         Err(LoaderError::WasmToolDownload {
@@ -628,12 +620,7 @@ fn extract_tar_gz_with_strip(archive_path: &Path, destination: &Path) -> Result<
         .arg("-C")
         .arg(destination)
         .status()
-        .map_err(|e| {
-            LoaderError::Tar(IoError {
-                error: e,
-                path: Some(archive_path.to_path_buf()),
-            })
-        })?;
+        .map_err(|e| LoaderError::Tar(archive_path.to_string_lossy().to_string(), e))?;
 
     if !status.success() {
         Err(LoaderError::Extraction(
@@ -697,7 +684,7 @@ fn ensure_wasi_libc_source_exists() -> Result<PathBuf> {
         .arg(&archive_path)
         .arg(&url)
         .status()
-        .map_err(|error| LoaderError::Curl(url.clone(), IoError { error, path: None }))?;
+        .map_err(|error| LoaderError::Curl(url.clone(), error))?;
     if !status.success() {
         return Err(LoaderError::WasmToolDownload {
             tool: "wasi-libc",

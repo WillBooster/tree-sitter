@@ -115,10 +115,10 @@ pub struct GrammarJSON {
 
 pub type ParseGrammarResult<T> = Result<T, ParseGrammarError>;
 
-#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum ParseGrammarError {
     #[error("{0}")]
-    Serialization(Box<str>),
+    Serialization(String),
     #[error("Rules in the `extras` array must not contain empty strings")]
     InvalidExtra,
     #[error("Invalid rule in precedences array. Only strings and symbols are allowed")]
@@ -126,12 +126,12 @@ pub enum ParseGrammarError {
     #[error("Reserved word sets must be arrays")]
     InvalidReservedWordSet,
     #[error("Grammar Error: Unexpected rule `{0}` in `token()` call")]
-    UnexpectedRule(Box<str>),
+    UnexpectedRule(String),
 }
 
 impl From<serde_json::Error> for ParseGrammarError {
     fn from(value: serde_json::Error) -> Self {
-        Self::Serialization(value.to_string().into())
+        Self::Serialization(value.to_string())
     }
 }
 
@@ -207,7 +207,7 @@ impl InputGrammar {
             };
             if matches_empty {
                 diagnostics.push(Diagnostic::EmptyStringMatch(
-                    self.pool.resolve(v.name).to_string().into(),
+                    self.pool.resolve(v.name).to_string(),
                 ));
             }
         }
@@ -375,7 +375,7 @@ impl RulePool {
                             if c != 'u' && c != 'v' {
                                 diagnostics.push(Diagnostic::UnsupportedRegexFlag {
                                     flag: c,
-                                    pattern: value.as_str().into(),
+                                    pattern: value.clone(),
                                 });
                             }
                             false
@@ -389,7 +389,7 @@ impl RulePool {
             }
             RuleJSON::SYMBOL { name } => {
                 if is_token {
-                    Err(ParseGrammarError::UnexpectedRule(name.into()))?
+                    Err(ParseGrammarError::UnexpectedRule(name))?
                 } else {
                     let sid = self.intern(&name);
                     Ok(self.named_symbol(sid))
@@ -402,9 +402,13 @@ impl RulePool {
                     .collect::<ParseGrammarResult<Vec<_>>>()?;
                 Ok(self.choice(&members))
             }
-            RuleJSON::SEQ { members } => self.try_seq(members.into_iter(), |pool, m| {
-                pool.parse_rule(m, is_token, diagnostics)
-            }),
+            RuleJSON::SEQ { members } => {
+                let members = members
+                    .into_iter()
+                    .map(|m| self.parse_rule(m, is_token, diagnostics))
+                    .collect::<ParseGrammarResult<Vec<_>>>()?;
+                Ok(self.seq(&members))
+            }
             RuleJSON::FIELD { name, content } => {
                 let content = self.parse_rule(*content, is_token, diagnostics)?;
                 let name = self.intern(&name);
@@ -414,10 +418,7 @@ impl RulePool {
                 let content = self.parse_rule(*content, is_token, diagnostics)?;
                 let repeat = self.repeat(content);
                 let blank = self.blank();
-                // Neither element is a `Choice` or equal to one another, so we
-                // can skip `self.choice`'s flattening loop.
-                let range = self.push_children(&[repeat, blank]);
-                Ok(self.push_node(Rule::Choice(range)))
+                Ok(self.choice(&[repeat, blank]))
             }
             RuleJSON::REPEAT1 { content } => {
                 let content = self.parse_rule(*content, is_token, diagnostics)?;
