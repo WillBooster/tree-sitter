@@ -116,5 +116,9 @@
     "prepack": "cp ../../LICENSE .",
     "postpack": "rm LICENSE",
     "prepublishOnly": "tsx script/check-artifacts-fresh.ts"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   }
 }

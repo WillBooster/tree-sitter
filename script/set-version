@@ -1,0 +1,26 @@
+#!/usr/bin/env node
+// Writes the release version into the Cargo workspace (the version of every crate and of the path dependencies
+// between them) and Cargo.lock, which semantic-release does not update. The npm plugin versions the web package.
+
+const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const version = process.argv[2];
+if (!/^\d+\.\d+\.\d+/.test(version ?? '')) throw new Error('Usage: script/set-version <major.minor.patch>');
+
+const manifestFile = path.join(__dirname, '..', 'Cargo.toml');
+const manifest = fs.readFileSync(manifestFile, 'utf8');
+const sectionStart = manifest.indexOf('\n[workspace.package]\n');
+const sectionEnd = manifest.indexOf('\n[', sectionStart + 1);
+const section = manifest.slice(sectionStart, sectionEnd);
+if (sectionStart < 0 || !/\nversion = "[^"]*"/.test(section)) {
+  throw new Error('Cargo.toml has no [workspace.package] version');
+}
+const updated = (
+  manifest.slice(0, sectionStart) + section.replace(/\nversion = "[^"]*"/, `\nversion = "${version}"`) + manifest.slice(sectionEnd)
+)
+  // Path dependencies on workspace crates carry the version they are published against.
+  .replace(/^(tree-sitter[\w-]* = \{[^}\n]*path = "[^"]+", version = )"[^"]*"/gm, `$1"${version}"`);
+fs.writeFileSync(manifestFile, updated);
+execFileSync('cargo', ['update', '--workspace', '--offline'], { cwd: path.dirname(manifestFile), stdio: 'inherit' });
