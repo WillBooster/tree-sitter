@@ -93,7 +93,7 @@ jobs:
           echo "AR_wasm32_wasip1=$RUNNER_TEMP/$name/bin/llvm-ar" >> "$GITHUB_ENV"
       - run: cargo build -p willbooster-tree-sitter --release --locked --target ${{ matrix.target }}
       - run: cargo check -p willbooster-tree-sitter --no-default-features --locked --target ${{ matrix.target }}
-  # Builds @willbooster/web-tree-sitter and tests it in Node.js, in Cloudflare Workers (workerd, without Node.js
+  # Builds @willbooster/web-tree-sitter and tests it in Node.js, in Cloudflare Workers (workerd, with and without Node.js
   # compatibility), and in Chromium, with grammars built to Wasm the way the grammar repositories build theirs.
   web:
     runs-on: ubuntu-latest
