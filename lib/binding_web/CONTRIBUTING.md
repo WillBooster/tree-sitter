@@ -78,8 +78,10 @@ you should run:
 npm run build:dts
 ```
 
-This uses [`dts-buddy`][dts-buddy] to generate `web-tree-sitter.d.ts` from the public types in `src`. Additionally, a sourcemap
-is generated for the `.d.ts` file, which enables `go-to definition` and other editor integrations to take you straight
+This uses [`dts-buddy`][dts-buddy] to generate `web-tree-sitter.d.ts` (for ES modules) and `web-tree-sitter.d.cts` (for
+CommonJS) from the public types in `src`. Each file is a module of its own, so a program that loads both does not see
+the declarations twice; `npx tsc -p test/types` type-checks both from one program. Additionally, a sourcemap is
+generated for each declaration file, which enables `go-to definition` and other editor integrations to take you straight
 to the TypeScript source code.
 
 This TypeScript code is then compiled into these JavaScript files with `esbuild`. The build configuration for this can

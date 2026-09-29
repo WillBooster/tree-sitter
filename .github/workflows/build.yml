@@ -126,6 +126,8 @@ jobs:
         working-directory: lib/binding_web
       - run: node -e "require('@willbooster/web-tree-sitter').Parser.init().then(() => console.log('Loaded the CommonJS bundle'))"
         working-directory: lib/binding_web
+      - run: npx tsc -p test/types
+        working-directory: lib/binding_web
   # The single required check for this workflow, so that the ruleset does not have to list each matrix leg.
   build-result:
     if: always()

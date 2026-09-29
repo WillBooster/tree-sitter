@@ -58,6 +58,13 @@
     "module": false
   },
   "types": "web-tree-sitter.d.ts",
+  "typesVersions": {
+    "*": {
+      "debug": [
+        "web-tree-sitter.d.ts"
+      ]
+    }
+  },
   "keywords": [
     "incremental",
     "parsing",
