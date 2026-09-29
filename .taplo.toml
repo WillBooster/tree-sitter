@@ -1,3 +1,6 @@
+# wbfy generates these files in its own format and rewrites them on every run.
+exclude = [ "bunfig.toml", "mise.toml" ]
+
 [formatting]
 column_width = 100
 compact_arrays = false
