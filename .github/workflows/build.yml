@@ -94,7 +94,7 @@ jobs:
       - run: cargo build -p willbooster-tree-sitter --release --locked --target ${{ matrix.target }}
       - run: cargo check -p willbooster-tree-sitter --no-default-features --locked --target ${{ matrix.target }}
   # The single required check for this workflow, so that the ruleset does not have to list each matrix leg.
-  result:
+  build-result:
     if: always()
     needs:
       - lint
