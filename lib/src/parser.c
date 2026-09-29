@@ -1832,6 +1832,23 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
       min_error_cost = status_i.cost;
     }
 
+    // Merge this version into an earlier one in the same state before comparing
+    // it with the others. Otherwise, whether it survives would depend on the
+    // versions compared first, since merging changes their node counts. After
+    // this, no pair compared below can be merged.
+    bool merged = false;
+    for (StackVersion j = 0; j < i; j++) {
+      if (ts_stack_merge(self->stack, j, i)) {
+        merged = true;
+        break;
+      }
+    }
+    if (merged) {
+      made_changes = true;
+      i--;
+      continue;
+    }
+
     // Examine each pair of stack versions, removing any versions that
     // are clearly worse than another version. Ensure that the versions
     // are ordered from most promising to least promising.
@@ -1848,21 +1865,11 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
 
         case ErrorComparisonPreferLeft:
         case ErrorComparisonNone:
-          if (ts_stack_merge(self->stack, j, i)) {
-            made_changes = true;
-            i--;
-            j = i;
-          }
           break;
 
         case ErrorComparisonPreferRight:
           made_changes = true;
-          if (ts_stack_merge(self->stack, j, i)) {
-            i--;
-            j = i;
-          } else {
-            ts_stack_swap_versions(self->stack, i, j);
-          }
+          ts_stack_swap_versions(self->stack, i, j);
           break;
 
         case ErrorComparisonTakeRight:
