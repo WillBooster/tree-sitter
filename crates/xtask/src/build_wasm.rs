@@ -666,7 +666,13 @@ pub fn vendor_wasm_stdlib() -> Result<()> {
 /// by the workspace of `manifest_path`, which compiles the library for those targets with them.
 pub fn wasm_headers_dir(manifest_path: &Path) -> Result<PathBuf> {
     let output = Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--manifest-path"])
+        .args([
+            "metadata",
+            "--locked",
+            "--format-version",
+            "1",
+            "--manifest-path",
+        ])
         .arg(manifest_path)
         .output()?;
     bail_on_err(&output, "Failed to run cargo metadata")?;
