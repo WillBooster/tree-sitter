@@ -15,24 +15,10 @@
       }
     ],
     [
-      "@semantic-release/npm",
+      "./script/publishRelease.mjs",
       {
+        "crate": "willbooster-tree-sitter",
         "pkgRoot": "lib/binding_web"
-      }
-    ],
-    [
-      "@semantic-release/github",
-      {
-        "successCommentCondition": false,
-        "failCommentCondition": false,
-        "labels": ["r: semantic-release"],
-        "releasedLabels": ["released :bookmark:"]
-      }
-    ],
-    [
-      "@semantic-release/exec",
-      {
-        "publishCmd": "script/publish-crate"
       }
     ]
   ]

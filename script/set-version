@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Writes the release version into the Cargo workspace (the version of every crate and of the path dependencies
-// between them) and Cargo.lock, which semantic-release does not update. The npm plugin versions the web package.
+// between them), Cargo.lock, and the web package, which semantic-release does not update.
 
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -24,3 +24,7 @@ const updated = (
   .replace(/^(tree-sitter[\w-]* = \{[^}\n]*path = "[^"]+", version = )"[^"]*"/gm, `$1"${version}"`);
 fs.writeFileSync(manifestFile, updated);
 execFileSync('cargo', ['update', '--workspace'], { cwd: path.dirname(manifestFile), stdio: 'inherit' });
+execFileSync('npm', ['version', version, '--no-git-tag-version', '--allow-same-version'], {
+  cwd: path.join(path.dirname(manifestFile), 'lib', 'binding_web'),
+  stdio: 'inherit',
+});
