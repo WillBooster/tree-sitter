@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Runs the tests under test/browser in Chromium, against the bundle that the `browser` export condition selects.
+// Runs the tests under test/browser in Chromium, importing the package, so that its `browser` export condition selects the bundle.
 export default defineConfig({
   server: {
     fs: {

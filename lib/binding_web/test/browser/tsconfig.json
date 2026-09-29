@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    // Type-checks the package import against the sources, which Vite ignores when resolving it at run time.
+    "paths": {
+      "@willbooster/web-tree-sitter": ["../../src/index.ts"]
+    }
+  },
+  "include": ["*.ts"]
+}

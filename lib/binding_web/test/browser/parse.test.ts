@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { expect, it } from 'vitest';
-import { Language, Parser } from '../../web-tree-sitter.web.js';
+import { Language, Parser } from '@willbooster/web-tree-sitter';
 import javascriptUrl from '../../../../target/release/tree-sitter-javascript.wasm?url';
 
 it('parses in a browser, loading the Wasm files over HTTP', async () => {
