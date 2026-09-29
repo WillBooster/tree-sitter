@@ -29,16 +29,17 @@ if (env.GITHUB_REF_TYPE === 'tag') {
 
 async function completePendingRelease(tag) {
   const draft = (await listDraftReleases(github)).find((release) => release.tag_name === tag);
-  if (!draft) {
+  if (draft) {
+    if (draft.target_commitish !== head) {
+      throw new Error(`The draft release ${tag} targets ${draft.target_commitish}, not ${head}.`);
+    }
+    const version = tag.replace(/^v/, '');
+    execFileSync(path.join(rootDir, 'script', 'build-release'), [version], { cwd: rootDir, stdio: 'inherit' });
+    await publishRelease({ ...pluginConfig, cwd: rootDir, env, logger: console, draft, version });
+  } else {
     console.info(`The release ${tag} is not pending.`);
-    return;
   }
-  if (draft.target_commitish !== head) {
-    throw new Error(`The draft release ${tag} targets ${draft.target_commitish}, not ${head}.`);
-  }
-  const version = tag.replace(/^v/, '');
-  execFileSync(path.join(rootDir, 'script', 'build-release'), [version], { cwd: rootDir, stdio: 'inherit' });
-  await publishRelease({ ...pluginConfig, cwd: rootDir, env, logger: console, draft, version });
+  // Also without a draft, so that re-running this run hands over to the branch when a previous attempt failed to.
   await dispatch(releaseConfig.branches[0]);
 }
 
