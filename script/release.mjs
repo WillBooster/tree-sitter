@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { createGitHubClient, fetchPublishedCommits, listDraftReleases, publishRelease } from './releasePlugin.mjs';
+import { createGitHubClient, fetchPublishedCommits, listPendingReleases, publishRelease } from './releasePlugin.mjs';
 
 const rootDir = path.resolve(import.meta.dirname, '..');
 const releaseConfig = JSON.parse(fs.readFileSync(path.join(rootDir, '.releaserc.json'), 'utf8'));
@@ -33,7 +33,7 @@ if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
 }
 
 async function completePendingRelease(tag) {
-  const draft = (await listDraftReleases(github)).find((release) => release.tag_name === tag);
+  const draft = (await listPendingReleases(github)).find((release) => release.tag_name === tag);
   if (draft) {
     if (draft.target_commitish !== head) {
       throw new Error(`The draft release ${tag} targets ${draft.target_commitish}, not ${head}.`);
@@ -50,7 +50,7 @@ async function completePendingRelease(tag) {
 /** Returns whether a pending release of an older commit must be completed before releasing this commit. */
 async function deferToPendingRelease() {
   // Oldest first, since versions are released in order.
-  for (const draft of (await listDraftReleases(github)).toReversed()) {
+  for (const draft of (await listPendingReleases(github)).toReversed()) {
     const commit = draft.target_commitish;
     const version = draft.tag_name.replace(/^v/, '');
     // semantic-release computes the same version again for the same commit and resumes the release itself.

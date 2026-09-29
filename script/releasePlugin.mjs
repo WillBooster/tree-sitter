@@ -11,6 +11,8 @@ import path from 'node:path';
 
 // crates.io rejects requests with a generic User-Agent.
 const userAgent = 'willbooster-release (https://github.com/WillBooster)';
+// Marks the drafts this release flow creates, so that it never completes or deletes a draft someone else prepared.
+const pendingMarker = '\n\n<!-- pending release -->';
 
 export function verifyConditions(pluginConfig, { env }) {
   if (!pluginConfig.crate || !pluginConfig.pkgRoot) throw new Error('Set the `crate` and `pkgRoot` options.');
@@ -30,7 +32,7 @@ export async function prepare(pluginConfig, { cwd, env, logger, nextRelease }) {
     tag_name: gitTag,
     target_commitish: gitHead,
     name,
-    body: notes,
+    body: `${notes}${pendingMarker}`,
     draft: true,
   });
   await publishRelease({ ...pluginConfig, cwd, env, logger, draft, version });
@@ -68,7 +70,10 @@ export async function publishRelease({ crate, pkgRoot, cwd, env, logger, draft, 
   }
 
   // Publishing the draft creates the tag, so semantic-release's tag push that follows changes nothing.
-  const release = await createGitHubClient(env)('PATCH', `releases/${draft.id}`, { draft: false });
+  const release = await createGitHubClient(env)('PATCH', `releases/${draft.id}`, {
+    draft: false,
+    body: draft.body.slice(0, -pendingMarker.length),
+  });
   logger.log(`Published the GitHub Release ${release.html_url}`);
 }
 
@@ -105,13 +110,15 @@ async function fetchPublishedCommit(url, getCommit) {
   return getCommit(await response.json()) ?? '';
 }
 
-/** Returns the draft releases of the repository, which GitHub lists before the published ones. */
-export async function listDraftReleases(github) {
-  return (await github('GET', 'releases?per_page=100')).filter((release) => release.draft);
+/** Returns the draft releases that this release flow created, which GitHub lists before the published releases. */
+export async function listPendingReleases(github) {
+  return (await github('GET', 'releases?per_page=100')).filter(
+    (release) => release.draft && release.body?.endsWith(pendingMarker)
+  );
 }
 
 async function findDraftRelease(github, gitTag) {
-  return (await listDraftReleases(github)).find((release) => release.tag_name === gitTag);
+  return (await listPendingReleases(github)).find((release) => release.tag_name === gitTag);
 }
 
 export function createGitHubClient(env) {
