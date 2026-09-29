@@ -1,0 +1,86 @@
+name: Robustness
+'on':
+  pull_request: null
+  push:
+    branches:
+      - main
+  workflow_dispatch: null
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update -y && sudo apt-get install -y libubsan1
+      - run: rustup toolchain install
+      - run: cargo build --release --locked
+      - uses: ./.github/actions/cache
+        id: cache
+      - run: cargo xtask fetch-fixtures
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: cargo xtask generate-fixtures
+      - name: Run the tests with the undefined behavior sanitizer
+        run: cargo test --locked -- --test-threads 1
+        env:
+          CFLAGS: -fsanitize=undefined
+          RUSTFLAGS: -lubsan
+      - name: Run the tests with the address sanitizer
+        run: cargo test --locked -- --test-threads 1
+        env:
+          ASAN_OPTIONS: verify_asan_link_order=0
+          CFLAGS: -fsanitize=address
+          RUSTFLAGS: -lasan --cfg sanitizing
+  # The C library must compile without warnings under the strictest flags upstream used.
+  c-warnings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: >-
+          clang -c -o /dev/null -std=c11 -g -Werror -Wall -Wextra -Wshadow -Wpedantic
+          -Werror=incompatible-pointer-types -Werror=strict-aliasing -Wstrict-aliasing=2
+          -Ilib/include -Ilib/src lib/src/lib.c
+  # lib/binding_rust/bindings.rs is generated from lib/include/tree_sitter/api.h and must match it.
+  bindgen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: cargo xtask generate-bindings
+      - run: git diff --exit-code lib/binding_rust/bindings.rs
+  # The Wasm build's exports must match the functions that the web binding calls.
+  wasm-exports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v4.3.0
+      - run: sudo apt-get update -y && sudo apt-get install -y wabt
+      - run: rustup toolchain install
+      - run: npm ci && npm run build:debug
+        working-directory: lib/binding_web
+      - run: cargo xtask check-wasm-exports
+  # The single required check for this workflow, so that the ruleset does not have to list each job.
+  result:
+    if: always()
+    needs:
+      - sanitize
+      - c-warnings
+      - bindgen
+      - wasm-exports
+    runs-on: ubuntu-latest
+    steps:
+      - run: '! ${{ contains(needs.*.result, ''failure'') || contains(needs.*.result, ''cancelled'') }}'

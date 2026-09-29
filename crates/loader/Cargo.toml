@@ -1,5 +1,6 @@
 [package]
 name = "tree-sitter-loader"
+publish = false
 version.workspace = true
 description = "Locates, builds, and loads tree-sitter grammars at runtime"
 authors.workspace = true

@@ -1,11 +1,12 @@
-# Rust Tree-sitter
+# willbooster-tree-sitter
 
 [![crates.io badge]][crates.io]
 
-[crates.io]: https://crates.io/crates/tree-sitter
-[crates.io badge]: https://img.shields.io/crates/v/tree-sitter.svg?color=%23B48723
+[crates.io]: https://crates.io/crates/willbooster-tree-sitter
+[crates.io badge]: https://img.shields.io/crates/v/willbooster-tree-sitter.svg?color=%23B48723
 
-Rust bindings to the [Tree-sitter][] parsing library.
+Rust bindings to WillBooster's fork of the [Tree-sitter][] parsing library. The crate keeps the library name
+`tree_sitter`, so depending on it under the name `tree-sitter` (as below) needs no code changes.
 
 ## Basic Usage
 
@@ -21,8 +22,8 @@ Then, add a language as a dependency:
 
 ```toml
 [dependencies]
-tree-sitter = "0.24"
-tree-sitter-rust = "0.23"
+tree-sitter = { package = "willbooster-tree-sitter", version = "1" }
+tree-sitter-rust = "0.24"
 ```
 
 To use a language, you assign them to the parser.

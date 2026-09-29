@@ -1,5 +1,6 @@
 [package]
 name = "tree-sitter-tags"
+publish = false
 version.workspace = true
 description = "Library for extracting tag information"
 authors = [ "Max Brunsfeld <maxbrunsfeld@gmail.com>", "Patrick Thomson <patrickt@github.com>" ]

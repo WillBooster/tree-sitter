@@ -2112,19 +2112,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 
 [[package]]
-name = "tree-sitter"
-version = "0.27.0"
-dependencies = [
- "bindgen",
- "cc",
- "regex",
- "serde_json",
- "streaming-iterator",
- "tree-sitter-language",
- "wasmtime-c-api-impl",
-]
-
-[[package]]
 name = "tree-sitter-cli"
 version = "0.27.0"
 dependencies = [
@@ -2158,7 +2145,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tiny_http",
- "tree-sitter",
  "tree-sitter-config",
  "tree-sitter-generate",
  "tree-sitter-highlight",
@@ -2170,6 +2156,7 @@ dependencies = [
  "wasmparser 0.244.0",
  "webbrowser",
  "widestring",
+ "willbooster-tree-sitter",
 ]
 
 [[package]]
@@ -2212,12 +2199,14 @@ dependencies = [
  "regex",
  "streaming-iterator",
  "thiserror",
- "tree-sitter",
+ "willbooster-tree-sitter",
 ]
 
 [[package]]
 name = "tree-sitter-language"
 version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca0d1bf6fdd806e43ae5198f82f527056d359def39e54e67a0f478ac09dac081"
 
 [[package]]
 name = "tree-sitter-loader"
@@ -2234,9 +2223,9 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
- "tree-sitter",
  "tree-sitter-highlight",
  "tree-sitter-tags",
+ "willbooster-tree-sitter",
 ]
 
 [[package]]
@@ -2247,7 +2236,7 @@ dependencies = [
  "regex",
  "streaming-iterator",
  "thiserror",
- "tree-sitter",
+ "willbooster-tree-sitter",
 ]
 
 [[package]]
@@ -2651,6 +2640,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
+name = "willbooster-tree-sitter"
+version = "0.27.0"
+dependencies = [
+ "bindgen",
+ "cc",
+ "regex",
+ "serde_json",
+ "streaming-iterator",
+ "tree-sitter-language",
+ "wasmtime-c-api-impl",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2777,7 +2779,6 @@ dependencies = [
  "notify-debouncer-full",
  "regex",
  "schemars",
- "semver",
  "serde_json",
  "tree-sitter-cli",
  "tree-sitter-loader",
