@@ -1,0 +1,9 @@
+==============================================
+Recovery does not keep inserting missing tokens
+==============================================
+
+<<a/a>{[:aaaaa
+
+---
+
+(program (ERROR (expression (type) (ERROR) (ERROR))))

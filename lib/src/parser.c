@@ -1543,6 +1543,12 @@ static void ts_parser__handle_error(
             did_insert_missing_token = true;
             break;
           }
+          // The missing token did not help. Discard every version derived from it, including versions
+          // that merged with one another, so that a failed attempt leaves no trace. Otherwise the zero-width
+          // token survives, and recovery can insert it again and again at the same position.
+          while (ts_stack_version_count(self->stack) > version_with_missing_tree) {
+            ts_stack_remove_version(self->stack, version_with_missing_tree);
+          }
         }
       }
     }
