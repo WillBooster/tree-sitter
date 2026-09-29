@@ -23,4 +23,4 @@ const updated = (
   // Path dependencies on workspace crates carry the version they are published against.
   .replace(/^(tree-sitter[\w-]* = \{[^}\n]*path = "[^"]+", version = )"[^"]*"/gm, `$1"${version}"`);
 fs.writeFileSync(manifestFile, updated);
-execFileSync('cargo', ['update', '--workspace', '--offline'], { cwd: path.dirname(manifestFile), stdio: 'inherit' });
+execFileSync('cargo', ['update', '--workspace'], { cwd: path.dirname(manifestFile), stdio: 'inherit' });

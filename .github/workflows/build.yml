@@ -121,6 +121,11 @@ jobs:
         working-directory: lib/binding_web
       - run: npm run test:browser
         working-directory: lib/binding_web
+      # The release also publishes the CommonJS bundle and the type declarations.
+      - run: CJS=true npm run build && npm run build:dts
+        working-directory: lib/binding_web
+      - run: node -e "require('@willbooster/web-tree-sitter').Parser.init().then(() => console.log('Loaded the CommonJS bundle'))"
+        working-directory: lib/binding_web
   # The single required check for this workflow, so that the ruleset does not have to list each matrix leg.
   build-result:
     if: always()
