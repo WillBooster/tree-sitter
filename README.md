@@ -1,8 +1,7 @@
-# tree-sitter
+# WillBooster/tree-sitter
 
-[![DOI](https://zenodo.org/badge/14164618.svg)](https://zenodo.org/badge/latestdoi/14164618)
-[![discord][discord]](https://discord.gg/w7nTvsVJhm)
-[![matrix][matrix]](https://matrix.to/#/#tree-sitter-chat:matrix.org)
+This is a fork of [tree-sitter/tree-sitter](https://github.com/tree-sitter/tree-sitter). We are grateful to its authors and
+contributors. This is not an official release of that project.
 
 Tree-sitter is a parser generator tool and an incremental parsing library. It can build a concrete syntax tree for a source file and efficiently update the syntax tree as the source file is edited. Tree-sitter aims to be:
 
@@ -16,6 +15,3 @@ Tree-sitter is a parser generator tool and an incremental parsing library. It ca
 - [Rust binding](lib/binding_rust/README.md)
 - [Wasm binding](lib/binding_web/README.md)
 - [Command-line interface](crates/cli/README.md)
-
-[discord]: https://img.shields.io/discord/1063097320771698699?logo=discord&label=discord
-[matrix]: https://img.shields.io/matrix/tree-sitter-chat%3Amatrix.org?logo=matrix&label=matrix

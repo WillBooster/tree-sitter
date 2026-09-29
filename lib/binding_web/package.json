@@ -1,18 +1,19 @@
 {
-  "name": "web-tree-sitter",
+  "name": "@willbooster/web-tree-sitter",
   "version": "0.28.0",
   "description": "Tree-sitter bindings for the web",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tree-sitter/tree-sitter.git",
+    "url": "git+https://github.com/WillBooster/tree-sitter.git",
     "directory": "lib/binding_web"
   },
   "license": "MIT",
-  "author": {
-    "name": "Max Brunsfeld",
-    "email": "maxbrunsfeld@gmail.com"
-  },
-  "maintainers": [
+  "author": "WillBooster Inc.",
+  "contributors": [
+    {
+      "name": "Max Brunsfeld",
+      "email": "maxbrunsfeld@gmail.com"
+    },
     {
       "name": "Amaan Qureshi",
       "email": "amaanq12@gmail.com"

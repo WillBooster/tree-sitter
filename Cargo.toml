@@ -20,7 +20,7 @@ edition = "2024"
 homepage = "https://tree-sitter.github.io/tree-sitter"
 keywords = [ "incremental", "parsing" ]
 license = "MIT"
-repository = "https://github.com/tree-sitter/tree-sitter"
+repository = "https://github.com/WillBooster/tree-sitter"
 rust-version = "1.90"
 version = "0.28.0"
 

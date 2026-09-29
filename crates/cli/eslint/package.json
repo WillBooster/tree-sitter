@@ -1,14 +1,17 @@
 {
-  "name": "eslint-config-treesitter",
+  "name": "@willbooster/eslint-config-treesitter",
   "version": "1.0.2",
   "description": "Eslint configuration for Tree-sitter grammar files",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tree-sitter/tree-sitter.git",
+    "url": "git+https://github.com/WillBooster/tree-sitter.git",
     "directory": "crates/cli/eslint"
   },
   "license": "MIT",
-  "author": "Amaan Qureshi <amaanq12@gmail.com>",
+  "author": "WillBooster Inc.",
+  "contributors": [
+    "Amaan Qureshi <amaanq12@gmail.com>"
+  ],
   "main": "index.js",
   "type": "module",
   "keywords": [
