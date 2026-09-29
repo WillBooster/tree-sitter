@@ -70,7 +70,7 @@ jobs:
         working-directory: lib/binding_web
       - run: cargo xtask check-wasm-exports
   # The single required check for this workflow, so that the ruleset does not have to list each job.
-  result:
+  robustness-result:
     if: always()
     needs:
       - sanitize

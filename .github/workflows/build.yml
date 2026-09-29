@@ -122,7 +122,7 @@ jobs:
       - run: npm run test:browser
         working-directory: lib/binding_web
   # The single required check for this workflow, so that the ruleset does not have to list each matrix leg.
-  result:
+  build-result:
     if: always()
     needs:
       - lint
