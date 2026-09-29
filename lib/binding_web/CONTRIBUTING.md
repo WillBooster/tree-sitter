@@ -65,9 +65,11 @@ from the root directory.
 #### The TypeScript side
 
 The TypeScript library is a higher level abstraction over the Wasm module, and is located in `src`. This is where the
-public API is defined, and where the Wasm module is loaded and initialized. The TypeScript library is built into a single
-ES6 (or CommonJS) module, and is output into the same directory as `package.json`. If you need to update the public API,
-you can do so by editing the files in `src`.
+public API is defined, and where the Wasm module is loaded and initialized. The TypeScript library is built into an ES6
+(or CommonJS) module for Node.js and, in the release ES6 build, a second module for browsers and Cloudflare Workers
+without the Node.js-only code paths (`web-tree-sitter.web.js`, selected by the `browser` and `workerd` export
+conditions). Both are output into the same directory as `package.json`. If you need to update the public API, you can do
+so by editing the files in `src`.
 
 If you make changes to the library that require updating the type definitions, such as adding a new public API method,
 you should run:
@@ -80,7 +82,7 @@ This uses [`dts-buddy`][dts-buddy] to generate `web-tree-sitter.d.ts` from the p
 is generated for the `.d.ts` file, which enables `go-to definition` and other editor integrations to take you straight
 to the TypeScript source code.
 
-This TypeScript code is then compiled into a single JavaScript file with `esbuild`. The build configuration for this can
+This TypeScript code is then compiled into these JavaScript files with `esbuild`. The build configuration for this can
 be found in [`script/build.js`][build.js], but this shouldn't need to be updated. This step is responsible for emitting
 the final JS and Wasm files that are shipped with the library, as well as their sourcemaps.
 
@@ -105,10 +107,18 @@ Then you can build the Wasm modules:
 cargo xtask generate-fixtures --wasm
 ```
 
-Now, you can run the tests. In the `lib/binding_web` directory, run:
+Now, you can run the tests. They load the built package, so build it first with `npm run build`. In the
+`lib/binding_web` directory, run:
 
 ```sh
 npm test
+```
+
+The browser tests run in Chromium, which Playwright needs to install once:
+
+```sh
+npx playwright install chromium
+npm run test:browser
 ```
 
 > [!NOTE]
@@ -122,7 +132,7 @@ npm test
 ### Debugging
 
 You might have noticed that when you ran `npm build`, the build process generated a couple of [sourcemaps][sourcemap]:
-`web-tree-sitter.js.map` and `web-tree-sitter.wasm.map`. These sourcemaps can be used to debug the library in the browser, and are
+`web-tree-sitter.js.map`, `web-tree-sitter.web.js.map`, and `web-tree-sitter.wasm.map`. These sourcemaps can be used to debug the library in the browser, and are
 shipped with the library on both NPM and the GitHub releases.
 
 #### Tweaking the Emscripten build
