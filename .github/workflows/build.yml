@@ -93,6 +93,34 @@ jobs:
           echo "AR_wasm32_wasip1=$RUNNER_TEMP/$name/bin/llvm-ar" >> "$GITHUB_ENV"
       - run: cargo build -p willbooster-tree-sitter --release --locked --target ${{ matrix.target }}
       - run: cargo check -p willbooster-tree-sitter --no-default-features --locked --target ${{ matrix.target }}
+  # Builds @willbooster/web-tree-sitter and tests it in Node.js, in Cloudflare Workers (workerd, without Node.js
+  # compatibility), and in Chromium, with grammars built to Wasm the way the grammar repositories build theirs.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v4.3.0
+      - run: rustup toolchain install
+      - uses: ./.github/actions/cache
+        id: cache
+        with:
+          variant: wasm
+      - run: cargo xtask fetch-fixtures
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: cargo xtask generate-fixtures --wasm
+      - run: npm ci
+        working-directory: lib/binding_web
+      # Without emcc on the runner, xtask builds the Wasm library in the emscripten Docker image.
+      - run: npm run build
+        working-directory: lib/binding_web
+      - run: npm test
+        working-directory: lib/binding_web
+      - run: npx playwright install --with-deps chromium
+        working-directory: lib/binding_web
+      - run: npm run test:browser
+        working-directory: lib/binding_web
   # The single required check for this workflow, so that the ruleset does not have to list each matrix leg.
   result:
     if: always()
@@ -100,6 +128,7 @@ jobs:
       - lint
       - test
       - wasm
+      - web
     runs-on: ubuntu-latest
     steps:
       - run: '! ${{ contains(needs.*.result, ''failure'') || contains(needs.*.result, ''cancelled'') }}'

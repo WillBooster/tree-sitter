@@ -228,12 +228,13 @@ export class Language {
 
   /**
    * Load a language from a WebAssembly module.
-   * The module can be provided as a path to a file, a `URL` to a file, or as a
-   * buffer.
+   * The module can be provided as a path to a file, a `URL` to a file, a
+   * buffer, or a precompiled `WebAssembly.Module`. In Cloudflare Workers, which
+   * do not allow compiling Wasm at run time, pass the imported `.wasm` module.
    */
-  static async load(input: string | URL | Uint8Array): Promise<Language> {
+  static async load(input: string | URL | Uint8Array | WebAssembly.Module): Promise<Language> {
     let binary: Uint8Array | WebAssembly.Module;
-    if (input instanceof Uint8Array) {
+    if (input instanceof Uint8Array || input instanceof WebAssembly.Module) {
       binary = input;
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     } else if (globalThis.process?.versions.node) {
