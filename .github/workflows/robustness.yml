@@ -39,17 +39,6 @@ jobs:
           ASAN_OPTIONS: verify_asan_link_order=0
           CFLAGS: -fsanitize=address
           RUSTFLAGS: -lasan --cfg sanitizing
-  # The C library must compile without warnings under the strictest flags upstream used.
-  c-warnings:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - run: >-
-          clang -c -o /dev/null -std=c11 -g -Werror -Wall -Wextra -Wshadow -Wpedantic
-          -Werror=incompatible-pointer-types -Werror=strict-aliasing -Wstrict-aliasing=2
-          -Ilib/include -Ilib/src lib/src/lib.c
   # lib/binding_rust/bindings.rs is generated from lib/include/tree_sitter/api.h and must match it.
   bindgen:
     runs-on: ubuntu-latest
@@ -60,8 +49,9 @@ jobs:
       - run: rustup toolchain install
       - run: cargo xtask generate-bindings
       - run: git diff --exit-code lib/binding_rust/bindings.rs
-  # The Wasm build's exports must match the functions that the web binding calls.
-  wasm-exports:
+  # Builds the C library as a shared library with the strictest warning flags upstream used, and checks that the
+  # Wasm build's exports match both the library's exported functions and what the web binding calls.
+  c-library:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -70,6 +60,12 @@ jobs:
       - uses: jdx/mise-action@v4.3.0
       - run: sudo apt-get update -y && sudo apt-get install -y wabt
       - run: rustup toolchain install
+      - name: Build the shared library
+        run: >-
+          clang -shared -o libtree-sitter.so -std=c11 -fPIC -fvisibility=hidden -g -Werror -Wall -Wextra -Wshadow
+          -Wpedantic -Werror=incompatible-pointer-types -Werror=strict-aliasing -Wstrict-aliasing=2
+          -D_POSIX_C_SOURCE=200112L -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_DARWIN_C_SOURCE
+          -Ilib/src -Ilib/src/wasm -Ilib/include lib/src/lib.c
       - run: npm ci && npm run build:debug
         working-directory: lib/binding_web
       - run: cargo xtask check-wasm-exports
@@ -78,9 +74,8 @@ jobs:
     if: always()
     needs:
       - sanitize
-      - c-warnings
       - bindgen
-      - wasm-exports
+      - c-library
     runs-on: ubuntu-latest
     steps:
       - run: '! ${{ contains(needs.*.result, ''failure'') || contains(needs.*.result, ''cancelled'') }}'

@@ -5,7 +5,7 @@
 [crates.io]: https://crates.io/crates/willbooster-tree-sitter
 [crates.io badge]: https://img.shields.io/crates/v/willbooster-tree-sitter.svg?color=%23B48723
 
-Rust bindings to WillBooster's fork of the [Tree-sitter][] parsing library. The crate keeps the library name
+Rust bindings to this fork of the [Tree-sitter][] parsing library. The crate keeps the library name
 `tree_sitter`, so depending on it under the name `tree-sitter` (as below) needs no code changes.
 
 ## Basic Usage
