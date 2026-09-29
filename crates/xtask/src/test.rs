@@ -7,7 +7,10 @@ use std::{
 use anyhow::{Result, anyhow};
 use regex::Regex;
 
-use crate::{Test, bail_on_err, build_wasm::ensure_wasi_sdk_exists};
+use crate::{
+    Test, bail_on_err,
+    build_wasm::{ensure_wasi_sdk_exists, wasm_headers_dir},
+};
 
 pub fn run(args: &Test) -> Result<()> {
     let test_flags = if args.address_sanitizer {
@@ -163,6 +166,7 @@ pub fn run_rust_wasm_web() -> Result<()> {
     let manifest_path = Path::new("test/fixtures/rust_wasm_web/Cargo.toml");
     let target_dir = Path::new("target/rust-wasm-web-test");
     let target = "wasm32-unknown-unknown";
+    let wasm_headers_dir = wasm_headers_dir()?;
     std::fs::create_dir_all(target_dir)?;
 
     let mut language_paths = Vec::new();
@@ -199,10 +203,7 @@ pub fn run_rust_wasm_web() -> Result<()> {
             "-I",
             "src",
             "-I",
-            env::current_dir()?
-                .join("crates/language/wasm/include")
-                .to_str()
-                .unwrap(),
+            wasm_headers_dir.to_str().unwrap(),
             "src/parser.c",
             "src/scanner.c",
         ]);
@@ -235,7 +236,7 @@ pub fn run_rust_wasm_web() -> Result<()> {
             "CFLAGS_wasm32_unknown_unknown",
             format!(
                 "-matomics -mbulk-memory -I{}",
-                env::current_dir()?.join("crates/language/wasm/include").display()
+                wasm_headers_dir.display()
             ),
         )
         .env(

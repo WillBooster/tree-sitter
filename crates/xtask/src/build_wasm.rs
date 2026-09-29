@@ -662,6 +662,30 @@ pub fn vendor_wasm_stdlib() -> Result<()> {
     Ok(())
 }
 
+/// The C headers for Wasm targets that the `tree-sitter-language` dependency ships, which the
+/// library is compiled with for those targets.
+pub fn wasm_headers_dir() -> Result<PathBuf> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1"])
+        .output()?;
+    bail_on_err(&output, "Failed to run cargo metadata")?;
+    let metadata = serde_json::from_slice::<serde_json::Value>(&output.stdout)?;
+    let manifest_path = metadata["packages"]
+        .as_array()
+        .and_then(|packages| {
+            packages
+                .iter()
+                .find(|package| package["name"] == "tree-sitter-language")
+        })
+        .and_then(|package| package["manifest_path"].as_str())
+        .ok_or_else(|| {
+            anyhow!("Failed to find the tree-sitter-language package in cargo metadata")
+        })?;
+    Ok(Path::new(manifest_path)
+        .with_file_name("wasm")
+        .join("include"))
+}
+
 fn ensure_wasi_libc_source_exists() -> Result<PathBuf> {
     let cache_dir = etcetera::choose_base_strategy()?
         .cache_dir()
@@ -732,7 +756,8 @@ pub fn run_wasm_stdlib() -> Result<()> {
             "-Wl,--export=reset_heap",
         ])
         .args(&export_flags)
-        .arg("-Icrates/language/wasm/include")
+        .arg("-I")
+        .arg(wasm_headers_dir()?)
         .arg("lib/src/wasm-stdlib/libc.c")
         .arg("lib/src/wasm-stdlib/stdio.c")
         .arg("lib/src/wasm-stdlib/external_scanner_allocator.c")
