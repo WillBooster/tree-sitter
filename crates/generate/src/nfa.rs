@@ -458,7 +458,7 @@ impl Nfa {
 
     #[must_use]
     pub fn last_state_id(&self) -> u32 {
-        assert_ne!(self.states, [] as [NfaState; 0]);
+        assert!(!self.states.is_empty());
         self.states.len() as u32 - 1
     }
 }

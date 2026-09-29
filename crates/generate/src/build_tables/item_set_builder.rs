@@ -7,10 +7,8 @@ use super::item::{
 };
 use crate::{
     build_tables::item::{LookaheadSetId, LookaheadSetPool},
-    grammars::{
-        InlinedProductionMap, LexicalGrammar, ProductionStep, ReservedWordSetId, SyntaxGrammar,
-    },
-    rules::{NonTerminalIndex, Symbol, SymbolView, TokenSet},
+    grammars::{InlinedProductionMap, LexicalGrammar, ReservedWordSetId, SyntaxGrammar},
+    rules::{Symbol, SymbolType, TokenSet},
     strpool::StrPool,
 };
 
@@ -116,30 +114,23 @@ impl<'a> ParseItemSetBuilder<'a> {
         // Rather than computing these sets using recursion, we use an explicit stack
         // called `symbols_to_process`.
         let mut symbols_to_process = Vec::new();
-        let mut processed_non_terminals = FxHashSet::<NonTerminalIndex>::default();
+        let mut processed_non_terminals = FxHashSet::default();
         for i in 0..syntax_grammar.variables.len() {
-            let root_index = NonTerminalIndex::new(i as u32);
             let symbol = Symbol::non_terminal(i);
             let first_set = result.first_sets.entry(symbol).or_default();
             let reserved_first_set = result.reserved_first_sets.entry(symbol).or_default();
 
             processed_non_terminals.clear();
             symbols_to_process.clear();
-            symbols_to_process.push(root_index);
-            while let Some(index) = symbols_to_process.pop() {
-                for prod_id in syntax_grammar.variable_prod_ids(usize::from(index)) {
+            symbols_to_process.push(symbol);
+            while let Some(sym) = symbols_to_process.pop() {
+                for prod_id in syntax_grammar.variable_prod_ids(sym.index as usize) {
                     if let Some(step) = syntax_grammar.production(prod_id).steps.first() {
                         let symbol = step.symbol();
-                        match symbol.view() {
-                            SymbolView::Terminal(_) | SymbolView::External(_) => {
-                                first_set.insert(symbol);
-                            }
-                            SymbolView::NonTerminal(index) => {
-                                if processed_non_terminals.insert(index) {
-                                    symbols_to_process.push(index);
-                                }
-                            }
-                            SymbolView::End | SymbolView::EndOfNonTerminalExtra => unreachable!(),
+                        if symbol.is_terminal() || symbol.is_external() {
+                            first_set.insert(symbol);
+                        } else if processed_non_terminals.insert(symbol) {
+                            symbols_to_process.push(symbol);
                         }
                         *reserved_first_set =
                             (*reserved_first_set).max(ReservedWordSetId(u32::from(step.reserved)));
@@ -151,21 +142,15 @@ impl<'a> ParseItemSetBuilder<'a> {
             let last_set = result.last_sets.entry(symbol).or_default();
             processed_non_terminals.clear();
             symbols_to_process.clear();
-            symbols_to_process.push(root_index);
-            while let Some(index) = symbols_to_process.pop() {
-                for prod_id in syntax_grammar.variable_prod_ids(usize::from(index)) {
+            symbols_to_process.push(symbol);
+            while let Some(sym) = symbols_to_process.pop() {
+                for prod_id in syntax_grammar.variable_prod_ids(sym.index as usize) {
                     if let Some(step) = syntax_grammar.production(prod_id).steps.last() {
                         let symbol = step.symbol();
-                        match symbol.view() {
-                            SymbolView::Terminal(_) | SymbolView::External(_) => {
-                                last_set.insert(symbol);
-                            }
-                            SymbolView::NonTerminal(index) => {
-                                if processed_non_terminals.insert(index) {
-                                    symbols_to_process.push(index);
-                                }
-                            }
-                            SymbolView::End | SymbolView::EndOfNonTerminalExtra => unreachable!(),
+                        if symbol.is_terminal() || symbol.is_external() {
+                            last_set.insert(symbol);
+                        } else if processed_non_terminals.insert(symbol) {
+                            symbols_to_process.push(symbol);
                         }
                     }
                 }
@@ -209,7 +194,7 @@ impl<'a> ParseItemSetBuilder<'a> {
         // Rather than computing these additions recursively, we use an explicit stack.
         let empty_lookaheads = TokenSet::new();
         let mut eof_lookaheads = TokenSet::new();
-        eof_lookaheads.insert(Symbol::End);
+        eof_lookaheads.insert(Symbol::end());
         let mut stack = Vec::new();
         let mut follow_set_info_by_non_terminal = FxHashMap::<usize, FollowSetInfo>::default();
         for i in 0..syntax_grammar.variables.len() {
@@ -237,28 +222,26 @@ impl<'a> ParseItemSetBuilder<'a> {
 
                 for prod_id in syntax_grammar.variable_prod_ids(sym_ix) {
                     let production = syntax_grammar.production(prod_id);
-                    if let Some(index) = production
-                        .first_symbol()
-                        .and_then(Symbol::non_terminal_index)
+                    if let Some(symbol) = production.first_symbol()
+                        && symbol.is_non_terminal()
                     {
-                        let index = usize::from(index);
                         if let Some(next_step) = production.steps.get(1) {
                             stack.push((
-                                index,
+                                symbol.index as usize,
                                 &result.first_sets[&next_step.symbol()],
                                 result.reserved_first_sets[&next_step.symbol()],
                                 false,
                             ));
                         } else if production.requires_eof_lookahead {
                             stack.push((
-                                index,
+                                symbol.index as usize,
                                 &eof_lookaheads,
                                 ReservedWordSetId::default(),
                                 false,
                             ));
                         } else {
                             stack.push((
-                                index,
+                                symbol.index as usize,
                                 lookaheads,
                                 reserved_word_set_id,
                                 propagates_lookaheads,
@@ -378,23 +361,23 @@ impl<'a> ParseItemSetBuilder<'a> {
     }
 
     fn add_item(&mut self, set: &mut ParseItemSet<'a>, entry: &ParseItemSetEntry<'a>) {
-        if let Some(index) = entry
-            .item
-            .step(self.syntax_grammar)
-            .and_then(ProductionStep::non_terminal_index)
+        if let Some(step) = entry.item.step(self.syntax_grammar)
+            && step.symbol().is_non_terminal()
         {
             let next_step = entry.item.successor().step(self.syntax_grammar);
 
             // Determine which tokens can follow this non-terminal.
             let (following_tokens, following_reserved_tokens) = if let Some(next_step) = next_step {
-                let key = next_step.symbol();
-                (self.first_set_ids[&key], self.reserved_first_sets[&key])
+                (
+                    self.first_set_ids[&next_step.symbol()],
+                    self.reserved_first_sets[&next_step.symbol()],
+                )
             } else {
                 (entry.lookaheads, entry.following_reserved_word_set)
             };
 
             // Use the pre-computed *additions* to expand the non-terminal.
-            for addition in &self.transitive_closure_additions[usize::from(index)] {
+            for addition in &self.transitive_closure_additions[step.symbol().index as usize] {
                 let e = set.insert(addition.item);
                 e.lookaheads = self
                     .lookaheads
@@ -440,18 +423,16 @@ impl fmt::Debug for ParseItemSetBuilderDisplay<'_> {
 
         writeln!(f, "  first_sets: {{")?;
         for (symbol, first_set) in &self.0.first_sets {
-            let name = match symbol.view() {
-                SymbolView::NonTerminal(index) => self
+            let symbol_index = symbol.index as usize;
+            let name = match symbol.kind {
+                SymbolType::NonTerminal => self
                     .2
-                    .resolve(self.0.syntax_grammar.variables[usize::from(index)].name),
-                SymbolView::External(index) => self
+                    .resolve(self.0.syntax_grammar.variables[symbol_index].name),
+                SymbolType::External => self
                     .2
-                    .resolve(self.0.syntax_grammar.external_tokens[usize::from(index)].name),
-                SymbolView::Terminal(index) => {
-                    self.2.resolve(self.1.variables[usize::from(index)].name)
-                }
-                SymbolView::End => "<EOF>",
-                SymbolView::EndOfNonTerminalExtra => "<END_OF_NONTERMINAL_EXTRA>",
+                    .resolve(self.0.syntax_grammar.external_tokens[symbol_index].name),
+                SymbolType::Terminal => self.2.resolve(self.1.variables[symbol_index].name),
+                SymbolType::End | SymbolType::EndOfNonTerminalExtra => "END",
             };
             writeln!(
                 f,
@@ -463,18 +444,16 @@ impl fmt::Debug for ParseItemSetBuilderDisplay<'_> {
 
         writeln!(f, "  last_sets: {{")?;
         for (symbol, last_set) in &self.0.last_sets {
-            let name = match symbol.view() {
-                SymbolView::NonTerminal(index) => self
+            let symbol_index = symbol.index as usize;
+            let name = match symbol.kind {
+                SymbolType::NonTerminal => self
                     .2
-                    .resolve(self.0.syntax_grammar.variables[usize::from(index)].name),
-                SymbolView::External(index) => self
+                    .resolve(self.0.syntax_grammar.variables[symbol_index].name),
+                SymbolType::External => self
                     .2
-                    .resolve(self.0.syntax_grammar.external_tokens[usize::from(index)].name),
-                SymbolView::Terminal(index) => {
-                    self.2.resolve(self.1.variables[usize::from(index)].name)
-                }
-                SymbolView::End => "<EOF>",
-                SymbolView::EndOfNonTerminalExtra => "<END_OF_NONTERMINAL_EXTRA>",
+                    .resolve(self.0.syntax_grammar.external_tokens[symbol_index].name),
+                SymbolType::Terminal => self.2.resolve(self.1.variables[symbol_index].name),
+                SymbolType::End | SymbolType::EndOfNonTerminalExtra => "END",
             };
             writeln!(
                 f,

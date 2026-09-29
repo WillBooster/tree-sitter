@@ -5,12 +5,9 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    grammars::{
-        InlinedProductionMap, InputGrammar, LexicalVariable, Production, ProductionStep,
-        ProductionStore,
-    },
+    grammars::{InlinedProductionMap, InputGrammar, Production, ProductionStep, ProductionStore},
     prepare_grammar::extract_tokens::ExtractedGrammarMeta,
-    rules::{Precedence, Symbol, SymbolView},
+    rules::{Precedence, Symbol, SymbolType},
 };
 
 struct InlineBuilder<'a> {
@@ -88,10 +85,7 @@ impl InlineBuilder<'_> {
 
             let removed_prod = std::mem::take(&mut scratch[i]);
             let removed_step = removed_prod.steps[si];
-            let SymbolView::NonTerminal(index) = symbol.view() else {
-                unreachable!();
-            };
-            let (v_start, v_end) = self.out.var_prods[usize::from(index)];
+            let (v_start, v_end) = self.out.var_prods[symbol.index as usize];
             let replacements = (v_start..v_end)
                 .filter_map(|p_idx| {
                     let p = self.out.productions[p_idx as usize];
@@ -174,41 +168,39 @@ pub type ProcessInlinesResult<T> = Result<T, ProcessInlinesError>;
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProcessInlinesError {
     #[error("External token `{0}` cannot be inlined")]
-    ExternalToken(Box<str>),
+    ExternalToken(String),
     #[error("Token `{0}` cannot be inlined")]
-    Token(Box<str>),
+    Token(String),
     #[error("Rule `{0}` cannot be inlined because it is the first rule")]
-    FirstRule(Box<str>),
+    FirstRule(String),
     #[error("Rule `{0}` has no reachable productions after inlining")]
-    NoReachableProductions(Box<str>),
+    NoReachableProductions(String),
 }
 
 pub(super) fn process_inlines(
     g: &InputGrammar,
     meta: &ExtractedGrammarMeta,
-    lexical_variables: &[LexicalVariable],
     out: &mut ProductionStore,
 ) -> ProcessInlinesResult<InlinedProductionMap> {
     if meta.inline.is_empty() {
         return Ok(InlinedProductionMap::default());
     }
     for symbol in &meta.inline {
-        match symbol.view() {
-            SymbolView::External(index) => Err(ProcessInlinesError::ExternalToken(
+        match symbol.kind {
+            SymbolType::External => Err(ProcessInlinesError::ExternalToken(
                 g.pool
-                    .resolve(meta.external_tokens[usize::from(index)].name)
-                    .into(),
+                    .resolve(meta.external_tokens[symbol.index as usize].name)
+                    .to_string(),
             ))?,
-            SymbolView::Terminal(index) => Err(ProcessInlinesError::Token(
+            SymbolType::Terminal => Err(ProcessInlinesError::Token(
                 g.pool
-                    .resolve(lexical_variables[usize::from(index)].name)
-                    .into(),
+                    .resolve(meta.lexical_variables[symbol.index as usize].name)
+                    .to_string(),
             ))?,
-            SymbolView::NonTerminal(index) if u32::from(index) == 0 => Err(
-                ProcessInlinesError::FirstRule(g.pool.resolve(g.variables[0].name).into()),
-            )?,
-            SymbolView::NonTerminal(_) => {}
-            SymbolView::End | SymbolView::EndOfNonTerminalExtra => unreachable!(),
+            SymbolType::NonTerminal if symbol.index == 0 => Err(ProcessInlinesError::FirstRule(
+                g.pool.resolve(g.variables[0].name).to_string(),
+            ))?,
+            _ => {}
         }
     }
 
@@ -229,7 +221,7 @@ pub(super) fn process_inlines(
             let symbol = Symbol::non_terminal(i);
             if i == 0 || out.steps.iter().any(|s| s.symbol() == symbol) {
                 Err(ProcessInlinesError::NoReachableProductions(
-                    g.pool.resolve(g.variables[i].name).to_string().into(),
+                    g.pool.resolve(g.variables[i].name).to_string(),
                 ))?;
             }
         }
@@ -243,6 +235,7 @@ mod tests {
     use super::*;
     use crate::{
         grammars::VariableType,
+        prepare_grammar::extract_tokens::LexicalToken,
         rules::{Alias, Associativity, RulePool, Symbol},
     };
 
@@ -273,13 +266,12 @@ mod tests {
             ],
         );
 
-        let mut g = InputGrammar::default();
+        let g = InputGrammar::default();
         let meta = ExtractedGrammarMeta {
             inline: vec![Symbol::non_terminal(1)],
             ..Default::default()
         };
-        let lexical_variables = make_lexical_variables_through(&mut g.pool, 14);
-        let map = process_inlines(&g, &meta, &lexical_variables, &mut out).unwrap();
+        let map = process_inlines(&g, &meta, &mut out).unwrap();
         let prod0 = out.var_prods[0].0;
 
         // Nothing to inline at step 0.
@@ -344,7 +336,7 @@ mod tests {
         add_variable(&mut out, &[(vec![plain(Symbol::terminal(15))], 0)]);
         add_variable(&mut out, &[(vec![plain(Symbol::terminal(16))], 0)]);
 
-        let mut g = InputGrammar::default();
+        let g = InputGrammar::default();
         let meta = ExtractedGrammarMeta {
             inline: vec![
                 Symbol::non_terminal(1),
@@ -353,8 +345,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let lexical_variables = make_lexical_variables_through(&mut g.pool, 16);
-        let map = process_inlines(&g, &meta, &lexical_variables, &mut out).unwrap();
+        let map = process_inlines(&g, &meta, &mut out).unwrap();
         let prod0 = out.var_prods[0].0;
 
         let (ids, prods) = inlined(&out, &map, prod0, 1).unwrap();
@@ -450,13 +441,12 @@ mod tests {
         );
         add_variable(&mut out, &[(vec![plain(Symbol::terminal(13))], 0)]);
 
-        let mut g = InputGrammar::default();
+        let g = InputGrammar::default();
         let meta = ExtractedGrammarMeta {
             inline: vec![Symbol::non_terminal(1), Symbol::non_terminal(2)],
             ..Default::default()
         };
-        let lexical_variables = make_lexical_variables_through(&mut g.pool, 13);
-        let map = process_inlines(&g, &meta, &lexical_variables, &mut out).unwrap();
+        let map = process_inlines(&g, &meta, &mut out).unwrap();
         let prod0 = out.var_prods[0].0;
 
         let (ids, prods) = inlined(&out, &map, prod0, 0).unwrap();
@@ -531,43 +521,26 @@ mod tests {
     fn test_error_when_inlining_tokens() {
         let mut pool = RulePool::default();
         let name = pool.intern("something");
+        let root = pool.blank();
         let g = InputGrammar {
             pool,
             ..Default::default()
         };
         let meta = ExtractedGrammarMeta {
             inline: vec![Symbol::terminal(0)],
+            lexical_variables: vec![LexicalToken {
+                name,
+                kind: VariableType::Named,
+                root,
+            }],
             ..Default::default()
         };
-        let lexical_variables = [LexicalVariable {
-            name,
-            kind: VariableType::Named,
-            implicit_precedence: 0,
-            start_state: 0,
-        }];
         let mut out = ProductionStore::default();
 
-        let result = process_inlines(&g, &meta, &lexical_variables, &mut out);
+        let result = process_inlines(&g, &meta, &mut out);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(
-            err,
-            ProcessInlinesError::Token("something".to_string().into())
-        );
-    }
-
-    fn make_lexical_variables_through(
-        pool: &mut RulePool,
-        last_index: usize,
-    ) -> Vec<LexicalVariable> {
-        (0..=last_index)
-            .map(|i| LexicalVariable {
-                name: pool.intern(&format!("t{i}")),
-                kind: VariableType::Anonymous,
-                implicit_precedence: 0,
-                start_state: 0,
-            })
-            .collect()
+        assert_eq!(err, ProcessInlinesError::Token("something".to_string()));
     }
 
     /// Append one variable's productions to `out` and record its production id range.
@@ -641,7 +614,6 @@ mod tests {
                 crate::grammars::Variable { name, root }
             })
             .to_vec();
-        let lexical_variables = make_lexical_variables_through(&mut pool, 10);
         let g = InputGrammar {
             pool,
             variables,
@@ -652,8 +624,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            process_inlines(&g, &meta, &lexical_variables, &mut out).unwrap_err(),
-            ProcessInlinesError::NoReachableProductions("rule1".to_string().into())
+            process_inlines(&g, &meta, &mut out).unwrap_err(),
+            ProcessInlinesError::NoReachableProductions("rule1".to_string())
         );
     }
 

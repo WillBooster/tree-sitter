@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 #[cfg(feature = "load")]
 use std::{
@@ -9,6 +10,7 @@ use std::{
 
 use bitflags::bitflags;
 use node_types::VariableInfo;
+use rules::Symbol;
 #[cfg(feature = "load")]
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -29,25 +31,19 @@ mod rules;
 mod strpool;
 mod tables;
 
+pub use build_tables::ParseTableBuilderError;
 use build_tables::build_tables;
-pub use build_tables::{AmbiguousExtraError, ConflictError, ParseTableBuilderError};
 use grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar};
 pub use node_types::{InvalidSupertypeError, SuperTypeCycleError, VariableInfoError};
 pub use parse_grammar::ParseGrammarError;
 use parse_grammar::parse_grammar;
+pub use prepare_grammar::PrepareGrammarError;
 use prepare_grammar::prepare_grammar;
-pub use prepare_grammar::{
-    ConflictingPrecedenceOrderingError, ExpandRegexError, ExpandRepeatsError, ExpandRuleError,
-    ExpandTokensError, ExpandTokensProcessingError, ExtractTokensError, FlattenGrammarError,
-    IndirectRecursionError, InternSymbolsError, NonAsciiByteClassError, NonTerminalWordTokenError,
-    PatternSpan, PrepareGrammarError, ProcessInlinesError, RegexError, RegexErrorKind,
-    UndeclaredPrecedenceError, ValidatePrecedenceError,
-};
 use render::render_c_code;
 pub use render::{ABI_VERSION_MAX, ABI_VERSION_MIN, RenderError};
 
 use crate::{
-    grammars::InputGrammar, prepare_grammar::PreparedGrammar, rules::AliasMap, strpool::StrPool,
+    grammars::InputGrammar, prepare_grammar::PreparedGrammar, rules::Alias, strpool::StrPool,
 };
 
 struct JSONOutput {
@@ -56,7 +52,7 @@ struct JSONOutput {
     syntax_grammar: SyntaxGrammar,
     lexical_grammar: LexicalGrammar,
     inlines: InlinedProductionMap,
-    simple_aliases: AliasMap,
+    simple_aliases: BTreeMap<Symbol, Alias>,
     variable_info: Vec<VariableInfo>,
     str_pool: StrPool,
 }
@@ -77,7 +73,7 @@ pub const PARSER_HEADER: &str = include_str!("parser.h.inc");
 
 pub type GenerateResult<T> = Result<T, GenerateError>;
 
-#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum GenerateError {
     #[error("Error with specified path -- {0}")]
     GrammarPath(IoError),
@@ -110,16 +106,6 @@ pub struct IoError {
     pub error: std::io::Error,
     pub path: Option<PathBuf>,
 }
-
-impl PartialEq for IoError {
-    fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
-            && self.error.kind() == other.error.kind()
-            && self.error.raw_os_error() == other.error.raw_os_error()
-    }
-}
-
-impl Eq for IoError {}
 
 #[cfg(feature = "load")]
 impl IoError {
@@ -177,7 +163,7 @@ impl<'de> Deserialize<'de> for IoError {
 pub type LoadGrammarFileResult<T> = Result<T, LoadGrammarError>;
 
 #[cfg(feature = "load")]
-#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum LoadGrammarError {
     #[error("Path to a grammar file with `.js` or `.json` extension is required")]
     InvalidPath,
@@ -190,12 +176,12 @@ pub enum LoadGrammarError {
 }
 
 #[cfg(feature = "load")]
-#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum ParseVersionError {
     #[error("{0}")]
-    Version(Box<str>),
+    Version(String),
     #[error("{0}")]
-    JSON(Box<str>),
+    JSON(String),
     #[error(transparent)]
     IO(IoError),
 }
@@ -204,56 +190,56 @@ pub enum ParseVersionError {
 pub type JSResult<T> = Result<T, JSError>;
 
 #[cfg(feature = "load")]
-#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum JSError {
     #[error("Failed to run `{runtime}` -- {error}")]
-    JSRuntimeSpawn { runtime: Box<str>, error: Box<str> },
+    JSRuntimeSpawn { runtime: String, error: String },
     #[error("Got invalid UTF8 from `{runtime}` -- {error}")]
-    JSRuntimeUtf8 { runtime: Box<str>, error: Box<str> },
+    JSRuntimeUtf8 { runtime: String, error: String },
     #[error("`{runtime}` process exited with status {code}")]
-    JSRuntimeExit { runtime: Box<str>, code: i32 },
+    JSRuntimeExit { runtime: String, code: i32 },
     #[error("Failed to open stdin for `{runtime}`")]
-    JSRuntimeStdin { runtime: Box<str> },
+    JSRuntimeStdin { runtime: String },
     #[error("Failed to write {item} to `{runtime}`'s stdin -- {error}")]
     JSRuntimeWrite {
-        runtime: Box<str>,
-        item: Box<str>,
-        error: Box<str>,
+        runtime: String,
+        item: String,
+        error: String,
     },
     #[error("Failed to read output from `{runtime}` -- {error}")]
-    JSRuntimeRead { runtime: Box<str>, error: Box<str> },
+    JSRuntimeRead { runtime: String, error: String },
     #[error(transparent)]
     IO(IoError),
     #[cfg(feature = "qjs-rt")]
     #[error("Failed to get relative path")]
     RelativePath,
     #[error("Could not parse this package's version as semver -- {0}")]
-    Semver(Box<str>),
+    Semver(String),
     #[error("Failed to serialize grammar JSON -- {0}")]
-    Serialization(Box<str>),
+    Serialzation(String),
     #[cfg(feature = "qjs-rt")]
     #[error("QuickJS error: {0}")]
-    QuickJS(Box<str>),
+    QuickJS(String),
 }
 
 #[cfg(feature = "load")]
 impl From<serde_json::Error> for JSError {
     fn from(value: serde_json::Error) -> Self {
-        Self::Serialization(value.to_string().into())
+        Self::Serialzation(value.to_string())
     }
 }
 
 #[cfg(feature = "load")]
 impl From<semver::Error> for JSError {
     fn from(value: semver::Error) -> Self {
-        Self::Semver(value.to_string().into())
+        Self::Semver(value.to_string())
     }
 }
 
 #[cfg(feature = "qjs-rt")]
 impl From<rquickjs::Error> for JSError {
     fn from(value: rquickjs::Error) -> Self {
-        Self::QuickJS(value.to_string().into())
+        Self::QuickJS(value.to_string())
     }
 }
 
@@ -272,12 +258,12 @@ impl Default for OptLevel {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Diagnostic {
-    UnnecessaryConflicts(Box<[Box<[Box<str>]>]>),
-    UnaryChoice { name: Option<Box<str>> },
-    UnarySeq { name: Option<Box<str>> },
-    EmptyStringMatch(Box<str>),
-    UnsupportedRegexFlag { flag: char, pattern: Box<str> },
-    SupertypeInlined { name: Box<str> },
+    UnnecessaryConflicts(Vec<Vec<String>>),
+    UnaryChoice { name: Option<String> },
+    UnarySeq { name: Option<String> },
+    EmptyStringMatch(String),
+    UnsupportedRegexFlag { flag: char, pattern: String },
+    SupertypeInlined { name: String },
 }
 
 impl std::fmt::Display for Diagnostic {
@@ -576,22 +562,17 @@ fn read_grammar_version(repo_path: &Path) -> Result<Option<Version>, ParseVersio
                 let contents = fs::read_to_string(path.as_path())
                     .map_err(|e| ParseVersionError::IO(IoError::new(e, Some(path.as_path()))))?;
                 serde_json::from_str::<TreeSitterJson>(&contents).map_err(|e| {
-                    ParseVersionError::JSON(
-                        format!("Failed to parse `{}` -- {e}", path.display()).into(),
-                    )
+                    ParseVersionError::JSON(format!("Failed to parse `{}` -- {e}", path.display()))
                 })
             })
             .transpose()?;
         if let Some(json) = json {
             return Version::parse(&json.metadata.version)
                 .map_err(|e| {
-                    ParseVersionError::Version(
-                        format!(
-                            "Failed to parse `{}` version as semver -- {e}",
-                            path.display()
-                        )
-                        .into(),
-                    )
+                    ParseVersionError::Version(format!(
+                        "Failed to parse `{}` version as semver -- {e}",
+                        path.display()
+                    ))
                 })
                 .map(Some);
         }
@@ -656,15 +637,15 @@ fn load_js_grammar_file(grammar_path: &Path, js_runtime: Option<&str>) -> JSResu
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| JSError::JSRuntimeSpawn {
-            runtime: js_runtime.to_string().into(),
-            error: e.to_string().into(),
+            runtime: js_runtime.to_string(),
+            error: e.to_string(),
         })?;
 
     let mut js_stdin = js_process
         .stdin
         .take()
         .ok_or_else(|| JSError::JSRuntimeStdin {
-            runtime: js_runtime.to_string().into(),
+            runtime: js_runtime.to_string(),
         })?;
 
     let cli_version = Version::parse(env!("CARGO_PKG_VERSION"))?;
@@ -676,30 +657,30 @@ fn load_js_grammar_file(grammar_path: &Path, js_runtime: Option<&str>) -> JSResu
         cli_version.major, cli_version.minor, cli_version.patch,
     )
     .map_err(|e| JSError::JSRuntimeWrite {
-        runtime: js_runtime.to_string().into(),
-        item: "tree-sitter version".to_string().into(),
-        error: e.to_string().into(),
+        runtime: js_runtime.to_string(),
+        item: "tree-sitter version".to_string(),
+        error: e.to_string(),
     })?;
     js_stdin
         .write(include_bytes!("./dsl.js"))
         .map_err(|e| JSError::JSRuntimeWrite {
-            runtime: js_runtime.to_string().into(),
-            item: "grammar dsl".to_string().into(),
-            error: e.to_string().into(),
+            runtime: js_runtime.to_string(),
+            item: "grammar dsl".to_string(),
+            error: e.to_string(),
         })?;
     drop(js_stdin);
 
     let output = js_process
         .wait_with_output()
         .map_err(|e| JSError::JSRuntimeRead {
-            runtime: js_runtime.to_string().into(),
-            error: e.to_string().into(),
+            runtime: js_runtime.to_string(),
+            error: e.to_string(),
         })?;
     match output.status.code() {
         Some(0) => {
             let stdout = String::from_utf8(output.stdout).map_err(|e| JSError::JSRuntimeUtf8 {
-                runtime: js_runtime.to_string().into(),
-                error: e.to_string().into(),
+                runtime: js_runtime.to_string(),
+                error: e.to_string(),
             })?;
 
             let mut grammar_json = &stdout[..];
@@ -726,11 +707,11 @@ fn load_js_grammar_file(grammar_path: &Path, js_runtime: Option<&str>) -> JSResu
             >(grammar_json)?)?)
         }
         Some(code) => Err(JSError::JSRuntimeExit {
-            runtime: js_runtime.to_string().into(),
+            runtime: js_runtime.to_string(),
             code,
         }),
         None => Err(JSError::JSRuntimeExit {
-            runtime: js_runtime.to_string().into(),
+            runtime: js_runtime.to_string(),
             code: -1,
         }),
     }

@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 pub use build_lex_table::LARGE_CHARACTER_RANGE_COUNT;
 use build_parse_table::BuildTableResult;
-pub use build_parse_table::{AmbiguousExtraError, ConflictError, ParseTableBuilderError};
+pub use build_parse_table::ParseTableBuilderError;
 use log::{debug, info};
 use rustc_hash::FxHashMap;
 
@@ -28,7 +28,7 @@ use crate::{
     grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar},
     nfa::{CharacterSet, NfaCursor},
     node_types::VariableInfo,
-    rules::{AliasMap, Symbol, SymbolView, TerminalIndex, TokenSet},
+    rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::StrPool,
     tables::{ActionList, ActionListPool, LexTable, ParseAction, ParseTable, ParseTableEntry},
 };
@@ -105,7 +105,6 @@ pub fn build_tables(
         &keywords,
         &coincident_token_index,
         &token_conflict_map,
-        str_pool,
     );
     populate_external_lex_states(&mut parse_table, syntax_grammar);
     mark_fragile_tokens(&mut parse_table, &token_conflict_map);
@@ -154,22 +153,21 @@ fn get_following_tokens(
             let right_tokens = builder.first_set(steps[i].symbol());
             let right_reserved_tokens = builder.reserved_first_set(steps[i].symbol());
             for left_token in left_tokens.iter() {
-                if let SymbolView::Terminal(index) = left_token.view() {
-                    let index = usize::from(index);
-                    result[index].insert_all_terminals(right_tokens);
+                if left_token.is_terminal() {
+                    result[left_token.index as usize].insert_all_terminals(right_tokens);
                     if let Some(reserved_tokens) = right_reserved_tokens {
-                        result[index].insert_all_terminals(reserved_tokens);
+                        result[left_token.index as usize].insert_all_terminals(reserved_tokens);
                     }
                 }
             }
         }
     }
     for extra in &syntax_grammar.extra_symbols {
-        if let SymbolView::Terminal(index) = extra.view() {
+        if extra.is_terminal() {
             for entry in &mut result {
                 entry.insert(*extra);
             }
-            result[usize::from(index)] = all_tokens.clone();
+            result[extra.index as usize] = all_tokens.clone();
         }
     }
     result
@@ -191,10 +189,9 @@ fn populate_error_state(
     // any other token in any way, besides matching exactly the same string.
     let conflict_free_tokens = (0..n)
         .filter_map(|i| {
-            let a = TerminalIndex::new(i as u32);
             let conflicts_with_other_tokens = (0..n).any(|j| {
                 j != i
-                    && !coincident_token_index.contains(a, TerminalIndex::new(j as u32))
+                    && !coincident_token_index.contains(Symbol::terminal(i), Symbol::terminal(j))
                     && token_conflict_map.does_match_shorter_or_longer(i, j)
             });
             if conflicts_with_other_tokens {
@@ -221,15 +218,15 @@ fn populate_error_state(
         if !conflict_free_tokens.contains(symbol)
             && !keywords.contains(symbol)
             && syntax_grammar.word_token != Some(symbol)
-            && let Some(index) = conflict_free_tokens.terminals().find(|&other| {
-                !coincident_token_index.contains(TerminalIndex::new(i as u32), other)
-                    && token_conflict_map.does_conflict(i, usize::from(other))
+            && let Some(t) = conflict_free_tokens.iter().find(|t| {
+                !coincident_token_index.contains(symbol, *t)
+                    && token_conflict_map.does_conflict(symbol.index as usize, t.index as usize)
             })
         {
             debug!(
                 "error recovery - exclude token {} because of conflict with {}",
                 str_pool.resolve(lexical_grammar.variables[i].name),
-                str_pool.resolve(lexical_grammar.variables[usize::from(index)].name)
+                str_pool.resolve(lexical_grammar.variables[t.index as usize].name)
             );
             continue;
         }
@@ -252,7 +249,7 @@ fn populate_error_state(
         }
     }
 
-    state.terminal_entries.insert(Symbol::End, recover_entry);
+    state.terminal_entries.insert(Symbol::end(), recover_entry);
 }
 
 fn populate_used_symbols(
@@ -265,21 +262,17 @@ fn populate_used_symbols(
     let mut external_usages = vec![false; syntax_grammar.external_tokens.len()];
     for state in &parse_table.states {
         for symbol in state.terminal_entries.keys() {
-            match symbol.view() {
-                SymbolView::Terminal(index) => terminal_usages[usize::from(index)] = true,
-                SymbolView::External(index) => external_usages[usize::from(index)] = true,
-                SymbolView::End | SymbolView::EndOfNonTerminalExtra => {}
-                SymbolView::NonTerminal(_) => unreachable!(),
+            match symbol.kind {
+                SymbolType::Terminal => terminal_usages[symbol.index as usize] = true,
+                SymbolType::External => external_usages[symbol.index as usize] = true,
+                _ => {}
             }
         }
         for symbol in state.nonterminal_entries.keys() {
-            let SymbolView::NonTerminal(index) = symbol.view() else {
-                unreachable!();
-            };
-            non_terminal_usages[usize::from(index)] = true;
+            non_terminal_usages[symbol.index as usize] = true;
         }
     }
-    parse_table.symbols.push(Symbol::End);
+    parse_table.symbols.push(Symbol::end());
     for (i, value) in terminal_usages.into_iter().enumerate() {
         if value {
             // Assign the grammar's word token a low numerical index. This ensures that
@@ -288,13 +281,10 @@ fn populate_used_symbols(
             // ensure that a subtree's symbol can be successfully reassigned to the word token
             // without having to move the subtree to the heap.
             // See https://github.com/tree-sitter/tree-sitter/issues/258
-            if syntax_grammar.word_token.is_some_and(|t| match t.view() {
-                SymbolView::External(index) => usize::from(index) == i,
-                SymbolView::Terminal(index) => usize::from(index) == i,
-                SymbolView::End
-                | SymbolView::EndOfNonTerminalExtra
-                | SymbolView::NonTerminal(_) => false,
-            }) {
+            if syntax_grammar
+                .word_token
+                .is_some_and(|t| t.index as usize == i)
+            {
                 parse_table.symbols.insert(1, Symbol::terminal(i));
             } else {
                 parse_table.symbols.push(Symbol::terminal(i));
@@ -316,11 +306,8 @@ fn populate_used_symbols(
 fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &SyntaxGrammar) {
     let mut external_tokens_by_corresponding_internal_token = FxHashMap::default();
     for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
-        if let Some(SymbolView::Terminal(index)) = external_token
-            .corresponding_internal_token
-            .map(Symbol::view)
-        {
-            external_tokens_by_corresponding_internal_token.insert(index, i);
+        if let Some(symbol) = external_token.corresponding_internal_token {
+            external_tokens_by_corresponding_internal_token.insert(symbol.index, i);
         }
     }
 
@@ -331,17 +318,13 @@ fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &S
     for i in 0..parse_table.states.len() {
         let mut external_tokens = TokenSet::new();
         for token in parse_table.states[i].terminal_entries.keys() {
-            match token.view() {
-                SymbolView::External(_) => external_tokens.insert(*token),
-                SymbolView::Terminal(token_index) => {
-                    if let Some(index) =
-                        external_tokens_by_corresponding_internal_token.get(&token_index)
-                    {
-                        external_tokens.insert(Symbol::external(*index));
-                    }
-                }
-                SymbolView::End | SymbolView::EndOfNonTerminalExtra => {}
-                SymbolView::NonTerminal(_) => unreachable!(),
+            if token.is_external() {
+                external_tokens.insert(*token);
+            } else if token.is_terminal()
+                && let Some(index) =
+                    external_tokens_by_corresponding_internal_token.get(&token.index)
+            {
+                external_tokens.insert(Symbol::external(*index));
             }
         }
 
@@ -367,13 +350,7 @@ fn identify_keywords(
         return TokenSet::new();
     }
 
-    let word_token_index = match word_token.unwrap().view() {
-        SymbolView::External(index) => usize::from(index),
-        SymbolView::Terminal(index) => usize::from(index),
-        SymbolView::End | SymbolView::EndOfNonTerminalExtra | SymbolView::NonTerminal(_) => {
-            unreachable!()
-        }
-    };
+    let word_token = word_token.unwrap();
     let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
 
     // First find all of the candidate keyword tokens: tokens that start with
@@ -385,8 +362,8 @@ fn identify_keywords(
         .filter_map(|(i, variable)| {
             cursor.reset(vec![variable.start_state]);
             if all_chars_are_alphabetical(&cursor)
-                && token_conflict_map.does_match_same_string(i, word_token_index)
-                && !token_conflict_map.does_match_different_string(i, word_token_index)
+                && token_conflict_map.does_match_same_string(i, word_token.index as usize)
+                && !token_conflict_map.does_match_different_string(i, word_token.index as usize)
             {
                 debug!(
                     "Keywords - add candidate {}",
@@ -401,33 +378,32 @@ fn identify_keywords(
 
     // Exclude keyword candidates that shadow another keyword candidate.
     let keywords = keyword_candidates
-        .terminals()
-        .filter(|&token| {
-            for other in keyword_candidates.terminals() {
-                if other != token
+        .iter()
+        .filter(|token| {
+            for other_token in keyword_candidates.iter() {
+                if other_token != *token
                     && token_conflict_map
-                        .does_match_same_string(usize::from(other), usize::from(token))
+                        .does_match_same_string(other_token.index as usize, token.index as usize)
                 {
                     debug!(
                         "Keywords - exclude {} because it matches the same string as {}",
-                        str_pool.resolve(lexical_grammar.variables[usize::from(token)].name),
-                        str_pool.resolve(lexical_grammar.variables[usize::from(other)].name)
+                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
+                        str_pool
+                            .resolve(lexical_grammar.variables[other_token.index as usize].name)
                     );
                     return false;
                 }
             }
             true
         })
-        .map(Symbol::from)
         .collect::<TokenSet>();
 
     // Exclude keyword candidates for which substituting the keyword capture
     // token would introduce new lexical conflicts with other tokens.
 
     keywords
-        .terminals()
-        .filter(|&token| {
-            let token_index = usize::from(token);
+        .iter()
+        .filter(|token| {
             for other_index in 0..lexical_grammar.variables.len() {
                 if keyword_candidates.contains(Symbol::terminal(other_index)) {
                     continue;
@@ -437,19 +413,19 @@ fn identify_keywords(
                 // this keyword candidate, then substituting the word token won't
                 // introduce any new lexical conflicts.
                 if coincident_token_index
-                    .all_coincident_states_have_word(token, TerminalIndex::new(other_index as u32))
+                    .all_coincident_states_have_word(*token, Symbol::terminal(other_index))
                 {
                     continue;
                 }
 
                 if !token_conflict_map.has_same_conflict_status(
-                    token_index,
-                    word_token_index,
+                    token.index as usize,
+                    word_token.index as usize,
                     other_index,
                 ) {
                     debug!(
                         "Keywords - exclude {} because of conflict with {}",
-                        str_pool.resolve(lexical_grammar.variables[token_index].name),
+                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
                         str_pool.resolve(lexical_grammar.variables[other_index].name)
                     );
                     return false;
@@ -458,11 +434,10 @@ fn identify_keywords(
 
             debug!(
                 "Keywords - include {}",
-                str_pool.resolve(lexical_grammar.variables[token_index].name),
+                str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
             );
             true
         })
-        .map(Symbol::from)
         .collect()
 }
 
@@ -471,14 +446,14 @@ fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenC
     for state in &mut parse_table.states {
         valid_terminal_indices.clear();
         for token in state.terminal_entries.keys() {
-            if let SymbolView::Terminal(index) = token.view() {
-                valid_terminal_indices.push(index);
+            if token.is_terminal() {
+                valid_terminal_indices.push(token.index);
             }
         }
         for (token, id) in &mut state.terminal_entries {
-            if let SymbolView::Terminal(index) = token.view() {
+            if token.is_terminal() {
                 for &i in &valid_terminal_indices {
-                    if token_conflict_map.does_overlap(usize::from(i), usize::from(index)) {
+                    if token_conflict_map.does_overlap(i as usize, token.index as usize) {
                         id.set_reusable(false);
                         break;
                     }
@@ -498,7 +473,7 @@ fn report_state_info<'a>(
 ) {
     let mut all_state_indices = BTreeSet::new();
     let mut symbols_with_state_indices = (0..syntax_grammar.variables.len())
-        .map(|i| (i, BTreeSet::new()))
+        .map(|i| (Symbol::non_terminal(i), BTreeSet::new()))
         .collect::<Vec<_>>();
 
     for (i, state) in parse_table.states.iter().enumerate() {
@@ -521,10 +496,10 @@ fn report_state_info<'a>(
         .map(|v| str_pool.resolve(v.name).len())
         .max()
         .unwrap();
-    for (index, states) in &symbols_with_state_indices {
+    for (symbol, states) in &symbols_with_state_indices {
         info!(
             "{:width$}\t{}",
-            str_pool.resolve(syntax_grammar.variables[*index].name),
+            str_pool.resolve(syntax_grammar.variables[symbol.index as usize].name),
             states.len(),
             width = max_symbol_name_length
         );
@@ -536,8 +511,10 @@ fn report_state_info<'a>(
     } else {
         symbols_with_state_indices
             .iter()
-            .find_map(|(index, state_indices)| {
-                if str_pool.resolve(syntax_grammar.variables[*index].name) == report_symbol_name {
+            .find_map(|(symbol, state_indices)| {
+                if str_pool.resolve(syntax_grammar.variables[symbol.index as usize].name)
+                    == report_symbol_name
+                {
                     Some(state_indices)
                 } else {
                     None
@@ -559,15 +536,15 @@ fn report_state_info<'a>(
                 "symbol sequence: {}",
                 preceding_symbols
                     .iter()
-                    .map(|symbol| match symbol.view() {
-                        SymbolView::Terminal(index) =>
-                            str_pool.resolve(lexical_grammar.variables[usize::from(index)].name,),
-                        SymbolView::External(index) => str_pool
-                            .resolve(syntax_grammar.external_tokens[usize::from(index)].name,),
-                        SymbolView::NonTerminal(index) =>
-                            str_pool.resolve(syntax_grammar.variables[usize::from(index)].name,),
-                        SymbolView::End => "<EOF>",
-                        SymbolView::EndOfNonTerminalExtra => "<END_OF_NONTERMINAL_EXTRA>",
+                    .map(|symbol| {
+                        if symbol.is_terminal() {
+                            str_pool.resolve(lexical_grammar.variables[symbol.index as usize].name)
+                        } else if symbol.is_external() {
+                            str_pool
+                                .resolve(syntax_grammar.external_tokens[symbol.index as usize].name)
+                        } else {
+                            str_pool.resolve(syntax_grammar.variables[symbol.index as usize].name)
+                        }
                     })
                     .collect::<Vec<_>>()
                     .join(" ")

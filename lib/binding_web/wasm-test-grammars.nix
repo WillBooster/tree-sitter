@@ -1,14 +1,12 @@
 {
-  binaryen,
   cli,
   lib,
-  lld,
   nodejs_22,
+  pkgsCross,
   src,
   stdenv,
   test-grammars,
   version,
-  wasi-sdk,
 }:
 let
   grammars = [
@@ -30,16 +28,14 @@ stdenv.mkDerivation {
   pname = "wasm-test-grammars";
 
   nativeBuildInputs = [
-    binaryen
     cli
-    lld
+    pkgsCross.wasi32.stdenv.cc
     nodejs_22
   ];
 
   buildPhase = ''
     export HOME=$TMPDIR
-    export TREE_SITTER_WASI_SDK_PATH=${wasi-sdk}
-    export TREE_SITTER_BINARYEN_PATH=${binaryen}
+    export TREE_SITTER_WASI_SDK_PATH=${pkgsCross.wasi32.stdenv.cc}
     export NIX_LDFLAGS=""
 
     cp -r ${test-grammars}/fixtures .

@@ -5,6 +5,7 @@ description = "Library for generating C source code from a tree-sitter grammar"
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+readme = "README.md"
 homepage.workspace = true
 repository.workspace = true
 documentation = "https://docs.rs/tree-sitter-generate"
@@ -32,7 +33,12 @@ log.workspace = true
 pathdiff = { optional = true, version = "0.2.3" }
 regex.workspace = true
 regex-syntax.workspace = true
-rquickjs = { features = [ "bindgen", "loader", "macro", "phf" ], optional = true, version = "0.13" }
+rquickjs = { features = [
+  "bindgen",
+  "loader",
+  "macro",
+  "phf",
+], optional = true, version = "0.12.2" }
 rustc-hash.workspace = true
 semver = { optional = true, workspace = true }
 serde.workspace = true
