@@ -539,6 +539,36 @@ fn test_parsing_after_editing_end_of_code() {
 }
 
 #[test]
+fn test_parsing_after_editing_the_last_byte_of_a_multibyte_lookahead_character() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+
+    // U+200B cannot continue an identifier and U+200C can. Their UTF-8 encodings differ only in the last byte, which
+    // the lexer read as part of the lookahead character that ended the identifier `a`.
+    let mut code = "a\u{200B}b;".as_bytes().to_vec();
+    let mut tree = parser.parse(&code, None).unwrap();
+    assert!(tree.root_node().has_error());
+
+    perform_edit(
+        &mut tree,
+        &mut code,
+        &Edit {
+            position: 3,
+            deleted_length: 1,
+            inserted_text: vec![0x8C],
+        },
+    )
+    .unwrap();
+    assert_eq!(code, "a\u{200C}b;".as_bytes());
+
+    let tree = parser.parse(&code, Some(&tree)).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(program (expression_statement (identifier)))"
+    );
+}
+
+#[test]
 fn test_parsing_empty_file_with_reused_tree() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
