@@ -173,6 +173,20 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
             volume_string.push(":/src:Z");
             command.args([OsStr::new("--volume"), &volume_string]);
 
+            // Keep emscripten's cache, where it compiles the system libraries, across the discarded
+            // containers. The cache stays at the image's path because the source maps record the
+            // paths of the headers in it, and `EM_CACHE` cannot move it anyway: the image's
+            // entrypoint sources `emsdk_env.sh`, which unsets it. emcc installs the headers into the
+            // mounted directory, which hides the ones the image ships there.
+            let cache_dir = std::env::current_dir()
+                .unwrap()
+                .join("target/emscripten-cache");
+            // Created here so that the container does not create it as root.
+            fs::create_dir_all(&cache_dir)?;
+            let mut cache_volume = cache_dir.into_os_string();
+            cache_volume.push(":/emsdk/upstream/emscripten/cache:Z");
+            command.args([OsStr::new("--volume"), &cache_volume]);
+
             // In case `docker` is an alias to `podman`, ensure that podman
             // mounts the current directory as writable by the container
             // user which has the same uid as the host user. Setting the
@@ -196,7 +210,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
                 }
             };
 
-            // Run `emcc` in a container using the `emscripten-slim` image
+            // Run `emcc` in a container using the `emscripten/emsdk` image
             command.args([EMSCRIPTEN_TAG, "emcc"]);
             command
         }
