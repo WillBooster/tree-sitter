@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
-# Publishes the crate to crates.io with trusted publishing, exchanging the GitHub Actions OIDC token for a
-# short-lived crates.io token. crates.io matches the `release.yml` caller workflow, not the reusable workflow.
+# Publishes the crate named by the argument to crates.io with trusted publishing, exchanging the GitHub Actions OIDC
+# token for a short-lived crates.io token. crates.io matches the `release.yml` caller workflow, not the reusable workflow.
 
 set -euo pipefail
 
-# semantic-release/exec would parse stdout as release info.
-exec 1>&2
+crate=$1
 
 # crates.io rejects requests with curl's default User-Agent.
 user_agent='willbooster-tree-sitter-release (https://github.com/WillBooster/tree-sitter)'
@@ -20,4 +19,4 @@ trap 'curl -sSf -A "$user_agent" -X DELETE -H "Authorization: Bearer $token" htt
   echo "warning: failed to revoke the crates.io token"' EXIT
 
 # The release versions written by script/set-version are not committed.
-CARGO_REGISTRY_TOKEN=$token cargo publish -p willbooster-tree-sitter --allow-dirty
+CARGO_REGISTRY_TOKEN=$token cargo publish -p "$crate" --allow-dirty

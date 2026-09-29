@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+
+# Writes the release version given as the argument and builds every artifact the release publishes.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+script/set-version "$1"
+cd lib/binding_web
+npm ci
+npm run build
+npm run build:debug
+CJS=true npm run build
+CJS=true npm run build:debug
+npm run build:dts

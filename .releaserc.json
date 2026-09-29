@@ -11,28 +11,14 @@
     [
       "@semantic-release/exec",
       {
-        "prepareCmd": "script/set-version ${nextRelease.version} && cd lib/binding_web && npm ci && npm run build && npm run build:debug && CJS=true npm run build && CJS=true npm run build:debug && npm run build:dts"
+        "prepareCmd": "script/build-release ${nextRelease.version}"
       }
     ],
     [
-      "@semantic-release/npm",
+      "./script/releasePlugin.mjs",
       {
+        "crate": "willbooster-tree-sitter",
         "pkgRoot": "lib/binding_web"
-      }
-    ],
-    [
-      "@semantic-release/github",
-      {
-        "successCommentCondition": false,
-        "failCommentCondition": false,
-        "labels": ["r: semantic-release"],
-        "releasedLabels": ["released :bookmark:"]
-      }
-    ],
-    [
-      "@semantic-release/exec",
-      {
-        "publishCmd": "script/publish-crate"
       }
     ]
   ]
