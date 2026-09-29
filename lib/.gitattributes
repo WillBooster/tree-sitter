@@ -1,0 +1,4 @@
+# Kept here because wbfy regenerates the root .gitattributes: tests and fixtures expect LF line endings on every platform.
+* text=auto eol=lf
+src/unicode/*.h linguist-vendored
+src/unicode/LICENSE linguist-vendored

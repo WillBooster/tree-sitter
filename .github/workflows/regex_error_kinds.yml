@@ -7,7 +7,7 @@ on:
       - crates/generate/src/prepare_grammar/pattern.rs
       - crates/xtask/src/**
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - Cargo.lock
       - crates/generate/src/prepare_grammar/pattern.rs

@@ -7,7 +7,7 @@ on:
       - lib/binding_web/**
       - xtask/src/**
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - lib/include/tree_sitter/api.h
       - lib/binding_rust/bindings.rs

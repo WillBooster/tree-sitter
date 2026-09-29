@@ -1,0 +1,30 @@
+{
+  "name": "tree-sitter",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WillBooster/tree-sitter.git"
+  },
+  "license": "MIT",
+  "author": "WillBooster Inc.",
+  "scripts": {
+    "cleanup": "bun wb lint --fix --format",
+    "format": "bun wb lint --format",
+    "lint": "bun wb lint",
+    "lint-fix": "bun wb lint --fix",
+    "prepare": "(bun lefthook install || true) && (test ! -f .lefthook/normalize-bun-lockfile.sh || bash .lefthook/normalize-bun-lockfile.sh)",
+    "test": "bun wb test",
+    "test/ci": "bun wb test-on-ci",
+    "verify": "bun wb verify",
+    "verify-full": "bun wb verify --full"
+  },
+  "prettier": "@willbooster/prettier-config",
+  "devDependencies": {
+    "@willbooster/prettier-config": "10.4.0",
+    "@willbooster/wb": "22.11.0",
+    "lefthook": "2.1.14",
+    "prettier": "3.9.8",
+    "prettier-plugin-java": "2.10.4",
+    "sort-package-json": "4.0.0"
+  }
+}
