@@ -1,7 +1,11 @@
 # WillBooster/tree-sitter
 
+[![wbfy](https://img.shields.io/badge/wbfy-20.24.0-1e90ff.svg)](https://github.com/WillBooster/shared/tree/main/packages/wbfy)
+
 This is a fork of [tree-sitter/tree-sitter](https://github.com/tree-sitter/tree-sitter). We are grateful to its authors and
 contributors. This is not an official release of that project.
+
+This fork fixes bugs in the parsing library and the CLI that WillBooster's tools run into.
 
 Tree-sitter is a parser generator tool and an incremental parsing library. It can build a concrete syntax tree for a source file and efficiently update the syntax tree as the source file is edited. Tree-sitter aims to be:
 

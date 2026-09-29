@@ -6,7 +6,7 @@ on:
       - lib/include/tree_sitter/api.h
       - lib/binding_rust/bindings.rs
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - lib/include/tree_sitter/api.h
       - lib/binding_rust/bindings.rs
