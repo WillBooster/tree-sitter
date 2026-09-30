@@ -132,11 +132,7 @@ export async function findDraftRelease(github, gitTag) {
   return drafts.find((release) => release.tag_name === gitTag);
 }
 
-/**
- * Returns a client of the repository's GitHub REST API. A POST that is not safe to repeat passes `findCreated`; creating
- * a branch needs none, since GitHub rejects a second branch with the same name, which createBranch in
- * script/release.mjs accepts when it points at the same commit.
- */
+/** Returns a client of the repository's GitHub REST API. */
 export function createGitHubClient(env) {
   return async (method, route, body, findCreated) => {
     const response = await fetchWithRetry(
@@ -161,6 +157,7 @@ export function createGitHubClient(env) {
 async function fetchWithRetry(url, init, findCreated) {
   for (let attempt = 0; ; attempt++) {
     let response;
+    let connectionError;
     try {
       const received = await fetch(url, init);
       // Read here so that a connection dropped while receiving the body is retried too.
@@ -168,16 +165,20 @@ async function fetchWithRetry(url, init, findCreated) {
       response = new Response(body.byteLength > 0 ? body : undefined, received);
     } catch (error) {
       // fetch and reading the body reject with a TypeError when the connection fails or drops.
-      if (!(error instanceof TypeError) || attempt === retryDelays.length) throw error;
+      if (!(error instanceof TypeError)) throw error;
+      connectionError = error;
     }
     if (attempt > 0 && init.method === 'DELETE' && response && (await isAbsent(response))) {
       return new Response(undefined, { status: 204 });
     }
     const rateLimitDelay = response && (await getRateLimitDelay(response));
     if (response && rateLimitDelay === undefined && response.status < 500) return response;
-    if (attempt === retryDelays.length) return response;
-    const delay = Math.max(retryDelays[attempt], rateLimitDelay ?? 0);
-    if (delay > maxRetryDelay) return response;
+    const isUnfindablePost = init.method === 'POST' && rateLimitDelay === undefined && !findCreated;
+    const delay = Math.max(retryDelays[attempt] ?? Infinity, rateLimitDelay ?? 0);
+    if (isUnfindablePost || delay > maxRetryDelay) {
+      if (connectionError) throw connectionError;
+      return response;
+    }
 
     const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
     console.info(`Retrying ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);

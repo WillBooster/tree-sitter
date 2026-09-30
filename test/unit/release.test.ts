@@ -29,7 +29,7 @@ const fakeApi = `
 import fs from 'node:fs';
 const { drafts, npmCommits, failures } = JSON.parse(process.env.RELEASE_TEST_STATE);
 const deleted = new Set();
-const dispatchedRefs = [];
+const refs = new Map();
 globalThis.fetch = async (url, init = {}) => {
   const method = init.method ?? 'GET';
   fs.appendFileSync(process.env.RELEASE_TEST_LOG, JSON.stringify({ tool: 'fetch', method, url }) + '\\n');
@@ -50,11 +50,15 @@ function respond(method, url, init) {
     return commit ? Response.json({ gitHead: commit }) : new Response('', { status: 404 });
   }
   if (url.startsWith('https://crates.io/')) return new Response('', { status: 404 });
-  if (url.includes('/runs?')) {
-    const ref = new URL(url).searchParams.get('branch');
-    return Response.json({ workflow_runs: dispatchedRefs.filter((dispatched) => dispatched === ref).map(() => ({})) });
+  if (url.endsWith('/git/refs') && method === 'POST') {
+    const { ref, sha } = JSON.parse(init.body);
+    if (refs.has(ref)) return Response.json({ message: 'Reference already exists' }, { status: 422 });
+    refs.set(ref, sha);
   }
-  if (url.endsWith('/dispatches')) dispatchedRefs.push(JSON.parse(init.body).ref);
+  if (url.includes('/git/ref/')) {
+    const sha = refs.get('refs/' + url.split('/git/ref/')[1]);
+    return sha ? Response.json({ object: { sha } }) : Response.json({ message: 'Not Found' }, { status: 404 });
+  }
   if (method === 'DELETE') {
     if (deleted.has(url)) {
       return url.includes('/git/refs/')
@@ -184,7 +188,7 @@ test('a real run retries transient failures of GitHub and the registries', () =>
     'GET /releases?per_page=100': 'drop',
     'GET /1.0.1': 'serverError',
     'DELETE /releases/1': 'dropAfterProcessing',
-    'POST /git/refs': 'serverError',
+    'POST /git/refs': 'dropAfterProcessing',
     'POST /actions/workflows/release.yml/dispatches': 'rateLimit',
   });
 
@@ -193,16 +197,14 @@ test('a real run retries transient failures of GitHub and the registries', () =>
     'DELETE releases/1',
     'DELETE releases/1',
     'POST git/refs',
-    'POST git/refs',
     'POST actions/workflows/release.yml/dispatches',
     'POST actions/workflows/release.yml/dispatches',
   ]);
   // Beyond the default timeout, since each retry waits a second.
 }, 30_000);
 
-test('a real run on a pending-release branch dispatches once and deletes the branch after dropped connections', () => {
+test('a real run on a pending-release branch retries deleting the branch after a dropped connection', () => {
   const { status, requests } = runRelease([], 'release-pending/v1.0.2', [], {}, true, {
-    'POST /actions/workflows/release.yml/dispatches': 'dropAfterProcessing',
     'DELETE /git/refs/heads/release-pending/v1.0.2': 'dropAfterProcessing',
   });
 
@@ -273,5 +275,20 @@ for (const args of [
     expect(status).not.toBe(0);
     expect(output).toContain('Unsupported argument');
     expect(requests).toEqual([]);
+  });
+}
+
+for (const failure of ['drop', 'serverError'] as const) {
+  test(`a real run fails instead of repeating a dispatch that GitHub may have processed (${failure})`, () => {
+    const { status, requests } = runRelease([], 'main', olderDrafts, olderNpmCommits, true, {
+      'POST /actions/workflows/release.yml/dispatches': failure,
+    });
+
+    expect(status).not.toBe(0);
+    expect(writesOf(requests).map(formatRequest)).toEqual([
+      'DELETE releases/1',
+      'POST git/refs',
+      'POST actions/workflows/release.yml/dispatches',
+    ]);
   });
 }
