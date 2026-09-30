@@ -15,7 +15,8 @@ const userAgent = 'willbooster-release (https://github.com/WillBooster)';
 const pendingMarker = '\n\n<!-- pending release -->';
 
 export function verifyConditions(pluginConfig, { env }) {
-  if (!pluginConfig.crate || !pluginConfig.pkgRoot) throw new Error('Set the `crate` and `pkgRoot` options.');
+  // `crate` is optional, for a repository that publishes only the npm package.
+  if (!pluginConfig.pkgRoot) throw new Error('Set the `pkgRoot` option.');
   for (const name of ['GITHUB_REPOSITORY', 'GITHUB_TOKEN']) {
     if (!env[name]) throw new Error(`${name} is not set.`);
   }
@@ -43,7 +44,8 @@ export async function publishRelease({ crate, pkgRoot, cwd, env, logger, draft, 
   const gitHead = draft.target_commitish;
   const pkgDir = path.resolve(cwd, pkgRoot);
   const run = (command, args, dir) => execFileSync(command, args, { cwd: dir, env, stdio: 'inherit' });
-  const targets = (await fetchPublishedCommits({ crate, cwd, pkgRoot, version })).map((target) => ({
+  const publishedCommits = await fetchPublishedCommits({ crate, cwd, pkgRoot, version });
+  const targets = publishedCommits.map((target) => ({
     ...target,
     ...(target.registry === 'crates.io'
       ? {
@@ -84,14 +86,18 @@ export async function publishRelease({ crate, pkgRoot, cwd, env, logger, draft, 
 export async function fetchPublishedCommits({ crate, cwd, pkgRoot, version }) {
   const { name: pkgName } = JSON.parse(fs.readFileSync(path.resolve(cwd, pkgRoot, 'package.json'), 'utf8'));
   return [
-    {
-      registry: 'crates.io',
-      name: `${crate}@${version} on crates.io`,
-      commit: await fetchPublishedCommit(
-        `https://crates.io/api/v1/crates/${crate}/${version}`,
-        (body) => body.version.trustpub_data?.sha
-      ),
-    },
+    ...(crate
+      ? [
+          {
+            registry: 'crates.io',
+            name: `${crate}@${version} on crates.io`,
+            commit: await fetchPublishedCommit(
+              `https://crates.io/api/v1/crates/${crate}/${version}`,
+              (body) => body.version.trustpub_data?.sha
+            ),
+          },
+        ]
+      : []),
     {
       registry: 'npm',
       name: `${pkgName}@${version} on npm`,
@@ -105,20 +111,20 @@ export async function fetchPublishedCommits({ crate, cwd, pkgRoot, version }) {
 
 async function fetchPublishedCommit(url, getCommit) {
   const response = await fetch(url, { headers: { 'User-Agent': userAgent } });
-  if (response.status === 404) return undefined;
+  if (response.status === 404) return;
   if (!response.ok) throw new Error(`GET ${url} failed: ${response.status} ${await response.text()}`);
   return getCommit(await response.json()) ?? '';
 }
 
 /** Returns the draft releases that this release flow created, which GitHub lists before the published releases. */
 export async function listPendingReleases(github) {
-  return (await github('GET', 'releases?per_page=100')).filter(
-    (release) => release.draft && release.body?.endsWith(pendingMarker)
-  );
+  const releases = await github('GET', 'releases?per_page=100');
+  return releases.filter((release) => release.draft && release.body?.endsWith(pendingMarker));
 }
 
-async function findDraftRelease(github, gitTag) {
-  return (await listPendingReleases(github)).find((release) => release.tag_name === gitTag);
+export async function findDraftRelease(github, gitTag) {
+  const drafts = await listPendingReleases(github);
+  return drafts.find((release) => release.tag_name === gitTag);
 }
 
 export function createGitHubClient(env) {
@@ -126,7 +132,7 @@ export function createGitHubClient(env) {
     const response = await fetch(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}/${route}`, {
       method,
       headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${env.GITHUB_TOKEN}` },
-      body: body && JSON.stringify(body),
+      ...(body && { body: JSON.stringify(body) }),
     });
     if (!response.ok) throw new Error(`${method} ${route} failed: ${response.status} ${await response.text()}`);
     return response.status === 204 ? undefined : response.json();
