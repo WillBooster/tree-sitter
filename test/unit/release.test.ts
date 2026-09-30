@@ -118,14 +118,16 @@ test('a dry run on a pending-release branch reports its hand-over without writes
   expect(writesOf(requests)).toEqual([]);
 });
 
-test('a dry run without pending releases runs the release dry run', () => {
-  const { status, requests } = runRelease(['--', '--dry-run'], 'main', []);
+test('a run without pending releases forwards its arguments to the release', () => {
+  for (const args of [['--', '--dry-run', '--debug'], ['--', '--debug']]) {
+    const { status, requests } = runRelease(args, 'main', []);
 
-  expect(status).toBe(0);
-  expect(writesOf(requests)).toEqual([{ tool: 'wb', args: 'release -- --dry-run' }]);
+    expect(status).toBe(0);
+    expect(writesOf(requests)).toEqual([{ tool: 'wb', args: `release ${args.join(' ')}` }]);
+  }
 });
 
-for (const args of [['--dry-run=true'], ['--d'], ['-vd'], ['--', '-d', '--no-d'], ['--', '--dry']]) {
+for (const args of [['--dry-run=true'], ['--d'], ['-vd'], ['--', '-d', '--no-d'], ['--', '--dry'], ['--debug']]) {
   test(`${args.join(' ')} is refused before any request`, () => {
     const { status, output, requests } = runRelease(args, 'main', olderDrafts, olderNpmCommits);
 
