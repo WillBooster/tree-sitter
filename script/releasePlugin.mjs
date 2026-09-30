@@ -179,17 +179,19 @@ async function fetchWithRetry(url, init, findCreated) {
     if (response && rateLimitDelay === undefined && response.status < 500) return response;
     const isUnfindablePost = init.method === 'POST' && rateLimitDelay === undefined && !findCreated;
     const delay = Math.max(retryDelays[attempt] ?? Infinity, rateLimitDelay ?? 0);
-    if (isUnfindablePost || delay > maxRetryDelay) {
-      if (connectionError) throw connectionError;
-      return response;
+    const isFinal = isUnfindablePost || delay > maxRetryDelay;
+    if (!isFinal) {
+      const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
+      console.info(`Retrying ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);
+      await new Promise((resolve) => setTimeout(resolve, delay * 1000));
     }
-
-    const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
-    console.info(`Retrying ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);
-    await new Promise((resolve) => setTimeout(resolve, delay * 1000));
     if (findCreated && rateLimitDelay === undefined) {
       const created = await findCreated();
       if (created) return Response.json(created);
+    }
+    if (isFinal) {
+      if (connectionError) throw connectionError;
+      return response;
     }
   }
 }
