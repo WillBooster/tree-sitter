@@ -28,8 +28,7 @@ const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding
 // The registries trust this workflow file for publishing.
 const dispatch = (ref) => github('POST', 'actions/workflows/release.yml/dispatches', { ref });
 const pendingBranchPrefix = 'release-pending/';
-// The dry-run options of `wb release` and of semantic-release (forwarded after `--`).
-const dryRun = process.argv.slice(2).some((arg) => ['--dry-run', '--dry', '-d'].includes(arg));
+const dryRun = parseDryRun(process.argv.slice(2));
 
 // A dry run takes the same path as a real run but only reports the remote writes it would make.
 if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
@@ -43,6 +42,25 @@ if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
   }
 } else if (!(await deferToPendingRelease())) {
   execFileSync('wb', ['release', ...process.argv.slice(2)], { cwd: rootDir, stdio: 'inherit' });
+}
+
+/**
+ * Returns whether the arguments request the dry run of `wb release` or of semantic-release (forwarded after `--`). The
+ * other spellings their parsers accept (e.g., `--dry-run=true`, `-vd`) are refused, since misreading one as a real run
+ * would make remote writes.
+ */
+function parseDryRun(args) {
+  const forwardedFrom = args.includes('--') ? args.indexOf('--') + 1 : args.length;
+  let dryRun = false;
+  for (const [index, arg] of args.entries()) {
+    const flags = index < forwardedFrom ? ['--dry-run', '--dry', '-d'] : ['--dry-run', '-d'];
+    if (flags.includes(arg) && !['true', 'false'].includes(args[index + 1])) {
+      dryRun = true;
+    } else if (/^(?:--(?:no-)?dry(?:-run|Run)?(?:=|$)|-[a-zA-Z]*d[a-zA-Z]*(?:=|$))/.test(arg)) {
+      throw new Error(`Pass the dry-run option as one of ${flags.join(', ')} without a value, not as \`${arg}\`.`);
+    }
+  }
+  return dryRun;
 }
 
 async function completePendingRelease(tag) {
