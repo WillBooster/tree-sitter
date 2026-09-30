@@ -31,12 +31,17 @@ const pendingBranchPrefix = 'release-pending/';
 // The dry-run options of `wb release` and of semantic-release (forwarded after `--`).
 const dryRun = process.argv.slice(2).some((arg) => ['--dry-run', '--dry', '-d'].includes(arg));
 
-if (!dryRun && env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
+// A dry run takes the same path as a real run but only reports the remote writes it would make.
+if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
   await completePendingRelease(env.GITHUB_REF_NAME.slice(pendingBranchPrefix.length));
-  await dispatch(releaseConfig.branches[0]);
-  // After the dispatch, since the reusable workflow skips re-runs on a deleted branch.
-  await github('DELETE', `git/refs/heads/${env.GITHUB_REF_NAME}`);
-} else if (!(await deferToPendingRelease()) || dryRun) {
+  if (dryRun) {
+    console.info(`Would dispatch a run on ${releaseConfig.branches[0]} and delete the branch ${env.GITHUB_REF_NAME}.`);
+  } else {
+    await dispatch(releaseConfig.branches[0]);
+    // After the dispatch, since the reusable workflow skips re-runs on a deleted branch.
+    await github('DELETE', `git/refs/heads/${env.GITHUB_REF_NAME}`);
+  }
+} else if (!(await deferToPendingRelease())) {
   execFileSync('wb', ['release', ...process.argv.slice(2)], { cwd: rootDir, stdio: 'inherit' });
 }
 
@@ -45,6 +50,10 @@ async function completePendingRelease(tag) {
   if (draft) {
     if (draft.target_commitish !== head) {
       throw new Error(`The draft release ${tag} targets ${draft.target_commitish}, not ${head}.`);
+    }
+    if (dryRun) {
+      console.info(`Would build and publish the pending release ${tag}.`);
+      return;
     }
     const version = tag.replace(/^v/, '');
     execFileSync(path.join(rootDir, 'script', 'build-release'), [version], { cwd: rootDir, stdio: 'inherit' });
@@ -55,10 +64,7 @@ async function completePendingRelease(tag) {
   }
 }
 
-/**
- * Returns whether a pending release of an older commit must be completed before releasing this commit. A dry run only
- * reports what a real run would do.
- */
+/** Returns whether a pending release of an older commit must be completed before releasing this commit. */
 async function deferToPendingRelease() {
   // Oldest first, since versions are released in order.
   const drafts = await listPendingReleases(github);
