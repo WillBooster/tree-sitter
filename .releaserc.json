@@ -9,13 +9,7 @@
     ],
     "@semantic-release/release-notes-generator",
     [
-      "@semantic-release/exec",
-      {
-        "prepareCmd": "script/build-release ${nextRelease.version}"
-      }
-    ],
-    [
-      "./script/releasePlugin.mjs",
+      "@willbooster/wb/release-plugin",
       {
         "crate": "willbooster-tree-sitter",
         "pkgRoot": "lib/binding_web"
