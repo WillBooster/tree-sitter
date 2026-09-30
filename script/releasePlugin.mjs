@@ -31,16 +31,17 @@ export function verifyConditions(pluginConfig, { env }) {
 export async function prepare(pluginConfig, { cwd, env, logger, nextRelease }) {
   const { gitHead, gitTag, name, notes, version } = nextRelease;
   const github = createGitHubClient(env);
-  let draft = await findDraftRelease(github, gitTag);
-  if (draft && draft.target_commitish !== gitHead) {
+  const draft =
+    (await findDraftRelease(github, gitTag)) ??
+    (await github(
+      'POST',
+      'releases',
+      { tag_name: gitTag, target_commitish: gitHead, name, body: `${notes}${pendingMarker}`, draft: true },
+      () => findDraftRelease(github, gitTag)
+    ));
+  if (draft.target_commitish !== gitHead) {
     throw new Error(`The draft release ${gitTag} targets ${draft.target_commitish}, not ${gitHead}.`);
   }
-  draft ??= await github(
-    'POST',
-    'releases',
-    { tag_name: gitTag, target_commitish: gitHead, name, body: `${notes}${pendingMarker}`, draft: true },
-    () => findDraftRelease(github, gitTag)
-  );
   await publishRelease({ ...pluginConfig, cwd, env, logger, draft, version });
 }
 
