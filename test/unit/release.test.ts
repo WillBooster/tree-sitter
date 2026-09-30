@@ -24,7 +24,7 @@ const olderCommit = 'a'.repeat(40);
 const pendingMarker = '\n\n<!-- pending release -->';
 
 // Serves GitHub releases and registry versions from RELEASE_TEST_STATE, and appends every request to RELEASE_TEST_LOG.
-// The first request matching each of RELEASE_TEST_STATE's `failures` (a method and a URL suffix) fails in the given way.
+// The first request matching each of RELEASE_TEST_STATE's `failures` (a method and part of the URL) fails in the given way.
 const fakeApi = `
 import fs from 'node:fs';
 const { drafts, npmCommits, failures } = JSON.parse(process.env.RELEASE_TEST_STATE);
@@ -33,7 +33,7 @@ const refs = new Map();
 globalThis.fetch = async (url, init = {}) => {
   const method = init.method ?? 'GET';
   fs.appendFileSync(process.env.RELEASE_TEST_LOG, JSON.stringify({ tool: 'fetch', method, url }) + '\\n');
-  const key = Object.keys(failures).find((key) => key.startsWith(method + ' ') && url.endsWith(key.split(' ')[1]));
+  const key = Object.keys(failures).find((key) => key.startsWith(method + ' ') && url.includes(key.split(' ')[1]));
   const failure = failures[key];
   delete failures[key];
   if (failure === 'drop') throw new TypeError('fetch failed');
@@ -186,7 +186,7 @@ for (const [args, inCi] of [
 test('a real run retries transient failures of GitHub and the registries', () => {
   const { status, requests } = runRelease([], 'main', olderDrafts, olderNpmCommits, true, {
     'GET /releases?per_page=100': 'drop',
-    'GET /1.0.1': 'serverError',
+    'GET https://registry.npmjs.org/': 'serverError',
     'DELETE /releases/1': 'dropAfterProcessing',
     'POST /git/refs': 'dropAfterProcessing',
     'POST /actions/workflows/release.yml/dispatches': 'rateLimit',
