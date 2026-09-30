@@ -56,7 +56,7 @@ function parseDryRun(args) {
     const allowed = index < forwardedFrom ? ['--dry-run', '--dry', '-d', '--'] : ['--dry-run', '-d'];
     if (!allowed.includes(arg)) {
       throw new Error(
-        `Unsupported argument \`${arg}\`: pass none, or --dry-run, --dry, or -d for wb's dry run, or \`-- --dry-run\` or \`-- -d\` for semantic-release's.`
+        `Unsupported argument \`${arg}\`: request wb's dry run with --dry-run, --dry, or -d, or semantic-release's with \`-- --dry-run\` or \`-- -d\`.`
       );
     }
   }
