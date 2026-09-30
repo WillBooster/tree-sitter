@@ -167,7 +167,7 @@ async function fetchWithRetry(url, init, findCreated) {
       // fetch rejects with a TypeError when the connection fails or drops.
       if (!(error instanceof TypeError) || attempt === retryDelays.length) throw error;
     }
-    if (attempt > 0 && init.method === 'DELETE' && [404, 422].includes(response?.status)) {
+    if (attempt > 0 && init.method === 'DELETE' && response && (await isAbsent(response))) {
       return new Response(undefined, { status: 204 });
     }
     const rateLimitDelay = response && (await getRateLimitDelay(response));
@@ -184,6 +184,15 @@ async function fetchWithRetry(url, init, findCreated) {
       if (created) return Response.json(created);
     }
   }
+}
+
+/** Returns whether the response reports that the target does not exist. */
+async function isAbsent(response) {
+  // GitHub reports a missing Git reference with a 422 response, which also reports other validation failures.
+  return (
+    response.status === 404 ||
+    (response.status === 422 && (await response.clone().text()).includes('"Reference does not exist"'))
+  );
 }
 
 /** Returns the seconds to wait before repeating a rate-limited request, or `undefined` for another response. */

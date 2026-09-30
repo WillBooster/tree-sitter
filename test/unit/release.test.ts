@@ -50,7 +50,11 @@ function respond(method, url) {
   }
   if (url.startsWith('https://crates.io/')) return new Response('', { status: 404 });
   if (method === 'DELETE') {
-    if (deleted.has(url)) return new Response('', { status: 404 });
+    if (deleted.has(url)) {
+      return url.includes('/git/refs/')
+        ? Response.json({ message: 'Reference does not exist' }, { status: 422 })
+        : new Response('', { status: 404 });
+    }
     deleted.add(url);
   }
   return method === 'GET' ? Response.json({}) : new Response(null, { status: 204 });
@@ -189,6 +193,19 @@ test('a real run retries transient failures of GitHub and the registries', () =>
   ]);
   // Beyond the default timeout, since each retry waits a second.
 }, 30_000);
+
+test('a real run on a pending-release branch retries deleting the branch after a dropped connection', () => {
+  const { status, requests } = runRelease([], 'release-pending/v1.0.2', [], {}, true, {
+    'DELETE /git/refs/heads/release-pending/v1.0.2': 'dropAfterProcessing',
+  });
+
+  expect(status).toBe(0);
+  expect(writesOf(requests).map(formatRequest)).toEqual([
+    'POST actions/workflows/release.yml/dispatches',
+    'DELETE git/refs/heads/release-pending/v1.0.2',
+    'DELETE git/refs/heads/release-pending/v1.0.2',
+  ]);
+});
 
 test('a run outside CI without --no-ci reports the deferral without writes', () => {
   const { status, output, requests } = runRelease([], 'main', olderDrafts, olderNpmCommits, false);
