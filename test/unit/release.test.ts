@@ -39,6 +39,7 @@ globalThis.fetch = async (url, init = {}) => {
   if (failure === 'drop') throw new TypeError('fetch failed');
   if (failure === 'rateLimit') return new Response('', { status: 429, headers: { 'retry-after': '1' } });
   if (failure === 'serverError') return new Response('', { status: 502 });
+  if (failure === 'validationError') return Response.json({ message: 'Validation Failed' }, { status: 422 });
   const response = respond(method, url, init);
   if (failure === 'dropAfterProcessing') throw new TypeError('fetch failed');
   return response;
@@ -88,7 +89,7 @@ interface Request {
   args?: string;
 }
 
-type Failure = 'drop' | 'dropAfterProcessing' | 'rateLimit' | 'serverError';
+type Failure = 'drop' | 'dropAfterProcessing' | 'rateLimit' | 'serverError' | 'validationError';
 
 function runRelease(
   args: string[],
@@ -292,3 +293,12 @@ for (const failure of ['drop', 'serverError'] as const) {
     ]);
   });
 }
+
+test('a real run reports why creating the pending-release branch failed', () => {
+  const { status, output } = runRelease([], 'main', olderDrafts, olderNpmCommits, true, {
+    'POST /git/refs': 'validationError',
+  });
+
+  expect(status).not.toBe(0);
+  expect(output).toContain('POST git/refs failed: 422');
+});
