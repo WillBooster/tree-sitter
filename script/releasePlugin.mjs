@@ -132,7 +132,10 @@ export async function findDraftRelease(github, gitTag) {
   return drafts.find((release) => release.tag_name === gitTag);
 }
 
-/** Returns a client of the repository's GitHub REST API. */
+/**
+ * The returned client repeats a POST after a failure that GitHub may have processed only when `findCreated` is passed
+ * and finds nothing that the POST created.
+ */
 export function createGitHubClient(env) {
   return async (method, route, body, findCreated) => {
     const response = await fetchWithRetry(
