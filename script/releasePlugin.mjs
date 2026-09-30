@@ -199,11 +199,10 @@ async function fetchWithRetry(url, init, findCreated) {
 
 /** Returns whether the response reports that the target does not exist. */
 async function isAbsent(response) {
+  if (response.status === 404) return true;
   // GitHub reports a missing Git reference with a 422 response, which also reports other validation failures.
-  return (
-    response.status === 404 ||
-    (response.status === 422 && (await response.clone().text()).includes('"Reference does not exist"'))
-  );
+  const text = await response.clone().text();
+  return response.status === 422 && text.includes('"Reference does not exist"');
 }
 
 /** Returns the seconds to wait before repeating a rate-limited request, or `undefined` for another response. */

@@ -127,7 +127,7 @@ async function createBranch(branch, commit) {
     await github('POST', 'git/refs', { ref: `refs/heads/${branch}`, sha: commit });
   } catch (error) {
     // An earlier attempt created it.
-    const existing = await github('GET', `git/ref/heads/${branch}`).catch(() => undefined);
+    const existing = await github('GET', `git/ref/heads/${branch}`).catch(() => {});
     if (existing?.object.sha !== commit) throw error;
   }
 }
