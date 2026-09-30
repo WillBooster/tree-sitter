@@ -6,7 +6,10 @@ import path from 'node:path';
 import { expect, test } from 'bun:test';
 
 const rootDir = path.resolve(import.meta.dirname, '..', '..');
-const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8' }).stdout.trim();
+// The files script/release.mjs reads or runs, copied so that a regressed dry run builds nothing in this checkout.
+const releaseFiles = ['script', '.releaserc.json', 'lib/binding_web/package.json'];
+// A draft target standing for the commit of the repository a run releases from.
+const headCommit = 'HEAD';
 const olderCommit = 'a'.repeat(40);
 const pendingMarker = '\n\n<!-- pending release -->';
 
@@ -47,12 +50,19 @@ interface Request {
 function runRelease(args: string[], refName: string, drafts: Draft[], npmCommits: Record<string, string> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-test-'));
   try {
+    const repoDir = path.join(dir, 'repo');
+    for (const file of releaseFiles) fs.cpSync(path.join(rootDir, file), path.join(repoDir, file), { recursive: true });
+    const git = (...gitArgs: string[]) =>
+      spawnSync('git', gitArgs, { cwd: repoDir, encoding: 'utf8' }).stdout.trim();
+    git('init', '--quiet');
+    git('-c', 'user.name=test', '-c', 'user.email=test@example.com', 'commit', '--quiet', '--allow-empty', '-m', 'test');
+    const head = git('rev-parse', 'HEAD');
     fs.writeFileSync(path.join(dir, 'fakeApi.mjs'), fakeApi);
     fs.writeFileSync(path.join(dir, 'wb'), fakeWb, { mode: 0o755 });
     const logPath = path.join(dir, 'requests.jsonl');
     fs.writeFileSync(logPath, '');
     const result = spawnSync('node', ['--import', path.join(dir, 'fakeApi.mjs'), 'script/release.mjs', ...args], {
-      cwd: rootDir,
+      cwd: repoDir,
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -62,7 +72,12 @@ function runRelease(args: string[], refName: string, drafts: Draft[], npmCommits
         GITHUB_TOKEN: 'fake',
         RELEASE_TEST_LOG: logPath,
         RELEASE_TEST_STATE: JSON.stringify({
-          drafts: drafts.map((draft) => ({ ...draft, draft: true, body: `notes${pendingMarker}` })),
+          drafts: drafts.map((draft) => ({
+            ...draft,
+            target_commitish: draft.target_commitish === headCommit ? head : draft.target_commitish,
+            draft: true,
+            body: `notes${pendingMarker}`,
+          })),
           npmCommits,
         }),
       },
@@ -110,10 +125,13 @@ for (const args of [['--dry-run'], ['--dry'], ['-d'], ['--', '--dry-run'], ['--'
   });
 }
 
-test('a dry run on a pending-release branch reports its hand-over without writes', () => {
-  const { status, output, requests } = runRelease(['--dry-run'], 'release-pending/v1.0.2', []);
+test('a dry run on a pending-release branch reports completing the release without writes', () => {
+  const { status, output, requests } = runRelease(['--dry-run'], 'release-pending/v1.0.2', [
+    { id: 3, tag_name: 'v1.0.2', target_commitish: headCommit },
+  ]);
 
   expect(status).toBe(0);
+  expect(output).toContain('Would build and publish the pending release v1.0.2');
   expect(output).toContain('Would dispatch a run on main and delete the branch release-pending/v1.0.2');
   expect(writesOf(requests)).toEqual([]);
 });
