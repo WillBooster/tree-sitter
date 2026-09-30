@@ -25,8 +25,7 @@ const pluginConfig = releaseConfig.plugins.find(
 const env = process.env;
 const github = createGitHubClient(env);
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8' }).trim();
-// The registries trust this workflow file for publishing. The client does not repeat a dispatch that GitHub may have
-// processed, since no lookup proves that a dispatch created no run.
+// The registries trust this workflow file for publishing.
 const dispatch = (ref) => github('POST', 'actions/workflows/release.yml/dispatches', { ref });
 const pendingBranchPrefix = 'release-pending/';
 const dryRun = parseDryRun(process.argv.slice(2));
@@ -124,14 +123,11 @@ async function deferToPendingRelease() {
 }
 
 async function createBranch(branch, commit) {
-  const findBranch = async () => {
-    const ref = await github('GET', `git/ref/heads/${branch}`).catch(() => undefined);
-    return ref?.object.sha === commit ? ref : undefined;
-  };
   try {
-    await github('POST', 'git/refs', { ref: `refs/heads/${branch}`, sha: commit }, findBranch);
+    await github('POST', 'git/refs', { ref: `refs/heads/${branch}`, sha: commit });
   } catch (error) {
     // An earlier attempt created it.
-    if (!(await findBranch())) throw error;
+    const existing = await github('GET', `git/ref/heads/${branch}`).catch(() => undefined);
+    if (existing?.object.sha !== commit) throw error;
   }
 }

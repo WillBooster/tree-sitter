@@ -134,8 +134,8 @@ export async function findDraftRelease(github, gitTag) {
 }
 
 /**
- * The returned client repeats a POST after a failure that GitHub may have processed only when `findCreated` is passed
- * and finds nothing that the POST created.
+ * The returned client never repeats a POST after a failure that GitHub may have processed, since a listing cannot prove
+ * that the POST created nothing. `findCreated` then looks for what it created, which the client returns if found.
  */
 export function createGitHubClient(env) {
   return async (method, route, body, findCreated) => {
@@ -155,8 +155,8 @@ export function createGitHubClient(env) {
 
 /**
  * Fetches `url`, retrying a dropped connection, a 5xx response, and a rate limit. Unlike a rate-limited request, the
- * others may have been processed, so a POST is repeated only when `findCreated` finds nothing it created, and a
- * repeated DELETE that finds nothing left to delete succeeds.
+ * others may have been processed, so a POST is not repeated after them, and a repeated DELETE that finds nothing left
+ * to delete succeeds.
  */
 async function fetchWithRetry(url, init, findCreated) {
   for (let attempt = 0; ; attempt++) {
@@ -177,19 +177,20 @@ async function fetchWithRetry(url, init, findCreated) {
     }
     const rateLimitDelay = response && (await getRateLimitDelay(response));
     if (response && rateLimitDelay === undefined && response.status < 500) return response;
-    const isUnfindablePost = init.method === 'POST' && rateLimitDelay === undefined && !findCreated;
-    const delay = Math.max(retryDelays[attempt] ?? Infinity, rateLimitDelay ?? 0);
-    const isFinal = isUnfindablePost || delay > maxRetryDelay;
-    if (!isFinal) {
-      const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
-      console.info(`Retrying ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);
-      await new Promise((resolve) => setTimeout(resolve, delay * 1000));
+    const isUncertainPost = init.method === 'POST' && rateLimitDelay === undefined;
+    const delay = isUncertainPost ? retryDelays[0] : Math.max(retryDelays[attempt] ?? Infinity, rateLimitDelay ?? 0);
+    if (delay > maxRetryDelay || (isUncertainPost && !findCreated)) {
+      if (connectionError) throw connectionError;
+      return response;
     }
-    if (findCreated && rateLimitDelay === undefined) {
+
+    const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
+    const action = isUncertainPost ? 'Looking for the result of' : 'Retrying';
+    console.info(`${action} ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);
+    await new Promise((resolve) => setTimeout(resolve, delay * 1000));
+    if (isUncertainPost) {
       const created = await findCreated();
       if (created) return Response.json(created);
-    }
-    if (isFinal) {
       if (connectionError) throw connectionError;
       return response;
     }
