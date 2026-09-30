@@ -172,8 +172,9 @@ async function fetchWithRetry(url, init, findCreated) {
     }
     const rateLimitDelay = response && (await getRateLimitDelay(response));
     if (response && rateLimitDelay === undefined && response.status < 500) return response;
-    const delay = Math.max(retryDelays[attempt] ?? Infinity, rateLimitDelay ?? 0);
-    if (response && delay > maxRetryDelay) return response;
+    if (attempt === retryDelays.length) return response;
+    const delay = Math.max(retryDelays[attempt], rateLimitDelay ?? 0);
+    if (delay > maxRetryDelay) return response;
 
     const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
     console.info(`Retrying ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);
@@ -190,9 +191,13 @@ async function getRateLimitDelay(response) {
   const isRateLimited =
     response.status === 429 || (response.status === 403 && /rate limit/i.test(await response.clone().text()));
   if (!isRateLimited) return;
-  const retryAfter = response.headers.get('retry-after');
-  if (retryAfter) return Number(retryAfter);
-  const reset = response.headers.get('x-ratelimit-reset');
-  if (response.headers.get('x-ratelimit-remaining') === '0' && reset) return Number(reset) - Date.now() / 1000;
-  return defaultRateLimitDelay;
+  const now = Date.now() / 1000;
+  // Either seconds or an HTTP date.
+  const retryAfter = response.headers.get('retry-after') ?? '';
+  const reset = response.headers.get('x-ratelimit-remaining') === '0' && response.headers.get('x-ratelimit-reset');
+  const delays = [
+    /^\d+$/.test(retryAfter) ? Number(retryAfter) : Date.parse(retryAfter) / 1000 - now,
+    reset ? Number(reset) - now : Number.NaN,
+  ];
+  return delays.find((delay) => Number.isFinite(delay)) ?? defaultRateLimitDelay;
 }
