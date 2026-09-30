@@ -1,0 +1,13 @@
+{
+  // Type-checks the generated declarations as their consumers see them: the package imports itself by name, which
+  // resolves through `exports` to web-tree-sitter.d.ts for esm.ts and to web-tree-sitter.d.cts for cjs.cts.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "skipLibCheck": false,
+    "noEmit": true
+  },
+  "files": ["esm.ts", "cjs.cts"]
+}
