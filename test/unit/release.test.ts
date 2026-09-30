@@ -136,14 +136,14 @@ test('a dry run on a pending-release branch reports completing the release witho
   expect(writesOf(requests)).toEqual([]);
 });
 
-test('a run without pending releases forwards its arguments to the release', () => {
-  for (const args of [['--', '--dry-run', '--debug'], ['--', '--debug']]) {
+for (const args of [['--', '--dry-run', '--debug'], ['--', '--debug']]) {
+  test(`a run with ${args.join(' ')} and no pending release forwards its arguments to the release`, () => {
     const { status, requests } = runRelease(args, 'main', []);
 
     expect(status).toBe(0);
     expect(writesOf(requests)).toEqual([{ tool: 'wb', args: `release ${args.join(' ')}` }]);
-  }
-});
+  });
+}
 
 for (const args of [['--dry-run=true'], ['--d'], ['-vd'], ['--', '-d', '--no-d'], ['--', '--dry'], ['--debug']]) {
   test(`${args.join(' ')} is refused before any request`, () => {
