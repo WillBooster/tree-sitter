@@ -55,8 +55,9 @@ function parseDryRun(args) {
   const forwardedFrom = args.includes('--') ? args.indexOf('--') + 1 : args.length;
   let dryRun = false;
   for (const [index, arg] of args.entries()) {
-    const [dryRunOptions, otherOptions] =
-      index < forwardedFrom ? [['--dry-run', '--dry', '-d'], ['--']] : [['--dry-run', '-d'], ['--debug', '--no-ci']];
+    const isForwarded = index >= forwardedFrom;
+    const dryRunOptions = isForwarded ? ['--dry-run', '-d'] : ['--dry-run', '--dry', '-d'];
+    const otherOptions = isForwarded ? ['--debug', '--no-ci'] : ['--'];
     if (dryRunOptions.includes(arg)) {
       dryRun = true;
     } else if (!otherOptions.includes(arg)) {

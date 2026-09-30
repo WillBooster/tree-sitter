@@ -13,6 +13,12 @@ import path from 'node:path';
 const userAgent = 'willbooster-release (https://github.com/WillBooster)';
 // Marks the drafts this release flow creates, so that it never completes or deletes a draft someone else prepared.
 const pendingMarker = '\n\n<!-- pending release -->';
+// Seconds to wait before each retry of a request that failed transiently.
+const retryDelays = [1, 2, 4, 8, 16];
+// GitHub asks to wait at least a minute after a secondary rate limit that states no time.
+const defaultRateLimitDelay = 60;
+// A rate limit that lasts longer fails the run instead, which a re-run completes.
+const maxRetryDelay = 300;
 
 export function verifyConditions(pluginConfig, { env }) {
   // `crate` is optional, for a repository that publishes only the npm package.
@@ -29,13 +35,12 @@ export async function prepare(pluginConfig, { cwd, env, logger, nextRelease }) {
   if (draft && draft.target_commitish !== gitHead) {
     throw new Error(`The draft release ${gitTag} targets ${draft.target_commitish}, not ${gitHead}.`);
   }
-  draft ??= await github('POST', 'releases', {
-    tag_name: gitTag,
-    target_commitish: gitHead,
-    name,
-    body: `${notes}${pendingMarker}`,
-    draft: true,
-  });
+  draft ??= await github(
+    'POST',
+    'releases',
+    { tag_name: gitTag, target_commitish: gitHead, name, body: `${notes}${pendingMarker}`, draft: true },
+    () => findDraftRelease(github, gitTag)
+  );
   await publishRelease({ ...pluginConfig, cwd, env, logger, draft, version });
 }
 
@@ -110,7 +115,7 @@ export async function fetchPublishedCommits({ crate, cwd, pkgRoot, version }) {
 }
 
 async function fetchPublishedCommit(url, getCommit) {
-  const response = await fetch(url, { headers: { 'User-Agent': userAgent } });
+  const response = await fetchWithRetry(url, { headers: { 'User-Agent': userAgent } });
   if (response.status === 404) return;
   if (!response.ok) throw new Error(`GET ${url} failed: ${response.status} ${await response.text()}`);
   return getCommit(await response.json()) ?? '';
@@ -127,14 +132,67 @@ export async function findDraftRelease(github, gitTag) {
   return drafts.find((release) => release.tag_name === gitTag);
 }
 
+/**
+ * Returns a client of the repository's GitHub REST API. Only creating a release needs `findCreated` to be safe to
+ * repeat: GitHub rejects a second branch with the same name, which createBranch in script/release.mjs accepts when it
+ * points at the same commit, and a second dispatch of the release workflow starts a run that finds nothing to release.
+ */
 export function createGitHubClient(env) {
-  return async (method, route, body) => {
-    const response = await fetch(`https://api.github.com/repos/${env.GITHUB_REPOSITORY}/${route}`, {
-      method,
-      headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${env.GITHUB_TOKEN}` },
-      ...(body && { body: JSON.stringify(body) }),
-    });
+  return async (method, route, body, findCreated) => {
+    const response = await fetchWithRetry(
+      `https://api.github.com/repos/${env.GITHUB_REPOSITORY}/${route}`,
+      {
+        method,
+        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${env.GITHUB_TOKEN}` },
+        ...(body && { body: JSON.stringify(body) }),
+      },
+      findCreated
+    );
     if (!response.ok) throw new Error(`${method} ${route} failed: ${response.status} ${await response.text()}`);
     return response.status === 204 ? undefined : response.json();
   };
+}
+
+/**
+ * Fetches `url`, retrying a dropped connection, a 5xx response, and a rate limit. Unlike a rate-limited request, the
+ * others may have been processed, so a POST is repeated only when `findCreated` finds nothing it created, and a
+ * repeated DELETE that finds nothing left to delete succeeds.
+ */
+async function fetchWithRetry(url, init, findCreated) {
+  for (let attempt = 0; ; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, init);
+    } catch (error) {
+      // fetch rejects with a TypeError when the connection fails or drops.
+      if (!(error instanceof TypeError) || attempt === retryDelays.length) throw error;
+    }
+    if (attempt > 0 && init.method === 'DELETE' && [404, 422].includes(response?.status)) {
+      return new Response(undefined, { status: 204 });
+    }
+    const rateLimitDelay = response && (await getRateLimitDelay(response));
+    if (response && rateLimitDelay === undefined && response.status < 500) return response;
+    const delay = Math.max(retryDelays[attempt] ?? Infinity, rateLimitDelay ?? 0);
+    if (response && delay > maxRetryDelay) return response;
+
+    const reason = response ? `${response.status} ${response.statusText}` : 'a dropped connection';
+    console.info(`Retrying ${init.method ?? 'GET'} ${url} in ${Math.ceil(delay)} seconds after ${reason}`);
+    await new Promise((resolve) => setTimeout(resolve, delay * 1000));
+    if (findCreated && rateLimitDelay === undefined) {
+      const created = await findCreated();
+      if (created) return Response.json(created);
+    }
+  }
+}
+
+/** Returns the seconds to wait before repeating a rate-limited request, or `undefined` for another response. */
+async function getRateLimitDelay(response) {
+  const isRateLimited =
+    response.status === 429 || (response.status === 403 && /rate limit/i.test(await response.clone().text()));
+  if (!isRateLimited) return;
+  const retryAfter = response.headers.get('retry-after');
+  if (retryAfter) return Number(retryAfter);
+  const reset = response.headers.get('x-ratelimit-reset');
+  if (response.headers.get('x-ratelimit-remaining') === '0' && reset) return Number(reset) - Date.now() / 1000;
+  return defaultRateLimitDelay;
 }
