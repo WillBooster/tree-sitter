@@ -219,5 +219,6 @@ async function getRateLimitDelay(response) {
     /^\d+$/.test(retryAfter) ? Number(retryAfter) : Date.parse(retryAfter) / 1000 - now,
     reset ? Number(reset) - now : Number.NaN,
   ];
-  return delays.find((delay) => Number.isFinite(delay)) ?? defaultRateLimitDelay;
+  const statedDelays = delays.filter((delay) => Number.isFinite(delay));
+  return statedDelays.length > 0 ? Math.max(...statedDelays) : defaultRateLimitDelay;
 }
