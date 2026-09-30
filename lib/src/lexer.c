@@ -456,7 +456,10 @@ void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte) {
     self->token_start_position = self->token_end_position;
   }
 
-  uint32_t current_lookahead_end_byte = self->current_position.bytes + 1;
+  // The lexer has read every byte of the lookahead character, which can be
+  // longer than one byte.
+  uint32_t current_lookahead_end_byte =
+    self->current_position.bytes + (self->lookahead_size > 1 ? self->lookahead_size : 1);
 
   // In order to determine that a byte sequence is invalid UTF8 or UTF16,
   // the character decoding algorithm may have looked at the following byte.
