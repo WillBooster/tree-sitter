@@ -22,7 +22,7 @@
   "prettier": "@willbooster/prettier-config",
   "devDependencies": {
     "@willbooster/prettier-config": "10.4.0",
-    "@willbooster/wb": "22.11.0",
+    "@willbooster/wb": "22.13.0",
     "conventional-changelog-conventionalcommits": "10.4.0",
     "lefthook": "2.1.14",
     "prettier": "3.9.8",
