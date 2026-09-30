@@ -47,7 +47,13 @@ interface Request {
   args?: string;
 }
 
-function runRelease(args: string[], refName: string, drafts: Draft[], npmCommits: Record<string, string> = {}) {
+function runRelease(
+  args: string[],
+  refName: string,
+  drafts: Draft[],
+  npmCommits: Record<string, string> = {},
+  inCi = true
+) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-test-'));
   try {
     const repoDir = path.join(dir, 'repo');
@@ -66,6 +72,7 @@ function runRelease(args: string[], refName: string, drafts: Draft[], npmCommits
       encoding: 'utf8',
       env: {
         ...process.env,
+        CI: inCi ? 'true' : '',
         PATH: `${dir}${path.delimiter}${process.env.PATH}`,
         GITHUB_REF_NAME: refName,
         GITHUB_REPOSITORY: 'WillBooster/tree-sitter',
@@ -103,15 +110,27 @@ const olderDrafts: Draft[] = [
 ];
 const olderNpmCommits = { '1.0.2': olderCommit };
 
-test('a real run deletes an unheld draft and dispatches the pending release', () => {
-  const { status, requests } = runRelease([], 'main', olderDrafts, olderNpmCommits);
+for (const [args, inCi] of [
+  [[], true],
+  [['--', '--no-ci'], false],
+] as const) {
+  test(`a real run ${inCi ? 'in CI' : 'outside CI with --no-ci'} deletes an unheld draft and dispatches the pending release`, () => {
+    const { status, requests } = runRelease([...args], 'main', olderDrafts, olderNpmCommits, inCi);
+
+    expect(status).toBe(0);
+    expect(
+      writesOf(requests).map(({ method, url }) => `${method} ${url?.replace(/^.*\/repos\/[^/]+\/[^/]+\//, '')}`)
+    ).toEqual(['DELETE releases/1', 'POST git/refs', 'POST actions/workflows/release.yml/dispatches']);
+  });
+}
+
+test('a run outside CI without --no-ci reports the deferral without writes', () => {
+  const { status, output, requests } = runRelease([], 'main', olderDrafts, olderNpmCommits, false);
 
   expect(status).toBe(0);
-  expect(writesOf(requests).map(({ method, url }) => `${method} ${url?.replace(/^.*\/repos\/[^/]+\/[^/]+\//, '')}`)).toEqual([
-    'DELETE releases/1',
-    'POST git/refs',
-    'POST actions/workflows/release.yml/dispatches',
-  ]);
+  expect(output).toContain('Would delete the draft release v1.0.1');
+  expect(output).toContain('Would dispatch a run on release-pending/v1.0.2');
+  expect(writesOf(requests)).toEqual([]);
 });
 
 for (const args of [['--dry-run'], ['--dry'], ['-d'], ['--', '--dry-run'], ['--', '-d']]) {
@@ -145,7 +164,16 @@ for (const args of [['--', '--dry-run', '--debug'], ['--', '--debug']]) {
   });
 }
 
-for (const args of [['--dry-run=true'], ['--d'], ['-vd'], ['--', '-d', '--no-d'], ['--', '--dry'], ['--debug']]) {
+for (const args of [
+  ['--dry-run=true'],
+  ['--d'],
+  ['-vd'],
+  ['--', '-d', '--no-d'],
+  ['--', '--dry'],
+  ['--debug'],
+  ['--no-ci'],
+  ['--', '--ci=false'],
+]) {
   test(`${args.join(' ')} is refused before any request`, () => {
     const { status, output, requests } = runRelease(args, 'main', olderDrafts, olderNpmCommits);
 

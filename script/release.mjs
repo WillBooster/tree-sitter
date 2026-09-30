@@ -31,7 +31,7 @@ const pendingBranchPrefix = 'release-pending/';
 const dryRun = parseDryRun(process.argv.slice(2));
 
 // A dry run takes the same path as a real run but only reports the remote writes it would make.
-if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
+if (env.GITHUB_REF_NAME?.startsWith(pendingBranchPrefix)) {
   await completePendingRelease(env.GITHUB_REF_NAME.slice(pendingBranchPrefix.length));
   if (dryRun) {
     console.info(`Would dispatch a run on ${releaseConfig.branches[0]} and delete the branch ${env.GITHUB_REF_NAME}.`);
@@ -45,26 +45,27 @@ if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
 }
 
 /**
- * Returns whether the arguments request the dry run of `wb release` or, after `--`, of semantic-release. Only these
- * options and semantic-release's `--debug` are accepted: both parsers accept many more spellings of the dry-run option
- * (e.g., `--d`, `--dry-run=true`, `-vd`), and a spelling this script misread would make remote writes in a dry run, or
- * skip them in a run that semantic-release reads as real.
+ * Returns whether the run is a dry run: the arguments request the dry run of `wb release` or, after `--`, of
+ * semantic-release, or the run is outside CI without semantic-release's `--no-ci`, where semantic-release runs dry too.
+ * Only these options and semantic-release's `--debug` are accepted: both parsers accept many more spellings of them
+ * (e.g., `--d`, `--dry-run=true`, `-vd`, `--ci=false`), and a spelling this script misread would make remote writes in a
+ * dry run, or skip them in a run that semantic-release reads as real.
  */
 function parseDryRun(args) {
   const forwardedFrom = args.includes('--') ? args.indexOf('--') + 1 : args.length;
   let dryRun = false;
   for (const [index, arg] of args.entries()) {
     const [dryRunOptions, otherOptions] =
-      index < forwardedFrom ? [['--dry-run', '--dry', '-d'], ['--']] : [['--dry-run', '-d'], ['--debug']];
+      index < forwardedFrom ? [['--dry-run', '--dry', '-d'], ['--']] : [['--dry-run', '-d'], ['--debug', '--no-ci']];
     if (dryRunOptions.includes(arg)) {
       dryRun = true;
     } else if (!otherOptions.includes(arg)) {
       throw new Error(
-        `Unsupported argument \`${arg}\`: the script accepts wb's dry-run options --dry-run, --dry, and -d, and after \`--\` semantic-release's --dry-run, -d, and --debug.`
+        `Unsupported argument \`${arg}\`: the script accepts wb's dry-run options --dry-run, --dry, and -d, and after \`--\` semantic-release's --dry-run, -d, --debug, and --no-ci.`
       );
     }
   }
-  return dryRun;
+  return dryRun || (!env.CI && !args.slice(forwardedFrom).includes('--no-ci'));
 }
 
 async function completePendingRelease(tag) {
