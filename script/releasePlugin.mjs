@@ -162,9 +162,12 @@ async function fetchWithRetry(url, init, findCreated) {
   for (let attempt = 0; ; attempt++) {
     let response;
     try {
-      response = await fetch(url, init);
+      const received = await fetch(url, init);
+      // Read here so that a connection dropped while receiving the body is retried too.
+      const body = await received.arrayBuffer();
+      response = new Response(body.byteLength > 0 ? body : undefined, received);
     } catch (error) {
-      // fetch rejects with a TypeError when the connection fails or drops.
+      // fetch and reading the body reject with a TypeError when the connection fails or drops.
       if (!(error instanceof TypeError) || attempt === retryDelays.length) throw error;
     }
     if (attempt > 0 && init.method === 'DELETE' && response && (await isAbsent(response))) {
