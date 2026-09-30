@@ -45,22 +45,22 @@ if (env.GITHUB_REF_NAME.startsWith(pendingBranchPrefix)) {
 }
 
 /**
- * Returns whether the arguments request the dry run of `wb release` or of semantic-release (forwarded after `--`). The
- * other spellings their parsers accept (e.g., `--dry-run=true`, `-vd`) are refused, since misreading one as a real run
- * would make remote writes.
+ * Returns whether the arguments request the dry run of `wb release` or, after `--`, of semantic-release. Every other
+ * argument is refused: their parsers accept many spellings of the option (e.g., `--d`, `--dry-run=true`, `-vd`), and a
+ * spelling this script misread would make remote writes in a dry run, or skip them in a run that semantic-release
+ * reads as real.
  */
 function parseDryRun(args) {
   const forwardedFrom = args.includes('--') ? args.indexOf('--') + 1 : args.length;
-  let dryRun = false;
   for (const [index, arg] of args.entries()) {
-    const flags = index < forwardedFrom ? ['--dry-run', '--dry', '-d'] : ['--dry-run', '-d'];
-    if (flags.includes(arg) && !['true', 'false'].includes(args[index + 1])) {
-      dryRun = true;
-    } else if (/^(?:--(?:no-)?dry(?:-run|Run)?(?:=|$)|-[a-zA-Z]*d[a-zA-Z]*(?:=|$))/.test(arg)) {
-      throw new Error(`Pass the dry-run option as one of ${flags.join(', ')} without a value, not as \`${arg}\`.`);
+    const allowed = index < forwardedFrom ? ['--dry-run', '--dry', '-d', '--'] : ['--dry-run', '-d'];
+    if (!allowed.includes(arg)) {
+      throw new Error(
+        `Unsupported argument \`${arg}\`: pass none, or --dry-run, --dry, or -d for wb's dry run, or \`-- --dry-run\` or \`-- -d\` for semantic-release's.`
+      );
     }
   }
-  return dryRun;
+  return args.some((arg) => arg !== '--');
 }
 
 async function completePendingRelease(tag) {
