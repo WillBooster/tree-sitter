@@ -80,7 +80,9 @@ npm run build:dts
 
 This uses [`dts-buddy`][dts-buddy] to generate `web-tree-sitter.d.ts` (for ES modules) and `web-tree-sitter.d.cts` (for
 CommonJS) from the public types in `src`. Each file is a module of its own, so a program that loads both does not see
-the declarations twice; `npx tsc -p test/types` type-checks both from one program. Additionally, a sourcemap is
+the declarations twice; `npx tsc -p test/types` type-checks both from one program. Consumers with
+`moduleResolution: node10` ignore `exports` and find the types of `@willbooster/web-tree-sitter/debug` only through
+`typesVersions` in `package.json`, which no in-repository check covers. Additionally, a sourcemap is
 generated for each declaration file, which enables `go-to definition` and other editor integrations to take you straight
 to the TypeScript source code.
 
