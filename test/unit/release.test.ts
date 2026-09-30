@@ -29,6 +29,7 @@ const fakeApi = `
 import fs from 'node:fs';
 const { drafts, npmCommits, failures } = JSON.parse(process.env.RELEASE_TEST_STATE);
 const deleted = new Set();
+const dispatchedRefs = [];
 globalThis.fetch = async (url, init = {}) => {
   const method = init.method ?? 'GET';
   fs.appendFileSync(process.env.RELEASE_TEST_LOG, JSON.stringify({ tool: 'fetch', method, url }) + '\\n');
@@ -38,17 +39,22 @@ globalThis.fetch = async (url, init = {}) => {
   if (failure === 'drop') throw new TypeError('fetch failed');
   if (failure === 'rateLimit') return new Response('', { status: 429, headers: { 'retry-after': '1' } });
   if (failure === 'serverError') return new Response('', { status: 502 });
-  const response = respond(method, url);
+  const response = respond(method, url, init);
   if (failure === 'dropAfterProcessing') throw new TypeError('fetch failed');
   return response;
 };
-function respond(method, url) {
+function respond(method, url, init) {
   if (url.endsWith('/releases?per_page=100')) return Response.json(drafts);
   if (url.startsWith('https://registry.npmjs.org/')) {
     const commit = npmCommits[url.split('/').at(-1)];
     return commit ? Response.json({ gitHead: commit }) : new Response('', { status: 404 });
   }
   if (url.startsWith('https://crates.io/')) return new Response('', { status: 404 });
+  if (url.includes('/runs?')) {
+    const ref = new URL(url).searchParams.get('branch');
+    return Response.json({ workflow_runs: dispatchedRefs.filter((dispatched) => dispatched === ref).map(() => ({})) });
+  }
+  if (url.endsWith('/dispatches')) dispatchedRefs.push(JSON.parse(init.body).ref);
   if (method === 'DELETE') {
     if (deleted.has(url)) {
       return url.includes('/git/refs/')
@@ -194,8 +200,9 @@ test('a real run retries transient failures of GitHub and the registries', () =>
   // Beyond the default timeout, since each retry waits a second.
 }, 30_000);
 
-test('a real run on a pending-release branch retries deleting the branch after a dropped connection', () => {
+test('a real run on a pending-release branch dispatches once and deletes the branch after dropped connections', () => {
   const { status, requests } = runRelease([], 'release-pending/v1.0.2', [], {}, true, {
+    'POST /actions/workflows/release.yml/dispatches': 'dropAfterProcessing',
     'DELETE /git/refs/heads/release-pending/v1.0.2': 'dropAfterProcessing',
   });
 

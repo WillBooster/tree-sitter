@@ -26,7 +26,7 @@ const env = process.env;
 const github = createGitHubClient(env);
 const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootDir, encoding: 'utf8' }).trim();
 // The registries trust this workflow file for publishing.
-const dispatch = (ref) => github('POST', 'actions/workflows/release.yml/dispatches', { ref });
+const workflowRoute = 'actions/workflows/release.yml';
 const pendingBranchPrefix = 'release-pending/';
 const dryRun = parseDryRun(process.argv.slice(2));
 
@@ -129,4 +129,14 @@ async function createBranch(branch, commit) {
     const existing = await github('GET', `git/ref/heads/${branch}`);
     if (existing.object.sha !== commit) throw error;
   }
+}
+
+async function dispatch(ref) {
+  // Whole seconds, like the run times GitHub compares it with.
+  const since = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  await github('POST', `${workflowRoute}/dispatches`, { ref }, async () => {
+    const query = new URLSearchParams({ event: 'workflow_dispatch', branch: ref, created: `>=${since}` });
+    const { workflow_runs: runs } = await github('GET', `${workflowRoute}/runs?${query}`);
+    return runs[0];
+  });
 }

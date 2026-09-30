@@ -133,9 +133,9 @@ export async function findDraftRelease(github, gitTag) {
 }
 
 /**
- * Returns a client of the repository's GitHub REST API. Only creating a release needs `findCreated` to be safe to
- * repeat: GitHub rejects a second branch with the same name, which createBranch in script/release.mjs accepts when it
- * points at the same commit, and a second dispatch of the release workflow starts a run that finds nothing to release.
+ * Returns a client of the repository's GitHub REST API. A POST that is not safe to repeat passes `findCreated`; creating
+ * a branch needs none, since GitHub rejects a second branch with the same name, which createBranch in
+ * script/release.mjs accepts when it points at the same commit.
  */
 export function createGitHubClient(env) {
   return async (method, route, body, findCreated) => {
