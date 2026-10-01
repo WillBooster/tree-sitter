@@ -887,22 +887,32 @@ impl Loader {
         }
     }
 
-    /// Registers the grammars at `path` like [`Self::languages_at_path`], but uses `language` for
-    /// the ones named `language_name` instead of compiling them.
-    pub fn use_language_at_path(&mut self, path: &Path, language_name: &str, language: &Language) {
+    /// Like [`Self::languages_at_path`], but uses `language` for the grammar named `language_name`
+    /// instead of compiling it, and puts that grammar first.
+    pub fn languages_at_path_using(
+        &mut self,
+        path: &Path,
+        language_name: &str,
+        language: &Language,
+    ) -> LoaderResult<Vec<(Language, String)>> {
+        let mut languages = vec![(language.clone(), language_name.to_string())];
         let Ok(configurations) = self.find_language_configurations_at_path(path, true) else {
-            return;
+            return Ok(languages);
         };
         let mut language_ids = configurations
             .iter()
-            .filter(|c| c.language_name == language_name)
-            .map(|c| c.language_id)
+            .map(|c| (c.language_id, c.language_name.clone()))
             .collect::<Vec<_>>();
         language_ids.sort_unstable();
         language_ids.dedup();
-        for id in language_ids {
-            let _ = self.languages_by_id[id].1.set(language.clone());
+        for (id, name) in language_ids {
+            if name == language_name {
+                let _ = self.languages_by_id[id].1.set(language.clone());
+            } else {
+                languages.push((self.language_for_id(id)?, name));
+            }
         }
+        Ok(languages)
     }
 
     #[must_use]

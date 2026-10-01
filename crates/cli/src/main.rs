@@ -1352,9 +1352,7 @@ impl Test {
                         lib_path.display()
                     )
                 })?;
-            // The highlight and tags tests look the grammar up by file name.
-            loader.use_language_at_path(current_dir, language_name, &language);
-            vec![(language, (*language_name).to_string())]
+            loader.languages_at_path_using(current_dir, language_name, &language)?
         } else {
             loader.languages_at_path(current_dir)?
         };

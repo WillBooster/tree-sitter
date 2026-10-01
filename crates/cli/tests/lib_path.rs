@@ -57,13 +57,12 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
         &["query", "words.scm", "--test-number", "1"],
     ] {
         let output = run(&grammar_dir, &cache_dir, &[args, &lib_args].concat());
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if args[0] == "fuzz" {
-            assert!(
-                !stdout.contains("failed fuzzing"),
-                "{args:?} reported a failure:\n{stdout}"
-            );
-        }
+        // `fuzz` exits successfully even when a case fails, and logs the summary to stderr.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("failed fuzzing"),
+            "{args:?} reported a failure:\n{stderr}"
+        );
         assert_cache_is_empty(&cache_dir, &args.join(" "));
     }
 
@@ -79,6 +78,51 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
         &[&["test"][..], &lib_args].concat(),
     );
     assert_cache_is_empty(&cache_dir, "test next to an unreadable grammar");
+
+    // Corpus tests of the other grammars in the same tree-sitter.json still run on parsers compiled
+    // from their sources, while the named grammar comes from the library.
+    let multi_dir = temp_dir.path().join("multi");
+    fs::create_dir_all(multi_dir.join("src")).unwrap();
+    fs::create_dir_all(multi_dir.join("other/src")).unwrap();
+    fs::create_dir_all(multi_dir.join("test/corpus")).unwrap();
+    fs::write(multi_dir.join("src/grammar.json"), GRAMMAR_JSON).unwrap();
+    fs::write(
+        multi_dir.join("other/src/grammar.json"),
+        GRAMMAR_JSON
+            .replace("words", "numbers")
+            .replace("[a-z]+", "[0-9]+"),
+    )
+    .unwrap();
+    fs::write(
+        multi_dir.join("tree-sitter.json"),
+        TREE_SITTER_JSON.replace(
+            "}],",
+            r#"}, { "name": "numbers", "scope": "source.numbers", "path": "other" }],"#,
+        ),
+    )
+    .unwrap();
+    fs::write(
+        multi_dir.join("test/corpus/both.txt"),
+        format!(
+            "{CORPUS}\n==========\nNumbers\n:language(numbers)\n==========\n\n12 34\n\n---\n\n\
+             (source_file (word) (word))\n"
+        ),
+    )
+    .unwrap();
+    run(
+        &multi_dir.join("other"),
+        &cache_dir,
+        &["generate", "src/grammar.json"],
+    );
+    run(&multi_dir, &cache_dir, &[&["test"][..], &lib_args].concat());
+    let cached = fs::read_dir(&cache_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        cached.iter().all(|name| name.starts_with("numbers")) && !cached.is_empty(),
+        "test with grammars besides the library cached {cached:?}"
+    );
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
