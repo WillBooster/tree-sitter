@@ -47,14 +47,14 @@ jobs:
       # release, so this waits here instead of in the four builds that need it.
       - if: steps.tag.outputs.tag
         run: |
-          for _ in {1..120}; do
-            if curl -fsS --max-time 60 -o /dev/null "https://registry.npmjs.org/@willbooster%2fweb-tree-sitter/${TAG#v}"; then
-              exit 0
+          deadline=$((SECONDS + 3600))
+          until curl -fsS --max-time 60 -o /dev/null "https://registry.npmjs.org/@willbooster%2fweb-tree-sitter/${TAG#v}"; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::The registry did not list @willbooster/web-tree-sitter@${TAG#v} within an hour"
+              exit 1
             fi
             sleep 30
           done
-          echo "::error::The registry did not list @willbooster/web-tree-sitter@${TAG#v} within an hour"
-          exit 1
         env:
           TAG: ${{ steps.tag.outputs.tag }}
   build:
