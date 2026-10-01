@@ -1222,7 +1222,6 @@ impl Parse {
                 languages: language_names,
             } => {
                 let path = get_tmp_source_file(&contents)?;
-                let languages = loader.languages_at_path(current_dir)?;
 
                 let language = if let Some(ref lib_path) = self.lib_path {
                     &loader
@@ -1239,6 +1238,7 @@ impl Parse {
                             )
                         })?
                 } else {
+                    let languages = loader.languages_at_path(current_dir)?;
                     &languages
                         .iter()
                         .find(|(_, n)| language_names.contains(&Box::from(n.as_str())))
@@ -1342,24 +1342,26 @@ impl Test {
             });
         }
 
-        let languages = loader.languages_at_path(current_dir)?;
-        let language = if let Some(ref lib_path) = self.lib_path {
-            let lib_info =
-                get_lib_info(self.lib_path.as_ref(), self.lang_name.as_ref(), current_dir);
-            &loader
+        let lib_info = get_lib_info(self.lib_path.as_ref(), self.lang_name.as_ref(), current_dir);
+        let languages = if let Some((lib_path, language_name)) = &lib_info {
+            let language = loader
                 .select_language(None, current_dir, None, lib_info.as_ref())
                 .with_context(|| {
                     anyhow!(
                         "Failed to load language for path \"{}\"",
                         lib_path.display()
                     )
-                })?
+                })?;
+            // The highlight and tags tests look the grammar up by file name.
+            loader.use_language_at_path(current_dir, language_name, &language)?;
+            vec![(language, (*language_name).to_string())]
         } else {
-            &languages
-                .first()
-                .ok_or_else(|| anyhow!("No language found"))?
-                .0
+            loader.languages_at_path(current_dir)?
         };
+        let language = &languages
+            .first()
+            .ok_or_else(|| anyhow!("No language found"))?
+            .0;
         parser.set_language(language)?;
 
         let test_dir = current_dir.join("test");
@@ -1517,25 +1519,23 @@ impl Fuzz {
         loader.sanitize_build(true);
         loader.force_rebuild(self.rebuild || self.grammar_path.is_some());
 
-        let languages = loader.languages_at_path(current_dir)?;
         let (language, language_name) = if let Some(ref lib_path) = self.lib_path {
             let lib_info = get_lib_info(Some(lib_path), self.lang_name.as_ref(), current_dir)
                 .with_context(|| anyhow!("No language name found for {}", lib_path.display()))?;
-            let lang_name = lib_info.1.to_string();
-            &(
-                loader
-                    .select_language(None, current_dir, None, Some(&lib_info))
-                    .with_context(|| {
-                        anyhow!(
-                            "Failed to load language for path \"{}\"",
-                            lib_path.display()
-                        )
-                    })?,
-                lang_name,
-            )
+            let language = loader
+                .select_language(None, current_dir, None, Some(&lib_info))
+                .with_context(|| {
+                    anyhow!(
+                        "Failed to load language for path \"{}\"",
+                        lib_path.display()
+                    )
+                })?;
+            (language, lib_info.1.to_string())
         } else {
-            languages
-                .first()
+            loader
+                .languages_at_path(current_dir)?
+                .into_iter()
+                .next()
                 .ok_or_else(|| anyhow!("No language found"))?
         };
 
@@ -1551,8 +1551,8 @@ impl Fuzz {
         };
 
         fuzz_language_corpus(
-            language,
-            language_name,
+            &language,
+            &language_name,
             *START_SEED,
             current_dir,
             &mut fuzz_options,
@@ -1624,7 +1624,6 @@ impl Query {
                 languages: language_names,
             } => {
                 let path = get_tmp_source_file(&contents)?;
-                let languages = loader.languages_at_path(current_dir)?;
                 let language = if let Some(ref lib_path) = self.lib_path {
                     &loader
                         .select_language(None, current_dir, None, lib_info.as_ref())
@@ -1635,6 +1634,7 @@ impl Query {
                             )
                         })?
                 } else {
+                    let languages = loader.languages_at_path(current_dir)?;
                     &languages
                         .iter()
                         .find(|(_, n)| language_names.contains(&Box::from(n.as_str())))

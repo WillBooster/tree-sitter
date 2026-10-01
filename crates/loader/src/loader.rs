@@ -887,6 +887,27 @@ impl Loader {
         }
     }
 
+    /// Registers the grammars at `path` like [`Self::languages_at_path`], but uses `language` for
+    /// the ones named `language_name` instead of compiling them.
+    pub fn use_language_at_path(
+        &mut self,
+        path: &Path,
+        language_name: &str,
+        language: &Language,
+    ) -> LoaderResult<()> {
+        let language_ids = self
+            .find_language_configurations_at_path(path, true)?
+            .iter()
+            .filter(|c| c.language_name == language_name)
+            .map(|c| c.language_id)
+            .collect::<Vec<_>>();
+        for id in language_ids {
+            // A grammar registered by an earlier call keeps the language it already has.
+            let _ = self.languages_by_id[id].1.set(language.clone());
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn get_all_language_configurations(&self) -> Vec<(&LanguageConfiguration<'static>, &Path)> {
         self.language_configurations
