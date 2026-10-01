@@ -3,7 +3,9 @@ name: Release
   push:
     branches:
       - main
-  # `wb release` dispatches runs to complete a release that a failed run left pending.
+  # Runs are dispatched here to complete a release that a failed run left pending. The dispatches target this file,
+  # and crates.io and npm trusted publishing identify the publisher by this caller workflow's file name, so the release
+  # job must stay in .github/workflows/release.yml.
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}
@@ -12,7 +14,7 @@ concurrency:
 permissions:
   id-token: write
   contents: write
-  # for `wb release` to dispatch runs, and for the reusable workflow to list runs
+  # for the release to dispatch runs, and for the reusable workflow to list runs
   actions: write
 jobs:
   release:
