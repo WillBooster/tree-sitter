@@ -64,10 +64,13 @@ jobs:
       - name: Check the library without the standard library
         run: cargo check -p willbooster-tree-sitter --no-default-features --locked
       # The CLI workflow builds this after each release on the same runners; a failure there leaves the release without
-      # its archives.
+      # its archives. The release embeds the published web runtime, so empty stand-ins make the embedding compile too;
+      # no earlier step has run the CLI's build script for the release profile, which would otherwise ignore them.
       - name: Build the CLI as the release attaches it
         if: runner.os != 'Windows'
-        run: cargo build --release --locked -p tree-sitter-cli --features wasm
+        run: |
+          touch lib/binding_web/web-tree-sitter.js lib/binding_web/web-tree-sitter.wasm
+          cargo build --release --locked -p tree-sitter-cli --features wasm
   # code-gauge compiles the library for wasm32-wasip1 (Cloudflare Workers), and ultra-uni for Wasm as well.
   wasm:
     name: wasm (${{ matrix.target }})

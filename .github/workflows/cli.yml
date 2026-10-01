@@ -90,6 +90,8 @@ jobs:
           TAG: ${{ needs.release.outputs.tag }}
       # The grammar repositories run `tree-sitter test --wasm`, which needs the wasm feature.
       - run: cargo build --release --locked -p tree-sitter-cli --features wasm
+      # clap shows `--wasm` only in a build with the wasm feature.
+      - run: ./target/release/tree-sitter test --help | grep -q -- --wasm
       # A tarball keeps the executable bit, which a bare gzip stream drops.
       - run: tar -czf tree-sitter-cli-${{ matrix.platform }}.tar.gz -C target/release tree-sitter
       - uses: actions/upload-artifact@v7.0.1
