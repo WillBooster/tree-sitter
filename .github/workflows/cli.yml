@@ -66,8 +66,13 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install
       # The CLI embeds the web runtime that its playground loads, so it takes the one that this release published.
+      # The registry can answer with the previous version list for minutes after a publish, so this waits for it.
       - run: |
-          npm pack "@willbooster/web-tree-sitter@${TAG#v}" --registry https://registry.npmjs.org/
+          for attempt in {1..20}; do
+            npm pack --prefer-online "@willbooster/web-tree-sitter@${TAG#v}" --registry https://registry.npmjs.org/ && break
+            if (( attempt == 20 )); then exit 1; fi
+            sleep 30
+          done
           tar -xzf willbooster-web-tree-sitter-*.tgz --strip-components 1 -C lib/binding_web \
             package/web-tree-sitter.js package/web-tree-sitter.wasm
         env:
