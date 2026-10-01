@@ -78,8 +78,9 @@ static const unsigned MAX_VERSION_COUNT = 6;
 static const unsigned MAX_VERSION_COUNT_OVERFLOW = 4;
 static const unsigned MAX_SUMMARY_DEPTH = 16;
 // Bounds how many reductions error recovery performs in a row on one stack version without reaching a shift, in case a
-// parse table's reductions never reach one. The deepest chain in WillBooster's grammars is 7, in tree-sitter-kotlin.
-static const unsigned MAX_CHAINED_REDUCTION_COUNT = 64;
+// parse table's reductions never reach one. A chain that does reach one grows with the nesting depth of the input (about
+// four reductions per level of nested Kotlin if-expressions), so the bound must stay far above realistic nesting.
+static const unsigned MAX_CHAINED_REDUCTION_COUNT = 4096;
 static const unsigned MAX_COST_DIFFERENCE = 18 * ERROR_COST_PER_SKIPPED_TREE;
 static const unsigned OP_COUNT_PER_PARSER_CALLBACK_CHECK = 100;
 

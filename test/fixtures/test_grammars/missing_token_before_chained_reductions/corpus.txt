@@ -1,6 +1,6 @@
-==========================================================================
+=====================================================================================
 Recovery inserts a missing token that many reductions in a row make valid
-==========================================================================
+=====================================================================================
 
 f(x;
 
@@ -20,3 +20,98 @@ f(x;
                       (identifier)
                       (identifier)
                       (MISSING ")"))))))))))))
+
+=====================================================================================
+Recovery inserts a missing token that reductions through nested constructs make valid
+=====================================================================================
+
+if if if if if if if if f(x;
+
+---
+
+(program
+  (statement
+    (level1
+      (level2
+        (level3
+          (level4
+            (level5
+              (level6
+                (level7
+                  (level8
+                    (guarded
+                      (level1
+                        (level2
+                          (level3
+                            (level4
+                              (level5
+                                (level6
+                                  (level7
+                                    (level8
+                                      (guarded
+                                        (level1
+                                          (level2
+                                            (level3
+                                              (level4
+                                                (level5
+                                                  (level6
+                                                    (level7
+                                                      (level8
+                                                        (guarded
+                                                          (level1
+                                                            (level2
+                                                              (level3
+                                                                (level4
+                                                                  (level5
+                                                                    (level6
+                                                                      (level7
+                                                                        (level8
+                                                                          (guarded
+                                                                            (level1
+                                                                              (level2
+                                                                                (level3
+                                                                                  (level4
+                                                                                    (level5
+                                                                                      (level6
+                                                                                        (level7
+                                                                                          (level8
+                                                                                            (guarded
+                                                                                              (level1
+                                                                                                (level2
+                                                                                                  (level3
+                                                                                                    (level4
+                                                                                                      (level5
+                                                                                                        (level6
+                                                                                                          (level7
+                                                                                                            (level8
+                                                                                                              (guarded
+                                                                                                                (level1
+                                                                                                                  (level2
+                                                                                                                    (level3
+                                                                                                                      (level4
+                                                                                                                        (level5
+                                                                                                                          (level6
+                                                                                                                            (level7
+                                                                                                                              (level8
+                                                                                                                                (guarded
+                                                                                                                                  (level1
+                                                                                                                                    (level2
+                                                                                                                                      (level3
+                                                                                                                                        (level4
+                                                                                                                                          (level5
+                                                                                                                                            (level6
+                                                                                                                                              (level7
+                                                                                                                                                (level8
+                                                                                                                                                  (guarded
+                                                                                                                                                    (level1
+                                                                                                                                                      (level2
+                                                                                                                                                        (level3
+                                                                                                                                                          (level4
+                                                                                                                                                            (level5
+                                                                                                                                                              (level6
+                                                                                                                                                                (level7
+                                                                                                                                                                  (level8
+                                                                                                                                                                    (call
+                                                                                                                                                                      (identifier)
+                                                                                                                                                                      (identifier)
+                                                                                                                                                                      (MISSING ")"))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))
