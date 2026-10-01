@@ -895,14 +895,15 @@ impl Loader {
         language_name: &str,
         language: &Language,
     ) -> LoaderResult<()> {
-        let language_ids = self
+        let mut language_ids = self
             .find_language_configurations_at_path(path, true)?
             .iter()
             .filter(|c| c.language_name == language_name)
             .map(|c| c.language_id)
             .collect::<Vec<_>>();
+        language_ids.sort_unstable();
+        language_ids.dedup();
         for id in language_ids {
-            // A grammar registered by an earlier call keeps the language it already has.
             let _ = self.languages_by_id[id].1.set(language.clone());
         }
         Ok(())
