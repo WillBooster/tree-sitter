@@ -1,35 +1,24 @@
 # Tree-sitter CLI
 
-[![crates.io badge]][crates.io] [![npmjs.com badge]][npmjs.com]
-
-[crates.io]: https://crates.io/crates/tree-sitter-cli
-[crates.io badge]: https://img.shields.io/crates/v/tree-sitter-cli.svg?color=%23B48723
-[npmjs.com]: https://www.npmjs.org/package/tree-sitter-cli
-[npmjs.com badge]: https://img.shields.io/npm/v/tree-sitter-cli.svg?color=%23BF4A4A
-
 The Tree-sitter CLI allows you to develop, test, and use Tree-sitter grammars from the command line. It works on `MacOS`,
 `Linux`, and `Windows`.
 
 ### Installation
 
-You can install the `tree-sitter-cli` with [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall):
+This fork's CLI is not published as a package. Each [release of this repository][the releases page] carries it as
+`tree-sitter-cli-<platform>.tar.gz` for `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64`, which extracts to an
+executable `tree-sitter`. On other platforms, build it from a checkout of this repository:
 
 ```sh
-cargo binstall tree-sitter-cli
+cargo install --locked --path crates/cli
 ```
-
-or you can build it from source:
-```sh
-cargo install --locked tree-sitter-cli
-```
-
-You can also download a pre-built binary for your platform from [the releases page].
 
 ### Dependencies
 
 The `tree-sitter` binary itself has no dependencies, but specific commands have dependencies that must be present at runtime:
 
-* To generate a parser from a grammar, you must have [`node`](https://nodejs.org) on your PATH.
+* To generate a parser from a grammar, you must have [`node`](https://nodejs.org) on your PATH, or pass
+  `--js-runtime native` to use the bundled QuickJS runtime.
 * To run and test parsers, you must have a C and C++ compiler on your system.
 
 ### Commands
@@ -43,4 +32,4 @@ The `tree-sitter` binary itself has no dependencies, but specific commands have 
 * `parse` - The `tree-sitter parse` command will parse a file (or list of files) using Tree-sitter parsers.
 
 [the documentation]: https://tree-sitter.github.io/tree-sitter/creating-parsers
-[the releases page]: https://github.com/tree-sitter/tree-sitter/releases/latest
+[the releases page]: https://github.com/WillBooster/tree-sitter/releases
