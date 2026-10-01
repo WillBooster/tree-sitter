@@ -19,7 +19,7 @@ cargo install --locked --path crates/cli
 The `tree-sitter` binary itself has no dependencies, but specific commands have dependencies that must be present at runtime:
 
 * To generate a parser from a grammar, you must have [`node`](https://nodejs.org) on your PATH, or pass
-  `--js-runtime native` to use the bundled QuickJS runtime.
+  `--js-runtime native` to use the bundled `QuickJS` runtime.
 * To run and test parsers, you must have a C and C++ compiler on your system.
 
 ### Commands
