@@ -145,14 +145,16 @@ reusable workflow, such as the tree-sitter-javascript [releases page][gh release
 
 #### Generating `.wasm` files
 
-You can also generate the `.wasm` file for your desired grammar with the CLI that each
-[release of this repository][releases] carries as `tree-sitter-cli-<platform>.tar.gz` (`linux-x64`, `linux-arm64`,
-`macos-arm64`, or `macos-x64`), which extracts to an executable `tree-sitter`. `tree-sitter build --wasm` downloads
-[wasi-sdk][] on first use, so no other tools need to be installed. For example, for the JavaScript grammar:
+You can also generate the `.wasm` file for your desired grammar with the CLI that each [release of this
+repository][releases] carries as `tree-sitter-cli-<platform>.tar.gz` (`linux-x64`, `linux-arm64`, `macos-arm64`, or
+`macos-x64`), which extracts to an executable `tree-sitter`; a workflow attaches the archives a few minutes after each
+release. `tree-sitter build --wasm` downloads [wasi-sdk][] on first use, so no other tools need to be installed. For
+example, for the JavaScript grammar:
 
 ```sh
 platform=macos-arm64 # or linux-x64, linux-arm64, macos-x64
-curl -fsSL "https://github.com/WillBooster/tree-sitter/releases/latest/download/tree-sitter-cli-$platform.tar.gz" | tar -xz
+tag=v1.0.10 # a release that lists tree-sitter-cli-$platform.tar.gz among its assets
+curl -fsSL "https://github.com/WillBooster/tree-sitter/releases/download/$tag/tree-sitter-cli-$platform.tar.gz" | tar -xz
 npm install tree-sitter-javascript
 ./tree-sitter build --wasm node_modules/tree-sitter-javascript
 ```
