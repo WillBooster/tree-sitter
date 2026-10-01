@@ -19,7 +19,8 @@ const TREE_SITTER_JSON: &str = r#"{
   "metadata": { "version": "0.1.0" }
 }"#;
 
-const CORPUS: &str = "==========\nWords\n==========\n\nab cd\n\n---\n\n(source_file (word) (word))\n";
+const CORPUS: &str =
+    "==========\nWords\n==========\n\nab cd\n\n---\n\n(source_file (word) (word))\n";
 
 // `--lib-path` names the parser to use, so the commands must neither compile the grammar in the
 // current directory into the parser cache nor load a parser from it.
@@ -40,7 +41,11 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
     let lib_path = temp_dir.path().join(format!("words.{DLL_EXTENSION}"));
     let lib_path = lib_path.to_str().unwrap();
     run(&grammar_dir, &cache_dir, &["generate", "src/grammar.json"]);
-    run(&grammar_dir, &cache_dir, &["build", "--output", lib_path, "."]);
+    run(
+        &grammar_dir,
+        &cache_dir,
+        &["build", "--output", lib_path, "."],
+    );
     assert_cache_is_empty(&cache_dir, "build --output");
 
     let lib_args = ["--lib-path", lib_path, "--lang-name", "words"];
