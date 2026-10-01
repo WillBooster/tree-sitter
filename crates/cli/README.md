@@ -5,9 +5,10 @@ The Tree-sitter CLI allows you to develop, test, and use Tree-sitter grammars fr
 
 ### Installation
 
-This fork's CLI is not published as a package. Each [release of this repository][the releases page] carries it as
-`tree-sitter-cli-<platform>.tar.gz` for `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64`, which extracts to an
-executable `tree-sitter`. On other platforms, build it from a checkout of this repository:
+This fork's CLI is not published as a package. The [releases of this repository][the releases page] from v1.0.7 on
+carry it as `tree-sitter-cli-<platform>.tar.gz` for `linux-x64`, `linux-arm64`, `macos-arm64`, and `macos-x64`, which
+extracts to an executable `tree-sitter`. A workflow builds and attaches the archives after a release is published, so the
+newest release lacks them for a while. On other platforms, build it from a checkout of this repository:
 
 ```sh
 cargo install --locked --path crates/cli
