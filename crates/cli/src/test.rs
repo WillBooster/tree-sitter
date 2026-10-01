@@ -4,6 +4,7 @@ use std::{
     fmt::{Display as _, Write as _},
     fs,
     io::{self, Write},
+    ops::Range,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -85,19 +86,25 @@ pub enum TestEntry {
     Group {
         name: String,
         children: Vec<Self>,
-        file_path: Option<PathBuf>,
+        file: Option<CorpusFile>,
     },
     Example {
         name: String,
         input: Vec<u8>,
         output: String,
-        header_delim_len: usize,
-        divider_delim_len: usize,
+        /// The byte range of the expected output in the corpus file, from the line after the
+        /// `---` divider to the end of the test.
+        output_range: Range<usize>,
         has_fields: bool,
-        attributes_str: String,
         attributes: TestAttributes,
         file_name: Option<String>,
     },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CorpusFile {
+    pub path: PathBuf,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,7 +140,7 @@ impl Default for TestEntry {
         Self::Group {
             name: String::new(),
             children: Vec::new(),
-            file_path: None,
+            file: None,
         }
     }
 }
@@ -806,38 +813,8 @@ impl TestFailure {
 }
 
 struct TestCorrection {
-    name: String,
-    input: String,
+    output_range: Range<usize>,
     output: String,
-    attributes_str: String,
-    header_delim_len: usize,
-    divider_delim_len: usize,
-}
-
-impl TestCorrection {
-    fn new<T, U, V, W>(
-        name: T,
-        input: U,
-        output: V,
-        attributes_str: W,
-        header_delim_len: usize,
-        divider_delim_len: usize,
-    ) -> Self
-    where
-        T: Into<String>,
-        U: Into<String>,
-        V: Into<String>,
-        W: Into<String>,
-    {
-        Self {
-            name: name.into(),
-            input: input.into(),
-            output: output.into(),
-            attributes_str: attributes_str.into(),
-            header_delim_len,
-            divider_delim_len,
-        }
-    }
 }
 
 /// This will return false if we want to "fail fast". It will bail and not parse any more tests.
@@ -854,10 +831,8 @@ fn run_tests(
             name,
             input,
             output,
-            header_delim_len,
-            divider_delim_len,
+            output_range,
             has_fields,
-            attributes_str,
             attributes,
             ..
         } => {
@@ -887,6 +862,9 @@ fn run_tests(
                 return Ok(true);
             }
 
+            // A test that names several languages is written back once, with the output of the
+            // first language that updated it.
+            let mut updated_output = None;
             for (i, language_name) in attributes.languages.iter().enumerate() {
                 if !language_name.is_empty() {
                     let language = opts
@@ -922,40 +900,7 @@ fn run_tests(
                             },
                         });
                         test_summary.parse_stats.successful_parses += 1;
-                        if opts.update {
-                            let input = String::from_utf8(input.clone()).unwrap();
-                            let output = if attributes.cst {
-                                output.clone()
-                            } else {
-                                format_sexp(&output, 0)
-                            };
-                            corrected_entries.push(TestCorrection::new(
-                                &name,
-                                input,
-                                output,
-                                &attributes_str,
-                                header_delim_len,
-                                divider_delim_len,
-                            ));
-                        }
                     } else {
-                        if opts.update {
-                            let input = String::from_utf8(input.clone()).unwrap();
-                            // Keep the original `expected` output if the actual output has no error
-                            let output = if attributes.cst {
-                                output.clone()
-                            } else {
-                                format_sexp(&output, 0)
-                            };
-                            corrected_entries.push(TestCorrection::new(
-                                &name,
-                                input,
-                                output,
-                                &attributes_str,
-                                header_delim_len,
-                                divider_delim_len,
-                            ));
-                        }
                         test_summary.parse_results.add_case(TestResult {
                             name: name.clone(),
                             info: TestInfo::ParseTest {
@@ -994,56 +939,15 @@ fn run_tests(
                             },
                         });
                         test_summary.parse_stats.successful_parses += 1;
-                        if opts.update {
-                            let input = String::from_utf8(input.clone()).unwrap();
-                            let output = if attributes.cst {
-                                actual
-                            } else {
-                                format_sexp(&output, 0)
-                            };
-                            corrected_entries.push(TestCorrection::new(
-                                &name,
-                                input,
-                                output,
-                                &attributes_str,
-                                header_delim_len,
-                                divider_delim_len,
-                            ));
-                        }
                     } else {
                         if opts.update {
-                            let input = String::from_utf8(input.clone()).unwrap();
-                            let (expected_output, actual_output) = if attributes.cst {
-                                (output.clone(), actual.clone())
-                            } else {
-                                (format_sexp(&output, 0), format_sexp(&actual, 0))
-                            };
-
                             // Only bail early before updating if `actual` does not match `output`.
                             // Sometimes users want to test cases that are intended to have
                             // errors, hence why this check isn't shown above.
                             if actual.contains("ERROR") || actual.contains("MISSING") {
                                 test_summary.has_parse_errors = true;
-
-                                // keep the original `expected` output if the actual output has an
-                                // error
-                                corrected_entries.push(TestCorrection::new(
-                                    &name,
-                                    input,
-                                    expected_output,
-                                    &attributes_str,
-                                    header_delim_len,
-                                    divider_delim_len,
-                                ));
                             } else {
-                                corrected_entries.push(TestCorrection::new(
-                                    &name,
-                                    input,
-                                    actual_output,
-                                    &attributes_str,
-                                    header_delim_len,
-                                    divider_delim_len,
-                                ));
+                                updated_output.get_or_insert_with(|| actual.clone());
                                 test_summary.parse_results.add_case(TestResult {
                                     name: name.clone(),
                                     info: TestInfo::ParseTest {
@@ -1081,12 +985,23 @@ fn run_tests(
                     parser.set_language(opts.languages.values().next().unwrap())?;
                 }
             }
+            if opts.update {
+                let output = updated_output.unwrap_or(output);
+                corrected_entries.push(TestCorrection {
+                    output_range,
+                    output: if attributes.cst {
+                        output
+                    } else {
+                        format_sexp(&output, 0)
+                    },
+                });
+            }
             test_summary.test_num += 1;
         }
         TestEntry::Group {
             name,
             children,
-            file_path,
+            file,
         } => {
             if children.is_empty() {
                 return Ok(true);
@@ -1113,28 +1028,10 @@ fn run_tests(
                 if let TestEntry::Example {
                     ref name,
                     ref file_name,
-                    ref input,
-                    ref output,
-                    ref attributes_str,
-                    header_delim_len,
-                    divider_delim_len,
                     ..
                 } = child
                     && !matches_filter(name, file_name, opts)
                 {
-                    if opts.update {
-                        let input = String::from_utf8(input.clone()).unwrap();
-                        let output = format_sexp(output, 0);
-                        corrected_entries.push(TestCorrection::new(
-                            name,
-                            input,
-                            output,
-                            attributes_str,
-                            header_delim_len,
-                            divider_delim_len,
-                        ));
-                    }
-
                     test_summary.test_num += 1;
                     continue;
                 }
@@ -1152,9 +1049,9 @@ fn run_tests(
             // the index
             test_summary.parse_results.pop_traversal();
 
-            if let Some(file_path) = file_path {
+            if let Some(file) = file {
                 if opts.update {
-                    write_tests(&file_path, corrected_entries)?;
+                    write_tests(&file, corrected_entries)?;
                 }
                 corrected_entries.clear();
             }
@@ -1216,48 +1113,57 @@ pub fn adjusted_parse_rate(tree: &Tree, parse_time: Duration) -> f64 {
     )
 }
 
-fn write_tests(file_path: &Path, corrected_entries: &[TestCorrection]) -> Result<()> {
-    let mut buffer = fs::File::create(file_path)?;
-    write_tests_to_buffer(&mut buffer, corrected_entries)
-}
-
-fn write_tests_to_buffer(
-    buffer: &mut impl Write,
-    corrected_entries: &[TestCorrection],
-) -> Result<()> {
-    for (
-        i,
-        TestCorrection {
-            name,
-            input,
-            output,
-            attributes_str,
-            header_delim_len,
-            divider_delim_len,
-        },
-    ) in corrected_entries.iter().enumerate()
-    {
-        if i > 0 {
-            writeln!(buffer)?;
-        }
-        writeln!(
-            buffer,
-            "{}\n{name}\n{}{}\n{input}\n{}\n\n{}",
-            "=".repeat(*header_delim_len),
-            if attributes_str.is_empty() {
-                attributes_str.clone()
-            } else {
-                format!("{attributes_str}\n")
-            },
-            "=".repeat(*header_delim_len),
-            "-".repeat(*divider_delim_len),
-            output.trim()
-        )?;
+/// Write the corrected expected outputs into the corpus file, leaving the rest of the file,
+/// including the tests that did not run, byte-for-byte unchanged.
+fn write_tests(file: &CorpusFile, corrected_entries: &[TestCorrection]) -> Result<()> {
+    let content = apply_corrections(&file.content, corrected_entries);
+    if content != file.content {
+        fs::write(&file.path, content)?;
     }
     Ok(())
 }
 
-pub fn parse_tests(path: &Path) -> io::Result<TestEntry> {
+fn apply_corrections(content: &str, corrected_entries: &[TestCorrection]) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut copied_end = 0;
+    for TestCorrection {
+        output_range,
+        output,
+    } in corrected_entries
+    {
+        let newline = if content[..output_range.start].ends_with("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let output = output.lines().collect::<Vec<_>>().join(newline);
+        let region = &content[output_range.clone()];
+        let expected = region.trim();
+        if output == expected {
+            continue;
+        }
+        result.push_str(&content[copied_end..output_range.start]);
+        if expected.is_empty() {
+            let separator = if output_range.end < content.len() {
+                newline
+            } else {
+                ""
+            };
+            write!(result, "{newline}{output}{newline}{separator}").unwrap();
+        } else {
+            let leading_len = region.len() - region.trim_start().len();
+            let trailing_start = region.trim_end().len();
+            result.push_str(&region[..leading_len]);
+            result.push_str(&output);
+            result.push_str(&region[trailing_start..]);
+        }
+        copied_end = output_range.end;
+    }
+    result.push_str(&content[copied_end..]);
+    result
+}
+
+pub fn parse_tests(path: &Path) -> Result<TestEntry> {
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -1280,14 +1186,15 @@ pub fn parse_tests(path: &Path) -> io::Result<TestEntry> {
         let children = children
             .iter()
             .map(|path| parse_tests(path))
-            .collect::<io::Result<Vec<TestEntry>>>()?;
+            .collect::<Result<Vec<TestEntry>>>()?;
         Ok(TestEntry::Group {
             name,
             children,
-            file_path: None,
+            file: None,
         })
     } else {
-        let content = fs::read_to_string(path)?;
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read corpus file {}", path.display()))?;
         Ok(parse_test_content(name, &content, Some(path.to_path_buf())))
     }
 }
@@ -1385,8 +1292,6 @@ fn suffix_matches(first_suffix: Option<&str>, suffix: &str) -> bool {
 /// Parsed header info stored between iterations while we wait to discover the body boundaries.
 struct PendingTest {
     name: String,
-    attributes_str: String,
-    header_delim_len: usize,
     attributes: TestAttributes,
     body_start_line: usize,
 }
@@ -1410,7 +1315,7 @@ fn parse_header(
     first_suffix: Option<&str>,
     start_line: usize,
 ) -> Option<(PendingTest, usize)> {
-    let (header_delim_len, suffix) = parse_delimiter_line(lines[start_line], '=')?;
+    let (_, suffix) = parse_delimiter_line(lines[start_line], '=')?;
     if !suffix_matches(first_suffix, suffix) {
         return None;
     }
@@ -1511,22 +1416,12 @@ fn parse_header(
         (false, true) => TestExpectation::Error,
     };
 
-    // Build attributes string from the content between test name and closing delimiter.
-    let name_and_markers: String = lines[start_line + 1..line_num].iter().copied().collect();
-    let attributes_str = name_and_markers
-        .strip_prefix(&test_name)
-        .unwrap_or("")
-        .trim_end()
-        .to_string();
-
     if languages.is_empty() {
         languages.push("".into());
     }
 
     let pending = PendingTest {
         name: test_name.trim_end().to_string(),
-        attributes_str,
-        header_delim_len,
         attributes: TestAttributes {
             platform: platform.unwrap_or(true),
             fail_fast,
@@ -1543,6 +1438,12 @@ fn parse_header(
 fn parse_test_content(name: String, content: &str, file_path: Option<PathBuf>) -> TestEntry {
     let mut children = Vec::new();
     let lines = content.split_inclusive('\n').collect::<Vec<_>>();
+    let line_starts = std::iter::once(0)
+        .chain(lines.iter().scan(0, |end, line| {
+            *end += line.len();
+            Some(*end)
+        }))
+        .collect::<Vec<_>>();
 
     // Determine the suffix from the first `===` line in the file.
     let first_suffix = lines
@@ -1571,6 +1472,7 @@ fn parse_test_content(name: String, content: &str, file_path: Option<PathBuf>) -
         if let Some(prev) = prev_test
             && let Some(entry) = build_test_entry(
                 &lines[prev.body_start_line..opening_line],
+                line_starts[prev.body_start_line],
                 first_suffix.as_deref(),
                 prev,
                 file_path.as_deref(),
@@ -1586,6 +1488,7 @@ fn parse_test_content(name: String, content: &str, file_path: Option<PathBuf>) -
     if let Some(prev) = prev_test
         && let Some(entry) = build_test_entry(
             &lines[prev.body_start_line..],
+            line_starts[prev.body_start_line],
             first_suffix.as_deref(),
             prev,
             file_path.as_deref(),
@@ -1597,7 +1500,10 @@ fn parse_test_content(name: String, content: &str, file_path: Option<PathBuf>) -
     TestEntry::Group {
         name,
         children,
-        file_path,
+        file: file_path.map(|path| CorpusFile {
+            path,
+            content: content.to_string(),
+        }),
     }
 }
 
@@ -1605,12 +1511,13 @@ fn parse_test_content(name: String, content: &str, file_path: Option<PathBuf>) -
 /// Finds the longest matching `---` divider to separate input from expected output.
 fn build_test_entry(
     body_lines: &[&str],
+    body_start: usize,
     first_suffix: Option<&str>,
     pending: PendingTest,
     file_path: Option<&Path>,
 ) -> Option<TestEntry> {
     // Find the longest `---` divider line in the body whose suffix matches.
-    let mut best_divider: Option<(usize, usize)> = None; // (delim_len, line_index)
+    let mut best_divider = None;
     let mut best_total_len = 0;
     for (j, line) in body_lines.iter().enumerate() {
         if let Some((delim_len, suffix)) = parse_delimiter_line(line, '-')
@@ -1620,13 +1527,13 @@ fn build_test_entry(
             // For ties prefer the later candidate, as an earlier same-length
             // `---` is a literal in the input.
             if total_len >= best_total_len {
-                best_divider = Some((delim_len, j));
+                best_divider = Some(j);
                 best_total_len = total_len;
             }
         }
     }
 
-    let (divider_delim_len, divider_line) = best_divider?;
+    let divider_line = best_divider?;
 
     // Input: lines before the divider (as bytes), with trailing newline stripped.
     let mut input = body_lines[..divider_line]
@@ -1648,8 +1555,18 @@ fn build_test_entry(
         .copied()
         .collect::<String>();
 
+    let output_start = body_start
+        + body_lines[..=divider_line]
+            .iter()
+            .map(|line| line.len())
+            .sum::<usize>();
+    let output_range = output_start..output_start + output_str.len();
+
     let (output, has_fields) = if pending.attributes.cst {
-        (output_str.trim().to_string(), false)
+        (
+            output_str.trim().lines().collect::<Vec<_>>().join("\n"),
+            false,
+        )
     } else {
         normalize_sexp_output(&output_str)
     };
@@ -1662,10 +1579,8 @@ fn build_test_entry(
         name: pending.name,
         input,
         output,
-        header_delim_len: pending.header_delim_len,
-        divider_delim_len,
+        output_range,
         has_fields,
-        attributes_str: pending.attributes_str,
         attributes: pending.attributes,
         file_name,
     })
@@ -1715,10 +1630,8 @@ d
                         name: "The first test".to_string(),
                         input: b"\na b c\n".to_vec(),
                         output: "(a (b c))".to_string(),
-                        header_delim_len: 15,
-                        divider_delim_len: 3,
+                        output_range: 59..75,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -1726,15 +1639,13 @@ d
                         name: "The second test".to_string(),
                         input: b"d".to_vec(),
                         output: "(d)".to_string(),
-                        header_delim_len: 16,
-                        divider_delim_len: 3,
+                        output_range: 131..134,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
                 ],
-                file_path: None,
+                file: None,
             }
         );
     }
@@ -1778,10 +1689,8 @@ abc
                         name: "Code with dashes".to_string(),
                         input: b"abc\n---\ndefg\n----\nhijkl".to_vec(),
                         output: "(a (b))".to_string(),
-                        header_delim_len: 18,
-                        divider_delim_len: 7,
+                        output_range: 87..97,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -1789,15 +1698,13 @@ abc
                         name: "Code ending with dashes".to_string(),
                         input: b"abc\n-----------".to_vec(),
                         output: "(c (d))".to_string(),
-                        header_delim_len: 25,
-                        divider_delim_len: 19,
+                        output_range: 209..217,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
                 ],
-                file_path: None,
+                file: None,
             }
         );
     }
@@ -1838,10 +1745,8 @@ c
                         name: "First".to_string(),
                         input: b"a\n===\nb".to_vec(),
                         output: "(a)".to_string(),
-                        header_delim_len: 10,
-                        divider_delim_len: 3,
+                        output_range: 40..45,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -1849,15 +1754,13 @@ c
                         name: "Second".to_string(),
                         input: b"c".to_vec(),
                         output: "(c)".to_string(),
-                        header_delim_len: 10,
-                        divider_delim_len: 3,
+                        output_range: 80..83,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
                 ],
-                file_path: None,
+                file: None,
             }
         );
     }
@@ -1890,14 +1793,12 @@ b
                     name: "Tied dashes".to_string(),
                     input: b"a\n---\nb".to_vec(),
                     output: "(c)".to_string(),
-                    header_delim_len: 10,
-                    divider_delim_len: 3,
+                    output_range: 46..49,
                     has_fields: false,
-                    attributes_str: String::new(),
                     attributes: TestAttributes::default(),
                     file_name: None,
                 }],
-                file_path: None,
+                file: None,
             }
         );
     }
@@ -1952,52 +1853,6 @@ b
     }
 
     #[test]
-    fn test_write_tests_to_buffer() {
-        let mut buffer = Vec::new();
-        let corrected_entries = vec![
-            TestCorrection::new(
-                "title 1".to_string(),
-                "input 1".to_string(),
-                "output 1".to_string(),
-                String::new(),
-                80,
-                80,
-            ),
-            TestCorrection::new(
-                "title 2".to_string(),
-                "input 2".to_string(),
-                "output 2".to_string(),
-                String::new(),
-                80,
-                80,
-            ),
-        ];
-        write_tests_to_buffer(&mut buffer, &corrected_entries).unwrap();
-        assert_eq!(
-            String::from_utf8(buffer).unwrap(),
-            r"
-================================================================================
-title 1
-================================================================================
-input 1
---------------------------------------------------------------------------------
-
-output 1
-
-================================================================================
-title 2
-================================================================================
-input 2
---------------------------------------------------------------------------------
-
-output 2
-"
-            .trim_start()
-            .to_string()
-        );
-    }
-
-    #[test]
     fn test_parse_test_content_with_comments_in_sexp() {
         let entry = parse_test_content(
             "the-filename".to_string(),
@@ -2045,10 +1900,8 @@ code
                         name: "sexp with comment".to_string(),
                         input: b"code".to_vec(),
                         output: "(a (b))".to_string(),
-                        header_delim_len: 18,
-                        divider_delim_len: 3,
+                        output_range: 65..96,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2056,10 +1909,8 @@ code
                         name: "sexp with comment between".to_string(),
                         input: b"code".to_vec(),
                         output: "(a (b))".to_string(),
-                        header_delim_len: 18,
-                        divider_delim_len: 3,
+                        output_range: 169..242,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2067,15 +1918,13 @@ code
                         name: "sexp with ';'".to_string(),
                         input: b"code".to_vec(),
                         output: "(MISSING \";\")".to_string(),
-                        header_delim_len: 25,
-                        divider_delim_len: 3,
+                        output_range: 317..331,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     }
                 ],
-                file_path: None,
+                file: None,
             }
         );
     }
@@ -2162,10 +2011,8 @@ Subsequent test containing equals
                         name: "First test".to_string(),
                         input: expected_input.clone(),
                         output: "(a)".to_string(),
-                        header_delim_len: 18,
-                        divider_delim_len: 3,
+                        output_range: 208..214,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2173,10 +2020,8 @@ Subsequent test containing equals
                         name: "Second test".to_string(),
                         input: expected_input.clone(),
                         output: "(a)".to_string(),
-                        header_delim_len: 18,
-                        divider_delim_len: 3,
+                        output_range: 423..429,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2184,10 +2029,8 @@ Subsequent test containing equals
                         name: "Test name with = symbol".to_string(),
                         input: expected_input,
                         output: "(a)".to_string(),
-                        header_delim_len: 25,
-                        divider_delim_len: 3,
+                        output_range: 664..670,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2195,10 +2038,8 @@ Subsequent test containing equals
                         name: "Test containing equals".to_string(),
                         input: "\n===\n".into(),
                         output: "(a)".into(),
-                        header_delim_len: 30,
-                        divider_delim_len: 30,
+                        output_range: 849..855,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2206,15 +2047,13 @@ Subsequent test containing equals
                         name: "Subsequent test containing equals".to_string(),
                         input: "\n===\n".into(),
                         output: "(a)".into(),
-                        header_delim_len: 30,
-                        divider_delim_len: 30,
+                        output_range: 1045..1049,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     }
                 ],
-                file_path: None,
+                file: None,
             }
         );
     }
@@ -2247,16 +2086,14 @@ code with ----
             entry,
             TestEntry::Group {
                 name: "the-filename".to_string(),
-                file_path: None,
+                file: None,
                 children: vec![
                     TestEntry::Example {
                         name: "name\nwith\nnewlines".to_string(),
                         input: b"a".to_vec(),
                         output: "(b)".to_string(),
-                        header_delim_len: 15,
-                        divider_delim_len: 3,
+                        output_range: 58..63,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     },
@@ -2264,10 +2101,8 @@ code with ----
                         name: "name with === signs".to_string(),
                         input: b"code with ----".to_vec(),
                         output: "(d)".to_string(),
-                        header_delim_len: 20,
-                        divider_delim_len: 3,
+                        output_range: 144..148,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     }
@@ -2298,15 +2133,13 @@ a
             entry,
             TestEntry::Group {
                 name: "the-filename".to_string(),
-                file_path: None,
+                file: None,
                 children: vec![TestEntry::Example {
                     name: "Test with skip marker".to_string(),
                     input: b"a".to_vec(),
                     output: "(b)".to_string(),
-                    header_delim_len: 21,
-                    divider_delim_len: 3,
+                    output_range: 79..83,
                     has_fields: false,
-                    attributes_str: ":skip".to_string(),
                     attributes: TestAttributes {
                         platform: true,
                         fail_fast: false,
@@ -2362,20 +2195,19 @@ Test with cst marker
             None,
         );
 
+        let os_len = std::env::consts::OS.len();
         assert_eq!(
             entry,
             TestEntry::Group {
                 name: "the-filename".to_string(),
-                file_path: None,
+                file: None,
                 children: vec![
                     TestEntry::Example {
                         name: "Test with platform marker".to_string(),
                         input: b"a".to_vec(),
                         output: "(b)".to_string(),
-                        header_delim_len: 25,
-                        divider_delim_len: 3,
+                        output_range: 108 + os_len..113 + os_len,
                         has_fields: false,
-                        attributes_str: format!(":platform({})\n:fail-fast", std::env::consts::OS),
                         attributes: TestAttributes {
                             platform: true,
                             fail_fast: true,
@@ -2389,14 +2221,8 @@ Test with cst marker
                         name: "Test with bad platform marker".to_string(),
                         input: b"a".to_vec(),
                         output: "(b)".to_string(),
-                        header_delim_len: 29,
-                        divider_delim_len: 3,
+                        output_range: 242 + os_len..247 + os_len,
                         has_fields: false,
-                        attributes_str: if std::env::consts::OS == "linux" {
-                            ":platform(macos)\n\n:language(foo)".to_string()
-                        } else {
-                            ":platform(linux)\n\n:language(foo)".to_string()
-                        },
                         attributes: TestAttributes {
                             platform: false,
                             fail_fast: false,
@@ -2413,10 +2239,8 @@ Test with cst marker
 0:0 - 0:1   expression
 0:0 - 0:1     number_literal `1`"
                             .to_string(),
-                        header_delim_len: 20,
-                        divider_delim_len: 3,
+                        output_range: 321 + os_len..401 + os_len,
                         has_fields: false,
-                        attributes_str: ":cst".to_string(),
                         attributes: TestAttributes {
                             platform: true,
                             fail_fast: false,
@@ -2478,15 +2302,13 @@ Test with cst marker
 
         let test_entry = TestEntry::Group {
             name: "foo".to_string(),
-            file_path: None,
+            file: None,
             children: vec![TestEntry::Example {
                 name: "C Test 1".to_string(),
                 input: b"1;\n".to_vec(),
                 output: "(translation_unit (expression_statement (number_literal)))".to_string(),
-                header_delim_len: 25,
-                divider_delim_len: 3,
+                output_range: 0..0,
                 has_fields: false,
-                attributes_str: String::new(),
                 attributes: TestAttributes::default(),
                 file_name: None,
             }],
@@ -2547,7 +2369,7 @@ Test with cst marker
 
         let test_entry = TestEntry::Group {
             name: "corpus".to_string(),
-            file_path: None,
+            file: None,
             children: vec![
                 TestEntry::Group {
                     name: "group1".to_string(),
@@ -2557,14 +2379,12 @@ Test with cst marker
                         input: b"1;\n".to_vec(),
                         output: "(translation_unit (expression_statement (number_literal)))"
                             .to_string(),
-                        header_delim_len: 25,
-                        divider_delim_len: 3,
+                        output_range: 0..0,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     }],
-                    file_path: None,
+                    file: None,
                 },
                 TestEntry::Group {
                     name: "group2".to_string(),
@@ -2575,10 +2395,8 @@ Test with cst marker
                             input: b"1;\n".to_vec(),
                             output: "(translation_unit (expression_statement (number_literal)))"
                                 .to_string(),
-                            header_delim_len: 25,
-                            divider_delim_len: 3,
+                            output_range: 0..0,
                             has_fields: false,
-                            attributes_str: String::new(),
                             attributes: TestAttributes::default(),
                             file_name: None,
                         },
@@ -2588,10 +2406,8 @@ Test with cst marker
                             input: b"1;\n".to_vec(),
                             output: "(translation_unit (expression_statement (string_literal)))"
                                 .to_string(),
-                            header_delim_len: 25,
-                            divider_delim_len: 3,
+                            output_range: 0..0,
                             has_fields: false,
-                            attributes_str: String::new(),
                             attributes: TestAttributes {
                                 fail_fast: true,
                                 ..Default::default()
@@ -2599,7 +2415,7 @@ Test with cst marker
                             file_name: None,
                         },
                     ],
-                    file_path: None,
+                    file: None,
                 },
                 // This group never runs because of the previous failure
                 TestEntry::Group {
@@ -2610,14 +2426,12 @@ Test with cst marker
                         input: b"1;\n".to_vec(),
                         output: "(translation_unit (expression_statement (number_literal)))"
                             .to_string(),
-                        header_delim_len: 25,
-                        divider_delim_len: 3,
+                        output_range: 0..0,
                         has_fields: false,
-                        attributes_str: String::new(),
                         attributes: TestAttributes::default(),
                         file_name: None,
                     }],
-                    file_path: None,
+                    file: None,
                 },
             ],
         };
