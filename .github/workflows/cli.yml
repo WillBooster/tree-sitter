@@ -66,11 +66,12 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install
       - run: cargo build --release --locked -p tree-sitter-cli
-      - run: gzip --best --stdout target/release/tree-sitter > tree-sitter-cli-${{ matrix.platform }}.gz
+      # A tarball keeps the executable bit, which a bare gzip stream drops.
+      - run: tar -czf tree-sitter-cli-${{ matrix.platform }}.tar.gz -C target/release tree-sitter
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: tree-sitter-cli-${{ matrix.platform }}
-          path: tree-sitter-cli-${{ matrix.platform }}.gz
+          path: tree-sitter-cli-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 1
   # Kept apart from the build so that the build scripts of the CLI's dependencies never run with a token that can
@@ -87,7 +88,7 @@ jobs:
         with:
           pattern: tree-sitter-cli-*
           merge-multiple: true
-      - run: gh release upload "$TAG" tree-sitter-cli-*.gz --repo "$GITHUB_REPOSITORY" --clobber
+      - run: gh release upload "$TAG" tree-sitter-cli-*.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.release.outputs.tag }}
