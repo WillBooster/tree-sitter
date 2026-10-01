@@ -25,6 +25,9 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
+      # The released CLI is built with the wasm feature: the test job builds it with the release profile on the shipping
+      # runners, and this step lints its feature-gated sources, tests, and benches.
+      - run: cargo clippy -p tree-sitter-cli --all-targets --locked --features wasm
       - uses: taiki-e/install-action@v2.87.21
         with:
           tool: taplo@0.10.0
@@ -51,6 +54,9 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+      # The release embeds the published web runtime. The CLI's build script embeds these files if they exist when it
+      # first runs for a build configuration, so they are created before any build to compile that embedding here too.
+      - run: touch lib/binding_web/web-tree-sitter.js lib/binding_web/web-tree-sitter.wasm
       - run: rustup toolchain install
       - uses: ./.github/actions/cache
         id: cache
@@ -60,6 +66,13 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Check the library without the standard library
         run: cargo check -p willbooster-tree-sitter --no-default-features --locked
+      # The CLI workflow builds this after each release on the same runners; a failure there leaves the release without
+      # its archives.
+      - name: Build the CLI as the release attaches it
+        if: runner.os != 'Windows'
+        run: |
+          cargo build --release --locked -p tree-sitter-cli --features wasm
+          ./target/release/tree-sitter test --help | grep -q -- --wasm
   # code-gauge compiles the library for wasm32-wasip1 (Cloudflare Workers), and ultra-uni for Wasm as well.
   wasm:
     name: wasm (${{ matrix.target }})

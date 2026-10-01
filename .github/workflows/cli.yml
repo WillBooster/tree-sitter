@@ -43,6 +43,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           INPUT_TAG: ${{ inputs.tag }}
+      # The registry has listed a version up to 11 minutes after the Release workflow published it and created the
+      # release, so this waits here instead of in the four builds that need it.
+      - if: steps.tag.outputs.tag
+        run: |
+          deadline=$((SECONDS + 3600))
+          until curl -fsS --max-time 60 -o /dev/null "https://registry.npmjs.org/@willbooster%2fweb-tree-sitter/${TAG#v}"; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::The registry did not list @willbooster/web-tree-sitter@${TAG#v} within an hour"
+              exit 1
+            fi
+            sleep 30
+          done
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
   build:
     needs: release
     if: needs.release.outputs.tag
@@ -66,9 +80,8 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install
       # The CLI embeds the web runtime that its playground loads, so it takes the one that this release published.
-      # The registry's cached version list, which `npm pack` reads, lagged a publish by over ten minutes, while the
-      # uncached manifest of the version itself is current. Each attempt checks the tarball against the integrity it
-      # lists.
+      # The `release` job has waited for the registry to list the version. Each attempt checks the tarball against the
+      # integrity that the manifest of the version lists.
       - run: |
           for attempt in {1..20}; do
             if manifest=$(curl -fsS --max-time 60 "https://registry.npmjs.org/@willbooster%2fweb-tree-sitter/${TAG#v}") &&
@@ -88,7 +101,10 @@ jobs:
             package/web-tree-sitter.js package/web-tree-sitter.wasm
         env:
           TAG: ${{ needs.release.outputs.tag }}
-      - run: cargo build --release --locked -p tree-sitter-cli
+      # The grammar repositories run `tree-sitter test --wasm`, which needs the wasm feature.
+      - run: cargo build --release --locked -p tree-sitter-cli --features wasm
+      # clap shows `--wasm` only in a build with the wasm feature.
+      - run: ./target/release/tree-sitter test --help | grep -q -- --wasm
       # A tarball keeps the executable bit, which a bare gzip stream drops.
       - run: tar -czf tree-sitter-cli-${{ matrix.platform }}.tar.gz -C target/release tree-sitter
       - uses: actions/upload-artifact@v7.0.1
