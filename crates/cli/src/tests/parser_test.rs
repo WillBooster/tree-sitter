@@ -1779,6 +1779,76 @@ fn test_grammars_that_can_hang_on_eof() {
 }
 
 #[test]
+fn test_parsing_null_characters_in_character_classes_containing_them() {
+    let (parser_name, parser_code) = generate_parser(
+        r##"
+        {
+            "name": "test_null_chars_in_classes",
+            "rules": {
+                "source_file": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "REPEAT", "content": { "type": "SYMBOL", "name": "string" } },
+                        {
+                            "type": "CHOICE",
+                            "members": [
+                                { "type": "SYMBOL", "name": "comment" },
+                                { "type": "BLANK" }
+                            ]
+                        }
+                    ]
+                },
+                "string": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "STRING", "value": "\"" },
+                        {
+                            "type": "REPEAT",
+                            "content": {
+                                "type": "CHOICE",
+                                "members": [
+                                    { "type": "SYMBOL", "name": "fragment" },
+                                    { "type": "SYMBOL", "name": "escape" }
+                                ]
+                            }
+                        },
+                        { "type": "STRING", "value": "\"" }
+                    ]
+                },
+                "fragment": { "type": "PATTERN", "value": "[^\"\\\\\\n]+" },
+                "escape": { "type": "PATTERN", "value": "\\\\[\\x00acegikmo]" },
+                "comment": { "type": "PATTERN", "value": "#[\\s\\S]*" }
+            },
+            "extras": []
+        }
+        "##,
+    )
+    .unwrap();
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+
+    let tree = parser.parse("\"a\0b\\\0\"#c\0d", None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(source_file (string (fragment) (escape)) (comment))"
+    );
+
+    // The lookahead is also 0 at the end of the input, which none of the classes may match.
+    for source in ["\"a", "\"\\"] {
+        let tree = parser.parse(source, None).unwrap();
+        let sexp = tree.root_node().to_sexp();
+        assert!(
+            tree.root_node().has_error(),
+            "source: {source:?}, tree: {sexp}"
+        );
+        assert!(!sexp.contains("escape"), "source: {source:?}, tree: {sexp}");
+    }
+}
+
+#[test]
 fn test_parse_stack_recursive_merge_error_cost_calculation_bug() {
     let source_code = r"
 fn main() {
