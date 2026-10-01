@@ -151,7 +151,8 @@ You can also generate the `.wasm` file for your desired grammar with the CLI tha
 [wasi-sdk][] on first use, so no other tools need to be installed. For example, for the JavaScript grammar:
 
 ```sh
-curl -fsSL https://github.com/WillBooster/tree-sitter/releases/latest/download/tree-sitter-cli-macos-arm64.tar.gz | tar -xz
+platform=macos-arm64 # or linux-x64, linux-arm64, macos-x64
+curl -fsSL "https://github.com/WillBooster/tree-sitter/releases/latest/download/tree-sitter-cli-$platform.tar.gz" | tar -xz
 npm install tree-sitter-javascript
 ./tree-sitter build --wasm node_modules/tree-sitter-javascript
 ```
