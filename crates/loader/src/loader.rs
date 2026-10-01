@@ -887,6 +887,40 @@ impl Loader {
         }
     }
 
+    /// Like [`Self::languages_at_path`], but uses `language` for the grammar named `language_name`
+    /// instead of compiling it, and puts that grammar first.
+    pub fn languages_at_path_using(
+        &mut self,
+        path: &Path,
+        language_name: &str,
+        language: &Language,
+    ) -> LoaderResult<Vec<(Language, String)>> {
+        let mut languages = vec![(language.clone(), language_name.to_string())];
+        let Ok(configurations) = self.find_language_configurations_at_path(path, true) else {
+            return Ok(languages);
+        };
+        let mut language_ids = configurations
+            .iter()
+            .map(|c| (c.language_id, c.language_name.clone()))
+            .collect::<Vec<_>>();
+        language_ids.sort_unstable();
+        language_ids.dedup();
+        // Grammars with the same path share an id, so every id of the named grammar gets the library
+        // before any other grammar is compiled.
+        for (id, _) in language_ids
+            .iter()
+            .filter(|(_, name)| name == language_name)
+        {
+            let _ = self.languages_by_id[*id].1.set(language.clone());
+        }
+        for (id, name) in language_ids {
+            if name != language_name {
+                languages.push((self.language_for_id(id)?, name));
+            }
+        }
+        Ok(languages)
+    }
+
     #[must_use]
     pub fn get_all_language_configurations(&self) -> Vec<(&LanguageConfiguration<'static>, &Path)> {
         self.language_configurations
