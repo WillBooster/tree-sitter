@@ -905,10 +905,16 @@ impl Loader {
             .collect::<Vec<_>>();
         language_ids.sort_unstable();
         language_ids.dedup();
+        // Grammars with the same path share an id, so every id of the named grammar gets the library
+        // before any other grammar is compiled.
+        for (id, _) in language_ids
+            .iter()
+            .filter(|(_, name)| name == language_name)
+        {
+            let _ = self.languages_by_id[*id].1.set(language.clone());
+        }
         for (id, name) in language_ids {
-            if name == language_name {
-                let _ = self.languages_by_id[id].1.set(language.clone());
-            } else {
+            if name != language_name {
                 languages.push((self.language_for_id(id)?, name));
             }
         }

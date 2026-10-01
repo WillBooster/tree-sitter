@@ -80,7 +80,8 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
     assert_cache_is_empty(&cache_dir, "test next to an unreadable grammar");
 
     // Corpus tests of the other grammars in the same tree-sitter.json still run on parsers compiled
-    // from their sources, while the named grammar comes from the library.
+    // from their sources, while the named grammar comes from the library, as does a grammar that
+    // shares its path (and so its parser) and sorts before it.
     let multi_dir = temp_dir.path().join("multi");
     fs::create_dir_all(multi_dir.join("src")).unwrap();
     fs::create_dir_all(multi_dir.join("other/src")).unwrap();
@@ -97,7 +98,7 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
         multi_dir.join("tree-sitter.json"),
         TREE_SITTER_JSON.replace(
             "}],",
-            r#"}, { "name": "numbers", "scope": "source.numbers", "path": "other" }],"#,
+            r#"}, { "name": "numbers", "scope": "source.numbers", "path": "other" }, { "name": "alias", "scope": "source.alias", "path": "." }],"#,
         ),
     )
     .unwrap();
