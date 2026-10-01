@@ -1,0 +1,93 @@
+name: CLI
+'on':
+  workflow_run:
+    workflows:
+      - Release
+    types:
+      - completed
+  # Attaches the binaries to a release that a failed run of this workflow left without them.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v1.2.3)
+        required: true
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || inputs.tag }}
+  cancel-in-progress: false
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  # The grammar repositories run `tree-sitter fuzz` on this runtime, and attaching the CLI to each release spares them
+  # building it, which takes over 10 minutes on GitHub's Intel macOS runner.
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - id: tag
+        run: |
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            tag=$(gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName \
+              --jq 'select(.isDraft | not) | .tagName')
+            echo "tag=${tag:?$INPUT_TAG is not a published release}" >> "$GITHUB_OUTPUT"
+          else
+            # The run released its commit if a published release targets it; most runs release nothing.
+            gh api "repos/$GITHUB_REPOSITORY/releases" --jq \
+              '"tag=" + ([.[] | select((.draft | not) and .target_commitish == env.HEAD_SHA)][0].tag_name // "")' \
+              >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          INPUT_TAG: ${{ inputs.tag }}
+  build:
+    needs: release
+    if: needs.release.outputs.tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+          - runner: macos-15
+            platform: macos-arm64
+          - runner: macos-15-intel
+            platform: macos-x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - run: rustup toolchain install
+      - run: cargo build --release --locked -p tree-sitter-cli
+      - run: gzip --best --stdout target/release/tree-sitter > tree-sitter-cli-${{ matrix.platform }}.gz
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: tree-sitter-cli-${{ matrix.platform }}
+          path: tree-sitter-cli-${{ matrix.platform }}.gz
+          if-no-files-found: error
+          retention-days: 1
+  # Kept apart from the build so that the build scripts of the CLI's dependencies never run with a token that can
+  # write to the repository.
+  upload:
+    needs:
+      - release
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          pattern: tree-sitter-cli-*
+          merge-multiple: true
+      - run: gh release upload "$TAG" tree-sitter-cli-*.gz --repo "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release.outputs.tag }}
