@@ -1054,7 +1054,9 @@ impl Generator {
                     // The lookahead is also 0 at the end of the input, so a set containing NUL
                     // must check for it explicitly.
                     let check_eof = !excluded_chars.contains('\0');
-                    let wrap = check_eof && large_char_set_ix.is_some();
+                    // Parenthesized after `||` to keep C compilers' `-Wall` from warning about
+                    // `&&` within `||`.
+                    let wrap = large_char_set_ix.is_some();
                     if wrap {
                         add!(self, "(");
                     }
