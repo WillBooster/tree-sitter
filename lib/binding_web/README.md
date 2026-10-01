@@ -147,9 +147,9 @@ reusable workflow, such as the tree-sitter-javascript [releases page][gh release
 
 You can also generate the `.wasm` file for your desired grammar with the CLI that each [release of this
 repository][releases] carries as `tree-sitter-cli-<platform>.tar.gz` (`linux-x64`, `linux-arm64`, `macos-arm64`, or
-`macos-x64`), which extracts to an executable `tree-sitter`; a workflow attaches the archives a few minutes after each
-release. `tree-sitter build --wasm` downloads [wasi-sdk][] on first use, so no other tools need to be installed. For
-example, for the JavaScript grammar:
+`macos-x64`), which extracts to an executable `tree-sitter`; a workflow builds and attaches the archives after the
+release is published, so a new release lacks them for a while. `tree-sitter build --wasm` downloads [wasi-sdk][] on
+first use, so no other tools need to be installed. For example, for the JavaScript grammar:
 
 ```sh
 platform=macos-arm64 # or linux-x64, linux-arm64, macos-x64
