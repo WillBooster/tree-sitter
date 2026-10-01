@@ -889,14 +889,11 @@ impl Loader {
 
     /// Registers the grammars at `path` like [`Self::languages_at_path`], but uses `language` for
     /// the ones named `language_name` instead of compiling them.
-    pub fn use_language_at_path(
-        &mut self,
-        path: &Path,
-        language_name: &str,
-        language: &Language,
-    ) -> LoaderResult<()> {
-        let mut language_ids = self
-            .find_language_configurations_at_path(path, true)?
+    pub fn use_language_at_path(&mut self, path: &Path, language_name: &str, language: &Language) {
+        let Ok(configurations) = self.find_language_configurations_at_path(path, true) else {
+            return;
+        };
+        let mut language_ids = configurations
             .iter()
             .filter(|c| c.language_name == language_name)
             .map(|c| c.language_id)
@@ -906,7 +903,6 @@ impl Loader {
         for id in language_ids {
             let _ = self.languages_by_id[id].1.set(language.clone());
         }
-        Ok(())
     }
 
     #[must_use]

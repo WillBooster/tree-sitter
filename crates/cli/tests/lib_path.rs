@@ -66,6 +66,19 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
         }
         assert_cache_is_empty(&cache_dir, &args.join(" "));
     }
+
+    // The grammar files in the current directory do not matter, even when they cannot be read.
+    let corpus_dir = temp_dir.path().join("broken");
+    fs::create_dir_all(corpus_dir.join("src")).unwrap();
+    fs::create_dir_all(corpus_dir.join("test/corpus")).unwrap();
+    fs::write(corpus_dir.join("src/grammar.json"), "{").unwrap();
+    fs::write(corpus_dir.join("test/corpus/words.txt"), CORPUS).unwrap();
+    run(
+        &corpus_dir,
+        &cache_dir,
+        &[&["test"][..], &lib_args].concat(),
+    );
+    assert_cache_is_empty(&cache_dir, "test next to an unreadable grammar");
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
