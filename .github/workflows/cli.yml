@@ -65,6 +65,13 @@ jobs:
           ref: ${{ needs.release.outputs.tag }}
           persist-credentials: false
       - run: rustup toolchain install
+      # The CLI embeds the web runtime that its playground loads, so it takes the one that this release published.
+      - run: |
+          npm pack "@willbooster/web-tree-sitter@${TAG#v}" --registry https://registry.npmjs.org/
+          tar -xzf willbooster-web-tree-sitter-*.tgz --strip-components 1 -C lib/binding_web \
+            package/web-tree-sitter.js package/web-tree-sitter.wasm
+        env:
+          TAG: ${{ needs.release.outputs.tag }}
       - run: cargo build --release --locked -p tree-sitter-cli
       # A tarball keeps the executable bit, which a bare gzip stream drops.
       - run: tar -czf tree-sitter-cli-${{ matrix.platform }}.tar.gz -C target/release tree-sitter
