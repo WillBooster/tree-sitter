@@ -34,9 +34,18 @@ macro_rules! optional_resource {
     };
 }
 
-optional_resource!(get_playground_js, "docs/src/assets/js/playground.js");
 optional_resource!(get_lib_js, "lib/binding_web/web-tree-sitter.js");
 optional_resource!(get_lib_wasm, "lib/binding_web/web-tree-sitter.wasm");
+
+// This repository has no docs/ to embed the playground's script from, so it comes from upstream's site
+// unless TREE_SITTER_BASE_DIR points to a checkout that has it.
+fn get_playground_js(tree_sitter_dir: Option<&Path>) -> Cow<'static, [u8]> {
+    tree_sitter_dir
+        .and_then(|tree_sitter_dir| {
+            fs::read(tree_sitter_dir.join("docs/src/assets/js/playground.js")).ok()
+        })
+        .map_or(Cow::Borrowed(&[]), Cow::Owned)
+}
 
 fn get_main_html(tree_sitter_dir: Option<&Path>) -> Cow<'static, [u8]> {
     tree_sitter_dir.map_or(
