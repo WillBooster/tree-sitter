@@ -11,8 +11,11 @@ extracts to an executable `tree-sitter`. A workflow builds and attaches the arch
 newest release lacks them for a while. On other platforms, build it from a checkout of this repository:
 
 ```sh
-cargo install --locked --path crates/cli
+cargo install --locked --path crates/cli --features wasm
 ```
+
+The `wasm` feature, which `tree-sitter test --wasm` and `tree-sitter parse --wasm` need, requires
+[CMake](https://cmake.org) at build time.
 
 ### Dependencies
 
