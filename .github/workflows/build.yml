@@ -62,6 +62,11 @@ jobs:
       - run: cargo test --workspace --locked
       - name: Check the library without the standard library
         run: cargo check -p willbooster-tree-sitter --no-default-features --locked
+      # The CLI workflow builds this after each release on the same runners; a failure there leaves the release without
+      # its archives.
+      - name: Build the CLI as the release attaches it
+        if: runner.os != 'Windows'
+        run: cargo build --release --locked -p tree-sitter-cli --features wasm
   # code-gauge compiles the library for wasm32-wasip1 (Cloudflare Workers), and ultra-uni for Wasm as well.
   wasm:
     name: wasm (${{ matrix.target }})
