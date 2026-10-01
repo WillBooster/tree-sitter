@@ -10,5 +10,14 @@
       "matchFileNames": ["crates/cli/src/templates/**"],
       "enabled": false,
     },
+    {
+      // The runtime dependencies of the published @willbooster/web-tree-sitter are installed by its consumers, so the
+      // preset's exact pins would force one version on them and duplicate packages that they also depend on.
+      // `replace` keeps the range and rewrites it only for a version outside it, as Renovate's
+      // `:pinOnlyDevDependencies` preset does for libraries; the devDependencies stay pinned by the preset.
+      "matchFileNames": ["lib/binding_web/package.json"],
+      "matchDepTypes": ["dependencies"],
+      "rangeStrategy": "replace",
+    },
   ],
 }
