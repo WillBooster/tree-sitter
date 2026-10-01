@@ -66,14 +66,25 @@ jobs:
           persist-credentials: false
       - run: rustup toolchain install
       # The CLI embeds the web runtime that its playground loads, so it takes the one that this release published.
-      # The registry can answer with the previous version list for minutes after a publish, so this waits for it.
+      # The registry's cached version list, which `npm pack` reads, lagged a publish by over ten minutes, while the
+      # uncached manifest of the version itself is current. Each attempt checks the tarball against the integrity it
+      # lists.
       - run: |
           for attempt in {1..20}; do
-            npm pack --prefer-online "@willbooster/web-tree-sitter@${TAG#v}" --registry https://registry.npmjs.org/ && break
-            if (( attempt == 20 )); then exit 1; fi
+            if manifest=$(curl -fsS --max-time 60 "https://registry.npmjs.org/@willbooster%2fweb-tree-sitter/${TAG#v}") &&
+              tarball=$(jq -er .dist.tarball <<< "$manifest") &&
+              curl -fsSL --max-time 300 "$tarball" -o web-tree-sitter.tgz &&
+              [[ "sha512-$(openssl dgst -sha512 -binary web-tree-sitter.tgz | openssl base64 -A)" == \
+                "$(jq -er .dist.integrity <<< "$manifest")" ]]; then
+              break
+            fi
+            if (( attempt == 20 )); then
+              echo "::error::Could not download @willbooster/web-tree-sitter@${TAG#v} matching its manifest's integrity"
+              exit 1
+            fi
             sleep 30
           done
-          tar -xzf willbooster-web-tree-sitter-*.tgz --strip-components 1 -C lib/binding_web \
+          tar -xzf web-tree-sitter.tgz --strip-components 1 -C lib/binding_web \
             package/web-tree-sitter.js package/web-tree-sitter.wasm
         env:
           TAG: ${{ needs.release.outputs.tag }}
