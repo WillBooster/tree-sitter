@@ -909,7 +909,9 @@ impl Generator {
         let mut leading_simple_transition_count = 0;
         let mut leading_simple_transition_range_count = 0;
         for (chars, action) in &state.advance_actions {
+            // The map compares the lookahead alone, which is also 0 at the end of the input.
             if action.in_main_token
+                && !chars.contains('\0')
                 && chars.ranges().all(|r| {
                     let start = *r.start() as u32;
                     let end = *r.end() as u32;
@@ -1045,11 +1047,30 @@ impl Generator {
                 // corresponds to a negated character class in a regex, so it will be more
                 // concise and readable to express it in terms of negated ranges.
                 let is_included = !asserted_chars.contains(char::MAX);
-                if !is_included {
-                    asserted_chars = asserted_chars.negate().add_char('\0');
+                if is_included {
+                    self.add_character_range_conditions(&asserted_chars, true, &line_break);
+                } else {
+                    let excluded_chars = asserted_chars.negate();
+                    // The lookahead is also 0 at the end of the input, so a set containing NUL
+                    // must check for it explicitly.
+                    let check_eof = !excluded_chars.contains('\0');
+                    // Parenthesized after `||` to keep C compilers' `-Wall` from warning about
+                    // `&&` within `||`.
+                    let wrap = large_char_set_ix.is_some();
+                    if wrap {
+                        add!(self, "(");
+                    }
+                    if check_eof {
+                        add!(self, "!eof");
+                        if !excluded_chars.is_empty() {
+                            add!(self, " &&{line_break}");
+                        }
+                    }
+                    self.add_character_range_conditions(&excluded_chars, false, &line_break);
+                    if wrap {
+                        add!(self, ")");
+                    }
                 }
-
-                self.add_character_range_conditions(&asserted_chars, is_included, &line_break);
             }
 
             if has_negative_condition {
@@ -1087,7 +1108,7 @@ impl Generator {
                 if start == '\0' {
                     add!(self, "(!eof && ");
                     if end == '\0' {
-                        add!(self, "lookahead == 0");
+                        add!(self, "lookahead == ");
                     } else {
                         add!(self, "lookahead <= ");
                     }
