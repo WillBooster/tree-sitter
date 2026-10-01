@@ -4,7 +4,9 @@
   "packageRules": [
     {
       // These are templates of the files that `tree-sitter init` writes into a grammar repository, not manifests of
-      // this repository, so the preset's pinning and updates would ship in every generated grammar.
+      // this repository, so the preset's pinning and updates would ship in every generated grammar. `ignorePaths` is
+      // not used because Renovate does not merge it: a value here would replace the inherited list that keeps the
+      // manifests under test/ and tests/ away from the preset's pinning.
       "matchFileNames": ["crates/cli/src/templates/**"],
       "enabled": false,
     },
