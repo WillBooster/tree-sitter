@@ -153,7 +153,7 @@ example, for the JavaScript grammar:
 
 ```sh
 platform=macos-arm64 # or linux-x64, linux-arm64, macos-x64
-tag=v1.0.10 # a release that lists tree-sitter-cli-$platform.tar.gz among its assets
+tag=v1.0.9 # a release that lists tree-sitter-cli-$platform.tar.gz among its assets
 curl -fsSL "https://github.com/WillBooster/tree-sitter/releases/download/$tag/tree-sitter-cli-$platform.tar.gz" | tar -xz
 npm install tree-sitter-javascript
 ./tree-sitter build --wasm node_modules/tree-sitter-javascript
