@@ -25,7 +25,8 @@ jobs:
       - run: rustup toolchain install
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
-      # The CLI attached to each release is built with the wasm feature, which nothing else compiles before a release.
+      # The released CLI is built with the wasm feature: the test job builds it with the release profile on the shipping
+      # runners, and this step lints its feature-gated sources, tests, and benches.
       - run: cargo clippy -p tree-sitter-cli --all-targets --locked --features wasm
       - uses: taiki-e/install-action@v2.87.21
         with:
