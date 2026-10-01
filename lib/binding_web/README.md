@@ -72,20 +72,17 @@ console.log(tree.rootNode.toString());
 
 // (program
 //   (lexical_declaration
-//     (variable_declarator (identifier) (number)))
+//     (variable_declarator name: (identifier) value: (number)))
 //   (expression_statement
 //     (call_expression
-//       (member_expression (identifier) (property_identifier))
-//       (arguments (identifier)))))
+//       function: (member_expression object: (identifier) property: (property_identifier))
+//       arguments: (arguments (identifier)))))
+// (printed on one line)
 
 const callExpression = tree.rootNode.child(1).firstChild;
-console.log(callExpression);
+console.log(callExpression.type, callExpression.startPosition, callExpression.endPosition);
 
-// { type: 'call_expression',
-//   startPosition: {row: 0, column: 16},
-//   endPosition: {row: 0, column: 30},
-//   startIndex: 0,
-//   endIndex: 30 }
+// call_expression { row: 0, column: 11 } { row: 0, column: 25 }
 ```
 
 ### Editing
@@ -131,53 +128,39 @@ There are several options on how to get the `.wasm` files for the languages you 
 
 #### From npmjs.com
 
-The recommended way is to just install the package from npm. For example, to parse JavaScript, you can install the `tree-sitter-javascript`
-package:
+WillBooster's grammar packages ship their `.wasm` files: `@willbooster/tree-sitter-bash`, `-c`, `-cpp`, `-c-sharp`,
+`-javascript`, `-kotlin`, `-rust`, and `-typescript`. For example, to parse JavaScript:
 
 ```sh
-npm install tree-sitter-javascript
+npm install @willbooster/tree-sitter-javascript
 ```
 
-Then you can find the `.wasm` file in the `node_modules/tree-sitter-javascript` directory.
+Then you can find `tree-sitter-javascript.wasm` in the `node_modules/@willbooster/tree-sitter-javascript` directory.
+Other grammar packages on npm, such as `tree-sitter-javascript`, may ship a `.wasm` file as well.
 
 #### From GitHub
 
-You can also download the `.wasm` files from GitHub releases, so long as the repository uses our reusable workflow to publish
-them.
-For example, you can download the JavaScript `.wasm` file from the tree-sitter-javascript [releases page][gh release js].
+You can also download the `.wasm` files from the GitHub releases of grammars that publish them with Tree-sitter's
+reusable workflow, such as the tree-sitter-javascript [releases page][gh release js].
 
 #### Generating `.wasm` files
 
-You can also generate the `.wasm` file for your desired grammar. Shown below is an example of how to generate the `.wasm`
-file for the JavaScript grammar.
-
-> [!NOTE]
-> Since v0.26.1, `tree-sitter build --wasm` uses [wasi-sdk][] and will automatically download it on first use.
-> No additional tools need to be installed.
-
-First install `tree-sitter-cli`, and the tree-sitter language for which to generate `.wasm`
-(`tree-sitter-javascript` in this example):
+You can also generate the `.wasm` file for your desired grammar with the CLI that each
+[release of this repository][releases] carries as `tree-sitter-cli-<platform>.tar.gz` (`linux-x64`, `linux-arm64`,
+`macos-arm64`, or `macos-x64`), which extracts to an executable `tree-sitter`. `tree-sitter build --wasm` downloads
+[wasi-sdk][] on first use, so no other tools need to be installed. For example, for the JavaScript grammar:
 
 ```sh
-npm install --save-dev tree-sitter-cli tree-sitter-javascript
-```
-
-Then just use tree-sitter cli tool to generate the `.wasm`.
-
-```sh
-npx tree-sitter build --wasm node_modules/tree-sitter-javascript
+curl -fsSL https://github.com/WillBooster/tree-sitter/releases/latest/download/tree-sitter-cli-macos-arm64.tar.gz | tar -xz
+npm install tree-sitter-javascript
+./tree-sitter build --wasm node_modules/tree-sitter-javascript
 ```
 
 If everything is fine, file `tree-sitter-javascript.wasm` should be generated in current directory.
 
 ### Wasm compatibility
 
-`web-tree-sitter` supports the same parser ABI versions as the corresponding tree-sitter library:
-
-| web-tree-sitter version | Min parser ABI version | Max parser ABI version |
-|-------------------------|------------------------|------------------------|
-| 0.24.x                  | 13                     | 14                     |
-| >= 0.25.0               | 13                     | 15                     |
+`@willbooster/web-tree-sitter` loads parsers of ABI versions 13 to 15.
 
 > [!WARNING]
 > Some prebuilt `.wasm` files use an older dynamic-linking format that newer versions of `web-tree-sitter` cannot
@@ -241,10 +224,8 @@ and not `http://localhost:3000/_next/static/chunks/pages/web-tree-sitter.wasm`.
 
 For more information on the module options you can pass in, see the [emscripten documentation][emscripten-module-options].
 
-[docker]: https://www.docker.com
-[emscripten]: https://emscripten.org
 [emscripten-module-options]: https://emscripten.org/docs/api_reference/module.html#affecting-execution
 [gh release js]: https://github.com/tree-sitter/tree-sitter-javascript/releases/latest
+[releases]: https://github.com/WillBooster/tree-sitter/releases
 [node bindings]: https://github.com/tree-sitter/node-tree-sitter
-[podman]: https://podman.io
 [wasi-sdk]: https://github.com/WebAssembly/wasi-sdk
