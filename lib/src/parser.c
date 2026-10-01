@@ -77,6 +77,10 @@
 static const unsigned MAX_VERSION_COUNT = 6;
 static const unsigned MAX_VERSION_COUNT_OVERFLOW = 4;
 static const unsigned MAX_SUMMARY_DEPTH = 16;
+// Bounds how many reductions error recovery performs in a row on one stack version without reaching a shift, in case a
+// parse table's reductions never reach one. A chain that does reach one grows with the nesting depth of the input (about
+// four reductions per level of nested Kotlin if-expressions), so the bound must stay far above realistic nesting.
+static const unsigned MAX_CHAINED_REDUCTION_COUNT = 4096;
 static const unsigned MAX_COST_DIFFERENCE = 18 * ERROR_COST_PER_SKIPPED_TREE;
 static const unsigned OP_COUNT_PER_PARSER_CALLBACK_CHECK = 100;
 
@@ -1142,7 +1146,8 @@ static bool ts_parser__do_all_potential_reductions(
 
   bool can_shift_lookahead_symbol = false;
   StackVersion version = starting_version;
-  for (unsigned i = 0; true; i++) {
+  unsigned chained_reduction_count = 0;
+  for (;;) {
     uint32_t version_count = ts_stack_version_count(self->stack);
     if (version >= version_count) break;
 
@@ -1153,7 +1158,10 @@ static bool ts_parser__do_all_potential_reductions(
         break;
       }
     }
-    if (merged) continue;
+    if (merged) {
+      chained_reduction_count = 0;
+      continue;
+    }
 
     TSStateId state = ts_stack_state(self->stack, version);
     bool has_shift_action = false;
@@ -1202,13 +1210,15 @@ static bool ts_parser__do_all_potential_reductions(
 
     if (has_shift_action) {
       can_shift_lookahead_symbol = true;
-    } else if (reduction_version != STACK_VERSION_NONE && i < MAX_VERSION_COUNT) {
+    } else if (reduction_version != STACK_VERSION_NONE && chained_reduction_count < MAX_CHAINED_REDUCTION_COUNT) {
       ts_stack_renumber_version(self->stack, reduction_version, version);
+      chained_reduction_count++;
       continue;
     } else if (lookahead_symbol != 0) {
       ts_stack_remove_version(self->stack, version);
     }
 
+    chained_reduction_count = 0;
     if (version == starting_version) {
       version = version_count;
     } else {
