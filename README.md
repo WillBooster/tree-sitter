@@ -13,10 +13,11 @@ into:
 - the npm package [`@willbooster/web-tree-sitter`](lib/binding_web/README.md), which runs in browsers and in Cloudflare
   Workers.
 
-The CLI and the parser generator under `crates/` build the test fixtures and are not published as packages. Each GitHub
-Release carries the CLI as `tree-sitter-cli-<platform>.tar.gz` for `linux-x64`, `linux-arm64`, `macos-arm64`, and
-`macos-x64`, so that the grammar repositories can generate their parsers with this generator and run `tree-sitter fuzz`
-on this runtime without building it.
+The CLI and the parser generator under `crates/` build the test fixtures and are not published as packages. The GitHub
+Releases from v1.0.7 on carry the CLI as `tree-sitter-cli-<platform>.tar.gz` for `linux-x64`, `linux-arm64`,
+`macos-arm64`, and `macos-x64`, so that the grammar repositories can generate their parsers with this generator and run
+`tree-sitter fuzz` on this runtime without building it. A workflow attaches the archives after a release is published,
+so the newest release lacks them for a while.
 
 Tree-sitter is a parser generator tool and an incremental parsing library. It can build a concrete syntax tree for a source file and efficiently update the syntax tree as the source file is edited. Tree-sitter aims to be:
 
