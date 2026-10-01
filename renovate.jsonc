@@ -1,6 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "github>WillBooster/willbooster-configs:renovate.jsonc"
-  ]
+  "extends": ["github>WillBooster/willbooster-configs:renovate.jsonc"],
+  "packageRules": [
+    {
+      // These are templates of the files that `tree-sitter init` writes into a grammar repository, not manifests of
+      // this repository, so the preset's pinning and updates would ship in every generated grammar.
+      "matchFileNames": ["crates/cli/src/templates/**"],
+      "enabled": false,
+    },
+  ],
 }
