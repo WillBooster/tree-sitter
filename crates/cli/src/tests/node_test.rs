@@ -190,6 +190,101 @@ fn test_node_child() {
 }
 
 #[test]
+fn test_node_child_with_descendant_same_range() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let tree = parser.parse("(a)", None).unwrap();
+    let root = tree.root_node();
+    let statement = root.child(0).unwrap();
+    let expression = statement.child(0).unwrap();
+    let copy = tree.clone();
+
+    assert_eq!(root.child_with_descendant(root), None);
+    assert_eq!(statement.child_with_descendant(root), None);
+    assert_eq!(expression.child_with_descendant(root), None);
+    assert_eq!(expression.child_with_descendant(statement), None);
+    assert_eq!(root.child_with_descendant(expression), Some(statement));
+    assert_eq!(
+        statement.child_with_descendant(expression),
+        Some(expression)
+    );
+    assert_eq!(
+        root.child_with_descendant(copy.root_node().child(0).unwrap()),
+        None
+    );
+}
+
+#[test]
+fn test_node_child_with_descendant_empty_siblings() {
+    let grammar = r#"{
+        "name": "empty_siblings",
+        "rules": {
+            "root": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "left"},
+                {"type": "SYMBOL", "name": "right"}
+            ]},
+            "left": {"type": "EOF"},
+            "right": {"type": "EOF"}
+        }
+    }"#;
+    let (name, code) = generate_parser(grammar).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("", None).unwrap();
+    let root = tree.root_node();
+    let left = root.child(0).unwrap();
+    let right = root.child(1).unwrap();
+
+    assert_eq!(root.child_with_descendant(root), None);
+    assert_eq!(root.child_with_descendant(left), Some(left));
+    assert_eq!(root.child_with_descendant(right), Some(right));
+    assert_eq!(left.child_with_descendant(root), None);
+    assert_eq!(left.child_with_descendant(right), None);
+}
+
+#[test]
+fn test_node_child_with_descendant_missing_sibling() {
+    let grammar = r#"{
+        "name": "missing_sibling",
+        "rules": {
+            "root": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "left"},
+                {"type": "SYMBOL", "name": "right"}
+            ]},
+            "left": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "x"},
+                {"type": "SYMBOL", "name": "terminator"}
+            ]},
+            "terminator": {"type": "STRING", "value": ";"},
+            "right": {"type": "SYMBOL", "name": "content"},
+            "content": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "value"},
+                {"type": "STRING", "value": "w"}
+            ]},
+            "value": {"type": "STRING", "value": "y"}
+        }
+    }"#;
+    let (name, code) = generate_parser(grammar).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("xyw", None).unwrap();
+    let root = tree.root_node();
+    let left = root.child(0).unwrap();
+    let right = root.child(1).unwrap();
+    let missing = left.child(1).unwrap();
+
+    assert!(missing.is_missing());
+    assert_eq!(missing.byte_range(), right.start_byte()..right.start_byte());
+    assert_eq!(root.child_with_descendant(missing), Some(left));
+    assert_eq!(left.child_with_descendant(missing), Some(missing));
+    assert_eq!(right.child_with_descendant(missing), None);
+}
+
+#[test]
 fn test_node_children() {
     let tree = parse_json_example();
     let mut cursor = tree.walk();
