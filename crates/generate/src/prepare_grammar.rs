@@ -54,7 +54,7 @@ pub type PrepareGrammarResult<T> = Result<T, PrepareGrammarError>;
 pub enum PrepareGrammarError {
     ValidatePrecedences(#[from] ValidatePrecedenceError),
     ValidateIndirectRecursion(#[from] IndirectRecursionError),
-    ValidateNullableRecursion(#[from] NullableRecursionError),
+    ValidateNonAdvancingRecursion(#[from] NonAdvancingRecursionError),
     ExpandRepeats(#[from] ExpandRepeatsError),
     InternSymbols(#[from] InternSymbolsError),
     ExtractTokens(#[from] ExtractTokensError),
@@ -76,8 +76,8 @@ pub enum ValidatePrecedenceError {
 pub struct IndirectRecursionError(pub Vec<String>);
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
-#[error("Rule cycle `{}` can repeat without consuming input because its surrounding symbols can match the empty string", .0.join(" -> "))]
-pub struct NullableRecursionError(pub Vec<String>);
+#[error("Rule cycle `{}` can repeat without consuming input", .0.join(" -> "))]
+pub struct NonAdvancingRecursionError(pub Vec<String>);
 
 impl std::fmt::Display for IndirectRecursionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -140,7 +140,7 @@ pub fn prepare_grammar(
     let mut state = FlattenState::default();
     let mut out = ProductionStore::default();
     flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
-    validate_nullable_recursion(&g, &out, &nullable_tokens)?;
+    validate_non_advancing_recursion(&g, &out, &nullable_tokens)?;
 
     let default_aliases = extract_default_aliases(&g, &ext_meta, &mut out);
     let inlines = process_inlines(&g, &ext_meta, &mut out)?;
@@ -182,11 +182,11 @@ fn validate_indirect_recursion(grammar: &InputGrammar) -> Result<(), IndirectRec
     validate_transition_cycles(grammar, &epsilon_transitions)
 }
 
-fn validate_nullable_recursion(
+fn validate_non_advancing_recursion(
     grammar: &InputGrammar,
     productions: &ProductionStore,
     nullable_tokens: &[bool],
-) -> Result<(), NullableRecursionError> {
+) -> Result<(), NonAdvancingRecursionError> {
     let mut nullable_variables = vec![false; grammar.variables.len()];
     loop {
         let mut changed = false;
@@ -242,7 +242,7 @@ fn validate_nullable_recursion(
         transitions.insert(grammar.variables[i].name, targets);
     }
     validate_transition_cycles(grammar, &transitions)
-        .map_err(|error| NullableRecursionError(error.0))
+        .map_err(|error| NonAdvancingRecursionError(error.0))
 }
 
 const fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {

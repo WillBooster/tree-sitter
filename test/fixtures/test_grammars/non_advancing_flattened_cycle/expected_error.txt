@@ -1,0 +1,1 @@
+Rule cycle `a -> b -> a` can repeat without consuming input

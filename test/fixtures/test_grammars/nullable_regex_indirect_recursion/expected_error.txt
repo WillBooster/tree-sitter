@@ -1,1 +1,1 @@
-Rule cycle `list -> item -> list` can repeat without consuming input because its surrounding symbols can match the empty string
+Rule cycle `list -> item -> list` can repeat without consuming input
