@@ -16,16 +16,73 @@ use super::helpers::{
     fixtures::{get_language, get_test_language},
     query_helpers::{Match, Pattern, assert_query_matches},
 };
-use crate::tests::{
-    ITERATION_COUNT, generate_parser,
-    helpers::{
-        fixtures::get_test_fixture_language,
-        query_helpers::{collect_captures, collect_matches},
+use crate::{
+    query::{QueryFileOptions, query_file_at_path},
+    test::TestSummary,
+    tests::{
+        ITERATION_COUNT, generate_parser,
+        helpers::{
+            fixtures::get_test_fixture_language,
+            query_helpers::{collect_captures, collect_matches},
+        },
     },
 };
 
 static EXAMPLE_FILTER: LazyLock<Option<String>> =
     LazyLock::new(|| env::var("TREE_SITTER_TEST_EXAMPLE_FILTER").ok());
+
+#[test]
+fn test_query_file_assertions_respect_multiline_capture_bounds() {
+    let language = get_language("javascript");
+    let directory = tempfile::tempdir().unwrap();
+    let source_path = directory.path().join("input.js");
+    let query_path = directory.path().join("query.scm");
+    std::fs::write(&query_path, "(template_string) @foo").unwrap();
+
+    for ordered_captures in [false, true] {
+        let opts = QueryFileOptions {
+            ordered_captures,
+            ..QueryFileOptions::default()
+        };
+        std::fs::write(&source_path, "`hi\nthere`\n// <- foo\n").unwrap();
+        let mut summary = TestSummary::default();
+        query_file_at_path(
+            &language,
+            &source_path,
+            "input.js",
+            &query_path,
+            &opts,
+            Some(&mut summary),
+        )
+        .unwrap();
+        let output = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            output["query_results"][0]["outcome"],
+            serde_json::json!({"AssertionPassed": {"assertion_count": 1}}),
+        );
+
+        std::fs::write(&source_path, "`hi\nthere`\nx\n// <- foo\n").unwrap();
+        let mut summary = TestSummary::default();
+        let error = query_file_at_path(
+            &language,
+            &source_path,
+            "input.js",
+            &query_path,
+            &opts,
+            Some(&mut summary),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Assertion failed: could not match foo at row 2, column 0",
+        );
+        let output = serde_json::to_value(&summary).unwrap();
+        assert_eq!(
+            output["query_results"][0]["outcome"]["AssertionFailed"]["error"],
+            error.to_string(),
+        );
+    }
+}
 
 #[test]
 fn test_query_errors_on_invalid_syntax() {
