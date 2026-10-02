@@ -371,6 +371,72 @@ fn test_first_named_child_for_offset() {
 }
 
 #[test]
+fn test_first_named_child_for_offset_after_anonymous_children() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    for source in ["for (;;);", "for (int i = 0; i < 3; i++) {}"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let for_node = tree.root_node().named_child(0).unwrap();
+        let body = for_node.child_by_field_name("body").unwrap();
+        assert_eq!(
+            for_node.first_named_child_for_byte(body.start_byte()),
+            Some(body)
+        );
+
+        let mut cursor = tree.walk();
+        'nodes: loop {
+            let node = cursor.node();
+            for byte in node.start_byte()..=node.end_byte() {
+                let mut children = node.walk();
+                let expected = node
+                    .named_children(&mut children)
+                    .find(|child| child.end_byte() > byte);
+                assert_eq!(
+                    node.first_named_child_for_byte(byte),
+                    expected,
+                    "{source:?}, {node:?}, byte {byte}"
+                );
+            }
+            if cursor.goto_first_child() {
+                continue;
+            }
+            while !cursor.goto_next_sibling() {
+                if !cursor.goto_parent() {
+                    break 'nodes;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_first_child_for_offset_after_nested_hidden_nodes() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("first_child_after_hidden_nodes"))
+        .unwrap();
+    let tree = parser.parse("pre pre2 n x sep B2", None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    for byte in 0..=root.end_byte() {
+        let mut cursor = root.walk();
+        let expected = root
+            .children(&mut cursor)
+            .find(|child| child.end_byte() > byte);
+        assert_eq!(root.first_child_for_byte(byte), expected, "byte {byte}");
+        let expected = root
+            .named_children(&mut cursor)
+            .find(|child| child.end_byte() > byte);
+        assert_eq!(
+            root.first_named_child_for_byte(byte),
+            expected,
+            "byte {byte}"
+        );
+    }
+}
+
+#[test]
 fn test_node_field_name_for_child() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
