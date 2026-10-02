@@ -41,6 +41,13 @@ Consuming recursive suffix
 (source_file (list (list)))
 
 ============================
+Consuming generated-name collision
+============================
+{onetwo b c}
+---
+(source_file (source_file_repeat1 (optional_prefix) (repeated_prefix)))
+
+============================
 Consuming comment content
 ============================
 // content

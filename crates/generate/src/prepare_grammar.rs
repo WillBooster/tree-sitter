@@ -10,6 +10,7 @@ mod process_inlines;
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, hash_map},
+    hash::Hash,
     mem,
 };
 
@@ -135,12 +136,12 @@ pub fn prepare_grammar(
         .iter()
         .map(|variable| lexical_grammar.nfa.can_match_empty(variable.start_state))
         .collect::<Vec<_>>();
-    expand_repeats(&mut g, &mut ext_meta, nullable_tokens.clone())?;
+    let repetition_owners = expand_repeats(&mut g, &mut ext_meta, nullable_tokens.clone())?;
 
     let mut state = FlattenState::default();
     let mut out = ProductionStore::default();
     flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
-    validate_non_advancing_recursion(&g, &out, &nullable_tokens)?;
+    validate_non_advancing_recursion(&g, &out, &nullable_tokens, &repetition_owners)?;
 
     let default_aliases = extract_default_aliases(&g, &ext_meta, &mut out);
     let inlines = process_inlines(&g, &ext_meta, &mut out)?;
@@ -179,13 +180,22 @@ fn validate_indirect_recursion(grammar: &InputGrammar) -> Result<(), IndirectRec
         epsilon_transitions.insert(variable.name, productions);
     }
 
-    validate_transition_cycles(grammar, &epsilon_transitions)
+    if let Some(cycle) = find_cycle(&epsilon_transitions) {
+        return Err(IndirectRecursionError(
+            cycle
+                .into_iter()
+                .map(|name| grammar.pool.resolve(name).to_string())
+                .collect(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_non_advancing_recursion(
     grammar: &InputGrammar,
     productions: &ProductionStore,
     nullable_tokens: &[bool],
+    repetition_owners: &[StrId],
 ) -> Result<(), NonAdvancingRecursionError> {
     let mut nullable_variables = vec![false; grammar.variables.len()];
     loop {
@@ -235,14 +245,28 @@ fn validate_non_advancing_recursion(
                     && (symbol.index as usize != i || steps.len() > 1)
                     && consuming == usize::from(!nullable_variables[symbol.index as usize])
                 {
-                    targets.insert(grammar.variables[symbol.index as usize].name);
+                    targets.insert(symbol.index as usize);
                 }
             }
         }
-        transitions.insert(grammar.variables[i].name, targets);
+        transitions.insert(i, targets);
     }
-    validate_transition_cycles(grammar, &transitions)
-        .map_err(|error| NonAdvancingRecursionError(error.0))
+    if let Some(cycle) = find_cycle(&transitions) {
+        let names = cycle
+            .into_iter()
+            .map(|index| {
+                let owner = repetition_owners[index];
+                let name = grammar.pool.resolve(owner);
+                if owner == grammar.variables[index].name {
+                    name.to_string()
+                } else {
+                    format!("{name} (repetition)")
+                }
+            })
+            .collect();
+        return Err(NonAdvancingRecursionError(names));
+    }
+    Ok(())
 }
 
 const fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {
@@ -253,55 +277,35 @@ const fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool])
     }
 }
 
-fn validate_transition_cycles(
-    grammar: &InputGrammar,
-    transitions: &IndexMap<StrId, BTreeSet<StrId>>,
-) -> Result<(), IndirectRecursionError> {
-    for &start_symbol in transitions.keys() {
-        let mut visited = BTreeSet::new();
-        let mut path = Vec::new();
-        if let Some((start_idx, end_idx)) =
-            get_cycle(start_symbol, transitions, &mut visited, &mut path)
-        {
-            let cycle_symbols = path[start_idx..=end_idx]
-                .iter()
-                .map(|&s| grammar.pool.resolve(s).to_string())
-                .collect();
-            return Err(IndirectRecursionError(cycle_symbols));
+fn find_cycle<T: Copy + Ord + Hash>(transitions: &IndexMap<T, BTreeSet<T>>) -> Option<Vec<T>> {
+    let mut visited = FxHashSet::default();
+    let mut active = FxHashMap::default();
+    for &start in transitions.keys() {
+        if !visited.insert(start) {
+            continue;
         }
-    }
-
-    Ok(())
-}
-
-/// Perform a depth-first search to detect cycles in single state transitions.
-fn get_cycle(
-    current: StrId,
-    transitions: &IndexMap<StrId, BTreeSet<StrId>>,
-    visited: &mut BTreeSet<StrId>,
-    path: &mut Vec<StrId>,
-) -> Option<(usize, usize)> {
-    if let Some(first_idx) = path.iter().position(|s| *s == current) {
-        path.push(current);
-        return Some((first_idx, path.len() - 1));
-    }
-
-    if visited.contains(&current) {
-        return None;
-    }
-
-    path.push(current);
-    visited.insert(current);
-
-    if let Some(next_symbols) = transitions.get(&current) {
-        for next in next_symbols {
-            if let Some(cycle) = get_cycle(*next, transitions, visited, path) {
-                return Some(cycle);
+        let mut stack = vec![(start, transitions.get(&start).map(BTreeSet::iter))];
+        active.insert(start, 0);
+        while let Some((current, children)) = stack.last_mut() {
+            if let Some(&next) = children.as_mut().and_then(Iterator::next) {
+                if let Some(&cycle_start) = active.get(&next) {
+                    let mut cycle = stack[cycle_start..]
+                        .iter()
+                        .map(|(symbol, _)| *symbol)
+                        .collect::<Vec<_>>();
+                    cycle.push(next);
+                    return Some(cycle);
+                }
+                if visited.insert(next) {
+                    active.insert(next, stack.len());
+                    stack.push((next, transitions.get(&next).map(BTreeSet::iter)));
+                }
+            } else {
+                active.remove(current);
+                stack.pop();
             }
         }
     }
-
-    path.pop();
     None
 }
 

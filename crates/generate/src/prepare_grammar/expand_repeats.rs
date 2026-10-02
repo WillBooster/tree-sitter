@@ -12,7 +12,7 @@ use crate::{
 #[derive(Default)]
 struct Expander {
     preceding: usize,
-    aux: Vec<Variable>,
+    aux: Vec<(Variable, StrId)>,
     memo: FxHashMap<u64, Vec<(RuleId, Symbol)>>,
     stack: Vec<Task>,
     zero_width: ZeroWidth,
@@ -89,7 +89,7 @@ impl Expander {
                     self.zero_width.push_variable(width);
                     self.memo.entry(hash).or_default().push((content, symbol));
                     let root = wrap_in_binary_tree(pool, symbol, content);
-                    self.aux.push(Variable { name, root });
+                    self.aux.push((Variable { name, root }, var_name));
                     pool.set_node(id, Rule::from(symbol));
                 }
             }
@@ -334,7 +334,7 @@ pub(super) fn expand_repeats(
     grammar: &mut InputGrammar,
     meta: &mut ExtractedGrammarMeta,
     nullable_tokens: Vec<bool>,
-) -> Result<(), ExpandRepeatsError> {
+) -> Result<Vec<StrId>, ExpandRepeatsError> {
     let mut expander = Expander {
         preceding: grammar.variables.len(),
         zero_width: ZeroWidth::new(&grammar.pool, &grammar.variables, nullable_tokens),
@@ -363,11 +363,17 @@ pub(super) fn expand_repeats(
 
         expander.expand_root(&mut grammar.pool, root, name, &mut aux_repeat_count)?;
     }
-    for var in expander.aux {
+    let mut owners = grammar
+        .variables
+        .iter()
+        .map(|variable| variable.name)
+        .collect::<Vec<_>>();
+    for (var, owner) in expander.aux {
         grammar.variables.push(var);
         meta.kinds.push(VariableType::Auxiliary);
+        owners.push(owner);
     }
-    Ok(())
+    Ok(owners)
 }
 
 #[cfg(test)]
