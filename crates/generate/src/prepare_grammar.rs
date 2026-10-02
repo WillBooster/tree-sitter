@@ -10,6 +10,7 @@ mod process_inlines;
 use std::{
     cmp::Ordering,
     collections::{BTreeSet, hash_map},
+    hash::Hash,
     mem,
 };
 
@@ -43,7 +44,7 @@ use super::{
     Diagnostic,
     grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar},
     prepare_grammar::flatten_grammar::{FlattenState, assemble_syntax_grammar},
-    rules::{AliasMap, Precedence, Rule},
+    rules::{AliasMap, Precedence, Rule, Symbol, SymbolType},
     strpool::StrId,
 };
 
@@ -54,6 +55,7 @@ pub type PrepareGrammarResult<T> = Result<T, PrepareGrammarError>;
 pub enum PrepareGrammarError {
     ValidatePrecedences(#[from] ValidatePrecedenceError),
     ValidateIndirectRecursion(#[from] IndirectRecursionError),
+    ValidateNonAdvancingRecursion(#[from] NonAdvancingRecursionError),
     ExpandRepeats(#[from] ExpandRepeatsError),
     InternSymbols(#[from] InternSymbolsError),
     ExtractTokens(#[from] ExtractTokensError),
@@ -73,6 +75,10 @@ pub enum ValidatePrecedenceError {
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IndirectRecursionError(pub Vec<String>);
+
+#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[error("Rule cycle `{}` can repeat without consuming input", .0.join(" -> "))]
+pub struct NonAdvancingRecursionError(pub Vec<String>);
 
 impl std::fmt::Display for IndirectRecursionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -120,17 +126,22 @@ pub fn prepare_grammar(
 
     let interned_meta = intern_symbols(&mut g, diagnostics)?;
     let mut ext_meta = extract_tokens(&mut g, &interned_meta)?;
-    expand_repeats(&mut g, &mut ext_meta)?;
-
-    let mut state = FlattenState::default();
-    let mut out = ProductionStore::default();
-    flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
-
     let lexical_grammar = expand_tokens(
         &mut g.pool,
         &ext_meta.lexical_variables,
         &ext_meta.separator_roots,
     )?;
+    let nullable_tokens = lexical_grammar
+        .variables
+        .iter()
+        .map(|variable| lexical_grammar.nfa.can_match_empty(variable.start_state))
+        .collect::<Vec<_>>();
+    let repetition_owners = expand_repeats(&mut g, &mut ext_meta, nullable_tokens.clone())?;
+
+    let mut state = FlattenState::default();
+    let mut out = ProductionStore::default();
+    flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
+    validate_non_advancing_recursion(&g, &out, &nullable_tokens, &repetition_owners)?;
 
     let default_aliases = extract_default_aliases(&g, &ext_meta, &mut out);
     let inlines = process_inlines(&g, &ext_meta, &mut out)?;
@@ -158,7 +169,6 @@ fn validate_indirect_recursion(grammar: &InputGrammar) -> Result<(), IndirectRec
         while let Some(id) = stack.pop() {
             match grammar.pool.node(id) {
                 Rule::NamedSymbol(sid) if sid != variable.name => {
-                    // Rules that *directly* reference themselves don't cause a parsing loop.
                     productions.insert(sid);
                 }
                 Rule::Choice(range) => stack.extend_from_slice(grammar.pool.child_slice(range)),
@@ -169,51 +179,131 @@ fn validate_indirect_recursion(grammar: &InputGrammar) -> Result<(), IndirectRec
         epsilon_transitions.insert(variable.name, productions);
     }
 
-    for &start_symbol in epsilon_transitions.keys() {
-        let mut visited = BTreeSet::new();
-        let mut path = Vec::new();
-        if let Some((start_idx, end_idx)) =
-            get_cycle(start_symbol, &epsilon_transitions, &mut visited, &mut path)
-        {
-            let cycle_symbols = path[start_idx..=end_idx]
-                .iter()
-                .map(|&s| grammar.pool.resolve(s).to_string())
-                .collect();
-            return Err(IndirectRecursionError(cycle_symbols));
-        }
+    if let Some(cycle) = find_cycle(&epsilon_transitions) {
+        return Err(IndirectRecursionError(
+            cycle
+                .into_iter()
+                .map(|name| grammar.pool.resolve(name).to_string())
+                .collect(),
+        ));
     }
-
     Ok(())
 }
 
-/// Perform a depth-first search to detect cycles in single state transitions.
-fn get_cycle(
-    current: StrId,
-    transitions: &IndexMap<StrId, BTreeSet<StrId>>,
-    visited: &mut BTreeSet<StrId>,
-    path: &mut Vec<StrId>,
-) -> Option<(usize, usize)> {
-    if let Some(first_idx) = path.iter().position(|s| *s == current) {
-        path.push(current);
-        return Some((first_idx, path.len() - 1));
-    }
-
-    if visited.contains(&current) {
-        return None;
-    }
-
-    path.push(current);
-    visited.insert(current);
-
-    if let Some(next_symbols) = transitions.get(&current) {
-        for next in next_symbols {
-            if let Some(cycle) = get_cycle(*next, transitions, visited, path) {
-                return Some(cycle);
+fn validate_non_advancing_recursion(
+    grammar: &InputGrammar,
+    productions: &ProductionStore,
+    nullable_tokens: &[bool],
+    repetition_owners: &[StrId],
+) -> Result<(), NonAdvancingRecursionError> {
+    let mut nullable_variables = vec![false; grammar.variables.len()];
+    loop {
+        let mut changed = false;
+        for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
+            if !nullable_variables[i]
+                && productions.productions[start as usize..end as usize]
+                    .iter()
+                    .any(|production| {
+                        productions.steps[production.step_range()]
+                            .iter()
+                            .all(|step| {
+                                is_nullable_symbol(
+                                    step.symbol(),
+                                    nullable_tokens,
+                                    &nullable_variables,
+                                )
+                            })
+                    })
+            {
+                nullable_variables[i] = true;
+                changed = true;
             }
+        }
+        if !changed {
+            break;
         }
     }
 
-    path.pop();
+    let mut transitions = IndexMap::new();
+    for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
+        let mut targets = BTreeSet::new();
+        for production in &productions.productions[start as usize..end as usize] {
+            let steps = &productions.steps[production.step_range()];
+            let consuming = steps
+                .iter()
+                .filter(|step| {
+                    !is_nullable_symbol(step.symbol(), nullable_tokens, &nullable_variables)
+                })
+                .count();
+            if consuming > 1 {
+                continue;
+            }
+            for step in steps {
+                let symbol = step.symbol();
+                if symbol.kind == SymbolType::NonTerminal
+                    && consuming == usize::from(!nullable_variables[symbol.index as usize])
+                {
+                    targets.insert(symbol.index as usize);
+                }
+            }
+        }
+        transitions.insert(i, targets);
+    }
+    if let Some(cycle) = find_cycle(&transitions) {
+        let names = cycle
+            .into_iter()
+            .map(|index| {
+                let owner = repetition_owners[index];
+                let name = grammar.pool.resolve(owner);
+                if owner == grammar.variables[index].name {
+                    name.to_string()
+                } else {
+                    format!("{name} (repetition)")
+                }
+            })
+            .collect();
+        return Err(NonAdvancingRecursionError(names));
+    }
+    Ok(())
+}
+
+const fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {
+    match symbol.kind {
+        SymbolType::Terminal => tokens[symbol.index as usize],
+        SymbolType::NonTerminal => variables[symbol.index as usize],
+        _ => false,
+    }
+}
+
+fn find_cycle<T: Copy + Ord + Hash>(transitions: &IndexMap<T, BTreeSet<T>>) -> Option<Vec<T>> {
+    let mut visited = FxHashSet::default();
+    let mut active = FxHashMap::default();
+    for &start in transitions.keys() {
+        if !visited.insert(start) {
+            continue;
+        }
+        let mut stack = vec![(start, transitions.get(&start).map(BTreeSet::iter))];
+        active.insert(start, 0);
+        while let Some((current, children)) = stack.last_mut() {
+            if let Some(&next) = children.as_mut().and_then(Iterator::next) {
+                if let Some(&cycle_start) = active.get(&next) {
+                    let mut cycle = stack[cycle_start..]
+                        .iter()
+                        .map(|(symbol, _)| *symbol)
+                        .collect::<Vec<_>>();
+                    cycle.push(next);
+                    return Some(cycle);
+                }
+                if visited.insert(next) {
+                    active.insert(next, stack.len());
+                    stack.push((next, transitions.get(&next).map(BTreeSet::iter)));
+                }
+            } else {
+                active.remove(current);
+                stack.pop();
+            }
+        }
+    }
     None
 }
 

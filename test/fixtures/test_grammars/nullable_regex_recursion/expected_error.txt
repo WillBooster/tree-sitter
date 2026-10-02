@@ -1,0 +1,1 @@
+Rule cycle `list -> list` can repeat without consuming input

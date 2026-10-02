@@ -1,3 +1,4 @@
+use rustc_hash::FxHashSet;
 use std::{
     cmp::{Ordering, max},
     fmt,
@@ -452,6 +453,26 @@ impl fmt::Debug for CharacterSet {
 }
 
 impl Nfa {
+    pub(crate) fn can_match_empty(&self, start_state: u32) -> bool {
+        if matches!(self.states[start_state as usize], NfaState::Advance { .. }) {
+            return false;
+        }
+        let mut pending = vec![start_state];
+        let mut visited = FxHashSet::default();
+        while let Some(state_id) = pending.pop() {
+            match self.states[state_id as usize] {
+                NfaState::Accept { .. } => return true,
+                NfaState::Split(left, right) => {
+                    if visited.insert(state_id) {
+                        pending.extend([left, right]);
+                    }
+                }
+                NfaState::Advance { .. } => {}
+            }
+        }
+        false
+    }
+
     #[must_use]
     pub const fn new() -> Self {
         Self { states: Vec::new() }

@@ -12,7 +12,7 @@ use crate::{
 #[derive(Default)]
 struct Expander {
     preceding: usize,
-    aux: Vec<Variable>,
+    aux: Vec<(Variable, StrId)>,
     memo: FxHashMap<u64, Vec<(RuleId, Symbol)>>,
     stack: Vec<Task>,
     zero_width: ZeroWidth,
@@ -25,8 +25,12 @@ enum Task {
 }
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
-#[error("Rule `{0}` contains a repetition that can match the empty string at end of input")]
-pub struct ExpandRepeatsError(pub String);
+pub enum ExpandRepeatsError {
+    #[error("Rule `{0}` contains a repetition whose body can match the empty string")]
+    EmptyString(String),
+    #[error("Rule `{0}` contains a repetition that can match the empty string at end of input")]
+    EndOfInput(String),
+}
 
 impl Expander {
     /// Post-order repeat expansion over one root. Children expand first, and `Reserved`
@@ -60,10 +64,10 @@ impl Expander {
                     _ => {} // For primitive rules, don't change anything.
                 },
                 Task::Expand { id, content } => {
-                    let width = self.zero_width.eval(pool, content);
-                    if width.eof_nullable {
-                        return Err(ExpandRepeatsError(pool.resolve(var_name).to_string()));
-                    }
+                    let width = self
+                        .zero_width
+                        .eval(pool, content)
+                        .validate_repetition(pool.resolve(var_name))?;
                     // For repetitions, introduce an auxiliary rule that contains the
                     // repeated content, but can also contain a recursive binary tree structure.
                     let hash = pool.subtree_hash(content);
@@ -85,7 +89,7 @@ impl Expander {
                     self.zero_width.push_variable(width);
                     self.memo.entry(hash).or_default().push((content, symbol));
                     let root = wrap_in_binary_tree(pool, symbol, content);
-                    self.aux.push(Variable { name, root });
+                    self.aux.push((Variable { name, root }, var_name));
                     pool.set_node(id, Rule::from(symbol));
                 }
             }
@@ -98,14 +102,26 @@ impl Expander {
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 struct Width {
     nullable: bool,
+    known_nullable: bool,
     eof_nullable: bool,
 }
 
 impl Width {
+    fn validate_repetition(self, name: &str) -> Result<Self, ExpandRepeatsError> {
+        if self.known_nullable {
+            Err(ExpandRepeatsError::EmptyString(name.to_string()))
+        } else if self.eof_nullable {
+            Err(ExpandRepeatsError::EndOfInput(name.to_string()))
+        } else {
+            Ok(self)
+        }
+    }
+
     /// Fold `other` in, reporting whether that set anything new to `true`.
     fn merge(&mut self, other: Self) -> bool {
         let before = *self;
         self.nullable |= other.nullable;
+        self.known_nullable |= other.known_nullable;
         self.eof_nullable |= other.eof_nullable;
         *self != before
     }
@@ -124,6 +140,7 @@ enum Visit {
 #[derive(Default)]
 struct ZeroWidth {
     by_variable: Vec<Width>,
+    nullable_tokens: Vec<bool>,
     stack: Vec<Visit>,
     values: Vec<Width>,
 }
@@ -137,9 +154,10 @@ impl ZeroWidth {
     /// changes nothing. Starting there prevents a cycle from marking itself. A rule
     /// that reaches itself reads back  "matches nothing", so flags are only set by
     /// a path that truly matches zero width.
-    fn new(pool: &RulePool, variables: &[Variable]) -> Self {
+    fn new(pool: &RulePool, variables: &[Variable], nullable_tokens: Vec<bool>) -> Self {
         let mut this = Self {
             by_variable: vec![Width::default(); variables.len()],
+            nullable_tokens,
             stack: Vec::new(),
             values: Vec::new(),
         };
@@ -183,20 +201,24 @@ impl ZeroWidth {
                     }
                     Rule::Blank => self.values.push(Width {
                         nullable: true,
+                        known_nullable: true,
                         eof_nullable: false,
                     }),
                     Rule::String(s) => self.values.push(Width {
                         nullable: s == StrPool::EMPTY_STR_ID,
+                        known_nullable: s == StrPool::EMPTY_STR_ID,
                         eof_nullable: false,
                     }),
                     Rule::Eof => self.values.push(Width {
                         nullable: false,
+                        known_nullable: false,
                         eof_nullable: true,
                     }),
                     Rule::Sym { kind, index } => {
                         let width = match kind {
                             SymbolType::End => Width {
                                 nullable: false,
+                                known_nullable: false,
                                 eof_nullable: true,
                             },
                             SymbolType::NonTerminal => self
@@ -213,10 +235,13 @@ impl ZeroWidth {
                             // every grammar that `repeat`s an external.
                             SymbolType::External => Width {
                                 nullable: true,
+                                known_nullable: false,
                                 eof_nullable: false,
                             },
-                            // `expand_tokens` rejects tokens that match the empty string
-                            SymbolType::Terminal => Width::default(),
+                            SymbolType::Terminal => {
+                                let nullable = self.nullable_tokens.get(index as usize).copied().unwrap_or(false);
+                                Width { nullable, known_nullable: nullable, eof_nullable: false }
+                            }
                             // Lookahead marker that `build_parse_table` inserts for nonterminal
                             // extras _after_ this pass runs.
                             SymbolType::EndOfNonTerminalExtra => unreachable!(),
@@ -236,6 +261,7 @@ impl ZeroWidth {
                         let mut width = Width::default();
                         for child in self.values.drain(base..) {
                             width.nullable |= child.nullable;
+                            width.known_nullable |= child.known_nullable;
                             width.eof_nullable |= child.eof_nullable;
                         }
                         self.values.push(width);
@@ -243,15 +269,18 @@ impl ZeroWidth {
                     Rule::Seq(range) => {
                         let base = self.values.len() - range.len as usize;
                         let mut nullable = true; // matches empty iff every element does
+                        let mut known_nullable = true;
                         let mut any_eof = false; // matches eof if any element does
                         let mut all_zero_width = true; // every element matches empty or via `eof()`
                         for child in self.values.drain(base..) {
                             nullable &= child.nullable;
+                            known_nullable &= child.known_nullable;
                             any_eof |= child.eof_nullable;
                             all_zero_width &= child.nullable || child.eof_nullable;
                         }
                         self.values.push(Width {
                             nullable,
+                            known_nullable,
                             eof_nullable: all_zero_width && any_eof,
                         });
                     }
@@ -304,10 +333,11 @@ fn wrap_in_binary_tree(pool: &mut RulePool, symbol: Symbol, inner: RuleId) -> Ru
 pub(super) fn expand_repeats(
     grammar: &mut InputGrammar,
     meta: &mut ExtractedGrammarMeta,
-) -> Result<(), ExpandRepeatsError> {
+    nullable_tokens: Vec<bool>,
+) -> Result<Vec<StrId>, ExpandRepeatsError> {
     let mut expander = Expander {
         preceding: grammar.variables.len(),
-        zero_width: ZeroWidth::new(&grammar.pool, &grammar.variables),
+        zero_width: ZeroWidth::new(&grammar.pool, &grammar.variables, nullable_tokens),
         ..Default::default()
     };
     for i in 0..grammar.variables.len() {
@@ -319,13 +349,10 @@ pub(super) fn expand_repeats(
         if meta.kinds[i] == VariableType::Hidden
             && let Rule::Repeat(content) = grammar.pool.node(root)
         {
-            if expander
+            expander
                 .zero_width
                 .eval(&grammar.pool, content)
-                .eof_nullable
-            {
-                return Err(ExpandRepeatsError(grammar.pool.resolve(name).to_string()));
-            }
+                .validate_repetition(grammar.pool.resolve(name))?;
             expander.expand_root(&mut grammar.pool, content, name, &mut aux_repeat_count)?;
             grammar.variables[i].root =
                 wrap_in_binary_tree(&mut grammar.pool, Symbol::non_terminal(i), content);
@@ -336,11 +363,17 @@ pub(super) fn expand_repeats(
 
         expander.expand_root(&mut grammar.pool, root, name, &mut aux_repeat_count)?;
     }
-    for var in expander.aux {
+    let mut owners = grammar
+        .variables
+        .iter()
+        .map(|variable| variable.name)
+        .collect::<Vec<_>>();
+    for (var, owner) in expander.aux {
         grammar.variables.push(var);
         meta.kinds.push(VariableType::Auxiliary);
+        owners.push(owner);
     }
-    Ok(())
+    Ok(owners)
 }
 
 #[cfg(test)]
@@ -657,8 +690,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            expand_repeats(&mut grammar, &mut meta).unwrap_err(),
-            ExpandRepeatsError("rule0".to_string())
+            expand_repeats(&mut grammar, &mut meta, Vec::new()).unwrap_err(),
+            ExpandRepeatsError::EndOfInput("rule0".to_string())
         );
     }
 
@@ -689,7 +722,7 @@ mod tests {
             kinds,
             ..Default::default()
         };
-        expand_repeats(&mut grammar, &mut meta).unwrap();
+        expand_repeats(&mut grammar, &mut meta, Vec::new()).unwrap();
         (grammar, meta)
     }
 }

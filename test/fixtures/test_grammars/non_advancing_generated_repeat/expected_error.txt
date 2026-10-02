@@ -1,0 +1,1 @@
+Rule cycle `body -> body (repetition) -> body` can repeat without consuming input

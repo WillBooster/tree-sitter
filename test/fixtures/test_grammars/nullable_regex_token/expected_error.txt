@@ -1,0 +1,1 @@
+Rule `source_file` contains a repetition whose body can match the empty string
