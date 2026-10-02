@@ -1,1 +1,1 @@
-Grammar contains a directly recursive rule: list -> list
+Rule cycle `list -> list` can repeat without consuming input because its surrounding symbols can match the empty string

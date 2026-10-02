@@ -54,6 +54,7 @@ pub type PrepareGrammarResult<T> = Result<T, PrepareGrammarError>;
 pub enum PrepareGrammarError {
     ValidatePrecedences(#[from] ValidatePrecedenceError),
     ValidateIndirectRecursion(#[from] IndirectRecursionError),
+    ValidateNullableRecursion(#[from] NullableRecursionError),
     ExpandRepeats(#[from] ExpandRepeatsError),
     InternSymbols(#[from] InternSymbolsError),
     ExtractTokens(#[from] ExtractTokensError),
@@ -74,14 +75,13 @@ pub enum ValidatePrecedenceError {
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IndirectRecursionError(pub Vec<String>);
 
+#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[error("Rule cycle `{}` can repeat without consuming input because its surrounding symbols can match the empty string", .0.join(" -> "))]
+pub struct NullableRecursionError(pub Vec<String>);
+
 impl std::fmt::Display for IndirectRecursionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kind = if self.0.len() == 2 {
-            "a directly"
-        } else {
-            "an indirectly"
-        };
-        write!(f, "Grammar contains {kind} recursive rule: ")?;
+        write!(f, "Grammar contains an indirectly recursive rule: ")?;
         for (i, symbol) in self.0.iter().enumerate() {
             if i > 0 {
                 write!(f, " -> ")?;
@@ -186,7 +186,7 @@ fn validate_nullable_recursion(
     grammar: &InputGrammar,
     productions: &ProductionStore,
     nullable_tokens: &[bool],
-) -> Result<(), IndirectRecursionError> {
+) -> Result<(), NullableRecursionError> {
     let mut nullable_variables = vec![false; grammar.variables.len()];
     loop {
         let mut changed = false;
@@ -242,9 +242,10 @@ fn validate_nullable_recursion(
         transitions.insert(grammar.variables[i].name, targets);
     }
     validate_transition_cycles(grammar, &transitions)
+        .map_err(|error| NullableRecursionError(error.0))
 }
 
-fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {
+const fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {
     match symbol.kind {
         SymbolType::Terminal => tokens[symbol.index as usize],
         SymbolType::NonTerminal => variables[symbol.index as usize],
