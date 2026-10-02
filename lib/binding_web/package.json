@@ -50,7 +50,15 @@
         "default": "./debug/web-tree-sitter.cjs"
       }
     },
-    "./debug/web-tree-sitter.wasm": "./debug/web-tree-sitter.wasm"
+    "./debug/web-tree-sitter.wasm": "./debug/web-tree-sitter.wasm",
+    "./dsl": {
+      "import": {
+        "types": "./dsl.d.ts"
+      },
+      "require": {
+        "types": "./dsl.d.cts"
+      }
+    }
   },
   "browser": {
     "fs": false,
@@ -62,6 +70,9 @@
     "*": {
       "debug": [
         "web-tree-sitter.d.ts"
+      ],
+      "dsl": [
+        "dsl.d.ts"
       ]
     }
   },
@@ -89,7 +100,9 @@
     "web-tree-sitter.d.ts",
     "web-tree-sitter.d.ts.map",
     "web-tree-sitter.d.cts",
-    "web-tree-sitter.d.cts.map"
+    "web-tree-sitter.d.cts.map",
+    "dsl.d.ts",
+    "dsl.d.cts"
   ],
   "dependencies": {
     "@types/emscripten": "^1.41.5"

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
-# Writes the release version given as the argument and builds every artifact the release publishes.
-
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 script/set-version "$1"
+cp crates/generate/src/dsl.d.ts lib/binding_web/dsl.d.ts
+cp crates/generate/src/dsl.d.ts lib/binding_web/dsl.d.cts
 cd lib/binding_web
 npm ci
 npm run build
