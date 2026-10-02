@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { playwright } from '@vitest/browser-playwright';
 
 // Runs the tests under test/browser in Chromium, importing the package, so that its `browser` export condition selects the bundle.
 export default defineConfig({
@@ -12,7 +13,7 @@ export default defineConfig({
     include: ['test/browser/**/*.test.ts'],
     browser: {
       enabled: true,
-      provider: 'playwright',
+      provider: playwright(),
       headless: true,
       instances: [{ browser: 'chromium' }],
     },

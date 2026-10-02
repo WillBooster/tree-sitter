@@ -97,7 +97,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.0",
     "@types/node": "^26.2.0",
-    "@vitest/browser": "^5.0.0",
+    "@vitest/browser-playwright": "^5.0.2",
     "@vitest/coverage-v8": "^5.0.0",
     "dts-buddy": "^0.8.3",
     "esbuild": "^0.28.2",
