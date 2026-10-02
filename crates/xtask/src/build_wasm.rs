@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use etcetera::BaseStrategy as _;
 use indoc::indoc;
 use notify::{
@@ -258,6 +258,12 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         };
     }
 
+    let runtime_path = if args.cjs {
+        binding_file!(".cjs")
+    } else {
+        binding_file!(".mjs")
+    };
+
     #[rustfmt::skip]
     emscripten_flags.extend([
         "-gsource-map=inline",
@@ -286,7 +292,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "-I", "lib/include",
         "--js-library", "lib/binding_web/lib/imports.js",
         "--pre-js",     "lib/binding_web/lib/prefix.js",
-        "-o",           if args.cjs { binding_file!(".cjs") } else { binding_file!(".mjs") },
+        "-o",           runtime_path,
         "lib/src/lib.c",
         "lib/binding_web/lib/tree-sitter.c",
     ]);
@@ -297,18 +303,35 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
     let command = command.args(&emscripten_flags);
 
     if args.watch {
-        watch_wasm!(|| build_wasm(command, args.emit_tsd));
+        watch_wasm!(|| build_wasm(command, args.emit_tsd, runtime_path));
     } else {
-        build_wasm(command, args.emit_tsd)?;
+        build_wasm(command, args.emit_tsd, runtime_path)?;
     }
 
     Ok(())
 }
 
-fn build_wasm(cmd: &mut Command, edit_tsd: bool) -> Result<()> {
+fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<()> {
     bail_on_err(
         &cmd.spawn()?.wait_with_output()?,
         "Failed to compile the Tree-sitter Wasm library",
+    )?;
+
+    // Emscripten 4.0.15 uses synchronous instantiation even in its async module loader,
+    // which Chrome rejects for modules larger than 8 MiB.
+    let runtime = fs::read_to_string(runtime_path)?;
+    let synchronous_instantiation = "instance = new WebAssembly.Instance(binary, info);";
+    ensure!(
+        runtime.matches(synchronous_instantiation).count() == 1,
+        "Expected exactly one async module instantiation in the Emscripten runtime"
+    );
+    fs::write(
+        runtime_path,
+        runtime.replacen(
+            synchronous_instantiation,
+            "instance = await WebAssembly.instantiate(binary, info);",
+            1,
+        ),
     )?;
 
     if edit_tsd {
