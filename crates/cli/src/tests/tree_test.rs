@@ -1,4 +1,4 @@
-use tree_sitter::{InputEdit, Parser, Point, Range, Tree};
+use tree_sitter::{InputEdit, Node, Parser, Point, Range, Tree};
 
 use super::helpers::fixtures::get_language;
 use crate::{
@@ -464,7 +464,7 @@ fn test_tree_cursor_previous_sibling_with_many_comments() {
     let mut cursor = tree.walk();
     let children: Vec<_> = root.children(&mut cursor).collect();
     assert_eq!(children.len(), 800);
-    assert!(children.iter().all(|node| node.is_extra()));
+    assert!(children.iter().all(Node::is_extra));
 
     cursor.reset(root);
     assert!(cursor.goto_last_child());
