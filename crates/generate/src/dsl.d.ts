@@ -225,7 +225,7 @@ export interface DSL {
    * @param rule rule that will be aliased
    * @param name target name for the alias
    */
-  alias(rule: RuleOrLiteral, name: string): AliasRule;
+  alias(this: void, rule: RuleOrLiteral, name: string): AliasRule;
 
   /**
    * Causes the given rule to appear as an alternative named node, for instance
@@ -235,12 +235,12 @@ export interface DSL {
    * @param rule rule that will be aliased
    * @param symbol target symbol for the alias
    */
-  alias(rule: RuleOrLiteral, symbol: SymbolRule<string>): AliasRule;
+  alias(this: void, rule: RuleOrLiteral, symbol: SymbolRule<string>): AliasRule;
 
   /**
    * Creates a blank rule, matching nothing.
    */
-  blank(): BlankRule;
+  blank(this: void): BlankRule;
 
   /**
    * Assigns a field name to the child node(s) matched by the given rule.
@@ -250,7 +250,7 @@ export interface DSL {
    * @param name name of the field
    * @param rule rule the field should match
    */
-  field(name: string, rule: RuleOrLiteral): FieldRule;
+  field(this: void, name: string, rule: RuleOrLiteral): FieldRule;
 
   /**
    * Creates a rule that matches one of a set of possible rules. The order
@@ -259,7 +259,7 @@ export interface DSL {
    *
    * @param options possible rule choices
    */
-  choice(...options: RuleOrLiteral[]): ChoiceRule;
+  choice(this: void, ...options: RuleOrLiteral[]): ChoiceRule;
 
   /**
    * Creates a rule that matches zero or one occurrence of a given rule.
@@ -267,7 +267,7 @@ export interface DSL {
    *
    * @param value rule to be made optional
    */
-  optional(rule: RuleOrLiteral): ChoiceRule;
+  optional(this: void, rule: RuleOrLiteral): ChoiceRule;
 
   /**
    * Marks the given rule with a precedence which will be used to resolve LR(1)
@@ -290,7 +290,7 @@ export interface DSL {
    * @see https://docs.oracle.com/cd/E19504-01/802-5880/6i9k05dh3/index.html
    */
   prec: {
-    (value: string | number, rule: RuleOrLiteral): PrecRule;
+    (this: void, value: string | number, rule: RuleOrLiteral): PrecRule;
 
     /**
      * Marks the given rule as left-associative (and optionally applies a
@@ -305,8 +305,8 @@ export interface DSL {
      *
      * @see https://docs.oracle.com/cd/E19504-01/802-5880/6i9k05dh3/index.html
      */
-    left(rule: RuleOrLiteral): PrecLeftRule;
-    left(value: string | number, rule: RuleOrLiteral): PrecLeftRule;
+    left(this: void, rule: RuleOrLiteral): PrecLeftRule;
+    left(this: void, value: string | number, rule: RuleOrLiteral): PrecLeftRule;
 
     /**
      * Marks the given rule as right-associative (and optionally applies a
@@ -321,8 +321,8 @@ export interface DSL {
      *
      * @see https://docs.oracle.com/cd/E19504-01/802-5880/6i9k05dh3/index.html
      */
-    right(rule: RuleOrLiteral): PrecRightRule;
-    right(value: string | number, rule: RuleOrLiteral): PrecRightRule;
+    right(this: void, rule: RuleOrLiteral): PrecRightRule;
+    right(this: void, value: string | number, rule: RuleOrLiteral): PrecRightRule;
 
     /**
      * Marks the given rule with a numerical precedence which will be used to
@@ -339,7 +339,7 @@ export interface DSL {
      *
      * @see https://www.gnu.org/software/bison/manual/html_node/Generalized-LR-Parsing.html
      */
-    dynamic(value: number, rule: RuleOrLiteral): PrecDynamicRule;
+    dynamic(this: void, value: number, rule: RuleOrLiteral): PrecDynamicRule;
   };
 
   /**
@@ -350,14 +350,14 @@ export interface DSL {
    *
    * @param rule rule to repeat, zero or more times
    */
-  repeat(rule: RuleOrLiteral): RepeatRule;
+  repeat(this: void, rule: RuleOrLiteral): RepeatRule;
 
   /**
    * Creates a rule that matches one-or-more occurrences of a given rule.
    *
    * @param rule rule to repeat, one or more times
    */
-  repeat1(rule: RuleOrLiteral): Repeat1Rule;
+  repeat1(this: void, rule: RuleOrLiteral): Repeat1Rule;
 
   /**
    * Overrides the global reserved word set for a given rule. The word set name
@@ -366,7 +366,7 @@ export interface DSL {
    * @param wordset name of the reserved word set
    * @param rule rule that will use the reserved word set
    */
-  reserved(wordset: string, rule: RuleOrLiteral): ReservedRule;
+  reserved(this: void, wordset: string, rule: RuleOrLiteral): ReservedRule;
 
   /**
    * Creates a rule that matches any number of other rules, one after another.
@@ -375,14 +375,14 @@ export interface DSL {
    *
    * @param rules ordered rules that comprise the sequence
    */
-  seq(...rules: RuleOrLiteral[]): SeqRule;
+  seq(this: void, ...rules: RuleOrLiteral[]): SeqRule;
 
   /**
    * Creates a symbol rule, representing another rule in the grammar by name.
    *
    * @param name name of the target rule
    */
-  sym<Name extends string>(name: Name): SymbolRule<Name>;
+  sym<Name extends string>(this: void, name: Name): SymbolRule<Name>;
 
   /**
    * Marks the given rule as producing only a single token. Tree-sitter's
@@ -396,7 +396,7 @@ export interface DSL {
    * @param rule rule to represent as a single token
    */
   token: {
-    (rule: RuleOrLiteral): TokenRule;
+    (this: void, rule: RuleOrLiteral): TokenRule;
 
     /**
      * Marks the given rule as producing an immediate token. This allows
@@ -407,7 +407,7 @@ export interface DSL {
      *
      * @param rule rule to represent as an immediate token
      */
-    immediate(rule: RuleOrLiteral): ImmediateTokenRule;
+    immediate(this: void, rule: RuleOrLiteral): ImmediateTokenRule;
   };
 
   /**
@@ -421,14 +421,14 @@ export interface DSL {
    * Useful when a rule should match either an explicit terminator (e.g. a
    * newline) or the end of the file.
    */
-  eof(): EOFRule;
+  eof(this: void): EOFRule;
 
   /**
    * Creates a new language grammar with the provided schema.
    *
    * @param options grammar options
    */
-  grammar<RuleName extends string>(options: Grammar<RuleName>): GrammarSchema<RuleName>;
+  grammar<RuleName extends string>(this: void, options: Grammar<RuleName>): GrammarSchema<RuleName>;
 
   /**
    * Extends an existing language grammar with the provided options,
@@ -438,6 +438,7 @@ export interface DSL {
    * @param options grammar options for the new extended language
    */
   grammar<BaseGrammarRuleName extends string, RuleName extends string>(
+    this: void,
     baseGrammar: GrammarSchema<BaseGrammarRuleName>,
     options: Grammar<RuleName, BaseGrammarRuleName>
   ): GrammarSchema<RuleName | BaseGrammarRuleName>;
