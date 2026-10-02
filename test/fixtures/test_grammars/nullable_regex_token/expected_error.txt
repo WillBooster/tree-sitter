@@ -1,0 +1,2 @@
+The token `source_file_token1` matches the empty string.
+Tree-sitter does not support tokens that match the empty string.

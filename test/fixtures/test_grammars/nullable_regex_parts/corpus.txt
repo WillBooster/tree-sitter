@@ -1,0 +1,13 @@
+============================
+Empty prefixes
+============================
+b c
+---
+(source_file (optional_prefix) (repeated_prefix))
+
+============================
+Consuming prefixes
+============================
+ab aaaac
+---
+(source_file (optional_prefix) (repeated_prefix))
