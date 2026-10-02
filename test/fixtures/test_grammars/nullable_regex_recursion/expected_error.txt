@@ -1,0 +1,1 @@
+Grammar contains a directly recursive rule: list -> list

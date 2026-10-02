@@ -34,6 +34,13 @@ Empty comment content
 (source_file (line_content))
 
 ============================
+Consuming recursive suffix
+============================
+[yxx]
+---
+(source_file (list (list)))
+
+============================
 Consuming comment content
 ============================
 // content

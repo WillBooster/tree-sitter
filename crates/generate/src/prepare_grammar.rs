@@ -43,7 +43,7 @@ use super::{
     Diagnostic,
     grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar},
     prepare_grammar::flatten_grammar::{FlattenState, assemble_syntax_grammar},
-    rules::{AliasMap, Precedence, Rule},
+    rules::{AliasMap, Precedence, Rule, Symbol, SymbolType},
     strpool::StrId,
 };
 
@@ -76,7 +76,12 @@ pub struct IndirectRecursionError(pub Vec<String>);
 
 impl std::fmt::Display for IndirectRecursionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Grammar contains an indirectly recursive rule: ")?;
+        let kind = if self.0.len() == 2 {
+            "a directly"
+        } else {
+            "an indirectly"
+        };
+        write!(f, "Grammar contains {kind} recursive rule: ")?;
         for (i, symbol) in self.0.iter().enumerate() {
             if i > 0 {
                 write!(f, " -> ")?;
@@ -130,11 +135,12 @@ pub fn prepare_grammar(
         .iter()
         .map(|variable| lexical_grammar.nfa.can_match_empty(variable.start_state))
         .collect::<Vec<_>>();
-    expand_repeats(&mut g, &mut ext_meta, nullable_tokens)?;
+    expand_repeats(&mut g, &mut ext_meta, nullable_tokens.clone())?;
 
     let mut state = FlattenState::default();
     let mut out = ProductionStore::default();
     flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
+    validate_nullable_recursion(&g, &out, &nullable_tokens)?;
 
     let default_aliases = extract_default_aliases(&g, &ext_meta, &mut out);
     let inlines = process_inlines(&g, &ext_meta, &mut out)?;
@@ -173,11 +179,88 @@ fn validate_indirect_recursion(grammar: &InputGrammar) -> Result<(), IndirectRec
         epsilon_transitions.insert(variable.name, productions);
     }
 
-    for &start_symbol in epsilon_transitions.keys() {
+    validate_transition_cycles(grammar, &epsilon_transitions)
+}
+
+fn validate_nullable_recursion(
+    grammar: &InputGrammar,
+    productions: &ProductionStore,
+    nullable_tokens: &[bool],
+) -> Result<(), IndirectRecursionError> {
+    let mut nullable_variables = vec![false; grammar.variables.len()];
+    loop {
+        let mut changed = false;
+        for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
+            if !nullable_variables[i]
+                && productions.productions[start as usize..end as usize]
+                    .iter()
+                    .any(|production| {
+                        productions.steps[production.step_range()]
+                            .iter()
+                            .all(|step| {
+                                is_nullable_symbol(
+                                    step.symbol(),
+                                    nullable_tokens,
+                                    &nullable_variables,
+                                )
+                            })
+                    })
+            {
+                nullable_variables[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut transitions = IndexMap::new();
+    for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
+        let mut targets = BTreeSet::new();
+        for production in &productions.productions[start as usize..end as usize] {
+            let steps = &productions.steps[production.step_range()];
+            let consuming = steps
+                .iter()
+                .filter(|step| {
+                    !is_nullable_symbol(step.symbol(), nullable_tokens, &nullable_variables)
+                })
+                .count();
+            if consuming > 1 {
+                continue;
+            }
+            for step in steps {
+                let symbol = step.symbol();
+                if symbol.kind == SymbolType::NonTerminal
+                    && (symbol.index as usize != i || steps.len() > 1)
+                    && consuming == usize::from(!nullable_variables[symbol.index as usize])
+                {
+                    targets.insert(grammar.variables[symbol.index as usize].name);
+                }
+            }
+        }
+        transitions.insert(grammar.variables[i].name, targets);
+    }
+    validate_transition_cycles(grammar, &transitions)
+}
+
+fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {
+    match symbol.kind {
+        SymbolType::Terminal => tokens[symbol.index as usize],
+        SymbolType::NonTerminal => variables[symbol.index as usize],
+        _ => false,
+    }
+}
+
+fn validate_transition_cycles(
+    grammar: &InputGrammar,
+    transitions: &IndexMap<StrId, BTreeSet<StrId>>,
+) -> Result<(), IndirectRecursionError> {
+    for &start_symbol in transitions.keys() {
         let mut visited = BTreeSet::new();
         let mut path = Vec::new();
         if let Some((start_idx, end_idx)) =
-            get_cycle(start_symbol, &epsilon_transitions, &mut visited, &mut path)
+            get_cycle(start_symbol, transitions, &mut visited, &mut path)
         {
             let cycle_symbols = path[start_idx..=end_idx]
                 .iter()
