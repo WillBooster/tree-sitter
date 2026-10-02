@@ -1919,6 +1919,47 @@ fn test_keyword_precedence_with_word() {
 }
 
 #[test]
+fn test_keyword_boundary_for_reserved_immediate() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "keyword_boundary_for_reserved_immediate",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "reserved": {"global": [
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "match"}}
+            ]},
+            "rules": {
+                "program": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "."},
+                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "match"}},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    let valid = parser.parse("value.match box", None).unwrap();
+    assert_eq!(
+        valid.root_node().to_sexp(),
+        "(program (identifier) (identifier))"
+    );
+    for source in ["value.matchbox", "match.match box"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            tree.root_node().has_error(),
+            "{source}: {}",
+            tree.root_node().to_sexp()
+        );
+    }
+}
+
+#[test]
 fn test_keyword_reserved_immediate() {
     for immediate_precedence in [0, 2] {
         let (parser_name, parser_code) = generate_parser(
@@ -1956,7 +1997,10 @@ fn test_keyword_reserved_immediate() {
                     {"type": "SYMBOL", "name": "identifier"},
                     {"type": "STRING", "value": "."},
                     {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "match"}},
-                    {"type": "STRING", "value": "{}"}
+                    {"type": "CHOICE", "members": [
+                        {"type": "STRING", "value": "{}"},
+                        {"type": "SYMBOL", "name": "identifier"}
+                    ]}
                 ]},
                 "dot_keyword": {"type": "SEQ", "members": [
                     {"type": "SYMBOL", "name": "identifier"},
@@ -1988,6 +2032,8 @@ fn test_keyword_reserved_immediate() {
         for (source, has_error) in [
             ("(value) match {}", false),
             ("value.match {}", false),
+            ("value.match box", false),
+            ("value.matchbox", true),
             ("value.keyword box", false),
             ("value.other(box)", false),
             ("value.keywordbox", true),

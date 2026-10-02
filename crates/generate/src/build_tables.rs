@@ -362,6 +362,7 @@ fn identify_keywords(
     let mut unsafe_pairs: Vec<(Symbol, Symbol)> = Vec::new();
     let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
     let mut guard_demoted = TokenSet::new();
+    let mut immediate_keywords = TokenSet::new();
 
     // First find all of the candidate keyword tokens: tokens that start with
     // letters or underscore and can match the same string as a word token.
@@ -379,6 +380,9 @@ fn identify_keywords(
                     "Keywords - add candidate {}",
                     str_pool.resolve(lexical_grammar.variables[i].name)
                 );
+                if variable.is_immediate {
+                    immediate_keywords.insert(Symbol::terminal(i));
+                }
                 let explicitly_reserved = syntax_grammar
                     .reserved_word_sets
                     .iter()
@@ -462,7 +466,7 @@ fn identify_keywords(
             str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
         );
     }
-    (keywords, unsafe_pairs, guard_demoted)
+    (keywords, unsafe_pairs, immediate_keywords)
 }
 
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {
