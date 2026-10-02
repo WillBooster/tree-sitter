@@ -77,7 +77,7 @@ export type GrammarSymbols<RuleName extends string> = {
 export type RuleBuilder<RuleName extends string> = ($: GrammarSymbols<RuleName>, previous?: Rule) => RuleOrLiteral;
 
 export type RuleBuilders<RuleName extends string, BaseGrammarRuleName extends string> = {
-  [name in RuleName]: RuleBuilder<RuleName | BaseGrammarRuleName>;
+  [name in RuleName]: RuleBuilder<NoInfer<RuleName> | BaseGrammarRuleName>;
 };
 
 export interface Grammar<
