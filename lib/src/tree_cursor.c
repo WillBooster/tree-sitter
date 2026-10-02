@@ -122,9 +122,7 @@ static inline bool ts_tree_cursor_child_iterator_previous(
   TreeCursorEntry *result,
   bool *visible
 ) {
-  // this is mostly a reverse `ts_tree_cursor_child_iterator_next` taking into
-  // account unsigned underflow
-  if (!self->parent.ptr || (int8_t)self->child_index == -1) return false;
+  if (!self->parent.ptr || self->child_index == UINT32_MAX) return false;
   const Subtree *child = &ts_subtree_children(self->parent)[self->child_index];
   *result = (TreeCursorEntry) {
     .subtree = child,
@@ -145,7 +143,6 @@ static inline bool ts_tree_cursor_child_iterator_previous(
     }
   }
 
-  // unsigned can underflow so compare it to child_count
   if (self->child_index < self->parent.ptr->child_count) {
     Subtree previous_child = ts_subtree_children(self->parent)[self->child_index];
     Length size = ts_subtree_size(previous_child);
