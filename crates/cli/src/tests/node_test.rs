@@ -1128,6 +1128,75 @@ fn test_node_field_names() {
 }
 
 #[test]
+fn test_node_field_lookup_through_visible_alias() {
+    for named in [true, false] {
+        let grammar = serde_json::json!({
+            "name": if named { "named_alias_fields" } else { "anonymous_alias_fields" },
+            "extras": [{"type": "PATTERN", "value": "\\s+"}],
+            "rules": {
+                "program": {"type": "SEQ", "members": [
+                    {"type": "FIELD", "name": "container", "content": {
+                        "type": "ALIAS", "named": named, "value": "visible", "content": {
+                            "type": "SYMBOL", "name": "_hidden"
+                        }
+                    }},
+                    {"type": "CHOICE", "members": [
+                        {"type": "BLANK"},
+                        {"type": "SYMBOL", "name": "_hidden"},
+                        {"type": "FIELD", "name": "item", "content": {
+                            "type": "SYMBOL", "name": "word"
+                        }}
+                    ]}
+                ]},
+                "_hidden": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "("},
+                    {"type": "FIELD", "name": "item", "content": {
+                        "type": "SYMBOL", "name": "word"
+                    }},
+                    {"type": "STRING", "value": ")"}
+                ]},
+                "word": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let field_id = language.field_id_for_name("item").unwrap().get();
+        let container_id = language.field_id_for_name("container").unwrap().get();
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for source in ["(a)", "(a) (b)", "(a) c"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+            let alias = root.child(0).unwrap();
+            assert_eq!(alias.kind(), "visible");
+            assert_eq!(alias.is_named(), named);
+            assert_eq!(root.child_by_field_name("container"), Some(alias));
+            assert_eq!(root.child_by_field_id(container_id), Some(alias));
+            let inner = alias.child(1).unwrap();
+            assert_eq!(inner.utf8_text(source.as_bytes()).unwrap(), "a");
+            assert_eq!(alias.child_by_field_name("item"), Some(inner));
+            assert_eq!(alias.child_by_field_id(field_id), Some(inner));
+
+            let mut cursor = root.walk();
+            let expected = root
+                .children(&mut cursor)
+                .find(|child| child.kind() == "word");
+            assert_eq!(root.child_by_field_name("item"), expected, "{source}");
+            assert_eq!(root.child_by_field_id(field_id), expected, "{source}");
+            if let Some(child) = expected {
+                assert_eq!(child.parent(), Some(root));
+                assert_eq!(
+                    child.utf8_text(source.as_bytes()).unwrap(),
+                    if source.ends_with('c') { "c" } else { "b" }
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_node_field_calls_in_language_without_fields() {
     let (parser_name, parser_code) = generate_parser(
         r#"
