@@ -1961,10 +1961,20 @@ fn test_keyword_reserved_immediate() {
                 "dot_keyword": {"type": "SEQ", "members": [
                     {"type": "SYMBOL", "name": "identifier"},
                     {"type": "STRING", "value": "."},
-                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "PREC", "value": IMMEDIATE_PRECEDENCE, "content": {"type": "STRING", "value": "keyword"}}},
-                    {"type": "SYMBOL", "name": "identifier"}
+                    {"type": "CHOICE", "members": [
+                        {"type": "SEQ", "members": [
+                            {"type": "IMMEDIATE_TOKEN", "content": {"type": "PREC", "value": IMMEDIATE_PRECEDENCE, "content": {"type": "STRING", "value": "keyword"}}},
+                            {"type": "SYMBOL", "name": "identifier"}
+                        ]},
+                        {"type": "SEQ", "members": [
+                            {"type": "IMMEDIATE_TOKEN", "content": {"type": "PREC", "value": 1, "content": {"type": "STRING", "value": "other"}}},
+                            {"type": "STRING", "value": "("},
+                            {"type": "SYMBOL", "name": "identifier"},
+                            {"type": "STRING", "value": ")"}
+                        ]}
+                    ]}
                 ]},
-                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+                "identifier": {"type": "PATTERN", "value": "[a-z][a-z(]*"}
             }
         }"#.replace("IMMEDIATE_PRECEDENCE", &immediate_precedence.to_string())
         .replace("keyword_reserved_immediate", &format!("keyword_reserved_immediate_{immediate_precedence}")),
@@ -1979,6 +1989,7 @@ fn test_keyword_reserved_immediate() {
             ("(value) match {}", false),
             ("value.match {}", false),
             ("value.keyword box", false),
+            ("value.other(box)", false),
             ("value.keywordbox", true),
             ("value. keyword box", true),
             ("def value = matcher", false),
