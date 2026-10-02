@@ -1837,7 +1837,7 @@ fn test_keyword_boundary_after_reduction() {
 #[test]
 fn test_keyword_precedence_with_word() {
     let (parser_name, parser_code) = generate_parser(
-        r##"{
+        r#"{
             "name": "keyword_precedence_with_word",
             "word": "word",
             "rules": {
@@ -1864,7 +1864,7 @@ fn test_keyword_precedence_with_word() {
                     }
                 }}
             }
-        }"##,
+        }"#,
     )
     .unwrap();
     let mut parser = Parser::new();
