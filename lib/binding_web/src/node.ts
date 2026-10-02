@@ -523,6 +523,7 @@ export class Node {
    * Note that this can return `descendant` itself.
    */
   childWithDescendant(descendant: Node): Node | null {
+    if (descendant.tree !== this.tree) return null;
     marshalNode(this);
     marshalNode(descendant, 1);
     C._ts_node_child_with_descendant_wasm(this.tree[0]);

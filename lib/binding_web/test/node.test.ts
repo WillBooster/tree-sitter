@@ -190,6 +190,16 @@ describe('Node', () => {
   });
 
   describe('.childWithDescendant()', () => {
+    it('rejects descendants from a copied tree', () => {
+      tree = parser.parse('(a)')!;
+      const copy = tree.copy();
+      try {
+        expect(tree.rootNode.childWithDescendant(copy.rootNode.firstChild!)).toBeNull();
+      } finally {
+        copy.delete();
+      }
+    });
+
     it('correctly retrieves immediate children', () => {
       const sourceCode = 'let x = 1; console.log(x);';
       tree = parser.parse(sourceCode)!;
