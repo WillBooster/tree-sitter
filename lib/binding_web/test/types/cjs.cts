@@ -3,11 +3,12 @@ import { Parser as DebugParser } from '@willbooster/web-tree-sitter/debug';
 import type { DSL, GrammarSchema } from '@willbooster/web-tree-sitter/dsl';
 
 export function defineGrammar(dsl: DSL): GrammarSchema<'source_file' | 'word'> {
-  return dsl.grammar({
+  const { grammar, repeat1, RustRegex } = dsl;
+  return grammar({
     name: 'typed_grammar',
     rules: {
-      source_file: ($) => dsl.repeat1($.word),
-      word: () => new dsl.RustRegex('[a-z]+'),
+      source_file: ($) => repeat1($.word),
+      word: () => new RustRegex('[a-z]+'),
     },
   });
 }

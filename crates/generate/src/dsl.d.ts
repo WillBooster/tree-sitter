@@ -22,7 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// DSL declarations from tree-sitter-cli 0.27.0, matching the fork CLI's upstream grammar API.
+// Based on tree-sitter-cli 0.27.0. Receiver-free signatures support destructured CLI globals,
+// and callback rule names do not widen the set of rules an extending grammar must define.
 export type AliasRule = { type: 'ALIAS'; named: boolean; content: Rule; value: string };
 export type BlankRule = { type: 'BLANK' };
 export type ChoiceRule = { type: 'CHOICE'; members: Rule[] };
