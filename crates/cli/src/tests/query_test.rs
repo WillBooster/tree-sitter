@@ -4697,6 +4697,87 @@ fn test_query_disable_pattern() {
 }
 
 #[test]
+fn test_query_disable_wildcard_pattern() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let mut query = Query::new(&language, "(_) @any").unwrap();
+        let source = "foo;";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            )
+            .len(),
+            3,
+        );
+
+        query.disable_pattern(0);
+        query.disable_pattern(0);
+        assert!(
+            cursor
+                .matches(&query, tree.root_node(), source.as_bytes())
+                .next()
+                .is_none()
+        );
+    });
+}
+
+#[test]
+fn test_query_disable_wildcard_patterns_with_alternatives() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let mut query = Query::new(
+            &language,
+            "
+                (identifier) @identifier
+                (_) @first
+                (_) @second
+                [(identifier) (_)] @alternative
+            ",
+        )
+        .unwrap();
+        let source = "foo;";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut expected: Vec<_> = collect_matches(
+            cursor.matches(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source,
+        )
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect();
+        for pattern in 0..query.pattern_count() {
+            assert!(expected.contains(&pattern));
+        }
+
+        for disabled_pattern in [1, 1, 3, 2, 0] {
+            query.disable_pattern(disabled_pattern);
+            expected.retain(|index| *index != disabled_pattern);
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                )
+                .into_iter()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+                expected,
+                "disabled pattern {disabled_pattern}",
+            );
+        }
+    });
+}
+
+#[test]
 fn test_query_deep_clone() {
     allocations::record(|| {
         let language = get_language("javascript");
