@@ -13,15 +13,15 @@ To make changes to Web-tree-sitter, you should have:
 1. A [Rust toolchain][rust], for running the xtasks necessary to build the library.
 2. Node.js and NPM (or an equivalent package manager).
 3. Either [Emscripten][emscripten], [Docker][docker], or [podman][podman] for
-compiling the library to Wasm.
+   compiling the library to Wasm.
 
 ### Building
 
 Clone the repository:
 
 ```sh
-git clone https://github.com/tree-sitter/tree-sitter
-cd tree-sitter/lib/binding_web
+ghq get -p WillBooster/tree-sitter
+cd "$(ghq root)/github.com/WillBooster/tree-sitter/lib/binding_web"
 ```
 
 Install the necessary dependencies:
@@ -43,7 +43,7 @@ If you use a local Emscripten installation, it must match the [version pinned in
 
 > [!NOTE]
 > By default, the build process will emit an ES6 module. If you need a CommonJS module, export `CJS` to `true`, or just
-> run `CJS=true npm run build` (or the equivalent command for Windows).
+> run `CJS=true npm run build`.
 
 > [!TIP]
 > To build the library with debug information, you can run `npm run build:debug`. The `CJS` environment variable is still
@@ -54,12 +54,12 @@ If you use a local Emscripten installation, it must match the [version pinned in
 #### The C side
 
 There are several components that come together to build the final JS and Wasm files. First, we use `emscripten` in our
-xtask located at `xtask/src/build_wasm.rs` from the root directory to compile the Wasm files. This Wasm module is output into the
+xtask located at `crates/xtask/src/build_wasm.rs` from the root directory to compile the Wasm files. This Wasm module is output into the
 local `lib` folder, and is used only in [`src/bindings.ts`][bindings.ts] to handle loading the Wasm module. The C code that
 is compiled into the Wasm module is located in at [`lib/tree-sitter.c`][tree-sitter.c], and contains all the necessary
 glue code to interact with the JS environment. If you need to update the imported functions from the tree-sitter library,
 or anywhere else, you must update [`lib/exports.txt`][exports.txt]. Lastly, the type information for the Wasm module is
-located at [`lib/tree-sitter.d.ts`][tree-sitter.d.ts], and can be updated by running `cargo xtask build-wasm --emit-tsd`
+located at [`lib/web-tree-sitter.d.ts`][tree-sitter.d.ts], and can be updated by running `cargo xtask build-wasm --emit-tsd`
 from the root directory.
 
 #### The TypeScript side
@@ -78,13 +78,13 @@ you should run:
 npm run build:dts
 ```
 
-This uses [`dts-buddy`][dts-buddy] to generate `web-tree-sitter.d.ts` (for ES modules) and `web-tree-sitter.d.cts` (for
-CommonJS) from the public types in `src`. Each file is a module of its own, so a program that loads both does not see
-the declarations twice; `npx tsc -p test/types` type-checks both from one program. Consumers with
-`moduleResolution: node10` ignore `exports` and find the types of `@willbooster/web-tree-sitter/debug` only through
-`typesVersions` in `package.json`, which no in-repository check covers. Additionally, a sourcemap is
-generated for each declaration file, which enables `go-to definition` and other editor integrations to take you straight
-to the TypeScript source code.
+[`script/generate-dts.js`](script/generate-dts.js) produces the runtime declarations and copies the grammar DSL
+source from `crates/generate/src/dsl.d.ts` into the package. Edit that generator-side source when changing the DSL types.
+`npx tsc -p test/types` checks the package exports in CommonJS and ESM consumers, including a grammar that binds the
+CLI-injected globals. Declaration maps for the runtime API support editor navigation into `src`.
+
+Legacy `moduleResolution: node10` consumers use `typesVersions` in `package.json`. The consumer checks use
+NodeNext resolution; verify the legacy mapping separately when changing it.
 
 This TypeScript code is then compiled into these JavaScript files with `esbuild`. The build configuration for this can
 be found in [`script/build.js`][build.js], but this shouldn't need to be updated. This step is responsible for emitting
@@ -137,11 +137,11 @@ npm run test:browser
 
 You might have noticed that when you ran `npm build`, the build process generated a couple of [sourcemaps][sourcemap]:
 `web-tree-sitter.js.map`, `web-tree-sitter.web.js.map`, and `web-tree-sitter.wasm.map`. These sourcemaps can be used to debug the library in the browser, and are
-shipped with the library on both NPM and the GitHub releases.
+shipped with the library on NPM.
 
 #### Tweaking the Emscripten build
 
-If you're trying to tweak the Emscripten build, or are trying to debug an issue, the code for this lies in `xtask/src/build_wasm.rs`
+If you're trying to tweak the Emscripten build, or are trying to debug an issue, the code for this lies in `crates/xtask/src/build_wasm.rs`
 file mentioned earlier, namely in the `run_wasm` function.
 
 [bindings.ts]: src/bindings.ts
@@ -156,4 +156,4 @@ file mentioned earlier, namely in the `run_wasm` function.
 [rust]: https://www.rust-lang.org/tools/install
 [sourcemap]: https://developer.mozilla.org/en-US/docs/Glossary/Source_map
 [tree-sitter.c]: lib/tree-sitter.c
-[tree-sitter.d.ts]: lib/tree-sitter.d.ts
+[tree-sitter.d.ts]: lib/web-tree-sitter.d.ts

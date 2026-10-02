@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Keep this build complete for the artifacts listed in lib/binding_web/package.json.
+
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

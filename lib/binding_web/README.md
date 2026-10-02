@@ -42,6 +42,28 @@ const JavaScript = await Language.load(javascript);
 To use the debug version of the library in Node.js, import `@willbooster/web-tree-sitter/debug` instead. It loads the
 debug versions of the `.js` and `.wasm` files, which include debug symbols and assertions.
 
+### Grammar DSL types
+
+`@willbooster/web-tree-sitter/dsl` supplies types for the globals injected by the Tree-sitter CLI.
+Bind those globals locally in a CommonJS grammar:
+
+```js
+// @ts-check
+const { grammar, repeat1, RustRegex } =
+  /** @type {typeof globalThis & import('@willbooster/web-tree-sitter/dsl').DSL} */ (globalThis);
+
+module.exports = grammar({
+  name: 'example',
+  rules: {
+    source_file: ($) => repeat1($.word),
+    word: () => new RustRegex('[a-z]+'),
+  },
+});
+```
+
+The declaration module exports types. The CLI supplies the functions at runtime.
+This pattern keeps the declarations local when composing grammars with other DSL types.
+
 ### Basic Usage
 
 First, create a parser:
@@ -87,7 +109,7 @@ console.log(callExpression.type, callExpression.startPosition, callExpression.en
 
 ### Editing
 
-If your source code *changes*, you can update the syntax tree. This will take less time than the first parse.
+If your source code _changes_, you can update the syntax tree. This will take less time than the first parse.
 
 ```javascript
 // Replace 'let' with 'const'
@@ -97,9 +119,9 @@ tree.edit({
   startIndex: 0,
   oldEndIndex: 3,
   newEndIndex: 5,
-  startPosition: {row: 0, column: 0},
-  oldEndPosition: {row: 0, column: 3},
-  newEndPosition: {row: 0, column: 5},
+  startPosition: { row: 0, column: 0 },
+  oldEndPosition: { row: 0, column: 3 },
+  newEndPosition: { row: 0, column: 5 },
 });
 
 const newTree = parser.parse(newSourceCode, tree);
@@ -111,10 +133,7 @@ If your text is stored in a data structure other than a single string, you can p
 instead of a string:
 
 ```javascript
-const sourceLines = [
-  'let x = 1;',
-  'console.log(x);'
-];
+const sourceLines = ['let x = 1;', 'console.log(x);'];
 
 const tree = parser.parse((index, position) => {
   let line = sourceLines[position.row];
@@ -232,3 +251,7 @@ For more information on the module options you can pass in, see the [emscripten 
 [releases]: https://github.com/WillBooster/tree-sitter/releases
 [node bindings]: https://github.com/tree-sitter/node-tree-sitter
 [wasi-sdk]: https://github.com/WebAssembly/wasi-sdk
+
+## Development
+
+For changes to the bindings or DSL declarations, read [the contributor guide](CONTRIBUTING.md).
