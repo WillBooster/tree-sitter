@@ -229,9 +229,11 @@ pub fn assert_expected_captures(
     let pairs = parse_position_comments(parser, language, contents.as_bytes())?;
     for assertion in &pairs {
         if let Some(found) = &infos.iter().find(|p| {
-            assertion.position >= p.start
-                && (assertion.position.row < p.end.row
-                    || assertion.position.column + assertion.length - 1 < p.end.column)
+            let assertion_end = Utf8Point::new(
+                assertion.position.row,
+                assertion.position.column + assertion.length - 1,
+            );
+            assertion.position >= p.start && assertion_end < p.end
         }) {
             if assertion.expected_capture_name != found.name && found.name != "name" {
                 return Err(anyhow!(
