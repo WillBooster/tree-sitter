@@ -169,7 +169,6 @@ fn validate_indirect_recursion(grammar: &InputGrammar) -> Result<(), IndirectRec
         while let Some(id) = stack.pop() {
             match grammar.pool.node(id) {
                 Rule::NamedSymbol(sid) if sid != variable.name => {
-                    // Rules that *directly* reference themselves don't cause a parsing loop.
                     productions.insert(sid);
                 }
                 Rule::Choice(range) => stack.extend_from_slice(grammar.pool.child_slice(range)),
@@ -242,7 +241,6 @@ fn validate_non_advancing_recursion(
             for step in steps {
                 let symbol = step.symbol();
                 if symbol.kind == SymbolType::NonTerminal
-                    && (symbol.index as usize != i || steps.len() > 1)
                     && consuming == usize::from(!nullable_variables[symbol.index as usize])
                 {
                     targets.insert(symbol.index as usize);
