@@ -315,8 +315,7 @@ static inline TSNode ts_node__first_child_for_byte(
   TSNode node = self;
   bool did_descend = true;
 
-  NodeChildIterator last_iterator;
-  bool has_last_iterator = false;
+  Array(NodeChildIterator) iterators = array_new();
 
   while (did_descend) {
     did_descend = false;
@@ -327,11 +326,11 @@ static inline TSNode ts_node__first_child_for_byte(
     while (ts_node_child_iterator_next(&iterator, &child)) {
       if (ts_node_end_byte(child) > goal) {
         if (ts_node__is_relevant(child, include_anonymous)) {
+          array_delete(&iterators);
           return child;
-        } else if (ts_node_child_count(child) > 0) {
-          if (iterator.child_index < ts_subtree_child_count(ts_node__subtree(child))) {
-            last_iterator = iterator;
-            has_last_iterator = true;
+        } else if (ts_node__relevant_child_count(child, include_anonymous) > 0) {
+          if (!ts_node_child_iterator_done(&iterator)) {
+            array_push(&iterators, iterator);
           }
           did_descend = true;
           node = child;
@@ -340,13 +339,13 @@ static inline TSNode ts_node__first_child_for_byte(
       }
     }
 
-    if (!did_descend && has_last_iterator) {
-      iterator = last_iterator;
-      has_last_iterator = false;
+    if (!did_descend && iterators.size > 0) {
+      iterator = array_pop(&iterators);
       goto loop;
     }
   }
 
+  array_delete(&iterators);
   return ts_node__null();
 }
 

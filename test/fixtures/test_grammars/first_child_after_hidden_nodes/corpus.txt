@@ -1,0 +1,11 @@
+==================
+Nested hidden nodes before a named sibling
+==================
+
+pre pre2 n x sep B2
+
+---
+
+(source_file
+  (first)
+  (last))
