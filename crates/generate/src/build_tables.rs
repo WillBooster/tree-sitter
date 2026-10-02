@@ -70,7 +70,7 @@ pub fn build_tables(
     let token_conflict_map = TokenConflictMap::new(lexical_grammar, following_tokens);
     let coincident_token_index =
         CoincidentTokenIndex::new(&parse_table, lexical_grammar, syntax_grammar.word_token);
-    let (keywords, unsafe_keyword_pairs) = identify_keywords(
+    let (keywords, unsafe_keyword_pairs, immediate_keywords) = identify_keywords(
         syntax_grammar,
         lexical_grammar,
         syntax_grammar.word_token,
@@ -107,6 +107,7 @@ pub fn build_tables(
         &coincident_token_index,
         &token_conflict_map,
         &unsafe_keyword_pairs,
+        &immediate_keywords,
         str_pool,
     );
     populate_external_lex_states(&mut parse_table, syntax_grammar);
@@ -346,7 +347,7 @@ fn identify_keywords(
     token_conflict_map: &TokenConflictMap,
     coincident_token_index: &CoincidentTokenIndex,
     str_pool: &StrPool,
-) -> (TokenSet, Vec<(Symbol, Symbol)>) {
+) -> (TokenSet, Vec<(Symbol, Symbol)>, TokenSet) {
     let word_token = match word_token {
         Some(token) if token.is_terminal() => token,
         // An external token has no lexical rule to compare with keywords.
@@ -354,7 +355,7 @@ fn identify_keywords(
             kind: SymbolType::External,
             ..
         })
-        | None => return (TokenSet::new(), Vec::new()),
+        | None => return (TokenSet::new(), Vec::new(), TokenSet::new()),
         // INVARIANT: Token extraction rejects a non-terminal word token.
         Some(_) => unreachable!(),
     };
@@ -419,7 +420,7 @@ fn identify_keywords(
         })
         .collect::<TokenSet>();
 
-    for token in keywords.iter() {
+    for token in keywords.iter().chain(guard_demoted.iter()) {
         for other_index in 0..lexical_grammar.variables.len() {
             if keyword_candidates.contains(Symbol::terminal(other_index)) {
                 continue;
@@ -461,7 +462,7 @@ fn identify_keywords(
             str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
         );
     }
-    (keywords, unsafe_pairs)
+    (keywords, unsafe_pairs, guard_demoted)
 }
 
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {
