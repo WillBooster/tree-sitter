@@ -1,0 +1,16 @@
+=========================
+Column-dependent tokens in a repeated sequence
+=========================
+
+ax
+x
+
+---
+
+(document
+  (newline)
+  (word)
+  (tail)
+  (newline)
+  (head)
+  (newline))
