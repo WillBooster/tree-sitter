@@ -22,8 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Based on tree-sitter-cli 0.27.0. Receiver-free signatures support destructured CLI globals,
-// and callback rule names do not widen the set of rules an extending grammar must define.
+// Based on tree-sitter-cli 0.27.0, with receiver-free signatures for destructured CLI globals.
 export type AliasRule = { type: 'ALIAS'; named: boolean; content: Rule; value: string };
 export type BlankRule = { type: 'BLANK' };
 export type ChoiceRule = { type: 'CHOICE'; members: Rule[] };
@@ -78,7 +77,7 @@ export type GrammarSymbols<RuleName extends string> = {
 export type RuleBuilder<RuleName extends string> = ($: GrammarSymbols<RuleName>, previous?: Rule) => RuleOrLiteral;
 
 export type RuleBuilders<RuleName extends string, BaseGrammarRuleName extends string> = {
-  [name in RuleName]: RuleBuilder<NoInfer<RuleName> | BaseGrammarRuleName>;
+  [name in RuleName]: RuleBuilder<RuleName | BaseGrammarRuleName>;
 };
 
 export interface Grammar<
