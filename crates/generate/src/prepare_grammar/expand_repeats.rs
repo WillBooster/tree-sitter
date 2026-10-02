@@ -25,8 +25,12 @@ enum Task {
 }
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
-#[error("Rule `{0}` contains a repetition that can match the empty string at end of input")]
-pub struct ExpandRepeatsError(pub String);
+pub enum ExpandRepeatsError {
+    #[error("Rule `{0}` contains a repetition whose body can match the empty string")]
+    EmptyString(String),
+    #[error("Rule `{0}` contains a repetition that can match the empty string at end of input")]
+    EndOfInput(String),
+}
 
 impl Expander {
     /// Post-order repeat expansion over one root. Children expand first, and `Reserved`
@@ -60,10 +64,10 @@ impl Expander {
                     _ => {} // For primitive rules, don't change anything.
                 },
                 Task::Expand { id, content } => {
-                    let width = self.zero_width.eval(pool, content);
-                    if width.known_nullable || width.eof_nullable {
-                        return Err(ExpandRepeatsError(pool.resolve(var_name).to_string()));
-                    }
+                    let width = self
+                        .zero_width
+                        .eval(pool, content)
+                        .validate_repetition(pool.resolve(var_name))?;
                     // For repetitions, introduce an auxiliary rule that contains the
                     // repeated content, but can also contain a recursive binary tree structure.
                     let hash = pool.subtree_hash(content);
@@ -103,6 +107,16 @@ struct Width {
 }
 
 impl Width {
+    fn validate_repetition(self, name: &str) -> Result<Self, ExpandRepeatsError> {
+        if self.known_nullable {
+            Err(ExpandRepeatsError::EmptyString(name.to_string()))
+        } else if self.eof_nullable {
+            Err(ExpandRepeatsError::EndOfInput(name.to_string()))
+        } else {
+            Ok(self)
+        }
+    }
+
     /// Fold `other` in, reporting whether that set anything new to `true`.
     fn merge(&mut self, other: Self) -> bool {
         let before = *self;
@@ -335,10 +349,10 @@ pub(super) fn expand_repeats(
         if meta.kinds[i] == VariableType::Hidden
             && let Rule::Repeat(content) = grammar.pool.node(root)
         {
-            let width = expander.zero_width.eval(&grammar.pool, content);
-            if width.known_nullable || width.eof_nullable {
-                return Err(ExpandRepeatsError(grammar.pool.resolve(name).to_string()));
-            }
+            expander
+                .zero_width
+                .eval(&grammar.pool, content)
+                .validate_repetition(grammar.pool.resolve(name))?;
             expander.expand_root(&mut grammar.pool, content, name, &mut aux_repeat_count)?;
             grammar.variables[i].root =
                 wrap_in_binary_tree(&mut grammar.pool, Symbol::non_terminal(i), content);
@@ -671,7 +685,7 @@ mod tests {
         };
         assert_eq!(
             expand_repeats(&mut grammar, &mut meta, Vec::new()).unwrap_err(),
-            ExpandRepeatsError("rule0".to_string())
+            ExpandRepeatsError::EndOfInput("rule0".to_string())
         );
     }
 
