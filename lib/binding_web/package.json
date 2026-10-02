@@ -52,12 +52,7 @@
     },
     "./debug/web-tree-sitter.wasm": "./debug/web-tree-sitter.wasm",
     "./dsl": {
-      "import": {
-        "types": "./dsl.d.ts"
-      },
-      "require": {
-        "types": "./dsl.d.cts"
-      }
+      "types": "./dsl.d.ts"
     }
   },
   "browser": {
@@ -101,8 +96,7 @@
     "web-tree-sitter.d.ts.map",
     "web-tree-sitter.d.cts",
     "web-tree-sitter.d.cts.map",
-    "dsl.d.ts",
-    "dsl.d.cts"
+    "dsl.d.ts"
   ],
   "dependencies": {
     "@types/emscripten": "^1.41.5"

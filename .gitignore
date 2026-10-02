@@ -548,7 +548,6 @@ profile*
 log*.html
 
 /lib/binding_web/dsl.d.ts
-/lib/binding_web/dsl.d.cts
 
 # Build outputs of the C library and the Wasm grammars
 /target
