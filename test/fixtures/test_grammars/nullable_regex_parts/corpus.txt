@@ -1,0 +1,55 @@
+============================
+Empty prefixes
+============================
+b c
+---
+(source_file (optional_prefix) (repeated_prefix))
+
+============================
+Consuming prefixes
+============================
+ab aaaac
+---
+(source_file (optional_prefix) (repeated_prefix))
+
+============================
+Empty delimited content
+============================
+``
+---
+(source_file (raw_content))
+
+============================
+Consuming delimited content
+============================
+`content`
+---
+(source_file (raw_content))
+
+============================
+Empty comment content
+============================
+//
+---
+(source_file (line_content))
+
+============================
+Consuming recursive suffix
+============================
+[yxx]
+---
+(source_file (list (list)))
+
+============================
+Consuming generated-name collision
+============================
+{onetwo b c}
+---
+(source_file (source_file_repeat1 (optional_prefix) (repeated_prefix)))
+
+============================
+Consuming comment content
+============================
+// content
+---
+(source_file (line_content))

@@ -190,6 +190,101 @@ fn test_node_child() {
 }
 
 #[test]
+fn test_node_child_with_descendant_same_range() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let tree = parser.parse("(a)", None).unwrap();
+    let root = tree.root_node();
+    let statement = root.child(0).unwrap();
+    let expression = statement.child(0).unwrap();
+    let copy = tree.clone();
+
+    assert_eq!(root.child_with_descendant(root), None);
+    assert_eq!(statement.child_with_descendant(root), None);
+    assert_eq!(expression.child_with_descendant(root), None);
+    assert_eq!(expression.child_with_descendant(statement), None);
+    assert_eq!(root.child_with_descendant(expression), Some(statement));
+    assert_eq!(
+        statement.child_with_descendant(expression),
+        Some(expression)
+    );
+    assert_eq!(
+        root.child_with_descendant(copy.root_node().child(0).unwrap()),
+        None
+    );
+}
+
+#[test]
+fn test_node_child_with_descendant_empty_siblings() {
+    let grammar = r#"{
+        "name": "empty_siblings",
+        "rules": {
+            "root": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "left"},
+                {"type": "SYMBOL", "name": "right"}
+            ]},
+            "left": {"type": "EOF"},
+            "right": {"type": "EOF"}
+        }
+    }"#;
+    let (name, code) = generate_parser(grammar).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("", None).unwrap();
+    let root = tree.root_node();
+    let left = root.child(0).unwrap();
+    let right = root.child(1).unwrap();
+
+    assert_eq!(root.child_with_descendant(root), None);
+    assert_eq!(root.child_with_descendant(left), Some(left));
+    assert_eq!(root.child_with_descendant(right), Some(right));
+    assert_eq!(left.child_with_descendant(root), None);
+    assert_eq!(left.child_with_descendant(right), None);
+}
+
+#[test]
+fn test_node_child_with_descendant_missing_sibling() {
+    let grammar = r#"{
+        "name": "missing_sibling",
+        "rules": {
+            "root": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "left"},
+                {"type": "SYMBOL", "name": "right"}
+            ]},
+            "left": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "x"},
+                {"type": "SYMBOL", "name": "terminator"}
+            ]},
+            "terminator": {"type": "STRING", "value": ";"},
+            "right": {"type": "SYMBOL", "name": "content"},
+            "content": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "value"},
+                {"type": "STRING", "value": "w"}
+            ]},
+            "value": {"type": "STRING", "value": "y"}
+        }
+    }"#;
+    let (name, code) = generate_parser(grammar).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("xyw", None).unwrap();
+    let root = tree.root_node();
+    let left = root.child(0).unwrap();
+    let right = root.child(1).unwrap();
+    let missing = left.child(1).unwrap();
+
+    assert!(missing.is_missing());
+    assert_eq!(missing.byte_range(), right.start_byte()..right.start_byte());
+    assert_eq!(root.child_with_descendant(missing), Some(left));
+    assert_eq!(left.child_with_descendant(missing), Some(missing));
+    assert_eq!(right.child_with_descendant(missing), None);
+}
+
+#[test]
 fn test_node_children() {
     let tree = parse_json_example();
     let mut cursor = tree.walk();
@@ -1125,6 +1220,75 @@ fn test_node_field_names() {
     cursor.goto_next_sibling();
     assert_eq!(cursor.node().kind(), "child-4");
     assert_eq!(cursor.field_name(), Some("field_3"));
+}
+
+#[test]
+fn test_node_field_lookup_through_visible_alias() {
+    for named in [true, false] {
+        let grammar = serde_json::json!({
+            "name": if named { "named_alias_fields" } else { "anonymous_alias_fields" },
+            "extras": [{"type": "PATTERN", "value": "\\s+"}],
+            "rules": {
+                "program": {"type": "SEQ", "members": [
+                    {"type": "FIELD", "name": "container", "content": {
+                        "type": "ALIAS", "named": named, "value": "visible", "content": {
+                            "type": "SYMBOL", "name": "_hidden"
+                        }
+                    }},
+                    {"type": "CHOICE", "members": [
+                        {"type": "BLANK"},
+                        {"type": "SYMBOL", "name": "_hidden"},
+                        {"type": "FIELD", "name": "item", "content": {
+                            "type": "SYMBOL", "name": "word"
+                        }}
+                    ]}
+                ]},
+                "_hidden": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "("},
+                    {"type": "FIELD", "name": "item", "content": {
+                        "type": "SYMBOL", "name": "word"
+                    }},
+                    {"type": "STRING", "value": ")"}
+                ]},
+                "word": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let field_id = language.field_id_for_name("item").unwrap().get();
+        let container_id = language.field_id_for_name("container").unwrap().get();
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for source in ["(a)", "(a) (b)", "(a) c"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+            let alias = root.child(0).unwrap();
+            assert_eq!(alias.kind(), "visible");
+            assert_eq!(alias.is_named(), named);
+            assert_eq!(root.child_by_field_name("container"), Some(alias));
+            assert_eq!(root.child_by_field_id(container_id), Some(alias));
+            let inner = alias.child(1).unwrap();
+            assert_eq!(inner.utf8_text(source.as_bytes()).unwrap(), "a");
+            assert_eq!(alias.child_by_field_name("item"), Some(inner));
+            assert_eq!(alias.child_by_field_id(field_id), Some(inner));
+
+            let mut cursor = root.walk();
+            let expected = root
+                .children(&mut cursor)
+                .find(|child| child.kind() == "word");
+            assert_eq!(root.child_by_field_name("item"), expected, "{source}");
+            assert_eq!(root.child_by_field_id(field_id), expected, "{source}");
+            if let Some(child) = expected {
+                assert_eq!(child.parent(), Some(root));
+                assert_eq!(
+                    child.utf8_text(source.as_bytes()).unwrap(),
+                    if source.ends_with('c') { "c" } else { "b" }
+                );
+            }
+        }
+    }
 }
 
 #[test]

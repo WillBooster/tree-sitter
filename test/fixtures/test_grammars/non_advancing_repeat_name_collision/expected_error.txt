@@ -1,0 +1,1 @@
+Rule cycle `x_repeat1 -> x_repeat1` can repeat without consuming input
