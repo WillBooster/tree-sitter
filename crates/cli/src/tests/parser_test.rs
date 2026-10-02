@@ -706,6 +706,45 @@ fn test_parsing_after_editing_tree_that_depends_on_column_position() {
 }
 
 #[test]
+fn test_column_dependent_token_after_balancing_repeat() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("column_dependent_repeat"))
+        .unwrap();
+    let mut source = b"\nax\na".to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(document (newline) (word) (tail) (newline) (word))"
+    );
+
+    perform_edit(
+        &mut tree,
+        &mut source,
+        &Edit {
+            position: 2,
+            deleted_length: 0,
+            inserted_text: b"\n".to_vec(),
+        },
+    )
+    .unwrap();
+    let incremental = parser.parse(&source, Some(&tree)).unwrap();
+    let fresh = parser.parse(&source, None).unwrap();
+    assert_eq!(
+        fresh.root_node().to_sexp(),
+        "(document (newline) (word) (newline) (head) (newline) (word))"
+    );
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(
+        incremental.root_node().child(3).unwrap().start_position(),
+        Point::new(2, 0)
+    );
+}
+
+#[test]
 fn test_parsing_after_detecting_error_in_the_middle_of_a_string_token() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("python")).unwrap();
