@@ -411,6 +411,32 @@ fn test_first_named_child_for_offset_after_anonymous_children() {
 }
 
 #[test]
+fn test_first_child_for_offset_after_nested_hidden_nodes() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("first_child_after_hidden_nodes"))
+        .unwrap();
+    let tree = parser.parse("pre pre2 n x sep B2", None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    for byte in 0..=root.end_byte() {
+        let mut cursor = root.walk();
+        let expected = root
+            .children(&mut cursor)
+            .find(|child| child.end_byte() > byte);
+        assert_eq!(root.first_child_for_byte(byte), expected, "byte {byte}");
+        let expected = root
+            .named_children(&mut cursor)
+            .find(|child| child.end_byte() > byte);
+        assert_eq!(
+            root.first_named_child_for_byte(byte),
+            expected,
+            "byte {byte}"
+        );
+    }
+}
+
+#[test]
 fn test_node_field_name_for_child() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
