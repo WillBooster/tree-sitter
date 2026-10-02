@@ -14,6 +14,8 @@ typedef struct {
 } NodeChildIterator;
 
 static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
+static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
+static TSNode ts_node__child_with_descendant_same_range(TSNode self, TSNode descendant);
 
 // TSNode - constructors
 
@@ -548,7 +550,7 @@ TSNode ts_node_parent(TSNode self) {
   if (node.id == self.id) return ts_node__null();
 
   while (true) {
-    TSNode next_node = ts_node_child_with_descendant(node, self);
+    TSNode next_node = ts_node__child_with_descendant_unchecked(node, self);
     if (next_node.id == self.id || ts_node_is_null(next_node)) break;
     node = next_node;
   }
@@ -557,6 +559,18 @@ TSNode ts_node_parent(TSNode self) {
 }
 
 TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
+  if (self.tree != descendant.tree || self.id == descendant.id) {
+    return ts_node__null();
+  }
+  uint32_t start_byte = ts_node_start_byte(descendant);
+  uint32_t end_byte = ts_node_end_byte(descendant);
+  if (start_byte == ts_node_start_byte(self) && end_byte == ts_node_end_byte(self)) {
+    return ts_node__child_with_descendant_same_range(self, descendant);
+  }
+  return ts_node__child_with_descendant_unchecked(self, descendant);
+}
+
+static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant) {
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
   bool is_empty = start_byte == end_byte;
@@ -574,11 +588,8 @@ TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
         return self;
       }
 
-      // If the descendant is empty, and the end byte is within `self`,
-      // we check whether `self` contains it or not.
       if (is_empty && iter.position.bytes >= end_byte && ts_node_child_count(self) > 0) {
-        TSNode child = ts_node_child_with_descendant(self, descendant);
-        // If the child is not null, return self if it's relevant, else return the child
+        TSNode child = ts_node__child_with_descendant_unchecked(self, descendant);
         if (!ts_node_is_null(child)) {
           return ts_node__is_relevant(self, true) ? self : child;
         }
@@ -587,6 +598,43 @@ TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
   } while (!ts_node__is_relevant(self, true));
 
   return self;
+}
+
+static TSNode ts_node__child_with_descendant_same_range(TSNode self, TSNode descendant) {
+  TSTreeCursor cursor = ts_tree_cursor_new(self);
+  if (!ts_tree_cursor_goto_first_child(&cursor)) {
+    ts_tree_cursor_delete(&cursor);
+    return ts_node__null();
+  }
+
+  uint32_t depth = 1;
+  TSNode child = ts_tree_cursor_current_node(&cursor);
+  for (;;) {
+    TSNode node = ts_tree_cursor_current_node(&cursor);
+    if (depth == 1) child = node;
+    if (
+      ts_node_start_byte(node) == ts_node_start_byte(descendant)
+      && ts_node_end_byte(node) == ts_node_end_byte(descendant)
+    ) {
+      if (node.id == descendant.id) {
+        ts_tree_cursor_delete(&cursor);
+        return child;
+      }
+      if (ts_tree_cursor_goto_first_child(&cursor)) {
+        depth++;
+        continue;
+      }
+    }
+
+    while (!ts_tree_cursor_goto_next_sibling(&cursor)) {
+      if (depth == 1) {
+        ts_tree_cursor_delete(&cursor);
+        return ts_node__null();
+      }
+      ts_tree_cursor_goto_parent(&cursor);
+      depth--;
+    }
+  }
 }
 
 TSNode ts_node_child(TSNode self, uint32_t child_index) {
