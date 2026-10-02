@@ -175,9 +175,7 @@ pub fn build_lex_table(
             .filter(|keyword| {
                 state.terminal_entries.contains_key(keyword)
                     && !retained.contains(keyword)
-                    && syntax_grammar.word_token.is_some_and(|word| {
-                        word.is_terminal() && !state.terminal_entries.contains_key(&word)
-                    })
+                    && syntax_grammar.word_token.is_some_and(Symbol::is_terminal)
             })
             .collect::<TokenSet>();
         let tokens = state
@@ -416,7 +414,7 @@ impl<'a> LexTableBuilder<'a> {
                 }
             })
             .collect();
-        if guard_id != 0 {
+        if guard_id != 0 && !tokens.contains(self.word_token.unwrap()) {
             let word = self.word_token.unwrap();
             self.cursor.reset(vec![
                 self.lexical_grammar.variables[word.index as usize].start_state,
@@ -517,21 +515,12 @@ impl<'a> LexTableBuilder<'a> {
             completion = Some((id, prec));
         }
 
-        if guard_id != 0
+        let retained_immediate_complete = guard_id != 0
             && completion.is_some_and(|(id, _)| {
                 let token = Symbol::terminal(id);
                 self.immediate_keywords.contains(token)
                     && !self.word_guards[guard_id].contains(token)
-            })
-        {
-            let word = self.word_token.unwrap();
-            self.cursor.state_ids.retain(|&id| {
-                !self
-                    .lexical_grammar
-                    .variable_indices_for_nfa_states(&[id])
-                    .any(|index| index == word.index as usize)
             });
-        }
         let (transitions, has_sep) = self.cursor.transitions_and_any_sep();
 
         // If EOF is a valid lookahead token, add a transition predicated on the null
@@ -544,10 +533,28 @@ impl<'a> LexTableBuilder<'a> {
             });
         }
 
-        for transition in transitions {
+        for mut transition in transitions {
+            let guarded_keyword_pending = guard_id != 0
+                && self
+                    .lexical_grammar
+                    .variable_indices_for_nfa_states(&transition.states)
+                    .any(|index| self.word_guards[guard_id].contains(Symbol::terminal(index)));
+            if retained_immediate_complete && !guarded_keyword_pending {
+                let word = self.word_token.unwrap();
+                transition.states.retain(|&id| {
+                    !self
+                        .lexical_grammar
+                        .variable_indices_for_nfa_states(&[id])
+                        .any(|index| index == word.index as usize)
+                });
+                if transition.states.is_empty() {
+                    continue;
+                }
+            }
             if let Some((completed_id, completed_precedence)) = completion
                 && !(guard_id != 0
-                    && self.word_guards[guard_id].contains(Symbol::terminal(completed_id))
+                    && (self.word_guards[guard_id].contains(Symbol::terminal(completed_id))
+                        || guarded_keyword_pending)
                     && self.word_token.is_some_and(|word| {
                         self.lexical_grammar
                             .variable_indices_for_nfa_states(&transition.states)

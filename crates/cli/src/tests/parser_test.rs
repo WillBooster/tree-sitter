@@ -1919,6 +1919,94 @@ fn test_keyword_precedence_with_word() {
 }
 
 #[test]
+fn test_keyword_boundary_for_immediate_with_word() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "keyword_boundary_for_immediate_with_word",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "SYMBOL", "name": "statement"}
+                ]},
+                "statement": {"type": "SEQ", "members": [
+                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "PREC", "value": 2, "content": {"type": "STRING", "value": "match"}}},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#,
+    ).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    for source in ["matchbox", " matchbox"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(program (identifier))");
+        assert_eq!(
+            tree.root_node().named_child(0).unwrap().end_byte(),
+            source.len()
+        );
+    }
+    let tree = parser.parse("match box", None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(program (statement (identifier)))"
+    );
+    assert!(!tree.root_node().has_error());
+}
+
+#[test]
+fn test_keyword_boundary_with_retained_immediate_prefix() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "keyword_boundary_with_retained_immediate_prefix",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "."},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SEQ", "members": [
+                            {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "othermatch"}},
+                            {"type": "SYMBOL", "name": "identifier"}
+                        ]},
+                        {"type": "SEQ", "members": [
+                            {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "other"}},
+                            {"type": "STRING", "value": "("},
+                            {"type": "SYMBOL", "name": "identifier"},
+                            {"type": "STRING", "value": ")"}
+                        ]}
+                    ]}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z][a-z(]*"}
+            }
+        }"#,
+    ).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    for source in ["value.othermatch box", "value.other(box)"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "{source}: {}",
+            tree.root_node().to_sexp()
+        );
+    }
+    let tree = parser.parse("value.othermatchbox", None).unwrap();
+    assert!(
+        tree.root_node().has_error(),
+        "{}",
+        tree.root_node().to_sexp()
+    );
+}
+
+#[test]
 fn test_keyword_boundary_for_reserved_immediate() {
     let (parser_name, parser_code) = generate_parser(
         r#"{
