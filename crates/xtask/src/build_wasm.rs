@@ -323,7 +323,7 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
     let synchronous_instantiation = "instance = new WebAssembly.Instance(binary, info);";
     ensure!(
         runtime.matches(synchronous_instantiation).count() == 1,
-        "Expected exactly one async module instantiation in the Emscripten runtime"
+        "Expected exactly one '{synchronous_instantiation}' in {runtime_path}"
     );
     fs::write(
         runtime_path,
