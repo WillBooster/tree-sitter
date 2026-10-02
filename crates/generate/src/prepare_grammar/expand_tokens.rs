@@ -1,5 +1,4 @@
 use regex_syntax::hir::{Class, Hir, HirKind};
-use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -21,8 +20,9 @@ pub type ExpandTokensResult<T> = Result<T, ExpandTokensError>;
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ExpandTokensError {
     #[error(
-        "The token `{0}` matches the empty string.
-Tree-sitter does not support tokens that match the empty string.
+        "The rule `{0}` matches the empty string.
+Tree-sitter does not support syntactic rules that match the empty string
+unless they are used only as the grammar's start rule.
 "
     )]
     EmptyString(String),
@@ -84,6 +84,11 @@ pub fn expand_tokens(
 
     let mut variables = Vec::with_capacity(lexical_variables.len());
     for (i, variable) in lexical_variables.iter().enumerate() {
+        if pool.subtree_matches_empty_str(variable.root) {
+            Err(ExpandTokensError::EmptyString(
+                pool.resolve(variable.name).to_string(),
+            ))?;
+        }
         let is_immediate_token = match pool.node(variable.root) {
             Rule::Metadata { params, .. } => pool.params(params).is_main_token,
             _ => false,
@@ -103,12 +108,6 @@ pub fn expand_tokens(
                     error: e,
                 })
             })?;
-
-        if builder.can_match_empty(builder.nfa.last_state_id()) {
-            return Err(ExpandTokensError::EmptyString(
-                pool.resolve(variable.name).to_string(),
-            ));
-        }
 
         if !is_immediate_token {
             builder.is_sep = true;
@@ -207,29 +206,6 @@ impl std::fmt::Display for NonAsciiByteClassError {
 }
 
 impl NfaBuilder {
-    fn can_match_empty(&self, start_state: u32) -> bool {
-        if matches!(
-            self.nfa.states[start_state as usize],
-            NfaState::Advance { .. }
-        ) {
-            return false;
-        }
-        let mut pending = vec![start_state];
-        let mut visited = FxHashSet::default();
-        while let Some(state_id) = pending.pop() {
-            match self.nfa.states[state_id as usize] {
-                NfaState::Accept { .. } => return true,
-                NfaState::Split(left, right) => {
-                    if visited.insert(state_id) {
-                        pending.extend([left, right]);
-                    }
-                }
-                NfaState::Advance { .. } => {}
-            }
-        }
-        false
-    }
-
     fn expand_rule(
         &mut self,
         pool: &RulePool,
@@ -599,6 +575,14 @@ mod tests {
                 ("bdfh1", Some((0, "bdfh"))),
                 ("ad1", None),
             ],
+        );
+        // regex with repeats
+        check(
+            |p| {
+                let (v, f) = (p.intern("a*"), p.intern(""));
+                (vec![p.pattern(v, f)], vec![])
+            },
+            &[("aaa1", Some((0, "aaa"))), ("b", Some((0, "")))],
         );
         // regex with repeats in sequences
         check(

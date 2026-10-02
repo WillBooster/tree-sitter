@@ -659,7 +659,7 @@ mod tests {
             pool.string(s)
         };
         let anything = {
-            let v = pool.intern(".+");
+            let v = pool.intern(".*");
             let pat = pool.pattern(v, empty);
             pool.prec(Precedence::Integer(-1), pat)
         };

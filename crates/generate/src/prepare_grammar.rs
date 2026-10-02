@@ -120,17 +120,21 @@ pub fn prepare_grammar(
 
     let interned_meta = intern_symbols(&mut g, diagnostics)?;
     let mut ext_meta = extract_tokens(&mut g, &interned_meta)?;
-    expand_repeats(&mut g, &mut ext_meta)?;
-
-    let mut state = FlattenState::default();
-    let mut out = ProductionStore::default();
-    flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
-
     let lexical_grammar = expand_tokens(
         &mut g.pool,
         &ext_meta.lexical_variables,
         &ext_meta.separator_roots,
     )?;
+    let nullable_tokens = lexical_grammar
+        .variables
+        .iter()
+        .map(|variable| lexical_grammar.nfa.can_match_empty(variable.start_state))
+        .collect::<Vec<_>>();
+    expand_repeats(&mut g, &mut ext_meta, nullable_tokens)?;
+
+    let mut state = FlattenState::default();
+    let mut out = ProductionStore::default();
+    flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
 
     let default_aliases = extract_default_aliases(&g, &ext_meta, &mut out);
     let inlines = process_inlines(&g, &ext_meta, &mut out)?;

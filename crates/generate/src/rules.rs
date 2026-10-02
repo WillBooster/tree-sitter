@@ -443,6 +443,25 @@ impl RulePool {
         true
     }
 
+    /// Whether the subtree at `id` can only match the empty string.
+    pub fn subtree_matches_empty_str(&self, id: RuleId) -> bool {
+        match self.node(id) {
+            Rule::String(sid) => self.resolve(sid).is_empty(),
+            Rule::Metadata { rule, .. } | Rule::Repeat(rule) | Rule::Reserved { rule, .. } => {
+                self.subtree_matches_empty_str(rule)
+            }
+            Rule::Choice(range) => self
+                .child_slice(range)
+                .iter()
+                .any(|&c| self.subtree_matches_empty_str(c)),
+            Rule::Seq(range) => self
+                .child_slice(range)
+                .iter()
+                .all(|&c| self.subtree_matches_empty_str(c)),
+            _ => false,
+        }
+    }
+
     /// Check if a rule is referenced by another rule.
     ///
     /// This function is used to determine if a variable is used in a given rule,
