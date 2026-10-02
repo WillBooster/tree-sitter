@@ -2065,6 +2065,11 @@ fn run() -> Result<()> {
         || BUILD_VERSION.to_string(),
         |build_sha| format!("{BUILD_VERSION} ({build_sha})"),
     );
+    let version = if let Some(fork_version) = option_env!("TREE_SITTER_FORK_VERSION") {
+        format!("{version} (WillBooster {fork_version})")
+    } else {
+        version
+    };
 
     let cli = Command::new("tree-sitter")
         .help_template(concat!(
