@@ -254,4 +254,4 @@ For more information on the module options you can pass in, see the [emscripten 
 
 ## Development
 
-For changes to the bindings or DSL declarations, read [the contributor guide](CONTRIBUTING.md).
+For changes to the bindings or DSL declarations, read [the contributor guide](https://github.com/WillBooster/tree-sitter/blob/main/lib/binding_web/CONTRIBUTING.md).
