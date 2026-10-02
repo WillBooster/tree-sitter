@@ -163,7 +163,7 @@ pub fn build_lex_table(
             }
             {
                 let word_prec = token_precedence[word_token.index as usize];
-                if word_prec < 0 {
+                if word_prec < 0 && state.terminal_entries.contains_key(&word_token) {
                     for &pair_kw in &deferred_keywords {
                         if retained.contains(&pair_kw)
                             || !state.terminal_entries.contains_key(&pair_kw)

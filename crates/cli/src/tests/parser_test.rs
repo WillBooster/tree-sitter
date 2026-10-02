@@ -1850,6 +1850,11 @@ fn test_keyword_precedence_with_word() {
                         {"type": "STRING", "value": ")"}
                     ]},
                     {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "!"},
+                        {"type": "SYMBOL", "name": "rgb"},
+                        {"type": "STRING", "value": "x"}
+                    ]},
+                    {"type": "SEQ", "members": [
                         {"type": "SYMBOL", "name": "word"},
                         {"type": "CHOICE", "members": [
                             {"type": "SYMBOL", "name": "rgb"},
@@ -1879,6 +1884,12 @@ fn test_keyword_precedence_with_word() {
         rgb.root_node().to_sexp()
     );
     assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
+    let prefix = parser.parse("!rgbx", None).unwrap();
+    assert!(
+        prefix.root_node().has_error(),
+        "{}",
+        prefix.root_node().to_sexp()
+    );
     let word = parser.parse("otherxyz", None).unwrap();
     assert_eq!(word.root_node().to_sexp(), "(program (word))");
 }
