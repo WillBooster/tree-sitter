@@ -3,7 +3,7 @@ use std::{
     mem,
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use log::debug;
 
@@ -11,9 +11,11 @@ use super::{coincident_tokens::CoincidentTokenIndex, token_conflicts::TokenConfl
 use crate::{
     dedup::split_state_id_groups,
     grammars::{LexicalGrammar, SyntaxGrammar},
-    nfa::{CharacterSet, NfaCursor},
+    nfa::{CharacterSet, NfaCursor, NfaState},
     rules::{Symbol, TokenSet},
-    tables::{AdvanceAction, LexState, LexStateId, LexTable, ParseStateId, ParseTable},
+    tables::{
+        AdvanceAction, LexState, LexStateId, LexTable, ParseAction, ParseStateId, ParseTable,
+    },
 };
 
 pub const LARGE_CHARACTER_RANGE_COUNT: usize = 8;
@@ -24,6 +26,10 @@ pub struct LexTables {
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "all parameters are required for lex table building"
+)]
 pub fn build_lex_table(
     parse_table: &mut ParseTable,
     syntax_grammar: &SyntaxGrammar,
@@ -31,6 +37,8 @@ pub fn build_lex_table(
     keywords: &TokenSet,
     coincident_token_index: &CoincidentTokenIndex,
     token_conflict_map: &TokenConflictMap,
+    unsafe_keyword_pairs: &[(Symbol, Symbol)],
+    str_pool: &crate::strpool::StrPool,
 ) -> LexTables {
     let keyword_lex_table = if syntax_grammar.word_token.is_some() {
         let mut builder = LexTableBuilder::new(lexical_grammar);
@@ -41,7 +49,148 @@ pub fn build_lex_table(
     };
 
     let mut parse_state_ids_by_token_set = Vec::<(TokenSet, Vec<ParseStateId>)>::new();
+    let starting_chars = token_conflict_map.starting_chars();
+    let word_start_chars: CharacterSet = syntax_grammar
+        .word_token
+        .filter(|token| token.is_terminal())
+        .map(|w| starting_chars[w.index as usize].clone())
+        .unwrap_or_default();
+    let mut continuation_cache: FxHashMap<usize, CharacterSet> = FxHashMap::default();
+    let token_precedence: Vec<i32> = {
+        let mut prec = vec![0i32; lexical_grammar.variables.len()];
+        for state in &lexical_grammar.nfa.states {
+            if let NfaState::Accept {
+                variable_index,
+                precedence,
+            } = state
+            {
+                prec[*variable_index] = *precedence;
+            }
+        }
+        prec
+    };
+    let mut seen_keywords = FxHashSet::default();
+    let deferred_keywords: Vec<Symbol> = unsafe_keyword_pairs
+        .iter()
+        .filter_map(|&(keyword, _)| seen_keywords.insert(keyword).then_some(keyword))
+        .collect();
     for (i, state) in parse_table.states.iter().enumerate() {
+        let mut retained: Vec<Symbol> = Vec::new();
+        if let Some(word_token) = syntax_grammar
+            .word_token
+            .filter(|token| token.is_terminal())
+        {
+            for &(pair_kw, other) in unsafe_keyword_pairs {
+                if state.terminal_entries.contains_key(&pair_kw)
+                    && state.terminal_entries.contains_key(&other)
+                    && !state.terminal_entries.contains_key(&word_token)
+                {
+                    retained.push(pair_kw);
+                    if log::log_enabled!(log::Level::Debug) {
+                        debug!(
+                            "Keywords - exclude {} in state {} because of conflict with {} (retaining raw keyword)",
+                            str_pool
+                                .resolve(lexical_grammar.variables[pair_kw.index as usize].name),
+                            i,
+                            str_pool.resolve(lexical_grammar.variables[other.index as usize].name),
+                        );
+                    }
+                }
+            }
+            for &pair_kw in &deferred_keywords {
+                if retained.contains(&pair_kw)
+                    || !state.terminal_entries.contains_key(&pair_kw)
+                    || state.terminal_entries.contains_key(&word_token)
+                {
+                    continue;
+                }
+                let keyword_index = pair_kw.index as usize;
+                let forced = continuation_cache.entry(keyword_index).or_insert_with(|| {
+                    let mut forced = word_continuation_chars(
+                        lexical_grammar,
+                        word_token.index as usize,
+                        keyword_index,
+                    );
+                    let mut word_starts = word_start_chars.clone();
+                    forced.remove_intersection(&mut word_starts);
+                    forced
+                });
+                if forced.is_empty() {
+                    continue;
+                }
+                let Some(&entry_id) = state.terminal_entries.get(&pair_kw) else {
+                    continue;
+                };
+                let actions = parse_table.action_lists.get(entry_id);
+                let reduction_follows = actions
+                    .iter()
+                    .any(|action| matches!(action, ParseAction::Reduce { .. }))
+                    .then(|| token_conflict_map.following_tokens(keyword_index));
+                let culprit = actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        ParseAction::Shift { state: after, .. } => Some(*after),
+                        _ => None,
+                    })
+                    .flat_map(|after| {
+                        parse_table.states[after as usize]
+                            .terminal_entries
+                            .keys()
+                            .copied()
+                    })
+                    .chain(reduction_follows.into_iter().flat_map(TokenSet::iter))
+                    .find(|&follow| {
+                        follow.is_terminal()
+                            && follow != word_token
+                            && follow != pair_kw
+                            && !keywords.contains(follow)
+                            && !syntax_grammar.extra_symbols.contains(&follow)
+                            && starting_chars[follow.index as usize]
+                                .chars()
+                                .any(|character| forced.contains(character))
+                    });
+                if let Some(follow) = culprit {
+                    retained.push(pair_kw);
+                    if log::log_enabled!(log::Level::Debug) {
+                        debug!(
+                            "Keywords - retain-follow {} in state {} (follow-token {} starts with a word-continuation char; retaining raw keyword)",
+                            str_pool.resolve(lexical_grammar.variables[keyword_index].name),
+                            i,
+                            str_pool.resolve(lexical_grammar.variables[follow.index as usize].name),
+                        );
+                    }
+                }
+            }
+            {
+                let word_prec = token_precedence[word_token.index as usize];
+                if word_prec < 0 {
+                    for &pair_kw in &deferred_keywords {
+                        if retained.contains(&pair_kw)
+                            || !state.terminal_entries.contains_key(&pair_kw)
+                        {
+                            continue;
+                        }
+                        if token_precedence[pair_kw.index as usize] > word_prec {
+                            retained.push(pair_kw);
+                            if log::log_enabled!(log::Level::Debug) {
+                                debug!(
+                                    "Keywords - retain-prec {} in state {} (word token {} is valid here with lower precedence {} < {}; retaining raw keyword to restore precedence pruning)",
+                                    str_pool.resolve(
+                                        lexical_grammar.variables[pair_kw.index as usize].name
+                                    ),
+                                    i,
+                                    str_pool.resolve(
+                                        lexical_grammar.variables[word_token.index as usize].name
+                                    ),
+                                    word_prec,
+                                    token_precedence[pair_kw.index as usize],
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let tokens = state
             .terminal_entries
             .keys()
@@ -49,7 +198,10 @@ pub fn build_lex_table(
             .chain(state.reserved_words.iter())
             .filter_map(|token| {
                 if token.is_terminal() {
-                    if keywords.contains(token) {
+                    let immediate_syntax = lexical_grammar.variables[token.index as usize]
+                        .is_immediate
+                        && state.terminal_entries.contains_key(&token);
+                    if keywords.contains(token) && !retained.contains(&token) && !immediate_syntax {
                         syntax_grammar.word_token
                     } else {
                         Some(token)
@@ -130,6 +282,75 @@ pub fn build_lex_table(
     }
 }
 
+fn word_continuation_chars(
+    grammar: &LexicalGrammar,
+    word_index: usize,
+    keyword_index: usize,
+) -> CharacterSet {
+    let mut w_cursor = NfaCursor::new(&grammar.nfa, Vec::new());
+    let mut k_cursor = NfaCursor::new(&grammar.nfa, Vec::new());
+
+    let expand = |cursor: &mut NfaCursor, states: Vec<u32>| -> Vec<u32> {
+        cursor.reset(states);
+        cursor.state_ids.clone()
+    };
+
+    let mut result = CharacterSet::empty();
+    let mut visited: FxHashSet<(Vec<u32>, Vec<u32>)> = FxHashSet::default();
+    let mut queue: Vec<(Vec<u32>, Vec<u32>)> = Vec::with_capacity(8);
+    queue.push((
+        expand(
+            &mut w_cursor,
+            vec![grammar.variables[word_index].start_state],
+        ),
+        expand(
+            &mut k_cursor,
+            vec![grammar.variables[keyword_index].start_state],
+        ),
+    ));
+
+    while let Some((ws, ks)) = queue.pop() {
+        if !visited.insert((ws.clone(), ks.clone())) {
+            continue;
+        }
+
+        let k_complete = ks.iter().any(|&s| {
+            matches!(
+                grammar.nfa.states[s as usize],
+                NfaState::Accept { variable_index, .. } if variable_index == keyword_index
+            )
+        });
+
+        w_cursor.reset(ws.clone());
+        let w_transitions = w_cursor.transitions();
+
+        if k_complete {
+            for t in &w_transitions {
+                result = result.add(&t.characters);
+            }
+        }
+
+        k_cursor.reset(ks);
+        let k_transitions = k_cursor.transitions();
+        for wt in &w_transitions {
+            for kt in &k_transitions {
+                let mut wc = wt.characters.clone();
+                let mut kc = kt.characters.clone();
+                let shared = wc.remove_intersection(&mut kc);
+                if shared.is_empty() {
+                    continue;
+                }
+                queue.push((
+                    expand(&mut w_cursor, wt.states.clone()),
+                    expand(&mut k_cursor, kt.states.clone()),
+                ));
+            }
+        }
+    }
+
+    result
+}
+
 struct QueueEntry {
     state_id: LexStateId,
     nfa_states: Vec<u32>,
@@ -181,6 +402,7 @@ impl<'a> LexTableBuilder<'a> {
                 "entry point state: {state_id}, tokens: {:?}",
                 tokens
                     .iter()
+                    .filter(|t| t.is_terminal())
                     .map(|t| &self.lexical_grammar.variables[t.index as usize].name)
                     .collect::<Vec<_>>()
             );
