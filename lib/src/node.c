@@ -15,7 +15,7 @@ typedef struct {
 
 static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
-static TSNode ts_node__child_with_descendant_same_range(TSNode self, TSNode descendant);
+static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant);
 
 // TSNode - constructors
 
@@ -564,8 +564,11 @@ TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
   }
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
-  if (start_byte == ts_node_start_byte(self) && end_byte == ts_node_end_byte(self)) {
-    return ts_node__child_with_descendant_same_range(self, descendant);
+  if (
+    start_byte == end_byte
+    || (start_byte == ts_node_start_byte(self) && end_byte == ts_node_end_byte(self))
+  ) {
+    return ts_node__child_with_descendant_checked(self, descendant);
   }
   return ts_node__child_with_descendant_unchecked(self, descendant);
 }
@@ -600,7 +603,9 @@ static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode desce
   return self;
 }
 
-static TSNode ts_node__child_with_descendant_same_range(TSNode self, TSNode descendant) {
+static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant) {
+  uint32_t start_byte = ts_node_start_byte(descendant);
+  uint32_t end_byte = ts_node_end_byte(descendant);
   TSTreeCursor cursor = ts_tree_cursor_new(self);
   if (!ts_tree_cursor_goto_first_child(&cursor)) {
     ts_tree_cursor_delete(&cursor);
@@ -613,8 +618,8 @@ static TSNode ts_node__child_with_descendant_same_range(TSNode self, TSNode desc
     TSNode node = ts_tree_cursor_current_node(&cursor);
     if (depth == 1) child = node;
     if (
-      ts_node_start_byte(node) == ts_node_start_byte(descendant)
-      && ts_node_end_byte(node) == ts_node_end_byte(descendant)
+      ts_node_start_byte(node) <= start_byte
+      && ts_node_end_byte(node) >= end_byte
     ) {
       if (node.id == descendant.id) {
         ts_tree_cursor_delete(&cursor);
