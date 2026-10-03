@@ -3,6 +3,11 @@ use std::{fs, process::Command};
 #[test]
 fn parse_reports_missing_hidden_tokens() {
     let directory = tempfile::tempdir().unwrap();
+    fs::write(
+        directory.path().join("config.json"),
+        r#"{"parser-directories": []}"#,
+    )
+    .unwrap();
     fs::create_dir(directory.path().join("src")).unwrap();
     fs::write(
         directory.path().join("src/grammar.json"),
@@ -26,12 +31,15 @@ fn parse_reports_missing_hidden_tokens() {
     )
     .unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_tree-sitter"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tree-sitter"));
+        command
             .current_dir(directory.path())
             .env("TREE_SITTER_LIBDIR", directory.path().join("cache"))
-            .args(args)
-            .output()
-            .unwrap()
+            .args(args);
+        if args[0] == "parse" {
+            command.args(["--config-path", "config.json"]);
+        }
+        command.output().unwrap()
     };
     let generated = run(&["generate", "src/grammar.json"]);
     assert!(
