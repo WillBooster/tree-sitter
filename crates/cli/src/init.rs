@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 use crc32fast::hash as crc32;
 use heck::{ToKebabCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use indoc::{formatdoc, indoc};
-use log::info;
+use log::{info, warn};
 use rand::RngExt;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -384,8 +384,18 @@ fn generate_common_files(
     opts: &GenerateOpts,
     node_bindings: bool,
 ) -> Result<()> {
+    let package_path = ctx.repo_path.join("package.json");
+    if node_bindings && !ctx.allow_update && package_path.exists() {
+        let package: Value = serde_json::from_str(&fs::read_to_string(&package_path)?)?;
+        if package.get("main").is_none() && package["dependencies"].get("node-addon-api").is_none()
+        {
+            warn!(
+                "Node bindings are enabled, but package.json has no Node binding setup. Run `tree-sitter init --update` to add missing entries."
+            );
+        }
+    }
     missing_path_else(
-        ctx.repo_path.join("package.json"),
+        package_path,
         ctx.allow_update,
         |path| {
             let template = if node_bindings {
@@ -418,7 +428,7 @@ fn generate_common_files(
             };
             generate_file(path, &template, ctx.dashed_language_name.as_str(), opts)
         },
-        update_package_json,
+        |path| update_package_json(path, node_bindings),
     )?;
 
     if !ctx.has_multiple_language_configs {
@@ -857,7 +867,7 @@ fn generate_java_bindings(
     Ok(())
 }
 
-fn update_package_json(path: &Path) -> Result<()> {
+fn update_package_json(path: &Path, node_bindings: bool) -> Result<()> {
     let mut contents = fs::read_to_string(path)?
         .replace(
             r#""node-addon-api": "^8.3.1""#,
@@ -880,6 +890,49 @@ fn update_package_json(path: &Path) -> Result<()> {
             "type": "module",
               "repository":"#},
         );
+    }
+    if node_bindings {
+        let mut package: Value = serde_json::from_str(&contents)?;
+        let original = package.clone();
+        let template: Value = serde_json::from_str(PACKAGE_JSON_TEMPLATE)?;
+        let fields = package
+            .as_object_mut()
+            .context("package.json must be an object")?;
+        for key in ["main", "types"] {
+            fields.entry(key).or_insert_with(|| template[key].clone());
+        }
+        for (field, keys) in [
+            ("dependencies", &["node-addon-api", "node-gyp-build"][..]),
+            ("devDependencies", &["prebuildify", "tree-sitter"][..]),
+            ("peerDependencies", &["tree-sitter"][..]),
+            ("peerDependenciesMeta", &["tree-sitter"][..]),
+            ("scripts", &["install", "test"][..]),
+        ] {
+            let entries = fields
+                .entry(field)
+                .or_insert_with(|| Value::Object(Map::new()))
+                .as_object_mut()
+                .with_context(|| format!("package.json {field} must be an object"))?;
+            for &key in keys {
+                entries
+                    .entry(key)
+                    .or_insert_with(|| template[field][key].clone());
+            }
+        }
+        if let Some(files) = fields.get_mut("files") {
+            let files = files
+                .as_array_mut()
+                .context("package.json files must be an array")?;
+            for file in ["binding.gyp", "prebuilds/**", "bindings/node/*"] {
+                let file = Value::String(file.to_string());
+                if !files.contains(&file) {
+                    files.push(file);
+                }
+            }
+        }
+        if package != original {
+            contents = serde_json::to_string_pretty(&package)? + "\n";
+        }
     }
     write_file(path, contents)?;
     Ok(())
