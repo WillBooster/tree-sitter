@@ -43,6 +43,10 @@ fn test_query_alternation_structure_is_order_independent() {
     for pattern in [
         r#"(arguments ["{" (identifier)]) @args"#,
         r#"(arguments [(identifier) "{"]) @args"#,
+        r#"(arguments [["{" (identifier)] "~"]) @args"#,
+        r#"(arguments ["~" ["{" (identifier)]]) @args"#,
+        r#"(arguments [["~" (identifier)] (number)]) @args"#,
+        r#"(arguments [(number) ["~" (identifier)]]) @args"#,
     ] {
         let query = Query::new(&language, pattern).unwrap();
         let mut cursor = QueryCursor::new();
@@ -57,6 +61,8 @@ fn test_query_alternation_structure_is_order_independent() {
     for pattern in [
         r#"(arguments ["{" "}"]) @args"#,
         r#"(arguments ["}" "{"]) @args"#,
+        r#"(arguments [["{" "}"] "~"]) @args"#,
+        r#"(arguments ["~" ["{" "}"]]) @args"#,
     ] {
         assert_eq!(
             Query::new(&language, pattern).unwrap_err().kind,

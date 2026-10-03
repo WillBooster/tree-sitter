@@ -2462,6 +2462,14 @@ static TSQueryError ts_query__parse_pattern(
       uint32_t next_step_index = *array_get(&branch_step_indices, i + 1);
       QueryStep *start_step = array_get(&self->steps, step_index);
       QueryStep *end_step = array_get(&self->steps, next_step_index - 1);
+      while (
+        start_step->alternative_index != NONE &&
+        start_step->alternative_index > step_index &&
+        start_step->alternative_index < next_step_index
+      ) {
+        step_index = start_step->alternative_index;
+        start_step = array_get(&self->steps, step_index);
+      }
       start_step->alternative_index = next_step_index;
       end_step->alternative_index = self->steps.size;
       end_step->is_dead_end = true;
