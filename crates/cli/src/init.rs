@@ -265,7 +265,6 @@ pub fn generate_grammar_files(
             Ok(())
         },
         |path| {
-            // updating the config, if needed
             if let Some(opts) = opts {
                 let tree_sitter_json = opts.clone().to_tree_sitter_json();
                 write_file(path, serde_json::to_string_pretty(&tree_sitter_json)?)?;
@@ -350,7 +349,7 @@ pub fn generate_grammar_files(
 
     let bindings_dir = repo_path.join("bindings");
 
-    generate_common_files(&ctx, &generate_opts)?;
+    generate_common_files(&ctx, &generate_opts, tree_sitter_config.bindings.node)?;
 
     if tree_sitter_config.bindings.rust {
         generate_rust_bindings(&ctx, &generate_opts, &bindings_dir)?;
@@ -380,23 +379,48 @@ pub fn generate_grammar_files(
     Ok(())
 }
 
-fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
-    // Create package.json
+fn generate_common_files(
+    ctx: &InitContext,
+    opts: &GenerateOpts,
+    node_bindings: bool,
+) -> Result<()> {
     missing_path_else(
         ctx.repo_path.join("package.json"),
         ctx.allow_update,
         |path| {
-            generate_file(
-                path,
-                PACKAGE_JSON_TEMPLATE,
-                ctx.dashed_language_name.as_str(),
-                opts,
-            )
+            let template = if node_bindings {
+                PACKAGE_JSON_TEMPLATE.to_string()
+            } else {
+                let mut package: Value = serde_json::from_str(PACKAGE_JSON_TEMPLATE)?;
+                let fields = package.as_object_mut().unwrap();
+                for key in [
+                    "main",
+                    "types",
+                    "dependencies",
+                    "peerDependencies",
+                    "peerDependenciesMeta",
+                ] {
+                    fields.remove(key);
+                }
+                let development = package["devDependencies"].as_object_mut().unwrap();
+                development.remove("prebuildify");
+                development.remove("tree-sitter");
+                let scripts = package["scripts"].as_object_mut().unwrap();
+                scripts.remove("install");
+                scripts.remove("test");
+                package["files"].as_array_mut().unwrap().retain(|file| {
+                    !matches!(
+                        file.as_str(),
+                        Some("binding.gyp" | "prebuilds/**" | "bindings/node/*")
+                    )
+                });
+                serde_json::to_string_pretty(&package)?
+            };
+            generate_file(path, &template, ctx.dashed_language_name.as_str(), opts)
         },
         update_package_json,
     )?;
 
-    // Do not create a grammar.js file in a repo with multiple language configs
     if !ctx.has_multiple_language_configs {
         missing_path_else(
             ctx.repo_path.join("grammar.js"),
@@ -406,7 +430,6 @@ fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
         )?;
     }
 
-    // Write .gitignore file
     missing_path_else(
         ctx.repo_path.join(".gitignore"),
         ctx.allow_update,
@@ -414,7 +437,6 @@ fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
         update_gitignore,
     )?;
 
-    // Write .gitattributes file
     missing_path_else(
         ctx.repo_path.join(".gitattributes"),
         ctx.allow_update,
@@ -422,7 +444,6 @@ fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
         update_gitattributes,
     )?;
 
-    // Write .editorconfig file
     missing_path(ctx.repo_path.join(".editorconfig"), |path| {
         generate_file(path, EDITORCONFIG_TEMPLATE, ctx.language_name, opts)
     })?;
@@ -648,7 +669,7 @@ fn generate_python_bindings(
         )?;
 
         missing_path(lang_path.join("py.typed"), |path| {
-            generate_file(path, "", ctx.language_name, opts) // py.typed is empty
+            generate_file(path, "", ctx.language_name, opts)
         })?;
 
         missing_path(path.join("tests"), create_dir)?.apply(|path| {
@@ -836,8 +857,6 @@ fn generate_java_bindings(
     Ok(())
 }
 
-// TODO: remove old migrations
-
 fn update_package_json(path: &Path) -> Result<()> {
     let mut contents = fs::read_to_string(path)?
         .replace(
@@ -988,7 +1007,6 @@ fn update_rust_build_rs(path: &Path, language_name: &str, opts: &GenerateOpts) -
         contents = contents.replace(r#"    c_config.flag("-utf-8");"#, &replacement);
     }
 
-    // Introduce configuration variables for dynamic query inclusion
     if !contents.contains("with_highlights_query") {
         info!("Adding support for dynamic query inclusion to bindings/rust/build.rs");
         let replaced = indoc! {r#"
@@ -1296,7 +1314,7 @@ pub fn get_root_path(path: &Path) -> Result<PathBuf> {
         if json == Some(true) {
             return Ok(pathbuf.parent().unwrap().to_path_buf());
         }
-        pathbuf.pop(); // filename
+        pathbuf.pop();
         if !pathbuf.pop() {
             return Err(anyhow!(format!(
                 concat!(
