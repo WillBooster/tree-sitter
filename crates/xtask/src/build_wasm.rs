@@ -16,6 +16,7 @@ use notify::{
     event::{AccessKind, AccessMode},
 };
 use notify_debouncer_full::new_debouncer;
+use regex::Regex;
 use tree_sitter_loader::{IoError, LoaderError, WasmToolError};
 
 use crate::{
@@ -320,18 +321,27 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
     // Emscripten 4.0.15 uses synchronous instantiation even in its async module loader,
     // which Chrome rejects for modules larger than 8 MiB.
     let runtime = fs::read_to_string(runtime_path)?;
-    let synchronous_instantiation = "instance = new WebAssembly.Instance(binary, info);";
+    let synchronous_instantiation = Regex::new(concat!(
+        r"(if \(flags.loadAsync\) \{\s+",
+        r"return \(async \(\) => \{\s+",
+        r"var instance;\s+",
+        r"if \(binary instanceof WebAssembly.Module\) \{\s+)",
+        r"instance = new WebAssembly.Instance\(binary, info\);",
+    ))?;
     ensure!(
-        runtime.matches(synchronous_instantiation).count() == 1,
-        "Expected exactly one '{synchronous_instantiation}' in {runtime_path}"
+        synchronous_instantiation.find_iter(&runtime).count() == 1,
+        "Expected exactly one synchronous constructor in the async module loader in {runtime_path}; \
+         use the pinned Emscripten SDK with --docker or cargo xtask fetch-emscripten"
     );
     fs::write(
         runtime_path,
-        runtime.replacen(
-            synchronous_instantiation,
-            "instance = await WebAssembly.instantiate(binary, info);",
-            1,
-        ),
+        synchronous_instantiation
+            .replacen(
+                &runtime,
+                1,
+                "${1}instance = await WebAssembly.instantiate(binary, info);",
+            )
+            .as_ref(),
     )?;
 
     if edit_tsd {
