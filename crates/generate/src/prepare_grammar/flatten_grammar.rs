@@ -1,10 +1,14 @@
-use rustc_hash::FxHashMap;
+use std::hash::BuildHasher as _;
+
+use hashbrown::{HashTable, hash_table};
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     grammars::{
-        InputGrammar, Production, ProductionStep, ProductionStore, SyntaxGrammar, SyntaxVariable,
+        InputGrammar, ProdRef, Production, ProductionStep, ProductionStore, SyntaxGrammar,
+        SyntaxVariable,
     },
     prepare_grammar::extract_tokens::ExtractedGrammarMeta,
     rules::{
@@ -101,11 +105,15 @@ pub(super) struct FlattenState {
     choices: ChoiceCursor,
     dyn_prec: i32,
     dead: bool,
+    /// The positions in [`ProductionStore::productions`] of the current variable's
+    /// productions, by the hash of their [`ProdRef`].
+    emitted: HashTable<u32>,
 }
 
 impl FlattenState {
     fn reset_variable(&mut self) {
         self.choices.reset();
+        self.emitted.clear();
         self.reset_path();
     }
 
@@ -236,36 +244,41 @@ fn apply(
 /// Append the completed path as a production unless this variable already has an
 /// identical one. A path with `eof()` anywhere but the final step is discarded,
 /// since such a production could never be completed.
-fn emit(st: &mut FlattenState, out: &mut ProductionStore, prod_start: u32) -> bool {
+fn emit(st: &mut FlattenState, out: &mut ProductionStore) -> bool {
     let last = st.steps.len().saturating_sub(1);
     let Some(eof_index) = st
         .steps
         .iter()
         .position(|step| step.symbol() == Symbol::end())
     else {
-        return emit_ready(st, out, prod_start, false);
+        return emit_ready(st, out, false);
     };
     if eof_index != last {
         return false;
     }
     st.steps.pop();
-    emit_ready(st, out, prod_start, true)
+    emit_ready(st, out, true)
 }
 
 fn emit_ready(
-    st: &FlattenState,
+    st: &mut FlattenState,
     out: &mut ProductionStore,
-    prod_start: u32,
     requires_eof_lookahead: bool,
 ) -> bool {
-    for p in &out.productions[prod_start as usize..] {
-        if p.dynamic_precedence == st.dyn_prec
-            && p.requires_eof_lookahead == requires_eof_lookahead
-            && out.steps[p.step_range()] == st.steps[..]
-        {
-            return true;
-        }
-    }
+    let production = ProdRef {
+        steps: &st.steps,
+        dynamic_precedence: st.dyn_prec,
+        requires_eof_lookahead,
+    };
+    let entry = st.emitted.entry(
+        FxBuildHasher.hash_one(production),
+        |&index| out.production(index) == production,
+        |&index| FxBuildHasher.hash_one(out.production(index)),
+    );
+    let hash_table::Entry::Vacant(entry) = entry else {
+        return true;
+    };
+    entry.insert(out.productions.len() as u32);
     let steps_start = out.steps.len() as u32;
     out.steps.extend_from_slice(&st.steps);
     out.productions.push(Production {
@@ -309,7 +322,7 @@ pub(super) fn flatten_grammar(
                 st,
             )?;
             if !st.dead {
-                dropped_for_eof |= !emit(st, out, prod_start);
+                dropped_for_eof |= !emit(st, out);
             }
             if !st.choices.advance() {
                 break;
@@ -333,12 +346,19 @@ fn check(
     meta: &ExtractedGrammarMeta,
     out: &ProductionStore,
 ) -> FlattenGrammarResult<()> {
+    let mut used = vec![false; out.var_prods.len()];
+    for step in &out.steps {
+        if let Some(index) = step.symbol().non_terminal_index()
+            && let Some(slot) = used.get_mut(index)
+        {
+            *slot = true;
+        }
+    }
     for (i, &(p_start, p_end)) in out.var_prods.iter().enumerate() {
         let symbol = Symbol::non_terminal(i);
-        let used = out.steps.iter().any(|s| s.symbol() == symbol);
         let inlined = meta.inline.contains(&symbol);
         for p in &out.productions[p_start as usize..p_end as usize] {
-            if used && p.steps_len == 0 && !p.requires_eof_lookahead {
+            if used[i] && p.steps_len == 0 && !p.requires_eof_lookahead {
                 Err(FlattenGrammarError::EmptyString(
                     g.pool.resolve(g.variables[i].name).to_string(),
                 ))?;

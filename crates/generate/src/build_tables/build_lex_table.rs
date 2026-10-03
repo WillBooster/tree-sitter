@@ -7,9 +7,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use log::debug;
 
-use super::{coincident_tokens::CoincidentTokenIndex, token_conflicts::TokenConflictMap};
+use super::{
+    SymbolIndexer, coincident_tokens::CoincidentTokenIndex, token_conflicts::TokenConflictMap,
+};
 use crate::{
-    dedup::split_state_id_groups,
+    dedup::{SplitCriterion, split_state_id_groups},
     grammars::{LexicalGrammar, SyntaxGrammar},
     nfa::{CharacterSet, NfaCursor, NfaState},
     rules::{Symbol, TokenSet},
@@ -77,17 +79,20 @@ pub fn build_lex_table(
         .chain(immediate_keywords.iter())
         .filter(|&keyword| seen_keywords.insert(keyword))
         .collect();
+    let indexer = SymbolIndexer::new(syntax_grammar, lexical_grammar);
+    let mut entries_by_symbol = vec![None; indexer.token_count() as usize];
     for (i, state) in parse_table.states.iter().enumerate() {
+        for (&symbol, &entry) in state.terminal_entries.iter() {
+            entries_by_symbol[indexer.index(symbol)] = Some(entry);
+        }
+        let has_entry = |symbol| entries_by_symbol[indexer.index(symbol)].is_some();
         let mut retained: Vec<Symbol> = Vec::new();
         if let Some(word_token) = syntax_grammar
             .word_token
             .filter(|token| token.is_terminal())
         {
             for &(pair_kw, other) in unsafe_keyword_pairs {
-                if state.terminal_entries.contains_key(&pair_kw)
-                    && state.terminal_entries.contains_key(&other)
-                    && !state.terminal_entries.contains_key(&word_token)
-                {
+                if has_entry(pair_kw) && has_entry(other) && !has_entry(word_token) {
                     retained.push(pair_kw);
                     if log::log_enabled!(log::Level::Debug) {
                         debug!(
@@ -102,8 +107,8 @@ pub fn build_lex_table(
             }
             for &pair_kw in &deferred_keywords {
                 if retained.contains(&pair_kw)
-                    || !state.terminal_entries.contains_key(&pair_kw)
-                    || (state.terminal_entries.contains_key(&word_token)
+                    || !has_entry(pair_kw)
+                    || (has_entry(word_token)
                         && token_precedence[pair_kw.index as usize]
                             <= token_precedence[word_token.index as usize])
                 {
@@ -120,14 +125,14 @@ pub fn build_lex_table(
                         )
                     })
                     .clone();
-                if !state.terminal_entries.contains_key(&word_token) {
+                if !has_entry(word_token) {
                     let mut word_starts = word_start_chars.clone();
                     forced.remove_intersection(&mut word_starts);
                 }
                 if forced.is_empty() {
                     continue;
                 }
-                let Some(&entry_id) = state.terminal_entries.get(&pair_kw) else {
+                let Some(entry_id) = entries_by_symbol[indexer.index(pair_kw)] else {
                     continue;
                 };
                 let actions = parse_table.action_lists.get(entry_id);
@@ -173,7 +178,7 @@ pub fn build_lex_table(
         let guard_keywords = immediate_keywords
             .iter()
             .filter(|keyword| {
-                state.terminal_entries.contains_key(keyword)
+                has_entry(*keyword)
                     && !retained.contains(keyword)
                     && syntax_grammar.word_token.is_some_and(Symbol::is_terminal)
             })
@@ -187,7 +192,7 @@ pub fn build_lex_table(
                 if token.is_terminal() {
                     let immediate_syntax = lexical_grammar.variables[token.index as usize]
                         .is_immediate
-                        && state.terminal_entries.contains_key(&token);
+                        && has_entry(token);
                     if keywords.contains(token) && !retained.contains(&token) && !immediate_syntax {
                         syntax_grammar.word_token
                     } else {
@@ -227,6 +232,9 @@ pub fn build_lex_table(
 
         if !did_merge {
             parse_state_ids_by_token_set.push((tokens, guard_keywords, vec![i as u32]));
+        }
+        for &symbol in state.terminal_entries.keys() {
+            entries_by_symbol[indexer.index(symbol)] = None;
         }
     }
 
@@ -713,7 +721,7 @@ fn minimize_lex_table(table: &mut LexTable, parse_table: &mut ParseTable) {
         &mut state_ids_by_group_id,
         &mut group_ids_by_state_id,
         1,
-        lex_states_differ,
+        &mut LexStateSplit,
     ) {}
 
     let mut new_states = Vec::with_capacity(state_ids_by_group_id.len());
@@ -735,6 +743,31 @@ fn minimize_lex_table(table: &mut LexTable, parse_table: &mut ParseTable) {
     }
 
     table.states = new_states;
+}
+
+struct LexStateSplit;
+
+impl SplitCriterion<LexState> for LexStateSplit {
+    fn should_split(
+        &mut self,
+        left: &LexState,
+        right: &LexState,
+        group_ids_by_state_id: &[LexStateId],
+    ) -> bool {
+        lex_states_differ(left, right, group_ids_by_state_id)
+    }
+
+    /// The states of a group have the same advance actions apart from the states they lead
+    /// to, so states that don't need to be split lead to the same groups. Every kept state
+    /// leads to the same groups as the first one, and `state` was just found to as well.
+    fn compatible_with_all(
+        &mut self,
+        _state: &LexState,
+        _kept: &[u32],
+        _group_ids_by_state_id: &[LexStateId],
+    ) -> bool {
+        true
+    }
 }
 
 fn lex_states_differ(
