@@ -108,6 +108,7 @@ typedef struct {
   uint16_t capture_ids[MAX_STEP_CAPTURE_COUNT];
   uint16_t depth;
   uint16_t alternative_index;
+  uint16_t alternative_branch_index;
   uint16_t negated_field_list_id;
   bool is_named: 1;
   bool is_immediate: 1;
@@ -956,12 +957,17 @@ static QueryStep query_step__new(
     .symbol = symbol,
     .depth = depth,
     .alternative_index = NONE,
+    .alternative_branch_index = NONE,
     .is_immediate = is_immediate,
   };
   for (unsigned i = 0; i < MAX_STEP_CAPTURE_COUNT; i++) {
     step.capture_ids[i] = NONE;
   }
   return step;
+}
+
+static uint16_t query_step__branch_alternative(const QueryStep *self) {
+  return self->alternative_is_skip ? self->alternative_branch_index : self->alternative_index;
 }
 
 static void query_step__add_capture(QueryStep *self, uint16_t capture_id) {
@@ -1547,6 +1553,12 @@ static void ts_query__perform_analysis(
           }
 
           for (;;) {
+            if (does_match && next_step->alternative_branch_index != NONE) {
+              AnalysisState branch_state = next_state;
+              branch_state.step_index = next_step->alternative_branch_index;
+              analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &branch_state);
+            }
+
             // Skip pass-through states. Although these states have alternatives, they are only
             // used to implement repetitions, and query analysis does not need to process
             // repetitions in order to determine whether steps are possible and definite.
@@ -1914,11 +1926,14 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     AnalysisSubgraph *subgraph = array_get(&subgraphs, subgraph_index);
     analysis_state_set__clear(&analysis.states, &analysis.state_pool);
     analysis_state_set__clear(&analysis.deeper_states, &analysis.state_pool);
+    Array(uint16_t) initial_steps = array_new();
     for (unsigned j = 0; j < subgraph->start_states.size; j++) {
       TSStateId parse_state = *array_get(&subgraph->start_states, j);
       uint16_t first_step_index = parent_step_index + 1;
-      uint16_t step_index = first_step_index;
-      for (;;) {
+      array_clear(&initial_steps);
+      array_push(&initial_steps, first_step_index);
+      for (unsigned initial_index = 0; initial_index < initial_steps.size; initial_index++) {
+        uint16_t step_index = *array_get(&initial_steps, initial_index);
         analysis_state_set__push(&analysis.states, &analysis.state_pool, &((AnalysisState) {
           .step_index = step_index,
           .stack = {
@@ -1934,14 +1949,19 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
           .root_symbol = parent_symbol,
         }));
         const QueryStep *step = array_get(&self->steps, step_index);
-        uint16_t alternative_index = step->alternative_index;
-        if (
-          alternative_index == NONE || alternative_index <= step_index ||
-          array_get(&self->steps, alternative_index)->depth != array_get(&self->steps, first_step_index)->depth
-        ) break;
-        step_index = alternative_index;
+        uint16_t alternatives[] = {step->alternative_index, step->alternative_branch_index};
+        for (unsigned alternative = 0; alternative < 2; alternative++) {
+          uint16_t alternative_index = alternatives[alternative];
+          if (
+            alternative_index != NONE && alternative_index > step_index &&
+            array_get(&self->steps, alternative_index)->depth == array_get(&self->steps, first_step_index)->depth
+          ) {
+            array_insert_sorted_by(&initial_steps, , alternative_index);
+          }
+        }
       }
     }
+    array_delete(&initial_steps);
 
     #ifdef DEBUG_ANALYZE_QUERY
       printf(
@@ -2462,15 +2482,17 @@ static TSQueryError ts_query__parse_pattern(
       uint32_t next_step_index = *array_get(&branch_step_indices, i + 1);
       QueryStep *start_step = array_get(&self->steps, step_index);
       QueryStep *end_step = array_get(&self->steps, next_step_index - 1);
-      while (
-        start_step->alternative_index != NONE &&
-        start_step->alternative_index > step_index &&
-        start_step->alternative_index < next_step_index - 1
-      ) {
-        step_index = start_step->alternative_index;
+      uint16_t branch_index = query_step__branch_alternative(start_step);
+      while (branch_index != NONE && branch_index > step_index && branch_index < next_step_index - 1) {
+        step_index = branch_index;
         start_step = array_get(&self->steps, step_index);
+        branch_index = query_step__branch_alternative(start_step);
       }
-      start_step->alternative_index = next_step_index;
+      if (start_step->alternative_is_skip) {
+        start_step->alternative_branch_index = next_step_index;
+      } else {
+        start_step->alternative_index = next_step_index;
+      }
       end_step->alternative_index = self->steps.size;
       end_step->is_dead_end = true;
     }
@@ -2765,19 +2787,11 @@ static TSQueryError ts_query__parse_pattern(
               // Mark this step *and* its alternatives as the last child of the parent.
               QueryStep *last_child_step = array_get(&self->steps, last_child_step_index);
               last_child_step->is_last_child = true;
-              if (
-                last_child_step->alternative_index != NONE &&
-                last_child_step->alternative_index < self->steps.size
-              ) {
-                QueryStep *alternative_step = array_get(&self->steps, last_child_step->alternative_index);
-                alternative_step->is_last_child = true;
-                while (
-                  alternative_step->alternative_index != NONE &&
-                  alternative_step->alternative_index < self->steps.size
-                ) {
-                  alternative_step = array_get(&self->steps, alternative_step->alternative_index);
-                  alternative_step->is_last_child = true;
-                }
+              uint16_t branch_index = query_step__branch_alternative(last_child_step);
+              while (branch_index != NONE && branch_index < self->steps.size) {
+                last_child_step = array_get(&self->steps, branch_index);
+                last_child_step->is_last_child = true;
+                branch_index = query_step__branch_alternative(last_child_step);
               }
             }
 
@@ -2885,12 +2899,9 @@ static TSQueryError ts_query__parse_pattern(
     QueryStep *step = array_get(&self->steps, step_index);
     for (;;) {
       step->field = field_id;
-      if (
-        step->alternative_index != NONE &&
-        step->alternative_index > step_index &&
-        step->alternative_index < self->steps.size
-      ) {
-        step_index = step->alternative_index;
+      uint16_t branch_index = query_step__branch_alternative(step);
+      if (branch_index != NONE && branch_index > step_index && branch_index < self->steps.size) {
+        step_index = branch_index;
         step = array_get(&self->steps, step_index);
       } else {
         break;
@@ -2957,12 +2968,9 @@ static TSQueryError ts_query__parse_pattern(
       for (;;) {
         QueryStep *step = array_get(&self->steps, step_index);
         query_step__add_capture(step, capture_id);
-        if (
-          step->alternative_index != NONE &&
-          step->alternative_index > step_index &&
-          step->alternative_index < self->steps.size
-        ) {
-          step_index = step->alternative_index;
+        uint16_t branch_index = query_step__branch_alternative(step);
+        if (branch_index != NONE && branch_index > step_index && branch_index < self->steps.size) {
+          step_index = branch_index;
         } else {
           break;
         }
@@ -2977,6 +2985,7 @@ static TSQueryError ts_query__parse_pattern(
 
   QueryStep repeat_step;
   QueryStep *step;
+  uint16_t branch_index;
   switch (quantifier) {
     case TSQuantifierOneOrMore:
       repeat_step = query_step__new(WILDCARD_SYMBOL, depth, false);
@@ -2996,16 +3005,20 @@ static TSQueryError ts_query__parse_pattern(
       // `repeat_step` or beyond. Note that having just been pushed,
       // `repeat_step` occupies slot `self->steps.size - 1`.
       step = array_get(&self->steps, starting_step_index);
-      while (step->alternative_index != NONE && step->alternative_index < self->steps.size - 1) {
-        step = array_get(&self->steps, step->alternative_index);
+      branch_index = query_step__branch_alternative(step);
+      while (branch_index != NONE && branch_index < self->steps.size - 1) {
+        step = array_get(&self->steps, branch_index);
+        branch_index = query_step__branch_alternative(step);
       }
       step->alternative_index = self->steps.size;
       step->alternative_is_skip = true;
       break;
     case TSQuantifierZeroOrOne:
       step = array_get(&self->steps, starting_step_index);
-      while (step->alternative_index != NONE && step->alternative_index < self->steps.size) {
-        step = array_get(&self->steps, step->alternative_index);
+      branch_index = query_step__branch_alternative(step);
+      while (branch_index != NONE && branch_index < self->steps.size) {
+        step = array_get(&self->steps, branch_index);
+        branch_index = query_step__branch_alternative(step);
       }
       step->alternative_index = self->steps.size;
       step->alternative_is_skip = true;
@@ -3090,9 +3103,14 @@ TSQuery *ts_query_new(
     array_push(&self->capture_quantifiers, capture_quantifiers);
 
     // Maintain a map that can look up patterns for a given root symbol.
-    uint16_t wildcard_root_alternative_index = NONE;
-    for (;;) {
+    Array(uint16_t) root_steps = array_new();
+    array_push(&root_steps, start_step_index);
+    for (unsigned root_index = 0; root_index < root_steps.size; root_index++) {
+      start_step_index = *array_get(&root_steps, root_index);
       QueryStep *step = array_get(&self->steps, start_step_index);
+      if (step->alternative_branch_index != NONE) {
+        array_insert_sorted_by(&root_steps, , step->alternative_branch_index);
+      }
 
       // If a pattern has a wildcard at its root, but it has a non-wildcard child,
       // then optimize the matching process by skipping matching the wildcard.
@@ -3101,7 +3119,9 @@ TSQuery *ts_query_new(
       if (step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
         if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
-          wildcard_root_alternative_index = step->alternative_index;
+          if (step->alternative_index != NONE) {
+            array_insert_sorted_by(&root_steps, , step->alternative_index);
+          }
           start_step_index += 1;
           step = second_step;
         }
@@ -3134,23 +3154,16 @@ TSQuery *ts_query_new(
       // If there are alternatives or options at the root of the pattern,
       // then add multiple entries to the pattern map.
       if (step->alternative_index != NONE) {
-        start_step_index = step->alternative_index;
-      } else if (wildcard_root_alternative_index != NONE) {
-        start_step_index = wildcard_root_alternative_index;
-        wildcard_root_alternative_index = NONE;
-      } else {
-        break;
+        array_insert_sorted_by(&root_steps, , step->alternative_index);
+      }
+      if (step->alternative_branch_index != NONE) {
+        array_insert_sorted_by(&root_steps, , step->alternative_branch_index);
       }
     }
+    array_delete(&root_steps);
 
-    // Fix up quantifier loop-backs within alternations. When a branch of an
-    // alternation has a + or * quantifier, the quantifier's pass_through step
-    // loops back to the branch's first step. However, the alternation linking
-    // assigns that same step's `alternative_index` to point to the _next_ branch.
-    // This causes the quantifier loop to incorrectly explore other alternation branches,
-    // when a quantified branch matches, loops back, and then fails to match. To correct
-    // this, we create "clean" copies of the branches' first steps without the link to the
-    // next branch. After a quantified branch matches, it loops back to the cleaned copy.
+    // Continued repetitions must not revisit other alternation branches.
+    // Copy their initial step so its branch and zero-skip links are not taken again.
     {
       uint32_t pat_start = pattern->steps.offset;
       uint32_t pat_end = pat_start + pattern->steps.length - 1; // exclude DONE
@@ -3173,6 +3186,7 @@ TSQuery *ts_query_new(
         uint32_t copy_idx = self->steps.size;
         QueryStep copy = *target;
         copy.alternative_index = NONE;
+        copy.alternative_branch_index = NONE;
         uint16_t target_depth = target->depth;
         array_push(&self->steps, copy);
 
@@ -4437,6 +4451,14 @@ static inline bool ts_query_cursor__advance(
           for (unsigned k = j; k < end_index; k++) {
             QueryState *child_state = array_get(&self->states, k);
             QueryStep *child_step = array_get(&self->query->steps, child_state->step_index);
+            if (child_step->alternative_branch_index != NONE) {
+              QueryState *branch = ts_query_cursor__copy_state(self, &child_state);
+              if (branch) {
+                branch->step_index = child_step->alternative_branch_index;
+                end_index++;
+                copy_count++;
+              }
+            }
             if (child_step->alternative_index != NONE) {
               // A "dead-end" step exists only to add a non-sequential jump into the step sequence,
               // via its alternative index. When a state reaches a dead-end step, it jumps straight

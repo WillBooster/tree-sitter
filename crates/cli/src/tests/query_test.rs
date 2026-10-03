@@ -546,6 +546,42 @@ fn test_query_errors_on_invalid_symbols() {
 }
 
 #[test]
+fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let query = Query::new(
+            &language,
+            "(arguments ([((number)? @n . (identifier) @i) (string) @s]))",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &query,
+            "f(1, \"s\")",
+            &[(0, vec![("s", "\"s\"")])],
+        );
+        let anchored = Query::new(
+            &language,
+            "(arguments . [((number)? . (identifier) @i) (string) @s])",
+        )
+        .unwrap();
+        assert_query_matches(&language, &anchored, "f(1, \"s\")", &[]);
+        let root = Query::new(&language, "[(number)? @n (identifier) @id]").unwrap();
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let source = "f(x)";
+        let tree = parser.parse(source, None).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&root, tree.root_node(), source.as_bytes());
+        let mut ranges = Vec::new();
+        while let Some((matched, index)) = captures.next() {
+            ranges.push(matched.captures()[*index].node.byte_range());
+        }
+        assert_eq!(ranges, vec![0..1, 2..3]);
+    });
+}
+
+#[test]
 fn test_query_errors_on_invalid_predicates() {
     allocations::record(|| {
         let language = get_language("javascript");
