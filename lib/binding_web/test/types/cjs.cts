@@ -20,6 +20,11 @@ export function bindDsl(dsl: DSL) {
   return { alias, blank, choice, eof, field, grammar, optional, prec, repeat, repeat1, reserved, RustRegex, seq, sym, token, left, right, dynamic, immediate };
 }
 
+export function checkInvalidRule(dsl: DSL): void {
+  // @ts-expect-error -- Numeric rules must stay rejected by the public DSL types.
+  dsl.seq(1);
+}
+
 export function createParser(): Parser {
   return new Parser();
 }

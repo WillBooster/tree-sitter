@@ -11,8 +11,9 @@ Contributors to Tree-sitter should abide by the [Contributor Covenant][covenant]
 To make changes to Web-tree-sitter, you should have:
 
 1. A [Rust toolchain][rust], for running the xtasks necessary to build the library.
-2. Node.js and NPM (or an equivalent package manager).
-3. Either [Emscripten][emscripten], [Docker][docker], or [podman][podman] for
+2. Git and [ghq](https://github.com/x-motemen/ghq), with [GitHub SSH authentication](https://docs.github.com/en/authentication/connecting-to-github-with-ssh).
+3. Node.js and NPM (or an equivalent package manager).
+4. Either [Emscripten][emscripten], [Docker][docker], or [podman][podman] for
    compiling the library to Wasm.
 
 ### Building
@@ -78,10 +79,11 @@ you should run:
 npm run build:dts
 ```
 
-[`script/generate-dts.js`](script/generate-dts.js) produces the runtime declarations and copies the grammar DSL
+[`script/generate-dts.js`](script/generate-dts.js) bundles the runtime declarations with [dts-buddy] and copies the grammar DSL
 source from `crates/generate/src/dsl.d.ts` into the package. Edit that generator-side source when changing the DSL types.
 `npx tsc -p test/types` checks the package exports in CommonJS and ESM consumers, including a grammar that binds the
-CLI-injected globals. Declaration maps for the runtime API support editor navigation into `src`.
+CLI-injected globals and an invalid-input diagnostic. `npx eslint --no-ignore test/types/cjs.cts` checks extracted
+DSL helpers for receiver restrictions. Declaration maps for the runtime API support editor navigation into `src`.
 
 Legacy `moduleResolution: node10` consumers use `typesVersions` in `package.json`. The consumer checks use
 NodeNext resolution; verify the legacy mapping separately when changing it.
@@ -135,7 +137,7 @@ npm run test:browser
 
 ### Debugging
 
-You might have noticed that when you ran `npm build`, the build process generated a couple of [sourcemaps][sourcemap]:
+You might have noticed that when you ran `npm run build`, the build process generated a couple of [sourcemaps][sourcemap]:
 `web-tree-sitter.js.map`, `web-tree-sitter.web.js.map`, and `web-tree-sitter.wasm.map`. These sourcemaps can be used to debug the library in the browser, and are
 shipped with the library on NPM.
 
