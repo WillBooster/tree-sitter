@@ -6,10 +6,11 @@ const root = fileURLToPath(new URL("../..", import.meta.url));
 // Keep the require relative: Bun cannot embed an addon loaded through the computed root path.
 let binding;
 if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
+  // Catching the require lets Bun compile apps that bundle this grammar without loading it or supplying a prebuild.
   try {
     binding = require(`../../prebuilds/${process.platform}-${process.arch}/tree-sitter-KEBAB_PARSER_NAME.node`);
   } catch (error) {
-    throw new Error("The grammar's native prebuild is unavailable for this standalone executable", { cause: error });
+    throw new Error("The grammar's native prebuild is unavailable; provide a target prebuild and recompile the standalone executable", { cause: error });
   }
 } else {
   binding = (await import("node-gyp-build")).default(root);
