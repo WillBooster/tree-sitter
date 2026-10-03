@@ -70,6 +70,16 @@ pub struct Symbol {
 
 impl Symbol {
     #[must_use]
+    pub fn terminal_index(self) -> Option<usize> {
+        self.is_terminal().then_some(self.index as usize)
+    }
+
+    #[must_use]
+    pub fn non_terminal_index(self) -> Option<usize> {
+        self.is_non_terminal().then_some(self.index as usize)
+    }
+
+    #[must_use]
     pub fn is_terminal(self) -> bool {
         self.kind == SymbolType::Terminal
     }
@@ -521,7 +531,6 @@ impl RuleId {
     }
 }
 
-/// Index into [`RulePool::params`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ParamsId(u32);
 
