@@ -945,6 +945,20 @@ fn update_package_json(path: &Path, node_bindings: bool) -> Result<()> {
             }
         }
         if package != original {
+            let dependencies_changed = [
+                "dependencies",
+                "devDependencies",
+                "peerDependencies",
+                "peerDependenciesMeta",
+            ]
+            .iter()
+            .any(|field| package.get(field) != original.get(field));
+            if dependencies_changed && path.with_file_name("package-lock.json").exists() {
+                warn!(
+                    "Node dependencies changed in {}. Run `npm install` to refresh package-lock.json before `npm ci`.",
+                    path.display()
+                );
+            }
             contents = serde_json::to_string_pretty(&package)? + "\n";
         }
     }
