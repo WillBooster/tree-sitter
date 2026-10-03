@@ -123,6 +123,8 @@ typedef struct {
   bool alternative_is_skip: 1;
 } QueryStep;
 
+typedef Array(uint16_t) QueryStepIndexArray;
+
 /*
  * Slice - A slice of an external array. Within a query, capture names,
  * literal string values, and predicate step information are stored in three
@@ -968,6 +970,27 @@ static QueryStep query_step__new(
 
 static uint16_t query_step__branch_alternative(const QueryStep *self) {
   return self->alternative_is_skip ? self->alternative_branch_index : self->alternative_index;
+}
+
+static QueryStepIndexArray query_step__initial_indices(
+  const QueryStep *steps,
+  uint16_t first,
+  uint32_t end
+) {
+  QueryStepIndexArray result = array_new();
+  array_push(&result, first);
+  for (unsigned i = 0; i < result.size; i++) {
+    uint16_t index = *array_get(&result, i);
+    const QueryStep *step = &steps[index];
+    uint16_t alternatives[] = {step->alternative_index, step->alternative_branch_index};
+    for (unsigned j = 0; j < 2; j++) {
+      uint16_t alternative = alternatives[j];
+      if (alternative != NONE && alternative > index && alternative < end) {
+        array_insert_sorted_by(&result, , alternative);
+      }
+    }
+  }
+  return result;
 }
 
 static void query_step__add_capture(QueryStep *self, uint16_t capture_id) {
@@ -2785,14 +2808,13 @@ static TSQueryError ts_query__parse_pattern(
                 return TSQueryErrorSyntax;
               }
               // Mark this step *and* its alternatives as the last child of the parent.
-              QueryStep *last_child_step = array_get(&self->steps, last_child_step_index);
-              last_child_step->is_last_child = true;
-              uint16_t branch_index = query_step__branch_alternative(last_child_step);
-              while (branch_index != NONE && branch_index < self->steps.size) {
-                last_child_step = array_get(&self->steps, branch_index);
-                last_child_step->is_last_child = true;
-                branch_index = query_step__branch_alternative(last_child_step);
+              QueryStepIndexArray initial_steps = query_step__initial_indices(
+                self->steps.contents, last_child_step_index, self->steps.size
+              );
+              for (unsigned i = 0; i < initial_steps.size; i++) {
+                array_get(&self->steps, *array_get(&initial_steps, i))->is_last_child = true;
               }
+              array_delete(&initial_steps);
             }
 
             if (negated_field_count) {
@@ -2895,18 +2917,13 @@ static TSQueryError ts_query__parse_pattern(
       return TSQueryErrorField;
     }
 
-    uint32_t step_index = starting_step_index;
-    QueryStep *step = array_get(&self->steps, step_index);
-    for (;;) {
-      step->field = field_id;
-      uint16_t branch_index = query_step__branch_alternative(step);
-      if (branch_index != NONE && branch_index > step_index && branch_index < self->steps.size) {
-        step_index = branch_index;
-        step = array_get(&self->steps, step_index);
-      } else {
-        break;
-      }
+    QueryStepIndexArray initial_steps = query_step__initial_indices(
+      self->steps.contents, starting_step_index, self->steps.size
+    );
+    for (unsigned i = 0; i < initial_steps.size; i++) {
+      array_get(&self->steps, *array_get(&initial_steps, i))->field = field_id;
     }
+    array_delete(&initial_steps);
 
     capture_quantifiers_add_all(capture_quantifiers, &field_capture_quantifiers);
     capture_quantifiers_delete(&field_capture_quantifiers);
@@ -2964,17 +2981,14 @@ static TSQueryError ts_query__parse_pattern(
       // Add the capture quantifier
       capture_quantifiers_add_for_id(capture_quantifiers, capture_id, TSQuantifierOne);
 
-      uint32_t step_index = starting_step_index;
-      for (;;) {
-        QueryStep *step = array_get(&self->steps, step_index);
+      QueryStepIndexArray initial_steps = query_step__initial_indices(
+        self->steps.contents, starting_step_index, self->steps.size
+      );
+      for (unsigned i = 0; i < initial_steps.size; i++) {
+        QueryStep *step = array_get(&self->steps, *array_get(&initial_steps, i));
         query_step__add_capture(step, capture_id);
-        uint16_t branch_index = query_step__branch_alternative(step);
-        if (branch_index != NONE && branch_index > step_index && branch_index < self->steps.size) {
-          step_index = branch_index;
-        } else {
-          break;
-        }
       }
+      array_delete(&initial_steps);
     }
 
     // No more suffix modifiers
@@ -2985,7 +2999,7 @@ static TSQueryError ts_query__parse_pattern(
 
   QueryStep repeat_step;
   QueryStep *step;
-  uint16_t branch_index;
+  QueryStepIndexArray initial_steps;
   switch (quantifier) {
     case TSQuantifierOneOrMore:
       repeat_step = query_step__new(WILDCARD_SYMBOL, depth, false);
@@ -3004,22 +3018,20 @@ static TSQueryError ts_query__parse_pattern(
       // Stop when `step->alternative_index` is `NONE` or it points to
       // `repeat_step` or beyond. Note that having just been pushed,
       // `repeat_step` occupies slot `self->steps.size - 1`.
-      step = array_get(&self->steps, starting_step_index);
-      branch_index = query_step__branch_alternative(step);
-      while (branch_index != NONE && branch_index < self->steps.size - 1) {
-        step = array_get(&self->steps, branch_index);
-        branch_index = query_step__branch_alternative(step);
-      }
+      initial_steps = query_step__initial_indices(
+        self->steps.contents, starting_step_index, self->steps.size - 1
+      );
+      step = array_get(&self->steps, *array_back(&initial_steps));
+      array_delete(&initial_steps);
       step->alternative_index = self->steps.size;
       step->alternative_is_skip = true;
       break;
     case TSQuantifierZeroOrOne:
-      step = array_get(&self->steps, starting_step_index);
-      branch_index = query_step__branch_alternative(step);
-      while (branch_index != NONE && branch_index < self->steps.size) {
-        step = array_get(&self->steps, branch_index);
-        branch_index = query_step__branch_alternative(step);
-      }
+      initial_steps = query_step__initial_indices(
+        self->steps.contents, starting_step_index, self->steps.size
+      );
+      step = array_get(&self->steps, *array_back(&initial_steps));
+      array_delete(&initial_steps);
       step->alternative_index = self->steps.size;
       step->alternative_is_skip = true;
       break;
@@ -3108,6 +3120,10 @@ TSQuery *ts_query_new(
     for (unsigned root_index = 0; root_index < root_steps.size; root_index++) {
       start_step_index = *array_get(&root_steps, root_index);
       QueryStep *step = array_get(&self->steps, start_step_index);
+      if (step->is_dead_end) {
+        array_insert_sorted_by(&root_steps, , step->alternative_index);
+        continue;
+      }
       if (step->alternative_branch_index != NONE) {
         array_insert_sorted_by(&root_steps, , step->alternative_branch_index);
       }

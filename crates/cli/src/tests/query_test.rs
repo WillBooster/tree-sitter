@@ -566,6 +566,19 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
         )
         .unwrap();
         assert_query_matches(&language, &anchored, "f(1, \"s\")", &[]);
+        for (pattern, expected) in [
+            (
+                "(arguments ((number)? . (string)) @g)",
+                vec![("g", "\"s\"")],
+            ),
+            (
+                "(arguments ((number)? . (string) @s)? @g)",
+                vec![("s", "\"s\""), ("g", "\"s\"")],
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, "f(\"s\")", &[(0, expected)]);
+        }
         let root = Query::new(&language, "[(number)? @n (identifier) @id]").unwrap();
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
