@@ -664,7 +664,11 @@ impl fmt::Display for TokenSetDisplay<'_> {
                 write!(f, ", ")?;
             }
 
-            if symbol.is_terminal() {
+            if symbol.is_eof() {
+                write!(f, "<EOF>")?;
+            } else if symbol.kind == SymbolType::EndOfNonTerminalExtra {
+                write!(f, "<END_OF_NONTERMINAL_EXTRA>")?;
+            } else if symbol.is_terminal() {
                 if let Some(variable) = self.2.variables.get(symbol.index as usize) {
                     write!(
                         f,
