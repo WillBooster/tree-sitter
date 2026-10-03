@@ -123,6 +123,7 @@ jobs:
       - run: cargo xtask fetch-fixtures
       - if: steps.cache.outputs.cache-hit != 'true'
         run: cargo xtask generate-fixtures --wasm
+      - run: cargo test -p tree-sitter-cli --features wasm --locked tests::wasm_language_test
       - run: npm ci
         working-directory: lib/binding_web
       # Without emcc on the runner, xtask builds the Wasm library in the emscripten Docker image.
