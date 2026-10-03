@@ -62,8 +62,6 @@ typedef struct {
  * which forbids additional child nodes:
  * - `is_immediate` - Indicates that the node matching this step cannot be preceded
  *    by other sibling nodes that weren't specified in the pattern.
- * - `is_last_child` - Indicates that the node matching this step cannot have any
- *    subsequent named siblings.
  *
  * For simple patterns, steps are matched in sequential order. But in order to
  * handle alternative/repeated/optional sub-patterns, query steps are not always
@@ -77,9 +75,6 @@ typedef struct {
  *    step, so this splitting is an iterative process.
  * - `is_dead_end` - Indicates that this state cannot be passed directly, and
  *    exists only in order to redirect to an alternative index, with no splitting.
- * - `is_pass_through` - Indicates that state has no matching logic of its own,
- *    and exists only to split a state. One copy of the state advances immediately
- *    to the next step, and one moves to the alternative step.
  * - `alternative_is_skip` - Indicates that this step's `alternative_index` is the
  *    forward skip introduced by a `?` or `*` quantifier (the branch taken when the
  *    quantifier matches zero occurrences). For a state that follows it, an
