@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use etcetera::BaseStrategy as _;
 use indoc::indoc;
 use notify::{
@@ -16,10 +16,12 @@ use notify::{
     event::{AccessKind, AccessMode},
 };
 use notify_debouncer_full::new_debouncer;
+use regex::Regex;
 use tree_sitter_loader::{IoError, LoaderError, WasmToolError};
 
 use crate::{
-    BuildWasm, EMSCRIPTEN_TAG, bail_on_err, embed_sources::embed_sources_in_map, watch_wasm,
+    BuildWasm, EMSCRIPTEN_TAG, EMSCRIPTEN_VERSION, bail_on_err,
+    embed_sources::embed_sources_in_map, watch_wasm,
 };
 
 #[derive(PartialEq, Eq)]
@@ -258,6 +260,12 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         };
     }
 
+    let runtime_path = if args.cjs {
+        binding_file!(".cjs")
+    } else {
+        binding_file!(".mjs")
+    };
+
     #[rustfmt::skip]
     emscripten_flags.extend([
         "-gsource-map=inline",
@@ -286,7 +294,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "-I", "lib/include",
         "--js-library", "lib/binding_web/lib/imports.js",
         "--pre-js",     "lib/binding_web/lib/prefix.js",
-        "-o",           if args.cjs { binding_file!(".cjs") } else { binding_file!(".mjs") },
+        "-o",           runtime_path,
         "lib/src/lib.c",
         "lib/binding_web/lib/tree-sitter.c",
     ]);
@@ -297,18 +305,46 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
     let command = command.args(&emscripten_flags);
 
     if args.watch {
-        watch_wasm!(|| build_wasm(command, args.emit_tsd));
+        watch_wasm!(|| build_wasm(command, args.emit_tsd, runtime_path));
     } else {
-        build_wasm(command, args.emit_tsd)?;
+        build_wasm(command, args.emit_tsd, runtime_path)?;
     }
 
     Ok(())
 }
 
-fn build_wasm(cmd: &mut Command, edit_tsd: bool) -> Result<()> {
+fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<()> {
     bail_on_err(
         &cmd.spawn()?.wait_with_output()?,
         "Failed to compile the Tree-sitter Wasm library",
+    )?;
+
+    // Emscripten 4.0.15 uses synchronous instantiation even in its async module loader,
+    // which Chrome rejects for modules larger than 8 MiB.
+    let runtime = fs::read_to_string(runtime_path)?;
+    let synchronous_instantiation = Regex::new(concat!(
+        r"(if \(flags.loadAsync\) \{\s+",
+        r"return \(async \(\) => \{\s+",
+        r"var instance;\s+",
+        r"if \(binary instanceof WebAssembly.Module\) \{\s+)",
+        r"instance = new WebAssembly.Instance\(binary, info\);",
+    ))?;
+    ensure!(
+        synchronous_instantiation.find_iter(&runtime).count() == 1,
+        "Expected exactly one synchronous constructor in the async module loader in {runtime_path}. \
+         Install and activate Emscripten {EMSCRIPTEN_VERSION}, then source that SDK's emsdk_env.sh \
+         (run emsdk_env.bat on Windows) so emcc on PATH uses it, or build with --docker. \
+         If the pinned SDK is already in use, update the loader pattern in crates/xtask/src/build_wasm.rs"
+    );
+    fs::write(
+        runtime_path,
+        synchronous_instantiation
+            .replacen(
+                &runtime,
+                1,
+                "${1}instance = await WebAssembly.instantiate(binary, info);",
+            )
+            .as_ref(),
     )?;
 
     if edit_tsd {
