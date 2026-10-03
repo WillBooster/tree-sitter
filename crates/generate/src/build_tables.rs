@@ -462,7 +462,12 @@ fn identify_keywords(
         }
 
         debug!(
-            "Keywords - include {}",
+            "Keywords - {} {}",
+            if keywords.contains(token) {
+                "include"
+            } else {
+                "guard-immediate"
+            },
             str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
         );
     }
