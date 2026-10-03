@@ -103,6 +103,52 @@ fn test_regex_extra_preserves_matching_named_token() {
 }
 
 #[test]
+fn test_incremental_lexing_after_nonterminal_extra() {
+    let language = get_test_fixture_language("incremental_nonterminal_extra");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let original = b"main :: () {}\n// comment\n#import \"Basic\";\n";
+    let mut source = original.to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    let expected =
+        "(program (block_decl (identifier) (function (block))) (comment) (import (string)))";
+    assert_eq!(tree.root_node().to_sexp(), expected);
+    let position = source
+        .windows(7)
+        .position(|text| text == b"#import")
+        .unwrap();
+    for _ in 0..2 {
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position,
+                deleted_length: 0,
+                inserted_text: b"/".to_vec(),
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position,
+                deleted_length: 1,
+                inserted_text: Vec::new(),
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        assert_eq!(source, original);
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        assert!(!tree.root_node().has_error());
+    }
+}
+
+#[test]
 fn test_parsing_simple_string() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
