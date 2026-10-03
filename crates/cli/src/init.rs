@@ -387,10 +387,12 @@ fn generate_common_files(
     let package_path = ctx.repo_path.join("package.json");
     if node_bindings && !ctx.allow_update && package_path.exists() {
         let package: Value = serde_json::from_str(&fs::read_to_string(&package_path)?)?;
-        if package.get("main").is_none() && package["dependencies"].get("node-addon-api").is_none()
+        if package.get("main").is_none()
+            || package["dependencies"].get("node-addon-api").is_none()
+            || package["dependencies"].get("node-gyp-build").is_none()
         {
             warn!(
-                "Node bindings are enabled, but package.json has no Node binding setup. Run `tree-sitter init --update` to add missing entries."
+                "Node bindings are enabled, but package.json is missing Node binding setup. Run `tree-sitter init --update` to add missing entries."
             );
         }
     }
