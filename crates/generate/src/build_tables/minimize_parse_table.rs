@@ -1306,14 +1306,17 @@ fn merge_entries<V>(
     positions: &mut [Option<usize>],
     indexer: SymbolIndexer,
 ) {
+    let mut added = Vec::new();
     for (symbol, value) in other {
         let position = &mut positions[indexer.index(symbol)];
         if let Some(position) = *position {
-            // INVARIANT: `positions` only holds positions of `entries`' entries.
             *entries.get_index_mut(position).unwrap().1 = value;
         } else {
-            *position = Some(entries.len());
-            entries.push(symbol, value);
+            *position = Some(entries.len() + added.len());
+            added.push((symbol, value));
         }
+    }
+    if !added.is_empty() {
+        entries.extend(added);
     }
 }

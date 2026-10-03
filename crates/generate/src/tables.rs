@@ -322,11 +322,6 @@ impl<V> ParseStateEntries<V> {
         }));
     }
 
-    pub fn push(&mut self, symbol: Symbol, value: V) {
-        debug_assert!(!self.contains_key(symbol));
-        self.0.push((symbol, value));
-    }
-
     pub fn reserve_exact(&mut self, additional: usize) {
         self.0.reserve_exact(additional);
     }
