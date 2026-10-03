@@ -64,6 +64,9 @@ module.exports = grammar({
 The declaration module exports types. The CLI supplies the functions at runtime.
 This pattern keeps the declarations local when composing grammars with other DSL types.
 
+For grammar verification, enable `strict` and `noUncheckedIndexedAccess` so an unknown rule lookup is rejected.
+Use the injected `sym(name)` helper for intentionally synthetic alias or external names.
+
 ### Basic Usage
 
 First, create a parser:
@@ -246,15 +249,12 @@ and not `http://localhost:3000/_next/static/chunks/pages/web-tree-sitter.wasm`.
 
 For more information on the module options you can pass in, see the [emscripten documentation][emscripten-module-options].
 
+## Development
+
+For changes to the bindings or DSL declarations, read [the contributor guide](https://github.com/WillBooster/tree-sitter/blob/main/lib/binding_web/CONTRIBUTING.md).
+
 [emscripten-module-options]: https://emscripten.org/docs/api_reference/module.html#affecting-execution
 [gh release js]: https://github.com/tree-sitter/tree-sitter-javascript/releases/latest
 [releases]: https://github.com/WillBooster/tree-sitter/releases
 [node bindings]: https://github.com/tree-sitter/node-tree-sitter
 [wasi-sdk]: https://github.com/WebAssembly/wasi-sdk
-
-For grammar verification, enable `strict` and `noUncheckedIndexedAccess` so an unknown rule lookup is rejected.
-Use the injected `sym(name)` helper for intentionally synthetic alias or external names.
-
-## Development
-
-For changes to the bindings or DSL declarations, read [the contributor guide](https://github.com/WillBooster/tree-sitter/blob/main/lib/binding_web/CONTRIBUTING.md).
