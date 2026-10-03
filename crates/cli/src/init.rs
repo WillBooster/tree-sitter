@@ -386,7 +386,10 @@ fn generate_common_files(
 ) -> Result<()> {
     let package_path = ctx.repo_path.join("package.json");
     if node_bindings && !ctx.allow_update && package_path.exists() {
-        let package: Value = serde_json::from_str(&fs::read_to_string(&package_path)?)?;
+        let contents = fs::read_to_string(&package_path)?;
+        let package: Value =
+            serde_json::from_str(contents.strip_prefix('\u{feff}').unwrap_or(&contents))
+                .with_context(|| format!("Failed to parse {}", package_path.display()))?;
         if package.get("main").is_none()
             || package["dependencies"].get("node-addon-api").is_none()
             || package["dependencies"].get("node-gyp-build").is_none()
@@ -894,7 +897,9 @@ fn update_package_json(path: &Path, node_bindings: bool) -> Result<()> {
         );
     }
     if node_bindings {
-        let mut package: Value = serde_json::from_str(&contents)?;
+        let mut package: Value =
+            serde_json::from_str(contents.strip_prefix('\u{feff}').unwrap_or(&contents))
+                .with_context(|| format!("Failed to parse {}", path.display()))?;
         let original = package.clone();
         let template: Value = serde_json::from_str(PACKAGE_JSON_TEMPLATE)?;
         let fields = package
