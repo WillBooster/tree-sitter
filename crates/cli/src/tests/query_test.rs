@@ -1985,6 +1985,12 @@ fn test_query_matches_with_trailing_anchor_after_nested_repetition() {
             &[(0, vec![("fn", "a"), ("fn", "b")])],
         );
 
+        let nullable = Query::new(
+            &language,
+            "(program ((empty_statement) [(comment) (lexical_declaration)] ((lexical_declaration)? [(expression_statement)]?)+)* .)",
+        ).unwrap();
+        assert_query_matches(&language, &nullable, "; const x = 1;", &[(0, vec![])]);
+
         let grouped = Query::new(
             &language,
             "(program . ((expression_statement) @call (empty_statement) @semi)+ .)",

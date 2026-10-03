@@ -206,6 +206,7 @@ typedef struct {
   uint16_t start_depth;
   uint16_t step_index;
   uint16_t pattern_index;
+  uint16_t repetition_entry;
   uint16_t consumed_capture_count: 12;
   bool seeking_immediate_match: 1;
   bool has_in_progress_alternatives: 1;
@@ -3838,6 +3839,7 @@ static void ts_query_cursor__add_state(
     .pattern_index = pattern->pattern_index,
     .start_depth = start_depth,
     .consumed_capture_count = 0,
+    .repetition_entry = NONE,
     .seeking_immediate_match = true,
     .has_in_progress_alternatives = false,
     .needs_parent = step->depth == 1,
@@ -4426,6 +4428,7 @@ static inline bool ts_query_cursor__advance(
           // step it lands on. Once the state advances, a later anchor is normal.
           state->skipped_quantifier = false;
           state->needs_repeated_match = false;
+          state->repetition_entry = NONE;
 
           if (stop_on_definite_step && next_step->root_pattern_guaranteed) did_match = true;
 
@@ -4466,6 +4469,11 @@ static inline bool ts_query_cursor__advance(
                     ts_tree_cursor_delete(&repetition_cursor);
                   }
                   if (repetition_has_later_named_siblings) {
+                    if (child_step->alternative_index >= child_state->repetition_entry) {
+                      child_state->dead = true;
+                      continue;
+                    }
+                    child_state->repetition_entry = child_step->alternative_index;
                     child_state->step_index = child_step->alternative_index;
                     child_state->seeking_immediate_match = true;
                     child_state->needs_repeated_match = true;
@@ -4485,6 +4493,10 @@ static inline bool ts_query_cursor__advance(
                 continue;
               }
 
+              bool is_loop_back = child_step->is_pass_through &&
+                child_step->alternative_index < (uint16_t)(child_step - self->query->steps.contents);
+              if (is_loop_back && child_step->alternative_index >= child_state->repetition_entry) continue;
+
               QueryState *copy = ts_query_cursor__copy_state(self, &child_state);
               if (copy) {
                 LOG(
@@ -4498,6 +4510,7 @@ static inline bool ts_query_cursor__advance(
                 end_index++;
                 copy_count++;
                 copy->step_index = child_step->alternative_index;
+                if (is_loop_back) copy->repetition_entry = child_step->alternative_index;
                 if (child_step->is_pass_through) {
                   copy->seeking_immediate_match = true;
                 }
