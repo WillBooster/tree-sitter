@@ -586,18 +586,45 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
             let query = Query::new(&language, pattern).unwrap();
             assert_query_matches(&language, &query, "f(x, /r/)", &[(0, vec![("r", "/r/")])]);
         }
-        let root = Query::new(&language, "[(number)? @n (identifier) @id]").unwrap();
-        let mut parser = Parser::new();
-        parser.set_language(&language).unwrap();
-        let source = "f(x)";
-        let tree = parser.parse(source, None).unwrap();
-        let mut cursor = QueryCursor::new();
-        let mut captures = cursor.captures(&root, tree.root_node(), source.as_bytes());
-        let mut ranges = Vec::new();
-        while let Some((matched, index)) = captures.next() {
-            ranges.push(matched.captures()[*index].node.byte_range());
+        for quantifier in ['?', '*'] {
+            let query = Query::new(
+                &language,
+                &format!("(arguments ([(number)? @n (string) @s] (identifier) @i){quantifier})"),
+            )
+            .unwrap();
+            for source in ["f(1)", "f(\"s\")"] {
+                assert_query_matches(&language, &query, source, &[(0, vec![])]);
+            }
+            assert_query_matches(
+                &language,
+                &query,
+                "f(1,x)",
+                &[(0, vec![("n", "1"), ("i", "x")])],
+            );
+            assert_query_matches(
+                &language,
+                &query,
+                "f(\"s\",x)",
+                &[(0, vec![("s", "\"s\""), ("i", "x")])],
+            );
         }
-        assert_eq!(ranges, vec![0..1, 2..3]);
+        for pattern in [
+            "[(number)? @n (identifier) @id]",
+            "[((number)? (string))? @g (identifier) @id]",
+        ] {
+            let root = Query::new(&language, pattern).unwrap();
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let source = "f(x)";
+            let tree = parser.parse(source, None).unwrap();
+            let mut cursor = QueryCursor::new();
+            let mut captures = cursor.captures(&root, tree.root_node(), source.as_bytes());
+            let mut ranges = Vec::new();
+            while let Some((matched, index)) = captures.next() {
+                ranges.push(matched.captures()[*index].node.byte_range());
+            }
+            assert_eq!(ranges, vec![0..1, 2..3]);
+        }
     });
 }
 
