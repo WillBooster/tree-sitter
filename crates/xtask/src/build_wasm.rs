@@ -332,7 +332,8 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
     ensure!(
         synchronous_instantiation.find_iter(&runtime).count() == 1,
         "Expected exactly one synchronous constructor in the async module loader in {runtime_path}. \
-         Use Emscripten {EMSCRIPTEN_VERSION} with --docker or cargo xtask fetch-emscripten. \
+         Install and activate Emscripten {EMSCRIPTEN_VERSION}, then source that SDK's emsdk_env.sh \
+         (run emsdk_env.bat on Windows) so emcc on PATH uses it, or build with --docker. \
          If the pinned SDK is already in use, update the loader pattern in crates/xtask/src/build_wasm.rs"
     );
     fs::write(
