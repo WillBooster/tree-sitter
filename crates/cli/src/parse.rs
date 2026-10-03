@@ -662,6 +662,7 @@ pub fn parse_file_at_path(
             }
         }
 
+        let first_error = first_error.or(earliest_node_with_error);
         if first_error.is_some() || opts.print_time {
             let path = path.to_string_lossy();
             write!(
@@ -688,8 +689,10 @@ pub fn parse_file_at_path(
                     } else {
                         write!(&mut stdout, "MISSING \"{node_text}\"")?;
                     }
-                } else {
+                } else if node.is_error() {
                     write!(&mut stdout, "{node_text}")?;
+                } else {
+                    write!(&mut stdout, "ERROR in {node_text}")?;
                 }
 
                 let start = node.start_position();
