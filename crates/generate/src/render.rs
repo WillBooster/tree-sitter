@@ -1365,8 +1365,6 @@ impl Generator {
             add_line!(self, "[STATE({i})] = {{");
             indent!(self);
 
-            // Ensure the entries are in a deterministic order, since they are
-            // internally represented as a hash map.
             terminal_entries.clear();
             nonterminal_entries.clear();
             terminal_entries.extend(state.terminal_entries.iter());
