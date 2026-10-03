@@ -20,7 +20,8 @@ use regex::Regex;
 use tree_sitter_loader::{IoError, LoaderError, WasmToolError};
 
 use crate::{
-    BuildWasm, EMSCRIPTEN_TAG, bail_on_err, embed_sources::embed_sources_in_map, watch_wasm,
+    BuildWasm, EMSCRIPTEN_TAG, EMSCRIPTEN_VERSION, bail_on_err,
+    embed_sources::embed_sources_in_map, watch_wasm,
 };
 
 #[derive(PartialEq, Eq)]
@@ -330,8 +331,9 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
     ))?;
     ensure!(
         synchronous_instantiation.find_iter(&runtime).count() == 1,
-        "Expected exactly one synchronous constructor in the async module loader in {runtime_path}; \
-         use the pinned Emscripten SDK with --docker or cargo xtask fetch-emscripten"
+        "Expected exactly one synchronous constructor in the async module loader in {runtime_path}. \
+         Use Emscripten {EMSCRIPTEN_VERSION} with --docker or cargo xtask fetch-emscripten. \
+         If the pinned SDK is already in use, update the loader pattern in crates/xtask/src/build_wasm.rs"
     );
     fs::write(
         runtime_path,
