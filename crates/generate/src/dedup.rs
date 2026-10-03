@@ -43,12 +43,6 @@ pub trait SplitCriterion<S> {
     }
 }
 
-/// Splits every group from `start_group_id` on, including the groups split off from them, so
-/// that no group has two states that `criterion` separates. Returns whether any group split.
-///
-/// A group's states are scanned in order: each state stays unless it must be split from a
-/// state that stayed before it, and the states that don't stay form a new group, ordered by
-/// the state they were split from, then by position.
 pub fn split_state_id_groups<S>(
     states: &[S],
     state_ids_by_group_id: &mut Vec<Vec<u32>>,
