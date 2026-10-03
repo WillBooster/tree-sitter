@@ -149,9 +149,35 @@ static void ts_lexer_goto(Lexer *self, Length position) {
 
   self->current_position = position;
 
-  // Move to the first valid position at or after the given position.
+  unsigned first_range = 0;
+  if (self->included_range_count > 1) {
+    first_range = self->current_included_range_index;
+    if (
+      first_range > 0 && first_range <= self->included_range_count &&
+      self->included_ranges[first_range - 1].end_byte > position.bytes
+    ) {
+      first_range--;
+    }
+    if (
+      first_range >= self->included_range_count ||
+      self->included_ranges[first_range].end_byte <= position.bytes ||
+      (first_range > 0 && self->included_ranges[first_range - 1].end_byte > position.bytes)
+    ) {
+      first_range = 0;
+      unsigned end = self->included_range_count;
+      while (first_range < end) {
+        unsigned mid = first_range + (end - first_range) / 2;
+        if (self->included_ranges[mid].end_byte <= position.bytes) {
+          first_range = mid + 1;
+        } else {
+          end = mid;
+        }
+      }
+    }
+  }
+
   bool found_included_range = false;
-  for (unsigned i = 0; i < self->included_range_count; i++) {
+  for (unsigned i = first_range; i < self->included_range_count; i++) {
     TSRange *included_range = &self->included_ranges[i];
     if (
       included_range->end_byte > self->current_position.bytes &&

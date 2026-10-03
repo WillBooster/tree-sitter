@@ -1411,6 +1411,78 @@ fn test_parsing_with_one_included_range() {
 }
 
 #[test]
+fn test_parsing_with_empty_included_ranges_and_parser_reuse() {
+    let source = "// header\n[0, // first\n1, // second\n2] // footer\n";
+    let ranges = ["[0, ", "1, ", "2]"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let start_byte = source.find(text).unwrap();
+            Range {
+                start_byte,
+                end_byte: start_byte + text.len(),
+                start_point: Point::new(i + 1, 0),
+                end_point: Point::new(i + 1, text.len()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let empty_range = |byte, point| Range {
+        start_byte: byte,
+        end_byte: byte,
+        start_point: point,
+        end_point: point,
+    };
+    let mut ranges_with_empty = vec![empty_range(0, Point::new(0, 0))];
+    for range in &ranges {
+        ranges_with_empty.extend([
+            empty_range(range.start_byte, range.start_point),
+            *range,
+            empty_range(range.end_byte, range.end_point),
+        ]);
+    }
+    ranges_with_empty.push(empty_range(source.len(), Point::new(4, 0)));
+
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("json")).unwrap();
+    for included_ranges in [&ranges, &ranges_with_empty, &ranges] {
+        parser.set_included_ranges(included_ranges).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let reused_tree = parser.parse(source, Some(&tree)).unwrap();
+        for tree in [&tree, &reused_tree] {
+            let root = tree.root_node();
+            assert!(!root.has_error());
+            assert_eq!(
+                root.to_sexp(),
+                "(document (array (number) (number) (number)))"
+            );
+            let array = root.named_child(0).unwrap();
+            for (i, range) in ranges.iter().enumerate() {
+                let number = array.named_child(i as u32).unwrap();
+                let start = range.start_byte + usize::from(i == 0);
+                assert_eq!(number.start_byte(), start);
+                assert_eq!(number.end_byte(), start + 1);
+                assert_eq!(
+                    number.start_position(),
+                    Point::new(i + 1, usize::from(i == 0))
+                );
+            }
+        }
+    }
+
+    parser
+        .set_included_ranges(&[
+            empty_range(0, Point::new(0, 0)),
+            empty_range(ranges[0].start_byte, ranges[0].start_point),
+            empty_range(source.len(), Point::new(4, 0)),
+        ])
+        .unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), "(document)");
+    assert_eq!(tree.root_node().start_byte(), source.len());
+    assert_eq!(tree.root_node().end_byte(), source.len());
+}
+
+#[test]
 fn test_parsing_with_multiple_included_ranges() {
     let source_code = "html `<div>Hello, ${name.toUpperCase()}, it's <b>${now()}</b>.</div>`";
 

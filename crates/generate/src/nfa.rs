@@ -37,6 +37,7 @@ pub struct Nfa {
 pub struct NfaCursor<'a> {
     pub(crate) state_ids: Vec<u32>,
     nfa: &'a Nfa,
+    visited_states: Vec<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -509,18 +510,35 @@ impl fmt::Debug for Nfa {
 
 impl<'a> NfaCursor<'a> {
     #[must_use]
-    pub fn new(nfa: &'a Nfa, mut states: Vec<u32>) -> Self {
+    pub fn new(nfa: &'a Nfa, states: Vec<u32>) -> Self {
         let mut result = Self {
             nfa,
             state_ids: Vec::new(),
+            visited_states: vec![false; nfa.states.len()],
         };
-        result.add_states(&mut states);
+        result.reset(states);
         result
     }
 
     pub fn reset(&mut self, mut states: Vec<u32>) {
         self.state_ids.clear();
-        self.add_states(&mut states);
+        let mut i = 0;
+        while i < states.len() {
+            let state_id = states[i];
+            i += 1;
+            if std::mem::replace(&mut self.visited_states[state_id as usize], true) {
+                continue;
+            }
+            if let NfaState::Split(left, right) = self.nfa.states[state_id as usize] {
+                states.extend([left, right]);
+            } else {
+                self.state_ids.push(state_id);
+            }
+        }
+        for state_id in states {
+            self.visited_states[state_id as usize] = false;
+        }
+        self.state_ids.sort_unstable();
     }
 
     pub fn force_reset(&mut self, states: Vec<u32>) {
@@ -578,6 +596,16 @@ impl<'a> NfaCursor<'a> {
             chars.assign(input_chars);
             let mut i = 0;
             while i < result.len() && !chars.is_empty() {
+                if result[i].characters == chars {
+                    let transition = &mut result[i];
+                    transition.is_separator &= is_sep;
+                    transition.precedence = max(transition.precedence, prec);
+                    if let Err(j) = transition.states.binary_search(&state) {
+                        transition.states.insert(j, state);
+                    }
+                    chars.ranges.clear();
+                    break;
+                }
                 let intersection = result[i].characters.remove_intersection(&mut chars);
                 if !intersection.is_empty() {
                     let chars_is_empty = result[i].characters.is_empty();
@@ -652,35 +680,6 @@ impl<'a> NfaCursor<'a> {
                 None
             }
         })
-    }
-
-    pub fn add_states(&mut self, new_state_ids: &mut Vec<u32>) {
-        let mut i = 0;
-        while i < new_state_ids.len() {
-            let state_id = new_state_ids[i];
-            let state = &self.nfa.states[state_id as usize];
-            if let NfaState::Split(left, right) = state {
-                let mut has_left = false;
-                let mut has_right = false;
-                for new_state_id in new_state_ids.iter() {
-                    if *new_state_id == *left {
-                        has_left = true;
-                    }
-                    if *new_state_id == *right {
-                        has_right = true;
-                    }
-                }
-                if !has_left {
-                    new_state_ids.push(*left);
-                }
-                if !has_right {
-                    new_state_ids.push(*right);
-                }
-            } else if let Err(i) = self.state_ids.binary_search(&state_id) {
-                self.state_ids.insert(i, state_id);
-            }
-            i += 1;
-        }
     }
 }
 

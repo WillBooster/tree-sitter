@@ -8,7 +8,7 @@ use std::{
 use hashbrown::{HashTable, hash_table};
 use indexmap::{
     IndexMap,
-    map::{Entry, RawEntryApiV1, raw_entry_v1::RawEntryMut},
+    map::{RawEntryApiV1, raw_entry_v1::RawEntryMut},
 };
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet, FxHasher};
 use serde::{Deserialize, Serialize};
@@ -287,6 +287,54 @@ impl<'a> SuccessorSets<'a> {
     }
 }
 
+struct TerminalEntryBuilder {
+    indexer: SymbolIndexer,
+    entries: Vec<Option<ParseTableEntry>>,
+    symbols: Vec<Symbol>,
+}
+
+impl TerminalEntryBuilder {
+    fn new(indexer: SymbolIndexer) -> Self {
+        Self {
+            indexer,
+            entries: vec![None; indexer.token_count() as usize],
+            symbols: Vec::new(),
+        }
+    }
+
+    fn get_or_insert_with(
+        &mut self,
+        symbol: Symbol,
+        create: impl FnOnce() -> ParseTableEntry,
+    ) -> &mut ParseTableEntry {
+        let slot = &mut self.entries[self.indexer.index(symbol)];
+        if slot.is_none() {
+            self.symbols.push(symbol);
+        }
+        slot.get_or_insert_with(create)
+    }
+
+    fn get_mut(&mut self, symbol: Symbol) -> Option<&mut ParseTableEntry> {
+        self.entries[self.indexer.index(symbol)].as_mut()
+    }
+
+    fn contains(&self, symbol: Symbol) -> bool {
+        self.entries[self.indexer.index(symbol)].is_some()
+    }
+
+    const fn len(&self) -> usize {
+        self.symbols.len()
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = (Symbol, ParseTableEntry)> + '_ {
+        let indexer = self.indexer;
+        let entries = &mut self.entries;
+        self.symbols
+            .drain(..)
+            .map(move |symbol| (symbol, entries[indexer.index(symbol)].take().unwrap()))
+    }
+}
+
 struct ParseStateQueueEntry {
     state_id: ParseStateId,
     preceding_auxiliary_context: Option<AuxiliaryContextId>,
@@ -308,7 +356,7 @@ struct ParseTableBuilder<'a> {
     parse_table: ParseTable,
     action_list_ids: FxHashMap<ActionList, u32>,
     str_pool: &'a StrPool,
-    terminal_entries: IndexMap<Symbol, ParseTableEntry, BuildHasherDefault<FxHasher>>,
+    terminal_entries: TerminalEntryBuilder,
     successor_sets: SuccessorSets<'a>,
     reduction_infos: ReductionInfos,
 }
@@ -524,7 +572,7 @@ impl<'a> ParseTableBuilder<'a> {
             },
             action_list_ids: FxHashMap::default(),
             str_pool,
-            terminal_entries: IndexMap::default(),
+            terminal_entries: TerminalEntryBuilder::new(symbol_indexer),
             successor_sets: SuccessorSets::new(symbol_indexer),
             reduction_infos: ReductionInfos::new(symbol_indexer),
         }
@@ -789,8 +837,7 @@ impl<'a> ParseTableBuilder<'a> {
                     }
                     let table_entry = self
                         .terminal_entries
-                        .entry(lookahead)
-                        .or_insert_with(ParseTableEntry::new);
+                        .get_or_insert_with(lookahead, ParseTableEntry::new);
                     let reduction_info = self.reduction_infos.get_mut(lookahead);
 
                     // While inserting Reduce actions, eagerly resolve conflicts related
@@ -862,20 +909,17 @@ impl<'a> ParseTableBuilder<'a> {
                 self.add_parse_state(&preceding_symbols, auxiliary_context, next_item_set);
             preceding_symbols.pop();
 
-            let entry = self.terminal_entries.entry(symbol);
-            if let Entry::Occupied(e) = &entry
-                && !e.get().actions.is_empty()
-            {
+            let entry = self
+                .terminal_entries
+                .get_or_insert_with(symbol, ParseTableEntry::new);
+            if !entry.actions.is_empty() {
                 lookaheads_with_conflicts.insert(symbol);
             }
 
-            entry
-                .or_insert_with(ParseTableEntry::new)
-                .actions
-                .push(ParseAction::Shift {
-                    state: next_state_id,
-                    is_repetition: false,
-                });
+            entry.actions.push(ParseAction::Shift {
+                state: next_state_id,
+                is_repetition: false,
+            });
         }
 
         let gotos = non_terminal_successors
@@ -916,7 +960,7 @@ impl<'a> ParseTableBuilder<'a> {
         // Same check as `ParseState::is_end_of_non_terminal_extra` for entries not in the table yet
         let is_end_of_non_terminal_extra = self
             .terminal_entries
-            .contains_key(&Symbol::end_of_nonterminal_extra());
+            .contains(Symbol::end_of_nonterminal_extra());
 
         // If this state represents the end of a non-terminal extra rule, then make sure that
         // it doesn't have other successor states. Non-terminal extra rules must have
@@ -952,8 +996,7 @@ impl<'a> ParseTableBuilder<'a> {
         else {
             for (terminal, state_id) in &self.non_terminal_extra_states {
                 self.terminal_entries
-                    .entry(*terminal)
-                    .or_insert(ParseTableEntry {
+                    .get_or_insert_with(*terminal, || ParseTableEntry {
                         reusable: true,
                         actions: ActionList::One(ParseAction::Shift {
                             state: *state_id,
@@ -973,12 +1016,12 @@ impl<'a> ParseTableBuilder<'a> {
                             .insert(*extra_token, GotoAction::ShiftExtra);
                     }
                     SymbolType::Terminal | SymbolType::External => {
-                        self.terminal_entries
-                            .entry(*extra_token)
-                            .or_insert(ParseTableEntry {
+                        self.terminal_entries.get_or_insert_with(*extra_token, || {
+                            ParseTableEntry {
                                 reusable: true,
                                 actions: ActionList::One(ParseAction::ShiftExtra),
-                            });
+                            }
+                        });
                     }
                     SymbolType::End | SymbolType::EndOfNonTerminalExtra => unreachable!(),
                 }
@@ -1022,7 +1065,7 @@ impl<'a> ParseTableBuilder<'a> {
             .reserve_exact(self.terminal_entries.len());
         state
             .terminal_entries
-            .extend(self.terminal_entries.drain(..).map(|(symbol, entry)| {
+            .extend(self.terminal_entries.drain().map(|(symbol, entry)| {
                 let index = self
                     .parse_table
                     .action_lists
@@ -1043,7 +1086,7 @@ impl<'a> ParseTableBuilder<'a> {
     ) -> BuildTableResult<()> {
         let entry = self
             .terminal_entries
-            .get_mut(&conflicting_lookahead)
+            .get_mut(conflicting_lookahead)
             .unwrap();
         let reduction_info = self.reduction_infos.get(conflicting_lookahead);
 
@@ -1180,7 +1223,7 @@ impl<'a> ParseTableBuilder<'a> {
         // If all of the actions but one have been eliminated, then there's no problem.
         let entry = self
             .terminal_entries
-            .get_mut(&conflicting_lookahead)
+            .get_mut(conflicting_lookahead)
             .unwrap();
         if entry.actions.len() == 1 {
             return Ok(());
