@@ -1940,6 +1940,20 @@ fn test_query_matches_with_trailing_anchor_after_nested_repetition() {
             assert_query_matches(&language, &query, "a(); b(); const x = 1;", &[]);
         }
 
+        let star = Query::new(
+            &language,
+            "(program (expression_statement (call_expression function: (identifier) @fn arguments: (arguments)))* .)",
+        )
+        .unwrap();
+        assert_query_matches(&language, &star, "a(); b(); d;", &[(0, vec![])]);
+        assert_query_matches(&language, &star, "a(); d; b();", &[(0, vec![("fn", "b")])]);
+        assert_query_matches(
+            &language,
+            &star,
+            "a(); b();",
+            &[(0, vec![("fn", "a"), ("fn", "b")])],
+        );
+
         let grouped = Query::new(
             &language,
             "(program . ((expression_statement) @call (empty_statement) @semi)+ .)",

@@ -217,6 +217,7 @@ typedef struct {
   bool dead: 1;
   bool needs_parent: 1;
   bool skipped_quantifier: 1;
+  bool needs_repeated_match: 1;
 } QueryState;
 
 typedef Array(QueryState) QueryStateList;
@@ -4433,6 +4434,7 @@ static inline bool ts_query_cursor__advance(
           // The zero-skip's vacuous-anchor exemption only covers the immediate
           // step it lands on. Once the state advances, a later anchor is normal.
           state->skipped_quantifier = false;
+          state->needs_repeated_match = false;
 
           if (stop_on_definite_step && next_step->root_pattern_guaranteed) did_match = true;
 
@@ -4478,6 +4480,7 @@ static inline bool ts_query_cursor__advance(
                   if (repetition_has_later_named_siblings) {
                     child_state->step_index = child_step->alternative_index;
                     child_state->seeking_immediate_match = true;
+                    child_state->needs_repeated_match = true;
                     k--;
                     continue;
                   }
@@ -4491,8 +4494,8 @@ static inline bool ts_query_cursor__advance(
               // skip is only valid if that node really is the last named child.
               if (
                 child_step->alternative_is_skip &&
-                child_step->is_last_child &&
-                has_later_named_siblings
+                (child_state->needs_repeated_match ||
+                 (child_step->is_last_child && has_later_named_siblings))
               ) {
                 continue;
               }
