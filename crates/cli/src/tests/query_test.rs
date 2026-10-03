@@ -1885,6 +1885,76 @@ fn test_query_matches_with_trailing_repetitions_of_last_child() {
 }
 
 #[test]
+fn test_query_matches_with_trailing_anchor_after_repetition() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        for quantifier in ["+", "*"] {
+            let query = Query::new(
+                &language,
+                &format!("(program . (lexical_declaration) @decl . (empty_statement){quantifier} @semi .)"),
+            )
+            .unwrap();
+            assert_query_matches(
+                &language,
+                &query,
+                "const x = 1;;;",
+                &[(
+                    0,
+                    vec![("decl", "const x = 1;"), ("semi", ";"), ("semi", ";")],
+                )],
+            );
+            assert_query_matches(&language, &query, "const x = 1;;; f();", &[]);
+            let expected = if quantifier == "*" {
+                vec![(0, vec![("decl", "const x = 1;")])]
+            } else {
+                vec![]
+            };
+            assert_query_matches(&language, &query, "const x = 1;", &expected);
+        }
+    });
+}
+
+#[test]
+fn test_query_matches_with_trailing_anchor_after_nested_repetition() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let query = Query::new(
+            &language,
+            "(statement_block . (expression_statement (call_expression function: (identifier) @fn))+ .)",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &query,
+            "{ a(); b(); } c();",
+            &[(0, vec![("fn", "a"), ("fn", "b")])],
+        );
+        assert_query_matches(&language, &query, "{ a(); const x = 1; }", &[]);
+
+        let grouped = Query::new(
+            &language,
+            "(program . ((expression_statement) @call (empty_statement) @semi)+ .)",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &grouped,
+            "a();;b();;",
+            &[(
+                0,
+                vec![
+                    ("call", "a();"),
+                    ("semi", ";"),
+                    ("call", "b();"),
+                    ("semi", ";"),
+                ],
+            )],
+        );
+        assert_query_matches(&language, &grouped, "a();;b();", &[]);
+    });
+}
+
+#[test]
 fn test_query_matches_with_leading_zero_or_more_repeated_leaf_nodes() {
     allocations::record(|| {
         let language = get_language("javascript");

@@ -120,6 +120,7 @@ typedef struct {
   bool parent_pattern_guaranteed: 1;
   bool is_missing: 1;
   bool alternative_is_skip: 1;
+  bool is_repeated: 1;
 } QueryStep;
 
 /*
@@ -2746,6 +2747,15 @@ static TSQueryError ts_query__parse_pattern(
               // Mark this step *and* its alternatives as the last child of the parent.
               QueryStep *last_child_step = array_get(&self->steps, last_child_step_index);
               last_child_step->is_last_child = true;
+              QueryStep *repeat_end = array_back(&self->steps);
+              if (
+                repeat_end->is_pass_through &&
+                repeat_end->depth == depth + 1 &&
+                repeat_end->alternative_index >= last_child_step_index &&
+                repeat_end->alternative_index < self->steps.size - 1
+              ) {
+                repeat_end->is_last_child = true;
+              }
               if (
                 last_child_step->alternative_index != NONE &&
                 last_child_step->alternative_index < self->steps.size
@@ -2993,6 +3003,23 @@ static TSQueryError ts_query__parse_pattern(
       break;
     default:
       break;
+  }
+
+  if (quantifier == TSQuantifierOneOrMore || quantifier == TSQuantifierZeroOrMore) {
+    uint16_t step_index = starting_step_index;
+    for (;;) {
+      QueryStep *repeated_step = array_get(&self->steps, step_index);
+      repeated_step->is_repeated = true;
+      if (
+        repeated_step->alternative_index != NONE &&
+        repeated_step->alternative_index > step_index &&
+        repeated_step->alternative_index < self->steps.size - 1
+      ) {
+        step_index = repeated_step->alternative_index;
+      } else {
+        break;
+      }
+    }
   }
 
   capture_quantifiers_mul(capture_quantifiers, quantifier);
@@ -4265,7 +4292,7 @@ static inline bool ts_query_cursor__advance(
           if ((step->is_immediate && is_named && !state->skipped_quantifier) || state->seeking_immediate_match) {
             later_sibling_can_match = false;
           }
-          if (step->is_last_child && has_later_named_siblings) {
+          if (step->is_last_child && !step->is_repeated && has_later_named_siblings) {
             node_does_match = false;
           }
           if (step->supertype_symbol) {
@@ -4432,6 +4459,31 @@ static inline bool ts_query_cursor__advance(
               // via its alternative_index. When a state reaches a pass-through step, it splits
               // in order to process the alternative step, and then it advances to the next step.
               if (child_step->is_pass_through) {
+                if (child_step->is_last_child) {
+                  bool repetition_has_later_named_siblings = has_later_named_siblings;
+                  uint32_t repetition_depth = child_state->start_depth + child_step->depth;
+                  if (repetition_depth < self->depth) {
+                    TSTreeCursor repetition_cursor = ts_tree_cursor_copy(&self->cursor);
+                    for (uint32_t depth = self->depth; depth > repetition_depth; depth--) {
+                      ts_tree_cursor_goto_parent(&repetition_cursor);
+                    }
+                    TSFieldId unused_field;
+                    bool unused_siblings, unused_field_siblings;
+                    unsigned unused_supertype_count = 0;
+                    ts_tree_cursor_current_status(
+                      &repetition_cursor, &unused_field, &unused_siblings,
+                      &repetition_has_later_named_siblings, &unused_field_siblings,
+                      NULL, &unused_supertype_count
+                    );
+                    ts_tree_cursor_delete(&repetition_cursor);
+                  }
+                  if (repetition_has_later_named_siblings) {
+                    child_state->step_index = child_step->alternative_index;
+                    child_state->seeking_immediate_match = true;
+                    k--;
+                    continue;
+                  }
+                }
                 child_state->step_index++;
                 k--;
               }
