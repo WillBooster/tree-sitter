@@ -133,7 +133,7 @@ export function marshalRange(address: number, range: Range): void {
   marshalPoint(address, range.startPosition); address += SIZE_OF_POINT;
   marshalPoint(address, range.endPosition); address += SIZE_OF_POINT;
   C.setValue(address, range.startIndex, 'i32'); address += SIZE_OF_INT;
-  C.setValue(address, range.endIndex, 'i32'); address += SIZE_OF_INT;
+  C.setValue(address, range.endIndex, 'i32');
 }
 
 /**
@@ -161,7 +161,7 @@ export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER) {
   marshalPoint(address, edit.newEndPosition); address += SIZE_OF_POINT;
   C.setValue(address, edit.startIndex, 'i32'); address += SIZE_OF_INT;
   C.setValue(address, edit.oldEndIndex, 'i32'); address += SIZE_OF_INT;
-  C.setValue(address, edit.newEndIndex, 'i32'); address += SIZE_OF_INT;
+  C.setValue(address, edit.newEndIndex, 'i32');
 }
 
 /**
@@ -172,6 +172,6 @@ export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER) {
 export function unmarshalLanguageMetadata(address: number): LanguageMetadata {  
   const major_version = C.getValue(address, 'i32');
   const minor_version = C.getValue(address += SIZE_OF_INT, 'i32');
-  const patch_version = C.getValue(address += SIZE_OF_INT, 'i32');
+  const patch_version = C.getValue(address + SIZE_OF_INT, 'i32');
   return { major_version, minor_version, patch_version };
 }
