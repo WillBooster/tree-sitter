@@ -4563,7 +4563,7 @@ static inline bool ts_query_cursor__advance(
                     array_get(&self->query->steps, child_step_index - 1)->depth < child_step->depth) {
                   child_state->seeking_first_named_child = true;
                 }
-                if (child_step->is_last_child) {
+                if (child_step->is_last_child && !child_step->alternative_is_skip) {
                   bool repetition_has_later_named_siblings = has_later_named_siblings;
                   uint32_t repetition_depth = child_state->start_depth + child_step->depth;
                   if (repetition_depth < self->depth) {

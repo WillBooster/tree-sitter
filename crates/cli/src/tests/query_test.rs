@@ -721,6 +721,17 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
             assert_query_matches(&language, &anchored, source, &[(0, expected)]);
         }
         assert_query_matches(&language, &anchored, "f(true, x, 1)", &[]);
+        for quantifier in ['?', '*'] {
+            let trailing = Query::new(
+                &language,
+                &format!(r#"(arguments (identifier) @i ("{{"? "}}"){quantifier} .)"#),
+            )
+            .unwrap();
+            for source in ["f(x)", "f(x,)"] {
+                assert_query_matches(&language, &trailing, source, &[(0, vec![("i", "x")])]);
+            }
+            assert_query_matches(&language, &trailing, "f(x,1)", &[]);
+        }
         let invalid = Query::new(&language, "(identifier ((number)? (string))?)").unwrap_err();
         assert_eq!(invalid.kind, QueryErrorKind::Structure);
         assert_eq!(invalid.offset, 12);
