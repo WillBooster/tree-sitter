@@ -1754,6 +1754,46 @@ fn test_parsing_with_included_ranges_and_missing_tokens() {
 }
 
 #[test]
+fn test_keyword_guard_preserves_trailing_input() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "keyword_guard_trailing_input",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "_m"},
+                        {"type": "SYMBOL", "name": "_m"}
+                    ]}
+                ]},
+                "_m": {"type": "IMMEDIATE_TOKEN", "content": {
+                    "type": "PREC", "value": 2,
+                    "content": {"type": "STRING", "value": "mat"}
+                }},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+
+    for source in ["at at", "at box", "box box", "matmat box"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(tree.root_node().has_error(), "{source}");
+        assert_eq!(tree.root_node().end_byte(), source.len(), "{source}");
+    }
+    for source in ["at", "matmat", "at ", "matmat \n"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{source}");
+    }
+}
+
+#[test]
 fn test_keyword_boundary_after_reduction() {
     let (parser_name, parser_code) = generate_parser(
         r##"{

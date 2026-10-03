@@ -178,7 +178,7 @@ pub fn build_lex_table(
                     && syntax_grammar.word_token.is_some_and(Symbol::is_terminal)
             })
             .collect::<TokenSet>();
-        let tokens = state
+        let tokens: TokenSet = state
             .terminal_entries
             .keys()
             .copied()
@@ -201,11 +201,14 @@ pub fn build_lex_table(
             })
             .collect();
 
+        let has_terminals = tokens.iter().any(Symbol::is_terminal);
         let mut did_merge = false;
         for entry in &mut parse_state_ids_by_token_set {
-            if entry.1 == guard_keywords
+            let group_has_terminals = entry.0.iter().any(Symbol::is_terminal);
+            let terminal_free = !has_terminals || !group_has_terminals;
+            if (terminal_free || entry.1 == guard_keywords)
                 && (entry.0 == tokens
-                    || (guard_keywords.is_empty()
+                    || ((terminal_free || guard_keywords.is_empty())
                         && merge_token_set(
                             &mut entry.0,
                             &tokens,
@@ -213,6 +216,9 @@ pub fn build_lex_table(
                             coincident_token_index,
                         )))
             {
+                if !group_has_terminals {
+                    entry.1 = guard_keywords.clone();
+                }
                 did_merge = true;
                 entry.2.push(i as u32);
                 break;
