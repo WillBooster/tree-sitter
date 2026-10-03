@@ -1744,6 +1744,8 @@ static bool ts_parser__advance(
       // (and completing the non-terminal extra rule) run the lexer again based
       // on the current parse state.
       if (!lookahead.ptr) {
+        ts_parser__breakdown_top_of_stack(self, version);
+        state = ts_stack_state(self->stack, version);
         needs_lex = true;
       } else {
         ts_language_table_entry(
