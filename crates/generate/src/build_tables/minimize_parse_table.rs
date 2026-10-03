@@ -462,39 +462,17 @@ impl SplitCriterion<ParseState> for ConflictPass<'_, '_> {
     ) -> bool {
         let entries1 = self.entry_maps.get(left);
         let entries2 = self.entry_maps.get(right);
-        let action_lists = &self.minimizer.parse_table.action_lists;
         left.reserved_words == right.reserved_words
             && entries1.len() == entries2.len()
             && entries1
                 .iter()
                 .zip(entries2)
                 .all(|(&(key1, id1), &(key2, id2))| {
-                    if key1 != key2 {
-                        return false;
-                    }
-                    if id1.index() == id2.index() {
-                        return true;
-                    }
-                    let actions1 = action_lists.get(id1);
-                    let actions2 = action_lists.get(id2);
-                    actions1.len() == actions2.len()
-                        && actions1.iter().zip(actions2).all(|pair| match pair {
-                            (
-                                ParseAction::Shift {
-                                    state: s1,
-                                    is_repetition: is_repetition1,
-                                },
-                                ParseAction::Shift {
-                                    state: s2,
-                                    is_repetition: is_repetition2,
-                                },
-                            ) => {
-                                group_ids_by_state_id[*s1 as usize]
-                                    == group_ids_by_state_id[*s2 as usize]
-                                    && is_repetition1 == is_repetition2
-                            }
-                            (action1, action2) => action1 == action2,
-                        })
+                    key1 == key2
+                        && self
+                            .minimizer
+                            .entries_conflict(id1, id2, group_ids_by_state_id)
+                            .is_none()
                 })
     }
 
@@ -607,29 +585,21 @@ impl SplitCriterion<ParseState> for SuccessorPass<'_, '_> {
         let shifts2 = self.shift_maps.get(right);
         let gotos1 = self.nonterminal_maps.get(left);
         let gotos2 = self.nonterminal_maps.get(right);
-        shifts1.len() == shifts2.len()
-            && gotos1.len() == gotos2.len()
-            && shifts1
-                .iter()
-                .zip(shifts2)
-                .all(|(&(key1, s1), &(key2, s2))| {
-                    key1 == key2
-                        && group_ids_by_state_id[s1 as usize] == group_ids_by_state_id[s2 as usize]
-                })
+        shifts1
+            .iter()
+            .map(|(key, _)| key)
+            .eq(shifts2.iter().map(|(key, _)| key))
             && gotos1
                 .iter()
-                .zip(gotos2)
-                .all(|(&(index1, action1), &(index2, action2))| {
-                    index1 == index2
-                        && match (action1, action2) {
-                            (GotoAction::Goto(s1), GotoAction::Goto(s2)) => {
-                                group_ids_by_state_id[s1 as usize]
-                                    == group_ids_by_state_id[s2 as usize]
-                            }
-                            (GotoAction::ShiftExtra, GotoAction::ShiftExtra) => true,
-                            _ => false,
-                        }
-                })
+                .map(|(index, _)| index)
+                .eq(gotos2.iter().map(|(index, _)| index))
+            && !self.minimizer.state_successors_differ(
+                left,
+                right,
+                group_ids_by_state_id,
+                &self.shift_maps,
+                &self.nonterminal_maps,
+            )
     }
 }
 
