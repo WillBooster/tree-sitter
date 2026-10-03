@@ -3,10 +3,10 @@
   "extends": ["github>WillBooster/willbooster-configs:renovate.jsonc"],
   "packageRules": [
     {
-      // dts-buddy supports TypeScript 5 or 6; typescript-eslint requires a version below 6.1.
+      // The web package's node module resolution and type-aware linting fail with TypeScript 6.
       "matchFileNames": ["lib/binding_web/package.json"],
       "matchPackageNames": ["typescript"],
-      "allowedVersions": "<6.1.0",
+      "allowedVersions": "<6.0.0",
     },
     {
       // These are templates of the files that `tree-sitter init` writes into a grammar repository, not manifests of
