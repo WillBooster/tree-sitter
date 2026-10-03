@@ -967,7 +967,9 @@ impl Generator {
             // the additional checks that need to be performed to match this transition.
             let mut best_large_char_set: Option<(usize, CharacterSet, CharacterSet)> = None;
             if simplified_chars.range_count() >= super::build_tables::LARGE_CHARACTER_RANGE_COUNT {
-                for (ix, (_, set)) in self.large_character_sets.iter().enumerate() {
+                // Prefer the last candidate on ties. Searching backwards lets
+                // us stop as soon as a match needs no additional checks.
+                for (ix, (_, set)) in self.large_character_sets.iter().enumerate().rev() {
                     chars_copy.assign(&simplified_chars);
                     large_set.assign(set);
                     let intersection = chars_copy.remove_intersection(&mut large_set);
@@ -981,11 +983,16 @@ impl Generator {
                         if let Some((_, best_additions, best_removals)) = &best_large_char_set {
                             let best_range_count =
                                 best_additions.range_count() + best_removals.range_count();
-                            if best_range_count < total_range_count {
+                            // Only a set that needs fewer checks replaces the best one, so on
+                            // a tie the set found first wins.
+                            if best_range_count <= total_range_count {
                                 continue;
                             }
                         }
                         best_large_char_set = Some((ix, additions, removals));
+                        if total_range_count == 0 {
+                            break;
+                        }
                     }
                 }
             }
@@ -1358,8 +1365,6 @@ impl Generator {
             add_line!(self, "[STATE({i})] = {{");
             indent!(self);
 
-            // Ensure the entries are in a deterministic order, since they are
-            // internally represented as a hash map.
             terminal_entries.clear();
             nonterminal_entries.clear();
             terminal_entries.extend(state.terminal_entries.iter());
@@ -1432,7 +1437,7 @@ impl Generator {
                         .or_default()
                         .push(**symbol);
                 }
-                for (symbol, action) in &state.nonterminal_entries {
+                for (symbol, action) in state.nonterminal_entries.iter() {
                     let state_id = match action {
                         GotoAction::Goto(i) => *i,
                         GotoAction::ShiftExtra => {
