@@ -265,7 +265,7 @@ export interface DSL {
    * Creates a rule that matches zero or one occurrence of a given rule.
    * It is analogous to the `[x]` (square bracket) syntax in EBNF notation.
    *
-   * @param value rule to be made optional
+   * @param rule rule to be made optional
    */
   optional(this: void, rule: RuleOrLiteral): ChoiceRule;
 
