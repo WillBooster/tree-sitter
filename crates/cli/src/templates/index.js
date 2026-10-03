@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
+// Keep the require relative: Bun cannot embed an addon loaded through the computed root path.
 const binding = typeof Bun !== "undefined" && Bun.isStandaloneExecutable
   ? require(`../../prebuilds/${process.platform}-${process.arch}/tree-sitter-KEBAB_PARSER_NAME.node`)
   : (await import("node-gyp-build")).default(root);
