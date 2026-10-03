@@ -1,25 +1,28 @@
-use std::fmt;
+use std::hash::{BuildHasher as _, Hash};
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use hashbrown::{HashTable, hash_table};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
 use super::item::{
     ItemKeyMap, ParseItem, ParseItemDisplay, ParseItemSet, ParseItemSetEntry, TokenSetDisplay,
 };
 use crate::{
+    bitvec::{BitVec, SetBitsIter},
     build_tables::item::{LookaheadSetId, LookaheadSetPool},
     grammars::{InlinedProductionMap, LexicalGrammar, ReservedWordSetId, SyntaxGrammar},
     rules::{Symbol, SymbolType, TokenSet},
     strpool::StrPool,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 struct TransitiveClosureAddition<'a> {
     item: ParseItem<'a>,
     info: AdditionInfo,
+    rank: FirstStepRank,
 }
 
 /// [`FollowSetInfo`] with an interned lookahead set and word-token membership precomputed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct AdditionInfo {
     lookaheads: LookaheadSetId,
     reserved_lookaheads: ReservedWordSetId,
@@ -48,11 +51,182 @@ pub struct ParseItemSetBuilder<'a> {
     pub key_map: &'a ItemKeyMap,
     pub lookaheads: LookaheadSetPool,
     transitive_closure_additions: Vec<Vec<TransitiveClosureAddition<'a>>>,
+    closure_scratch: ClosureEntries<'a>,
 }
 
-fn find_or_push<T: Eq>(vector: &mut Vec<T>, value: T) {
-    if !vector.contains(&value) {
+fn push_unique<T: Eq + Hash>(vector: &mut Vec<T>, indices: &mut HashTable<u32>, value: T) {
+    let hash = FxBuildHasher.hash_one(&value);
+    if let hash_table::Entry::Vacant(entry) = indices.entry(
+        hash,
+        |&index| vector[index as usize] == value,
+        |&index| FxBuildHasher.hash_one(&vector[index as usize]),
+    ) {
+        entry.insert(vector.len() as u32);
         vector.push(value);
+    }
+}
+
+/// An item's position among all the items that a closure can hold at their first step
+/// (`step_index` 0), in item order. See [`FirstStepRanks`].
+#[derive(Clone, Copy, Debug)]
+struct FirstStepRank(u32);
+
+impl FirstStepRank {
+    const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// Everything that `ParseItem`'s `Eq` and `Ord` compare between items at their first step,
+/// which have nothing before their dot. The fields are declared in the order that `Ord`
+/// compares them, so the derived `Ord` orders keys the way it orders their items.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct FirstStepKey {
+    variable_index: u32,
+    cmp: u32,
+}
+
+impl FirstStepKey {
+    fn new(item: &ParseItem) -> Self {
+        assert!(item.step_index == 0 && !item.has_preceding_inherited_fields);
+        Self {
+            variable_index: item.variable_index,
+            cmp: item.keys[0].cmp,
+        }
+    }
+}
+
+#[derive(Default)]
+struct FirstStepRanks(FxHashMap<FirstStepKey, FirstStepRank>);
+
+impl FirstStepRanks {
+    fn new<'a>(items: impl Iterator<Item = ParseItem<'a>>) -> Self {
+        let mut keys = items
+            .map(|item| FirstStepKey::new(&item))
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        keys.dedup();
+        Self(
+            keys.into_iter()
+                .enumerate()
+                .map(|(rank, key)| (key, FirstStepRank(rank as u32)))
+                .collect(),
+        )
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn rank(&self, item: &ParseItem) -> FirstStepRank {
+        // INVARIANT: every item at its first step has a rank
+        *self.0.get(&FirstStepKey::new(item)).unwrap()
+    }
+}
+
+/// The entries of a closure while [`ParseItemSetBuilder::transitive_closure`] builds it:
+/// found by item as they're added, and taken out in item order once it's complete.
+///
+/// Items are ordered by `step_index` first, so the items at their first step come before
+/// all the others. Most of a closure's items are at their first step, and each of those has
+/// a [`FirstStepRank`] and a slot for its entry. The rest are kernel items past their first
+/// step, which are found by hash and sorted.
+#[derive(Default)]
+struct ClosureEntries<'a> {
+    ranks: FirstStepRanks,
+    first_step: Vec<Option<ParseItemSetEntry<'a>>>,
+    occupied: BitVec,
+    first_step_len: usize,
+    later: Vec<ParseItemSetEntry<'a>>,
+    later_indices: HashTable<u32>,
+}
+
+impl<'a> ClosureEntries<'a> {
+    fn new(ranks: FirstStepRanks) -> Self {
+        let mut occupied = BitVec::new();
+        occupied.resize(ranks.len(), false);
+        Self {
+            first_step: vec![None; ranks.len()],
+            ranks,
+            occupied,
+            first_step_len: 0,
+            later: Vec::new(),
+            later_indices: HashTable::new(),
+        }
+    }
+
+    #[inline]
+    fn addition_entry(
+        &mut self,
+        addition: &TransitiveClosureAddition<'a>,
+    ) -> &mut ParseItemSetEntry<'a> {
+        self.first_step_entry(addition.rank, addition.item)
+    }
+
+    fn kernel_entry(&mut self, item: ParseItem<'a>) -> &mut ParseItemSetEntry<'a> {
+        // A kernel's items are past their first step, except for the start item.
+        if item.step_index == 0 {
+            let rank = self.ranks.rank(&item);
+            self.first_step_entry(rank, item)
+        } else {
+            self.later_entry(item)
+        }
+    }
+
+    #[inline]
+    fn first_step_entry(
+        &mut self,
+        rank: FirstStepRank,
+        item: ParseItem<'a>,
+    ) -> &mut ParseItemSetEntry<'a> {
+        let slot = &mut self.first_step[rank.index()];
+        if slot.is_none() {
+            self.occupied.set(rank.index(), true);
+            self.first_step_len += 1;
+        }
+        slot.get_or_insert_with(|| Self::new_entry(item))
+    }
+
+    fn later_entry(&mut self, item: ParseItem<'a>) -> &mut ParseItemSetEntry<'a> {
+        let later = &mut self.later;
+        let index = match self.later_indices.entry(
+            FxBuildHasher.hash_one(item),
+            |&index| later[index as usize].item == item,
+            |&index| FxBuildHasher.hash_one(later[index as usize].item),
+        ) {
+            hash_table::Entry::Occupied(entry) => *entry.get(),
+            hash_table::Entry::Vacant(entry) => {
+                let index = later.len() as u32;
+                entry.insert(index);
+                later.push(Self::new_entry(item));
+                index
+            }
+        };
+        &mut later[index as usize]
+    }
+
+    fn new_entry(item: ParseItem<'a>) -> ParseItemSetEntry<'a> {
+        ParseItemSetEntry {
+            item,
+            lookaheads: LookaheadSetPool::EMPTY,
+            following_reserved_word_set: ReservedWordSetId::default(),
+        }
+    }
+
+    fn take_item_set(&mut self) -> ParseItemSet<'a> {
+        let mut entries = Vec::with_capacity(self.first_step_len + self.later.len());
+        let first_step = &mut self.first_step;
+        entries.extend(SetBitsIter::new(self.occupied.as_slice()).map(|rank| {
+            // INVARIANT: occupied ranks have entries
+            first_step[rank].take().unwrap()
+        }));
+        self.occupied.unset_all();
+        self.first_step_len = 0;
+        // Past their first step, these all come after the entries above.
+        self.later.sort_unstable_by(|a, b| a.item.cmp(&b.item));
+        entries.append(&mut self.later);
+        self.later_indices.clear();
+        ParseItemSet { entries }
     }
 }
 
@@ -73,7 +247,8 @@ impl<'a> ParseItemSetBuilder<'a> {
             inlines,
             key_map,
             lookaheads: LookaheadSetPool::new(),
-            transitive_closure_additions: vec![Vec::new(); syntax_grammar.variables.len()],
+            transitive_closure_additions: Vec::new(),
+            closure_scratch: ClosureEntries::default(),
         };
 
         // For each grammar symbol, populate the FIRST and LAST sets: the set of
@@ -197,7 +372,9 @@ impl<'a> ParseItemSetBuilder<'a> {
         eof_lookaheads.insert(Symbol::end());
         let mut stack = Vec::new();
         let mut follow_set_info_by_non_terminal = FxHashMap::<usize, FollowSetInfo>::default();
-        for i in 0..syntax_grammar.variables.len() {
+        let mut additions = vec![Vec::new(); syntax_grammar.variables.len()];
+        let mut addition_indices = HashTable::new();
+        for (i, additions_for_non_terminal) in additions.iter_mut().enumerate() {
             // First, build up a map whose keys are all of the non-terminals that can
             // appear at the beginning of non-terminal `i`, and whose values store
             // information about the tokens that can follow those non-terminals.
@@ -253,6 +430,7 @@ impl<'a> ParseItemSetBuilder<'a> {
 
             // Store all of those non-terminals' productions, along with their associated
             // lookahead info, as *additions* associated with non-terminal `i`.
+            addition_indices.clear();
             for (&variable_index, follow_set_info) in &follow_set_info_by_non_terminal {
                 let non_terminal = Symbol::non_terminal(variable_index);
                 if syntax_grammar.variables_to_inline.contains(&non_terminal) {
@@ -266,7 +444,6 @@ impl<'a> ParseItemSetBuilder<'a> {
                         .word_token
                         .is_some_and(|w| follow_set_info.lookaheads.contains(w)),
                 };
-                let additions_for_non_terminal = &mut result.transitive_closure_additions[i];
                 for prod_id in syntax_grammar.variable_prod_ids(variable_index) {
                     let item = ParseItem {
                         variable_index: variable_index as u32,
@@ -286,12 +463,13 @@ impl<'a> ParseItemSetBuilder<'a> {
                                 item_info.propagates_lookaheads = false;
                                 item_info.contains_word = false;
                             }
-                            find_or_push(
+                            push_unique(
                                 additions_for_non_terminal,
-                                TransitiveClosureAddition {
-                                    item: item.substitute_production(id, key_map.keys_for(id)),
-                                    info: item_info,
-                                },
+                                &mut addition_indices,
+                                (
+                                    item.substitute_production(id, key_map.keys_for(id)),
+                                    item_info,
+                                ),
                             );
                         }
                     } else {
@@ -302,46 +480,65 @@ impl<'a> ParseItemSetBuilder<'a> {
                             item_info.propagates_lookaheads = false;
                             item_info.contains_word = false;
                         }
-                        find_or_push(
+                        push_unique(
                             additions_for_non_terminal,
-                            TransitiveClosureAddition {
-                                item,
-                                info: item_info,
-                            },
+                            &mut addition_indices,
+                            (item, item_info),
                         );
                     }
                 }
             }
         }
 
+        // Besides these additions, the only item a closure holds at its first step is the start
+        // item, in the start state's kernel.
+        let ranks = FirstStepRanks::new(
+            additions
+                .iter()
+                .flatten()
+                .map(|&(item, _)| item)
+                .chain(std::iter::once(ParseItem::start(key_map))),
+        );
+        result.transitive_closure_additions = additions
+            .into_iter()
+            .map(|additions_for_non_terminal| {
+                additions_for_non_terminal
+                    .into_iter()
+                    .map(|(item, info)| TransitiveClosureAddition {
+                        item,
+                        info,
+                        rank: ranks.rank(&item),
+                    })
+                    .collect()
+            })
+            .collect();
+        result.closure_scratch = ClosureEntries::new(ranks);
+
         result
     }
 
     #[must_use]
     pub fn transitive_closure(&mut self, item_set: &ParseItemSet<'a>) -> ParseItemSet<'a> {
-        let mut result = ParseItemSet::default();
         for entry in &item_set.entries {
             if let Some(ids) = self
                 .inlines
                 .inlined_prod_ids(entry.item.prod_id, entry.item.step_index)
             {
                 for &id in ids {
-                    self.add_item(
-                        &mut result,
-                        &ParseItemSetEntry {
-                            item: entry
-                                .item
-                                .substitute_production(id, self.key_map.keys_for(id)),
-                            lookaheads: entry.lookaheads,
-                            following_reserved_word_set: entry.following_reserved_word_set,
-                        },
-                    );
+                    self.add_item(&ParseItemSetEntry {
+                        item: entry
+                            .item
+                            .substitute_production(id, self.key_map.keys_for(id)),
+                        lookaheads: entry.lookaheads,
+                        following_reserved_word_set: entry.following_reserved_word_set,
+                    });
                 }
             } else {
-                self.add_item(&mut result, entry);
+                self.add_item(entry);
             }
         }
-        result
+
+        self.closure_scratch.take_item_set()
     }
 
     #[must_use]
@@ -360,9 +557,11 @@ impl<'a> ParseItemSetBuilder<'a> {
         &self.last_sets[&symbol]
     }
 
-    fn add_item(&mut self, set: &mut ParseItemSet<'a>, entry: &ParseItemSetEntry<'a>) {
-        if let Some(step) = entry.item.step(self.syntax_grammar)
-            && step.symbol().is_non_terminal()
+    fn add_item(&mut self, entry: &ParseItemSetEntry<'a>) {
+        if let Some(index) = entry
+            .item
+            .step(self.syntax_grammar)
+            .and_then(|step| step.symbol().non_terminal_index())
         {
             let next_step = entry.item.successor().step(self.syntax_grammar);
 
@@ -377,8 +576,8 @@ impl<'a> ParseItemSetBuilder<'a> {
             };
 
             // Use the pre-computed *additions* to expand the non-terminal.
-            for addition in &self.transitive_closure_additions[step.symbol().index as usize] {
-                let e = set.insert(addition.item);
+            for addition in &self.transitive_closure_additions[index] {
+                let e = self.closure_scratch.addition_entry(addition);
                 e.lookaheads = self
                     .lookaheads
                     .union(e.lookaheads, addition.info.lookaheads);
@@ -402,7 +601,7 @@ impl<'a> ParseItemSetBuilder<'a> {
             }
         }
 
-        let e = set.insert(entry.item);
+        let e = self.closure_scratch.kernel_entry(entry.item);
         e.lookaheads = self.lookaheads.union(e.lookaheads, entry.lookaheads);
         e.following_reserved_word_set = e
             .following_reserved_word_set
@@ -417,8 +616,8 @@ struct ParseItemSetBuilderDisplay<'a>(
     pub &'a StrPool,
 );
 
-impl fmt::Debug for ParseItemSetBuilderDisplay<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl std::fmt::Debug for ParseItemSetBuilderDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         writeln!(f, "ParseItemSetBuilder {{")?;
 
         writeln!(f, "  first_sets: {{")?;
@@ -432,7 +631,8 @@ impl fmt::Debug for ParseItemSetBuilderDisplay<'_> {
                     .2
                     .resolve(self.0.syntax_grammar.external_tokens[symbol_index].name),
                 SymbolType::Terminal => self.2.resolve(self.1.variables[symbol_index].name),
-                SymbolType::End | SymbolType::EndOfNonTerminalExtra => "END",
+                SymbolType::End => "<EOF>",
+                SymbolType::EndOfNonTerminalExtra => "<END_OF_NONTERMINAL_EXTRA>",
             };
             writeln!(
                 f,
@@ -453,7 +653,8 @@ impl fmt::Debug for ParseItemSetBuilderDisplay<'_> {
                     .2
                     .resolve(self.0.syntax_grammar.external_tokens[symbol_index].name),
                 SymbolType::Terminal => self.2.resolve(self.1.variables[symbol_index].name),
-                SymbolType::End | SymbolType::EndOfNonTerminalExtra => "END",
+                SymbolType::End => "<EOF>",
+                SymbolType::EndOfNonTerminalExtra => "<END_OF_NONTERMINAL_EXTRA>",
             };
             writeln!(
                 f,

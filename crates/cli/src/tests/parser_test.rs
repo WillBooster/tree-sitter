@@ -30,6 +30,125 @@ use crate::{
 };
 
 #[test]
+fn test_immediate_token_with_reused_anonymous_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "reused_anonymous_extra",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "program": {
+                "type": "SEQ",
+                "members": [
+                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                    {"type": "CHOICE", "members": [
+                        {"type": "PATTERN", "value": "\\s"},
+                        {"type": "BLANK"}
+                    ]}
+                ]
+            }
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language(&name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for source in ["x", "x ", "x\n"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+    for source in [" x", "\tx", "\nx", " x "] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(tree.root_node().has_error(), "{source:?}");
+    }
+}
+
+#[test]
+fn test_regex_extra_preserves_matching_named_token() {
+    for (suffix, token_name) in [("named", "comment"), ("hidden", "_comment")] {
+        let grammar = serde_json::json!({
+            "name": format!("matching_declared_extra{suffix}"),
+            "extras": [
+                {"type": "PATTERN", "value": "\\s"},
+                {"type": "PATTERN", "value": "#.*"}
+            ],
+            "rules": {
+                "program": {
+                    "type": "SEQ",
+                    "members": [
+                        {"type": "STRING", "value": "x"},
+                        {"type": "CHOICE", "members": [
+                            {"type": "SYMBOL", "name": token_name},
+                            {"type": "BLANK"}
+                        ]},
+                        {"type": "STRING", "value": "y"}
+                    ]
+                },
+                token_name: {"type": "PATTERN", "value": "#.*"}
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &parser_code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("x # hi\ny # there\n", None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let expected = if token_name == "comment" {
+            "(program (comment) (comment))"
+        } else {
+            "(program)"
+        };
+        assert_eq!(tree.root_node().to_sexp(), expected);
+    }
+}
+
+#[test]
+fn test_incremental_lexing_after_nonterminal_extra() {
+    let language = get_test_fixture_language("incremental_nonterminal_extra");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let original = b"main :: () {}\n// comment\n#import \"Basic\";\n";
+    let mut source = original.to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    let expected =
+        "(program (block_decl (identifier) (function (block))) (comment) (import (string)))";
+    assert_eq!(tree.root_node().to_sexp(), expected);
+    let position = source
+        .windows(7)
+        .position(|text| text == b"#import")
+        .unwrap();
+    for _ in 0..2 {
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position,
+                deleted_length: 0,
+                inserted_text: b"/".to_vec(),
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position,
+                deleted_length: 1,
+                inserted_text: Vec::new(),
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        assert_eq!(source, original);
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        assert!(!tree.root_node().has_error());
+    }
+}
+
+#[test]
 fn test_parsing_simple_string() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();

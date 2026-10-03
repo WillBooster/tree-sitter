@@ -1,0 +1,18 @@
+======================================
+Import after a nonterminal comment
+======================================
+
+main :: () {}
+// comment
+#import "Basic";
+
+---
+
+(program
+  (block_decl
+    (identifier)
+    (function
+      (block)))
+  (comment)
+  (import
+    (string)))

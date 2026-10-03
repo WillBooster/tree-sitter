@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 use crc32fast::hash as crc32;
 use heck::{ToKebabCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use indoc::{formatdoc, indoc};
-use log::info;
+use log::{info, warn};
 use rand::RngExt;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -78,6 +78,15 @@ const TAGS_QUERY_PATH_PLACEHOLDER: &str = "TAGS_QUERY_PATH";
 
 const GRAMMAR_JS_TEMPLATE: &str = include_str!("./templates/grammar.js");
 const PACKAGE_JSON_TEMPLATE: &str = include_str!("./templates/package.json");
+const NODE_PACKAGE_FIELDS: &[&str] = &["main", "types"];
+const NODE_PACKAGE_ENTRIES: &[(&str, &[&str])] = &[
+    ("dependencies", &["node-addon-api", "node-gyp-build"]),
+    ("devDependencies", &["prebuildify", "tree-sitter"]),
+    ("peerDependencies", &["tree-sitter"]),
+    ("peerDependenciesMeta", &["tree-sitter"]),
+    ("scripts", &["install", "test"]),
+];
+const NODE_PACKAGE_FILES: &[&str] = &["binding.gyp", "prebuilds/**", "bindings/node/*"];
 const GITIGNORE_TEMPLATE: &str = include_str!("./templates/gitignore");
 const GITATTRIBUTES_TEMPLATE: &str = include_str!("./templates/gitattributes");
 const EDITORCONFIG_TEMPLATE: &str = include_str!("./templates/.editorconfig");
@@ -265,7 +274,6 @@ pub fn generate_grammar_files(
             Ok(())
         },
         |path| {
-            // updating the config, if needed
             if let Some(opts) = opts {
                 let tree_sitter_json = opts.clone().to_tree_sitter_json();
                 write_file(path, serde_json::to_string_pretty(&tree_sitter_json)?)?;
@@ -350,7 +358,7 @@ pub fn generate_grammar_files(
 
     let bindings_dir = repo_path.join("bindings");
 
-    generate_common_files(&ctx, &generate_opts)?;
+    generate_common_files(&ctx, &generate_opts, tree_sitter_config.bindings.node)?;
 
     if tree_sitter_config.bindings.rust {
         generate_rust_bindings(&ctx, &generate_opts, &bindings_dir)?;
@@ -380,23 +388,59 @@ pub fn generate_grammar_files(
     Ok(())
 }
 
-fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
-    // Create package.json
+fn generate_common_files(
+    ctx: &InitContext,
+    opts: &GenerateOpts,
+    node_bindings: bool,
+) -> Result<()> {
+    let package_path = ctx.repo_path.join("package.json");
+    if node_bindings && !ctx.allow_update && package_path.exists() {
+        let contents = fs::read_to_string(&package_path)?;
+        let package: Value =
+            serde_json::from_str(contents.strip_prefix('\u{feff}').unwrap_or(&contents))
+                .with_context(|| format!("Failed to parse {}", package_path.display()))?;
+        if package.get("main").is_none()
+            || package["dependencies"].get("node-addon-api").is_none()
+            || package["dependencies"].get("node-gyp-build").is_none()
+        {
+            warn!(
+                "Node bindings are enabled, but package.json is missing Node binding setup. Run `tree-sitter init --update` to add missing entries."
+            );
+        }
+    }
     missing_path_else(
-        ctx.repo_path.join("package.json"),
+        package_path,
         ctx.allow_update,
         |path| {
-            generate_file(
-                path,
-                PACKAGE_JSON_TEMPLATE,
-                ctx.dashed_language_name.as_str(),
-                opts,
-            )
+            let template = if node_bindings {
+                PACKAGE_JSON_TEMPLATE.to_string()
+            } else {
+                let mut package: Value = serde_json::from_str(PACKAGE_JSON_TEMPLATE)?;
+                let fields = package.as_object_mut().unwrap();
+                for &key in NODE_PACKAGE_FIELDS {
+                    fields.remove(key);
+                }
+                for &(field, keys) in NODE_PACKAGE_ENTRIES {
+                    let entries = fields[field].as_object_mut().unwrap();
+                    for &key in keys {
+                        entries.remove(key);
+                    }
+                    if entries.is_empty() {
+                        fields.remove(field);
+                    }
+                }
+                fields["files"].as_array_mut().unwrap().retain(|file| {
+                    !file
+                        .as_str()
+                        .is_some_and(|file| NODE_PACKAGE_FILES.contains(&file))
+                });
+                serde_json::to_string_pretty(&package)?
+            };
+            generate_file(path, &template, ctx.dashed_language_name.as_str(), opts)
         },
-        update_package_json,
+        |path| update_package_json(path, node_bindings),
     )?;
 
-    // Do not create a grammar.js file in a repo with multiple language configs
     if !ctx.has_multiple_language_configs {
         missing_path_else(
             ctx.repo_path.join("grammar.js"),
@@ -406,7 +450,6 @@ fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
         )?;
     }
 
-    // Write .gitignore file
     missing_path_else(
         ctx.repo_path.join(".gitignore"),
         ctx.allow_update,
@@ -414,7 +457,6 @@ fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
         update_gitignore,
     )?;
 
-    // Write .gitattributes file
     missing_path_else(
         ctx.repo_path.join(".gitattributes"),
         ctx.allow_update,
@@ -422,7 +464,6 @@ fn generate_common_files(ctx: &InitContext, opts: &GenerateOpts) -> Result<()> {
         update_gitattributes,
     )?;
 
-    // Write .editorconfig file
     missing_path(ctx.repo_path.join(".editorconfig"), |path| {
         generate_file(path, EDITORCONFIG_TEMPLATE, ctx.language_name, opts)
     })?;
@@ -489,7 +530,7 @@ fn generate_node_bindings(
             |path| {
                 regenerate_if_missing(
                     path,
-                    "Object.defineProperty",
+                    "Bun.isStandaloneExecutable",
                     INDEX_JS_TEMPLATE,
                     ctx.language_name,
                     opts,
@@ -648,7 +689,7 @@ fn generate_python_bindings(
         )?;
 
         missing_path(lang_path.join("py.typed"), |path| {
-            generate_file(path, "", ctx.language_name, opts) // py.typed is empty
+            generate_file(path, "", ctx.language_name, opts)
         })?;
 
         missing_path(path.join("tests"), create_dir)?.apply(|path| {
@@ -836,9 +877,7 @@ fn generate_java_bindings(
     Ok(())
 }
 
-// TODO: remove old migrations
-
-fn update_package_json(path: &Path) -> Result<()> {
+fn update_package_json(path: &Path, node_bindings: bool) -> Result<()> {
     let mut contents = fs::read_to_string(path)?
         .replace(
             r#""node-addon-api": "^8.3.1""#,
@@ -861,6 +900,67 @@ fn update_package_json(path: &Path) -> Result<()> {
             "type": "module",
               "repository":"#},
         );
+    }
+    if node_bindings {
+        let mut package: Value =
+            serde_json::from_str(contents.strip_prefix('\u{feff}').unwrap_or(&contents))
+                .with_context(|| format!("Failed to parse {}", path.display()))?;
+        let original = package.clone();
+        let template: Value = serde_json::from_str(PACKAGE_JSON_TEMPLATE)?;
+        let fields = package
+            .as_object_mut()
+            .context("package.json must be an object")?;
+        for &key in NODE_PACKAGE_FIELDS {
+            let value = template
+                .get(key)
+                .with_context(|| format!("package.json template is missing {key}"))?;
+            fields.entry(key).or_insert_with(|| value.clone());
+        }
+        for &(field, keys) in NODE_PACKAGE_ENTRIES {
+            let value = fields
+                .entry(field)
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(entries) = value.as_object_mut() else {
+                warn!("Skipping {field} in {}: expected an object", path.display());
+                continue;
+            };
+            for &key in keys {
+                let value = template
+                    .get(field)
+                    .and_then(|entries| entries.get(key))
+                    .with_context(|| format!("package.json template is missing {field}.{key}"))?;
+                entries.entry(key).or_insert_with(|| value.clone());
+            }
+        }
+        if let Some(files) = fields.get_mut("files") {
+            if let Some(files) = files.as_array_mut() {
+                for &file in NODE_PACKAGE_FILES {
+                    let file = Value::String(file.to_string());
+                    if !files.contains(&file) {
+                        files.push(file);
+                    }
+                }
+            } else {
+                warn!("Skipping files in {}: expected an array", path.display());
+            }
+        }
+        if package != original {
+            let dependencies_changed = [
+                "dependencies",
+                "devDependencies",
+                "peerDependencies",
+                "peerDependenciesMeta",
+            ]
+            .iter()
+            .any(|field| package.get(field) != original.get(field));
+            if dependencies_changed && path.with_file_name("package-lock.json").exists() {
+                warn!(
+                    "Node dependencies changed in {}. Run `npm install` to refresh package-lock.json before `npm ci`.",
+                    path.display()
+                );
+            }
+            contents = serde_json::to_string_pretty(&package)? + "\n";
+        }
     }
     write_file(path, contents)?;
     Ok(())
@@ -988,7 +1088,6 @@ fn update_rust_build_rs(path: &Path, language_name: &str, opts: &GenerateOpts) -
         contents = contents.replace(r#"    c_config.flag("-utf-8");"#, &replacement);
     }
 
-    // Introduce configuration variables for dynamic query inclusion
     if !contents.contains("with_highlights_query") {
         info!("Adding support for dynamic query inclusion to bindings/rust/build.rs");
         let replaced = indoc! {r#"
@@ -1296,7 +1395,7 @@ pub fn get_root_path(path: &Path) -> Result<PathBuf> {
         if json == Some(true) {
             return Ok(pathbuf.parent().unwrap().to_path_buf());
         }
-        pathbuf.pop(); // filename
+        pathbuf.pop();
         if !pathbuf.pop() {
             return Err(anyhow!(format!(
                 concat!(
