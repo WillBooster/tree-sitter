@@ -645,6 +645,9 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
         for source in ["f(x, 1)", "f(x, y, 1)"] {
             assert_query_matches(&language, &anchored, source, &[]);
         }
+        let invalid = Query::new(&language, "(identifier ((number)? (string))?)").unwrap_err();
+        assert_eq!(invalid.kind, QueryErrorKind::Structure);
+        assert_eq!(invalid.offset, 12);
         for pattern in [
             "[(number)? @n (identifier) @id]",
             "[((number)? (string))? @g (identifier) @id]",

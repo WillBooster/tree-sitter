@@ -3008,10 +3008,15 @@ static TSQueryError ts_query__parse_pattern(
         if (current->alternative_index != NONE && current->alternative_index >= starting_step_index) current->alternative_index++;
         if (current->alternative_branch_index != NONE && current->alternative_branch_index >= starting_step_index) current->alternative_branch_index++;
       }
-      for (unsigned i = 0; i < self->step_offsets.size; i++) {
-        StepOffset *offset = array_get(&self->step_offsets, i);
-        if (offset->step_index >= starting_step_index) offset->step_index++;
+      unsigned entry_offset_index;
+      bool entry_offset_exists;
+      array_search_sorted_by(&self->step_offsets, .step_index, starting_step_index, &entry_offset_index, &entry_offset_exists);
+      ts_assert(entry_offset_exists);
+      StepOffset entry_offset = *array_get(&self->step_offsets, entry_offset_index);
+      for (unsigned i = entry_offset_index; i < self->step_offsets.size; i++) {
+        array_get(&self->step_offsets, i)->step_index++;
       }
+      array_insert(&self->step_offsets, entry_offset_index, entry_offset);
       QueryStep entry = query_step__new(WILDCARD_SYMBOL, depth, false);
       entry.is_pass_through = true;
       entry.is_immediate = is_immediate;
