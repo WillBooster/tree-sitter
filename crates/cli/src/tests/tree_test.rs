@@ -21,7 +21,9 @@ fn test_print_dot_graph_for_deep_tree() {
 
             let graph = tempfile::NamedTempFile::new().unwrap();
             tree.print_dot_graph(graph.as_file());
-            let output = std::fs::read_to_string(graph.path()).unwrap();
+            let output = std::fs::read_to_string(graph.path())
+                .unwrap()
+                .replace("\r\n", "\n");
             assert!(output.starts_with("digraph tree {\n"));
             assert!(output.ends_with("}\n"));
             assert!(output.contains("[label=\"number\""));
