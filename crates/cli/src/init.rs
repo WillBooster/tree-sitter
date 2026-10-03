@@ -78,6 +78,15 @@ const TAGS_QUERY_PATH_PLACEHOLDER: &str = "TAGS_QUERY_PATH";
 
 const GRAMMAR_JS_TEMPLATE: &str = include_str!("./templates/grammar.js");
 const PACKAGE_JSON_TEMPLATE: &str = include_str!("./templates/package.json");
+const NODE_PACKAGE_FIELDS: &[&str] = &["main", "types"];
+const NODE_PACKAGE_ENTRIES: &[(&str, &[&str])] = &[
+    ("dependencies", &["node-addon-api", "node-gyp-build"]),
+    ("devDependencies", &["prebuildify", "tree-sitter"]),
+    ("peerDependencies", &["tree-sitter"]),
+    ("peerDependenciesMeta", &["tree-sitter"]),
+    ("scripts", &["install", "test"]),
+];
+const NODE_PACKAGE_FILES: &[&str] = &["binding.gyp", "prebuilds/**", "bindings/node/*"];
 const GITIGNORE_TEMPLATE: &str = include_str!("./templates/gitignore");
 const GITATTRIBUTES_TEMPLATE: &str = include_str!("./templates/gitattributes");
 const EDITORCONFIG_TEMPLATE: &str = include_str!("./templates/.editorconfig");
@@ -408,26 +417,22 @@ fn generate_common_files(
             } else {
                 let mut package: Value = serde_json::from_str(PACKAGE_JSON_TEMPLATE)?;
                 let fields = package.as_object_mut().unwrap();
-                for key in [
-                    "main",
-                    "types",
-                    "dependencies",
-                    "peerDependencies",
-                    "peerDependenciesMeta",
-                ] {
+                for &key in NODE_PACKAGE_FIELDS {
                     fields.remove(key);
                 }
-                let development = package["devDependencies"].as_object_mut().unwrap();
-                development.remove("prebuildify");
-                development.remove("tree-sitter");
-                let scripts = package["scripts"].as_object_mut().unwrap();
-                scripts.remove("install");
-                scripts.remove("test");
-                package["files"].as_array_mut().unwrap().retain(|file| {
-                    !matches!(
-                        file.as_str(),
-                        Some("binding.gyp" | "prebuilds/**" | "bindings/node/*")
-                    )
+                for &(field, keys) in NODE_PACKAGE_ENTRIES {
+                    let entries = fields[field].as_object_mut().unwrap();
+                    for &key in keys {
+                        entries.remove(key);
+                    }
+                    if entries.is_empty() {
+                        fields.remove(field);
+                    }
+                }
+                fields["files"].as_array_mut().unwrap().retain(|file| {
+                    !file
+                        .as_str()
+                        .is_some_and(|file| NODE_PACKAGE_FILES.contains(&file))
                 });
                 serde_json::to_string_pretty(&package)?
             };
@@ -905,36 +910,38 @@ fn update_package_json(path: &Path, node_bindings: bool) -> Result<()> {
         let fields = package
             .as_object_mut()
             .context("package.json must be an object")?;
-        for key in ["main", "types"] {
-            fields.entry(key).or_insert_with(|| template[key].clone());
+        for &key in NODE_PACKAGE_FIELDS {
+            let value = template
+                .get(key)
+                .with_context(|| format!("package.json template is missing {key}"))?;
+            fields.entry(key).or_insert_with(|| value.clone());
         }
-        for (field, keys) in [
-            ("dependencies", &["node-addon-api", "node-gyp-build"][..]),
-            ("devDependencies", &["prebuildify", "tree-sitter"][..]),
-            ("peerDependencies", &["tree-sitter"][..]),
-            ("peerDependenciesMeta", &["tree-sitter"][..]),
-            ("scripts", &["install", "test"][..]),
-        ] {
-            let entries = fields
+        for &(field, keys) in NODE_PACKAGE_ENTRIES {
+            let value = fields
                 .entry(field)
-                .or_insert_with(|| Value::Object(Map::new()))
-                .as_object_mut()
-                .with_context(|| format!("package.json {field} must be an object"))?;
+                .or_insert_with(|| Value::Object(Map::new()));
+            let Some(entries) = value.as_object_mut() else {
+                warn!("Skipping {field} in {}: expected an object", path.display());
+                continue;
+            };
             for &key in keys {
-                entries
-                    .entry(key)
-                    .or_insert_with(|| template[field][key].clone());
+                let value = template
+                    .get(field)
+                    .and_then(|entries| entries.get(key))
+                    .with_context(|| format!("package.json template is missing {field}.{key}"))?;
+                entries.entry(key).or_insert_with(|| value.clone());
             }
         }
         if let Some(files) = fields.get_mut("files") {
-            let files = files
-                .as_array_mut()
-                .context("package.json files must be an array")?;
-            for file in ["binding.gyp", "prebuilds/**", "bindings/node/*"] {
-                let file = Value::String(file.to_string());
-                if !files.contains(&file) {
-                    files.push(file);
+            if let Some(files) = files.as_array_mut() {
+                for &file in NODE_PACKAGE_FILES {
+                    let file = Value::String(file.to_string());
+                    if !files.contains(&file) {
+                        files.push(file);
+                    }
                 }
+            } else {
+                warn!("Skipping files in {}: expected an array", path.display());
             }
         }
         if package != original {
