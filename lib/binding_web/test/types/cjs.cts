@@ -25,6 +25,17 @@ export function checkInvalidRule(dsl: DSL): void {
   dsl.seq(1);
 }
 
+export function checkUnknownRule(dsl: DSL): void {
+  const { grammar, repeat1 } = bindDsl(dsl);
+  grammar({
+    name: 'invalid_rule_reference',
+    rules: {
+      // @ts-expect-error -- Unknown rule references must stay rejected by the supported compiler settings.
+      source_file: ($) => repeat1($.missing),
+    },
+  });
+}
+
 export function createParser(): Parser {
   return new Parser();
 }
