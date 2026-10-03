@@ -584,6 +584,35 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
         )
         .unwrap();
         assert_query_matches(&language, &anchored, "f(1, \"s\")", &[]);
+        for quantifier in ['?', '*'] {
+            let leading = Query::new(
+                &language,
+                &format!("(arguments . ((number)? @n (identifier) @i){quantifier})"),
+            )
+            .unwrap();
+            assert_query_matches(
+                &language,
+                &leading,
+                "f(1,x)",
+                &[(0, vec![("n", "1"), ("i", "x")])],
+            );
+            assert_query_matches(&language, &leading, "f(x)", &[(0, vec![("i", "x")])]);
+            for source in ["f()", "f(true,1,x)"] {
+                assert_query_matches(&language, &leading, source, &[(0, vec![])]);
+            }
+        }
+        let leading_empty = Query::new(
+            &language,
+            "(arguments . ((number)? @n (identifier) @i)? (regex) @r)",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &leading_empty,
+            "f(/r/)",
+            &[(0, vec![("r", "/r/")])],
+        );
+        assert_query_matches(&language, &leading_empty, "f(true,/r/)", &[]);
         for (pattern, expected) in [
             (
                 "(arguments ((number)? . (string)) @g)",
@@ -660,9 +689,13 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
             "(arguments . ((number)? (identifier) @i)* (number) @n)",
         )
         .unwrap();
-        for source in ["f(x, 1)", "f(x, y, 1)"] {
-            assert_query_matches(&language, &anchored, source, &[]);
+        for (source, expected) in [
+            ("f(x, 1)", vec![("i", "x"), ("n", "1")]),
+            ("f(x, y, 1)", vec![("i", "x"), ("n", "1")]),
+        ] {
+            assert_query_matches(&language, &anchored, source, &[(0, expected)]);
         }
+        assert_query_matches(&language, &anchored, "f(true, x, 1)", &[]);
         let invalid = Query::new(&language, "(identifier ((number)? (string))?)").unwrap_err();
         assert_eq!(invalid.kind, QueryErrorKind::Structure);
         assert_eq!(invalid.offset, 12);

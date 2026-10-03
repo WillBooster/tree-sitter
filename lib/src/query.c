@@ -215,6 +215,7 @@ typedef struct {
   uint16_t pattern_index;
   uint16_t consumed_capture_count: 12;
   bool seeking_immediate_match: 1;
+  bool seeking_first_named_child: 1;
   bool has_in_progress_alternatives: 1;
   bool dead: 1;
   bool needs_parent: 1;
@@ -4353,7 +4354,9 @@ static inline bool ts_query_cursor__advance(
             node_does_match = symbol == step->symbol && (!step->is_missing || is_missing);
           }
           bool later_sibling_can_match = has_later_siblings;
-          if ((step->is_immediate && is_named && !state->skipped_quantifier) || state->seeking_immediate_match) {
+          if ((step->is_immediate && is_named && !state->skipped_quantifier) ||
+              state->seeking_immediate_match ||
+              (state->seeking_first_named_child && is_named)) {
             later_sibling_can_match = false;
           }
           if (step->is_last_child && has_later_named_siblings) {
@@ -4499,6 +4502,7 @@ static inline bool ts_query_cursor__advance(
           // The zero-skip's vacuous-anchor exemption only covers the immediate
           // step it lands on. Once the state advances, a later anchor is normal.
           state->skipped_quantifier = false;
+          state->seeking_first_named_child = false;
 
           if (stop_on_definite_step && next_step->root_pattern_guaranteed) did_match = true;
 
@@ -4535,7 +4539,7 @@ static inline bool ts_query_cursor__advance(
                 if (child_step->alternative_is_skip && child_step->is_immediate &&
                     child_step_index > 0 &&
                     array_get(&self->query->steps, child_step_index - 1)->depth < child_step->depth) {
-                  child_state->seeking_immediate_match = true;
+                  child_state->seeking_first_named_child = true;
                 }
                 child_state->step_index++;
                 k--;
@@ -4590,7 +4594,7 @@ static inline bool ts_query_cursor__advance(
                     // leading *boundary* anchor (`(P . Q* Y)`). Transfer the first-child
                     // requirement to the skip target so it survives the empty run: `Y`
                     // must still be the parent's first named child.
-                    copy->seeking_immediate_match = true;
+                    copy->seeking_first_named_child = true;
                   }
                   // Otherwise the skipped step carried a leading *between* anchor
                   // (`A . Q* ...`): with zero `Q` that adjacency vanishes, while the skip
@@ -4662,7 +4666,8 @@ static inline bool ts_query_cursor__advance(
             if (left_contains_right) {
               if (
                 state->step_index == other_state->step_index &&
-                (other_state->seeking_immediate_match || !state->seeking_immediate_match)
+                (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
+                (other_state->seeking_first_named_child || !state->seeking_first_named_child)
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
@@ -4679,7 +4684,8 @@ static inline bool ts_query_cursor__advance(
             if (right_contains_left) {
               if (
                 state->step_index == other_state->step_index &&
-                (state->seeking_immediate_match || !other_state->seeking_immediate_match)
+                (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
+                (state->seeking_first_named_child || !other_state->seeking_first_named_child)
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
