@@ -3198,49 +3198,50 @@ TSQuery *ts_query_new(
     }
     array_delete(&root_steps);
 
-    // Continued repetitions must not revisit other alternation branches.
-    // Copy their initial step so its branch and zero-skip links are not taken again.
+    // A repeated nullable body must consume a node before taking its back-edge again.
+    // Copies preserve the original suffix without re-entering its initial epsilon paths.
     {
-      uint32_t pat_start = pattern->steps.offset;
-      uint32_t pat_end = pat_start + pattern->steps.length - 1; // exclude DONE
+      uint32_t pat_end = pattern->steps.offset + pattern->steps.length - 1;
+      for (uint32_t i = pattern->steps.offset; i < pat_end; i++) {
+        QueryStep *repeat = array_get(&self->steps, i);
+        if (!repeat->is_pass_through || repeat->alternative_index == NONE || repeat->alternative_index >= i) continue;
 
-      for (uint32_t i = pat_start; i < pat_end; i++) {
-        QueryStep *s = array_get(&self->steps, i);
-        // Ensure this step is a pass_through with a _backward_ alternative (a quantifier loop-back)
-        if (!s->is_pass_through || !s->is_inside_alternation
-            || s->alternative_index == NONE || s->alternative_index >= i) continue;
-
-        uint32_t target_idx = s->alternative_index;
-        QueryStep *target = array_get(&self->steps, target_idx);
-        if (target->is_pass_through && target->alternative_is_skip) {
-          s->alternative_index = target_idx + 1;
+        uint16_t start = repeat->alternative_index;
+        QueryStepIndexArray entries = query_step__initial_indices(self->steps.contents, start, i);
+        bool needs_copies = repeat->is_inside_alternation;
+        for (unsigned j = 0; j < entries.size; j++) {
+          const QueryStep *entry = array_get(&self->steps, *array_get(&entries, j));
+          if (entry->alternative_is_skip) needs_copies = true;
+        }
+        if (!needs_copies) {
+          array_delete(&entries);
           continue;
         }
 
-        // Check if the target has a forward alternative from alternation linking
-        uint16_t target_alt_index = target->alternative_index;
-        if (target_alt_index == NONE
-            || target_alt_index <= target_idx || target_alt_index >= pat_end) continue;
-
-        // Create a clean copy of the target step without the alternation alternative.
-        uint32_t copy_idx = self->steps.size;
-        QueryStep copy = *target;
-        copy.alternative_index = NONE;
-        copy.alternative_branch_index = NONE;
-        uint16_t target_depth = target->depth;
-        array_push(&self->steps, copy);
-
-        // Add a dead_end that redirects to the pass through step after the target,
-        // so the pattern continues correctly after the cleaned copy matches.
-        QueryStep redirect = query_step__new(0, target_depth, false);
-        redirect.is_dead_end = true;
-        redirect.alternative_index = target_idx + 1;
-        array_push(&self->steps, redirect);
-
-        // Update the pass_through to loop back to the copy. Reacquire `s` since
-        // `self->steps` may have been reallocated.
-        s = array_get(&self->steps, i);
-        s->alternative_index = copy_idx;
+        uint16_t first_copy = NONE;
+        uint16_t previous_copy = NONE;
+        for (unsigned j = 0; j < entries.size; j++) {
+          uint16_t entry_index = *array_get(&entries, j);
+          QueryStep copy = *array_get(&self->steps, entry_index);
+          if (copy.is_dead_end || copy.is_pass_through || copy.depth == PATTERN_DONE_MARKER) continue;
+          uint16_t copy_index = self->steps.size;
+          copy.alternative_index = NONE;
+          copy.alternative_branch_index = NONE;
+          copy.alternative_is_skip = false;
+          array_push(&self->steps, copy);
+          QueryStep redirect = query_step__new(0, copy.depth, false);
+          redirect.is_dead_end = true;
+          redirect.alternative_index = entry_index + 1;
+          array_push(&self->steps, redirect);
+          if (previous_copy != NONE) {
+            array_get(&self->steps, previous_copy)->alternative_branch_index = copy_index;
+          } else {
+            first_copy = copy_index;
+          }
+          previous_copy = copy_index;
+        }
+        array_delete(&entries);
+        if (first_copy != NONE) array_get(&self->steps, i)->alternative_index = first_copy;
       }
     }
   }
@@ -3690,7 +3691,9 @@ static bool ts_query_cursor__first_in_progress_capture(
     TSNode node = array_get(captures, state->consumed_capture_count)->node;
     if (
       ts_node_end_byte(node) <= self->included_range.start_byte ||
-      point_lte(ts_node_end_point(node), self->included_range.start_point)
+      point_lte(ts_node_end_point(node), self->included_range.start_point) ||
+      ts_node_start_byte(node) >= self->included_range.end_byte ||
+      point_gte(ts_node_start_point(node), self->included_range.end_point)
     ) {
       state->consumed_capture_count++;
       i--;

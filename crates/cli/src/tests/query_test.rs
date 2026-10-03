@@ -609,6 +609,15 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
             );
         }
         for pattern in [
+            r#"(arguments [","? (identifier)]*) @r"#,
+            "(arguments [(identifier)? (number)]+) @r",
+            r#"(arguments [(identifier)? ","?]*) @r"#,
+            r#"(arguments [(number) ","? (identifier)]*) @r"#,
+        ] {
+            let repeated = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &repeated, "f(x)", &[(0, vec![("r", "(x)")])]);
+        }
+        for pattern in [
             "[(number)? @n (identifier) @id]",
             "[((number)? (string))? @g (identifier) @id]",
         ] {
@@ -624,6 +633,32 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
                 ranges.push(matched.captures()[*index].node.byte_range());
             }
             assert_eq!(ranges, vec![0..1, 2..3]);
+        }
+    });
+}
+
+#[test]
+fn test_query_nullable_root_captures_respect_range_end() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let query = Query::new(&language, "[(number)* @n (identifier) @id]").unwrap();
+        let source = "f(x,1)";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        for point_range in [false, true] {
+            let mut cursor = QueryCursor::new();
+            if point_range {
+                cursor.set_point_range(Point::new(0, 2)..Point::new(0, 3));
+            } else {
+                cursor.set_byte_range(2..3);
+            }
+            let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+            let mut ranges = Vec::new();
+            while let Some((matched, index)) = captures.next() {
+                ranges.push(matched.captures()[*index].node.byte_range());
+            }
+            assert_eq!(ranges, vec![2..3]);
         }
     });
 }

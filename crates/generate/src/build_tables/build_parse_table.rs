@@ -1,15 +1,21 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
-    hash::BuildHasherDefault,
+    hash::{BuildHasher as _, BuildHasherDefault},
+    num::NonZeroU32,
 };
 
-use indexmap::{IndexMap, map::Entry};
-use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use hashbrown::{HashTable, hash_table};
+use indexmap::{
+    IndexMap,
+    map::{Entry, RawEntryApiV1, raw_entry_v1::RawEntryMut},
+};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet, FxHasher};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
+    SymbolIndexer,
     item::{ParseItem, ParseItemSet, ParseItemSetCore, ParseItemSetEntry},
     item_set_builder::ParseItemSetBuilder,
 };
@@ -21,8 +27,9 @@ use crate::{
     rules::{Associativity, Precedence, Symbol, SymbolType, TokenSet},
     strpool::StrPool,
     tables::{
-        ActionList, ActionListPool, FieldLocation, GotoAction, ParseAction, ParseState,
-        ParseStateId, ParseTable, ParseTableEntry, ProductionInfo, ProductionInfoId,
+        ActionList, ActionListId, ActionListPool, FieldLocation, GotoAction, NonterminalEntries,
+        ParseAction, ParseState, ParseStateId, ParseTable, ParseTableEntry, ProductionInfo,
+        ProductionInfoId, TerminalEntries,
     },
 };
 
@@ -30,7 +37,149 @@ use crate::{
 // sequence of symbols that could lead to that parse state.
 type SymbolSequence = Vec<Symbol>;
 
-type AuxiliarySymbolSequence = Vec<AuxiliarySymbolInfo>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct AuxiliaryContextId(NonZeroU32);
+
+impl AuxiliaryContextId {
+    const fn from_index(index: usize) -> Self {
+        Self(NonZeroU32::new(index as u32 + 1).unwrap())
+    }
+
+    const fn index(self) -> usize {
+        self.0.get() as usize - 1
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AuxiliaryParentSetId(u32);
+
+/// For conflict reporting, each parse state is associated with the auxiliary (repeat)
+/// symbols in progress along the path to that state, and their parents: the non-auxiliary
+/// rules that were using them. Auxiliary symbols can't be named in the grammar's
+/// `conflicts`, so a conflict inside a repeat rule is reported in terms of its parents.
+///
+/// A state's context only holds the auxiliary symbols at a dot in that state, and links
+/// to its predecessor: the context of the state that first led to it. Successor states
+/// share a context, and a lookup follows the predecessors back to the most recent state
+/// that used the symbol.
+#[derive(Default)]
+struct AuxiliarySymbolContexts {
+    contexts: Vec<AuxiliaryContext>,
+    entries: Vec<(usize, AuxiliaryParentSetId)>,
+    parent_symbols: Vec<Symbol>,
+    parent_sets: Vec<AuxiliaryParentSet>,
+    parent_set_ids: HashTable<AuxiliaryParentSetId>,
+}
+
+struct AuxiliaryContext {
+    predecessor: Option<AuxiliaryContextId>,
+    start: u32,
+    len: u32,
+}
+
+#[derive(Clone, Copy)]
+struct AuxiliaryParentSet {
+    start: u32,
+    len: u32,
+}
+
+impl AuxiliarySymbolContexts {
+    /// Adds the context of a state whose predecessor is `predecessor`. `uses` pairs each
+    /// auxiliary symbol at a dot in the state with the rule of an item using it. Auxiliary
+    /// rules aren't parents, but a symbol used only by auxiliary rules still gets an (empty)
+    /// entry, which hides any earlier one.
+    fn push(
+        &mut self,
+        grammar: &SyntaxGrammar,
+        predecessor: Option<AuxiliaryContextId>,
+        mut uses: Vec<(usize, usize)>,
+    ) -> Option<AuxiliaryContextId> {
+        if uses.is_empty() {
+            return predecessor;
+        }
+        uses.sort_unstable();
+        uses.dedup();
+        let start = self.entries.len() as u32;
+        let mut parents = Vec::new();
+        for group in uses.chunk_by(|a, b| a.0 == b.0) {
+            parents.clear();
+            parents.extend(
+                group
+                    .iter()
+                    .filter(|(_, parent)| !grammar.variables[*parent].is_auxiliary())
+                    .map(|&(_, parent)| Symbol::non_terminal(parent)),
+            );
+            let parent_set = self.intern(&parents);
+            let symbol = group[0].0;
+            self.entries.push((symbol, parent_set));
+        }
+        let id = AuxiliaryContextId::from_index(self.contexts.len());
+        self.contexts.push(AuxiliaryContext {
+            predecessor,
+            start,
+            len: self.entries.len() as u32 - start,
+        });
+        Some(id)
+    }
+
+    /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
+    /// the path to the state whose context is `context`.
+    fn parents(&self, mut context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+        while let Some(id) = context {
+            let AuxiliaryContext {
+                predecessor,
+                start,
+                len,
+            } = self.contexts[id.index()];
+            let entries = &self.entries[start as usize..(start + len) as usize];
+            if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
+                return Some(Self::parent_set(
+                    &self.parent_symbols,
+                    &self.parent_sets,
+                    parent_set,
+                ));
+            }
+            context = predecessor;
+        }
+        None
+    }
+
+    fn intern(&mut self, parents: &[Symbol]) -> AuxiliaryParentSetId {
+        let Self {
+            parent_symbols,
+            parent_sets,
+            parent_set_ids,
+            ..
+        } = self;
+        let hash = FxBuildHasher.hash_one(parents);
+        match parent_set_ids.entry(
+            hash,
+            |&id| Self::parent_set(parent_symbols, parent_sets, id) == parents,
+            |&id| FxBuildHasher.hash_one(Self::parent_set(parent_symbols, parent_sets, id)),
+        ) {
+            hash_table::Entry::Occupied(entry) => *entry.get(),
+            hash_table::Entry::Vacant(entry) => {
+                let id = AuxiliaryParentSetId(parent_sets.len() as u32);
+                parent_sets.push(AuxiliaryParentSet {
+                    start: parent_symbols.len() as u32,
+                    len: parents.len() as u32,
+                });
+                parent_symbols.extend_from_slice(parents);
+                entry.insert(id);
+                id
+            }
+        }
+    }
+
+    fn parent_set<'a>(
+        parent_symbols: &'a [Symbol],
+        parent_sets: &[AuxiliaryParentSet],
+        id: AuxiliaryParentSetId,
+    ) -> &'a [Symbol] {
+        let AuxiliaryParentSet { start, len } = parent_sets[id.0 as usize];
+        &parent_symbols[start as usize..(start + len) as usize]
+    }
+}
 
 pub struct ParseStateInfo<'a> {
     pub preceding_symbols_by_id: Vec<SymbolSequence>,
@@ -45,13 +194,7 @@ impl<'a> ParseStateInfo<'a> {
     }
 }
 
-#[derive(Clone, PartialEq)]
-struct AuxiliarySymbolInfo {
-    auxiliary_symbol: Symbol,
-    parent_symbols: Vec<Symbol>,
-}
-
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ReductionInfo {
     precedence: Precedence,
     symbols: Vec<Symbol>,
@@ -60,9 +203,93 @@ struct ReductionInfo {
     has_non_assoc: bool,
 }
 
+impl ReductionInfo {
+    fn clear(&mut self) {
+        self.symbols.clear();
+        *self = Self {
+            symbols: std::mem::take(&mut self.symbols),
+            ..Self::default()
+        };
+    }
+}
+
+struct ReductionInfos {
+    indexer: SymbolIndexer,
+    /// Each lookahead's reductions, by [`SymbolIndexer::index`]. Only the lookaheads with a
+    /// reduction in the current state are up to date: `add_actions` clears a lookahead's info at
+    /// its first reduction in each state.
+    infos: Vec<ReductionInfo>,
+}
+
+impl ReductionInfos {
+    fn new(indexer: SymbolIndexer) -> Self {
+        Self {
+            indexer,
+            infos: vec![ReductionInfo::default(); indexer.token_count() as usize],
+        }
+    }
+
+    fn get(&self, lookahead: Symbol) -> &ReductionInfo {
+        &self.infos[self.indexer.index(lookahead)]
+    }
+
+    fn get_mut(&mut self, lookahead: Symbol) -> &mut ReductionInfo {
+        &mut self.infos[self.indexer.index(lookahead)]
+    }
+}
+
+struct SuccessorSets<'a> {
+    indexer: SymbolIndexer,
+    sets: Vec<Option<ParseItemSet<'a>>>,
+    symbols: Vec<Symbol>,
+    pool: Vec<ParseItemSet<'a>>,
+}
+
+impl<'a> SuccessorSets<'a> {
+    const MAX_POOLED_CAPACITY: usize = 256;
+
+    fn new(indexer: SymbolIndexer) -> Self {
+        Self {
+            indexer,
+            sets: vec![None; indexer.symbol_count() as usize],
+            symbols: Vec::new(),
+            pool: Vec::new(),
+        }
+    }
+
+    fn item_set(&mut self, symbol: Symbol) -> &mut ParseItemSet<'a> {
+        let slot = &mut self.sets[self.indexer.index(symbol)];
+        if slot.is_none() {
+            self.symbols.push(symbol);
+        }
+        slot.get_or_insert_with(|| self.pool.pop().unwrap_or_default())
+    }
+
+    fn take_all(&mut self) -> Vec<(Symbol, ParseItemSet<'a>)> {
+        self.symbols.sort_unstable();
+        self.symbols
+            .drain(..)
+            .map(|symbol| {
+                // INVARIANT: every symbol in `symbols` has a set
+                let set = self.sets[self.indexer.index(symbol)].take().unwrap();
+                (symbol, set)
+            })
+            .collect()
+    }
+
+    fn recycle(&mut self, sets: Vec<(Symbol, ParseItemSet<'a>)>) {
+        for (_, mut set) in sets {
+            if set.entries.capacity() <= Self::MAX_POOLED_CAPACITY {
+                set.entries.clear();
+                self.pool.push(set);
+            }
+        }
+    }
+}
+
 struct ParseStateQueueEntry {
     state_id: ParseStateId,
-    preceding_auxiliary_symbols: AuxiliarySymbolSequence,
+    preceding_auxiliary_context: Option<AuxiliaryContextId>,
 }
 
 struct ParseTableBuilder<'a> {
@@ -75,10 +302,15 @@ struct ParseTableBuilder<'a> {
     preceding_symbols_by_id: Vec<SymbolSequence>,
     production_info_ids_by_prod_id: Vec<Option<ProductionInfoId>>,
     parse_state_queue: VecDeque<ParseStateQueueEntry>,
+    auxiliary_contexts: AuxiliarySymbolContexts,
     non_terminal_extra_states: Vec<(Symbol, ParseStateId)>,
     actual_conflicts: FxHashSet<Vec<Symbol>>,
-    parse_table: ParseTable<ParseTableEntry>,
+    parse_table: ParseTable,
+    action_list_ids: FxHashMap<ActionList, u32>,
     str_pool: &'a StrPool,
+    terminal_entries: IndexMap<Symbol, ParseTableEntry, BuildHasherDefault<FxHasher>>,
+    successor_sets: SuccessorSets<'a>,
+    reduction_infos: ReductionInfos,
 }
 
 pub type BuildTableResult<T> = Result<T, ParseTableBuilderError>;
@@ -268,6 +500,7 @@ impl<'a> ParseTableBuilder<'a> {
         variable_info: &'a [VariableInfo],
         str_pool: &'a StrPool,
     ) -> Self {
+        let symbol_indexer = SymbolIndexer::new(syntax_grammar, lexical_grammar);
         Self {
             syntax_grammar,
             lexical_grammar,
@@ -279,6 +512,7 @@ impl<'a> ParseTableBuilder<'a> {
             preceding_symbols_by_id: Vec::new(),
             production_info_ids_by_prod_id: vec![None; syntax_grammar.productions.len()],
             parse_state_queue: VecDeque::new(),
+            auxiliary_contexts: AuxiliarySymbolContexts::default(),
             actual_conflicts: syntax_grammar.expected_conflicts.iter().cloned().collect(),
             parse_table: ParseTable {
                 states: Vec::new(),
@@ -288,28 +522,32 @@ impl<'a> ParseTableBuilder<'a> {
                 production_infos: Vec::new(),
                 max_aliased_production_length: 1,
             },
+            action_list_ids: FxHashMap::default(),
             str_pool,
+            terminal_entries: IndexMap::default(),
+            successor_sets: SuccessorSets::new(symbol_indexer),
+            reduction_infos: ReductionInfos::new(symbol_indexer),
         }
     }
 
     fn build(
         mut self,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> BuildTableResult<(ParseTable<ParseTableEntry>, ParseStateInfo<'a>)> {
+    ) -> BuildTableResult<(ParseTable, ParseStateInfo<'a>)> {
         // Ensure that the empty alias sequence has index 0.
         self.parse_table
             .production_infos
             .push(ProductionInfo::default());
 
         // Add the error state at index 0.
-        self.add_parse_state(&Vec::new(), &Vec::new(), ParseItemSet::default());
+        self.add_parse_state(&Vec::new(), None, &ParseItemSet::default());
 
         // Add the starting state at index 1.
         let end_lookaheads = self.item_set_builder.lookaheads.singleton(Symbol::end());
         self.add_parse_state(
             &Vec::new(),
-            &Vec::new(),
-            ParseItemSet {
+            None,
+            &ParseItemSet {
                 entries: vec![ParseItemSetEntry {
                     item: ParseItem::start(self.item_set_builder.key_map),
                     lookaheads: end_lookaheads,
@@ -364,7 +602,7 @@ impl<'a> ParseTableBuilder<'a> {
 
             // Add the parse state, and *then* push the terminal and the state id into the
             // list of nonterminal extra states
-            let state_id = self.add_parse_state(&Vec::new(), &Vec::new(), item_set);
+            let state_id = self.add_parse_state(&Vec::new(), None, &item_set);
             self.non_terminal_extra_states.push((terminal, state_id));
         }
 
@@ -381,7 +619,7 @@ impl<'a> ParseTableBuilder<'a> {
 
             self.add_actions(
                 self.preceding_symbols_by_id[entry.state_id as usize].clone(),
-                entry.preceding_auxiliary_symbols,
+                entry.preceding_auxiliary_context,
                 entry.state_id,
                 &item_set,
             )?;
@@ -410,18 +648,24 @@ impl<'a> ParseTableBuilder<'a> {
     fn add_parse_state(
         &mut self,
         preceding_symbols: &SymbolSequence,
-        preceding_auxiliary_symbols: &AuxiliarySymbolSequence,
-        item_set: ParseItemSet<'a>,
+        preceding_auxiliary_context: Option<AuxiliaryContextId>,
+        item_set: &ParseItemSet<'a>,
     ) -> ParseStateId {
-        match self.state_ids_by_item_set.entry(item_set) {
+        // Hash the item set once, for both the lookup and a possible insert.
+        let hash = self.state_ids_by_item_set.hasher().hash_one(item_set);
+        match self
+            .state_ids_by_item_set
+            .raw_entry_mut_v1()
+            .from_key_hashed_nocheck(hash, item_set)
+        {
             // If an equivalent item set has already been processed, then return
             // the existing parse state index.
-            Entry::Occupied(o) => *o.get(),
+            RawEntryMut::Occupied(o) => *o.get(),
 
             // Otherwise, insert a new parse state and add it to the queue of
             // parse states to populate.
-            Entry::Vacant(v) => {
-                let core = v.key().core();
+            RawEntryMut::Vacant(v) => {
+                let core = item_set.core();
                 let core_count = self.core_ids_by_core.len() as u32;
                 let core_id = *self.core_ids_by_core.entry(core).or_insert(core_count);
 
@@ -432,17 +676,17 @@ impl<'a> ParseTableBuilder<'a> {
                     id: state_id,
                     lex_state_id: 0,
                     external_lex_state_id: 0,
-                    terminal_entries: IndexMap::default(),
-                    nonterminal_entries: IndexMap::default(),
+                    terminal_entries: TerminalEntries::default(),
+                    nonterminal_entries: NonterminalEntries::default(),
                     reserved_words: TokenSet::default(),
                     core_id,
                     has_eof_gated_reduce: false,
                 });
                 self.parse_state_queue.push_back(ParseStateQueueEntry {
                     state_id,
-                    preceding_auxiliary_symbols: preceding_auxiliary_symbols.clone(),
+                    preceding_auxiliary_context,
                 });
-                v.insert(state_id);
+                v.insert_hashed_nocheck(hash, item_set.clone(), state_id);
                 state_id
             }
         }
@@ -451,18 +695,12 @@ impl<'a> ParseTableBuilder<'a> {
     fn add_actions(
         &mut self,
         mut preceding_symbols: SymbolSequence,
-        mut preceding_auxiliary_symbols: AuxiliarySymbolSequence,
+        preceding_auxiliary_context: Option<AuxiliaryContextId>,
         state_id: ParseStateId,
         item_set: &ParseItemSet<'a>,
     ) -> BuildTableResult<()> {
-        let mut terminal_successors = BTreeMap::new();
-        let mut non_terminal_successors = BTreeMap::new();
         let mut lookaheads_with_conflicts = TokenSet::new();
-        let mut reduction_infos = FxHashMap::<Symbol, ReductionInfo>::default();
-
-        // `get_auxiliary_node_info` scans every entry in `item_set`, and the same auxiliary
-        // symbol typically appears across many entries in a state. Memoize per symbol.
-        let mut aux_node_info = FxHashMap::<Symbol, AuxiliarySymbolInfo>::default();
+        let mut auxiliary_uses = Vec::new();
 
         // Each item in the item set contributes to either or a Shift action or a Reduce
         // action in this state.
@@ -477,21 +715,16 @@ impl<'a> ParseTableBuilder<'a> {
             // item into the successor item set.
             if let Some(next_symbol) = item.symbol(self.syntax_grammar) {
                 let mut successor = item.successor();
-                let successor_set = if next_symbol.is_non_terminal() {
-                    let variable = &self.syntax_grammar.variables[next_symbol.index as usize];
+                if let Some(non_terminal_index) = next_symbol.non_terminal_index() {
+                    let index = non_terminal_index;
+                    let variable = &self.syntax_grammar.variables[index];
 
                     // Keep track of where auxiliary non-terminals (repeat symbols) are
                     // used within visible symbols. This information may be needed later
                     // for conflict resolution.
                     if variable.is_auxiliary() {
-                        preceding_auxiliary_symbols.push(
-                            aux_node_info
-                                .entry(next_symbol)
-                                .or_insert_with(|| {
-                                    self.get_auxiliary_node_info(item_set, next_symbol)
-                                })
-                                .clone(),
-                        );
+                        let parent = item.variable_index as usize;
+                        auxiliary_uses.push((non_terminal_index, parent));
                     }
 
                     // For most parse items, the symbols associated with the preceding children
@@ -503,22 +736,11 @@ impl<'a> ParseTableBuilder<'a> {
                     // If this item has consumed a hidden child with fields, then the symbols
                     // of its preceding children need to be taken into account when comparing
                     // it with other items.
-                    if variable.is_hidden()
-                        && !self.variable_info[next_symbol.index as usize]
-                            .fields
-                            .is_empty()
-                    {
+                    if variable.is_hidden() && !self.variable_info[index].fields.is_empty() {
                         successor.has_preceding_inherited_fields = true;
                     }
-
-                    non_terminal_successors
-                        .entry(next_symbol)
-                        .or_insert_with(ParseItemSet::default)
-                } else {
-                    terminal_successors
-                        .entry(next_symbol)
-                        .or_insert_with(ParseItemSet::default)
-                };
+                }
+                let successor_set = self.successor_sets.item_set(next_symbol);
                 let successor_entry = successor_set.insert(successor);
                 successor_entry.lookaheads = self
                     .item_set_builder
@@ -565,16 +787,19 @@ impl<'a> ParseTableBuilder<'a> {
                     {
                         continue;
                     }
-                    let table_entry = self.parse_table.states[state_id as usize]
+                    let table_entry = self
                         .terminal_entries
                         .entry(lookahead)
                         .or_insert_with(ParseTableEntry::new);
-                    let reduction_info = reduction_infos.entry(lookahead).or_default();
+                    let reduction_info = self.reduction_infos.get_mut(lookahead);
 
                     // While inserting Reduce actions, eagerly resolve conflicts related
                     // to precedence: avoid inserting lower-precedence reductions, and
                     // clear the action list when inserting higher-precedence reductions.
                     if table_entry.actions.is_empty() {
+                        // This is the lookahead's first reduction in this state, so its info is
+                        // still from an earlier state.
+                        reduction_info.clear();
                         table_entry.actions.push(action);
                     } else {
                         match Self::compare_precedence(
@@ -588,7 +813,7 @@ impl<'a> ParseTableBuilder<'a> {
                                 table_entry.actions.clear();
                                 table_entry.actions.push(action);
                                 lookaheads_with_conflicts.remove(lookahead);
-                                *reduction_info = ReductionInfo::default();
+                                reduction_info.clear();
                             }
                             // Two items that reduce identically build the same tree, so
                             // there is nothing for the user to resolve. Precedence is
@@ -617,23 +842,27 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
-        preceding_auxiliary_symbols.dedup();
+        let auxiliary_context = self.auxiliary_contexts.push(
+            self.syntax_grammar,
+            preceding_auxiliary_context,
+            auxiliary_uses,
+        );
 
         // Having computed the successor item sets for each symbol, add a new
         // parse state for each of these item sets, and add a corresponding Shift
         // action to this state.
-        for (symbol, next_item_set) in terminal_successors {
+        let successors = self.successor_sets.take_all();
+        // Non-terminals come last in symbol order.
+        let (terminal_successors, non_terminal_successors) = successors.split_at(
+            successors.partition_point(|(symbol, _)| symbol.non_terminal_index().is_none()),
+        );
+        for &(symbol, ref next_item_set) in terminal_successors {
             preceding_symbols.push(symbol);
-            let next_state_id = self.add_parse_state(
-                &preceding_symbols,
-                &preceding_auxiliary_symbols,
-                next_item_set,
-            );
+            let next_state_id =
+                self.add_parse_state(&preceding_symbols, auxiliary_context, next_item_set);
             preceding_symbols.pop();
 
-            let entry = self.parse_table.states[state_id as usize]
-                .terminal_entries
-                .entry(symbol);
+            let entry = self.terminal_entries.entry(symbol);
             if let Entry::Occupied(e) = &entry
                 && !e.get().actions.is_empty()
             {
@@ -649,44 +878,51 @@ impl<'a> ParseTableBuilder<'a> {
                 });
         }
 
-        for (symbol, next_item_set) in non_terminal_successors {
-            preceding_symbols.push(symbol);
-            let next_state_id = self.add_parse_state(
-                &preceding_symbols,
-                &preceding_auxiliary_symbols,
-                next_item_set,
-            );
-            preceding_symbols.pop();
-            self.parse_table.states[state_id as usize]
-                .nonterminal_entries
-                .insert(symbol, GotoAction::Goto(next_state_id));
-        }
+        let gotos = non_terminal_successors
+            .iter()
+            .map(|(symbol, next_item_set)| {
+                preceding_symbols.push(*symbol);
+                let next_state_id =
+                    self.add_parse_state(&preceding_symbols, auxiliary_context, next_item_set);
+                preceding_symbols.pop();
+                (*symbol, GotoAction::Goto(next_state_id))
+            })
+            .collect::<Vec<_>>();
+        self.parse_table.states[state_id as usize]
+            .nonterminal_entries
+            .extend(gotos);
+        self.successor_sets.recycle(successors);
 
         // For any symbol with multiple actions, perform conflict resolution.
         // This will either
         // * choose one action over the others using precedence or associativity
         // * keep multiple actions if this conflict has been whitelisted in the grammar
         // * fail, terminating the parser generation process
-        for symbol in lookaheads_with_conflicts.iter() {
-            self.handle_conflict(
-                item_set,
-                state_id,
-                &preceding_symbols,
-                &preceding_auxiliary_symbols,
-                symbol,
-                reduction_infos.get(&symbol).unwrap(),
-            )?;
+        if !lookaheads_with_conflicts.is_empty() {
+            // Only finished items and items past their first step can take part in a
+            // conflict. Most of a closure is neither, so find those items once per state.
+            let candidates = item_set
+                .entries
+                .iter()
+                .filter(|entry| entry.item.step_index > 0 || entry.item.is_done())
+                .collect::<Vec<_>>();
+            for symbol in lookaheads_with_conflicts.iter() {
+                self.handle_conflict(&candidates, &preceding_symbols, auxiliary_context, symbol)?;
+            }
         }
 
         // Add actions for the grammar's `extra` symbols.
         let state = &mut self.parse_table.states[state_id as usize];
-        let is_end_of_non_terminal_extra = state.is_end_of_non_terminal_extra();
+        // Same check as `ParseState::is_end_of_non_terminal_extra` for entries not in the table yet
+        let is_end_of_non_terminal_extra = self
+            .terminal_entries
+            .contains_key(&Symbol::end_of_nonterminal_extra());
 
         // If this state represents the end of a non-terminal extra rule, then make sure that
         // it doesn't have other successor states. Non-terminal extra rules must have
         // unambiguous endings.
         if is_end_of_non_terminal_extra {
-            if state.terminal_entries.len() > 1 {
+            if self.terminal_entries.len() > 1 {
                 let parent_symbols = item_set
                     .entries
                     .iter()
@@ -715,8 +951,7 @@ impl<'a> ParseTableBuilder<'a> {
         // Add actions for the start tokens of each non-terminal extra rule.
         else {
             for (terminal, state_id) in &self.non_terminal_extra_states {
-                state
-                    .terminal_entries
+                self.terminal_entries
                     .entry(*terminal)
                     .or_insert(ParseTableEntry {
                         reusable: true,
@@ -731,18 +966,21 @@ impl<'a> ParseTableBuilder<'a> {
             // are added to every state except for those at the ends of non-terminal
             // extras.
             for extra_token in &self.syntax_grammar.extra_symbols {
-                if extra_token.is_non_terminal() {
-                    state
-                        .nonterminal_entries
-                        .insert(*extra_token, GotoAction::ShiftExtra);
-                } else {
-                    state
-                        .terminal_entries
-                        .entry(*extra_token)
-                        .or_insert(ParseTableEntry {
-                            reusable: true,
-                            actions: ActionList::One(ParseAction::ShiftExtra),
-                        });
+                match extra_token.kind {
+                    SymbolType::NonTerminal => {
+                        state
+                            .nonterminal_entries
+                            .insert(*extra_token, GotoAction::ShiftExtra);
+                    }
+                    SymbolType::Terminal | SymbolType::External => {
+                        self.terminal_entries
+                            .entry(*extra_token)
+                            .or_insert(ParseTableEntry {
+                                reusable: true,
+                                actions: ActionList::One(ParseAction::ShiftExtra),
+                            });
+                    }
+                    SymbolType::End | SymbolType::EndOfNonTerminalExtra => unreachable!(),
                 }
             }
         }
@@ -776,22 +1014,38 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
+        // Every state stays in the table until minimization, so store its terminal entries as
+        // interned action lists, with no spare capacity, and give back the capacity its
+        // non-terminal map grew into.
+        state
+            .terminal_entries
+            .reserve_exact(self.terminal_entries.len());
+        state
+            .terminal_entries
+            .extend(self.terminal_entries.drain(..).map(|(symbol, entry)| {
+                let index = self
+                    .parse_table
+                    .action_lists
+                    .intern(&mut self.action_list_ids, entry.actions);
+                (symbol, ActionListId::new(index, entry.reusable))
+            }));
+        state.nonterminal_entries.shrink_to_fit();
+
         Ok(())
     }
 
     fn handle_conflict(
         &mut self,
-        item_set: &ParseItemSet,
-        state_id: ParseStateId,
+        candidates: &[&ParseItemSetEntry],
         preceding_symbols: &SymbolSequence,
-        preceding_auxiliary_symbols: &[AuxiliarySymbolInfo],
+        auxiliary_context: Option<AuxiliaryContextId>,
         conflicting_lookahead: Symbol,
-        reduction_info: &ReductionInfo,
     ) -> BuildTableResult<()> {
-        let entry = self.parse_table.states[state_id as usize]
+        let entry = self
             .terminal_entries
             .get_mut(&conflicting_lookahead)
             .unwrap();
+        let reduction_info = self.reduction_infos.get(conflicting_lookahead);
 
         // Determine which items in the set conflict with each other, and the
         // precedences associated with SHIFT vs REDUCE actions. There won't
@@ -804,7 +1058,7 @@ impl<'a> ParseTableBuilder<'a> {
         let mut conflicting_items = BTreeSet::new();
         for ParseItemSetEntry {
             item, lookaheads, ..
-        } in &item_set.entries
+        } in candidates
         {
             if let Some(step) = item.step(self.syntax_grammar) {
                 if item.step_index > 0
@@ -924,7 +1178,7 @@ impl<'a> ParseTableBuilder<'a> {
         }
 
         // If all of the actions but one have been eliminated, then there's no problem.
-        let entry = self.parse_table.states[state_id as usize]
+        let entry = self
             .terminal_entries
             .get_mut(&conflicting_lookahead)
             .unwrap();
@@ -938,18 +1192,9 @@ impl<'a> ParseTableBuilder<'a> {
             let symbol = Symbol::non_terminal(item.variable_index as usize);
             if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
                 actual_conflict.extend(
-                    preceding_auxiliary_symbols
-                        .iter()
-                        .rev()
-                        .find_map(|info| {
-                            if info.auxiliary_symbol == symbol {
-                                Some(&info.parent_symbols)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap()
-                        .iter(),
+                    self.auxiliary_contexts
+                        .parents(auxiliary_context, item.variable_index as usize)
+                        .unwrap(),
                 );
             } else {
                 actual_conflict.push(symbol);
@@ -1149,31 +1394,6 @@ impl<'a> ParseTableBuilder<'a> {
         }
     }
 
-    fn get_auxiliary_node_info(
-        &self,
-        item_set: &ParseItemSet,
-        symbol: Symbol,
-    ) -> AuxiliarySymbolInfo {
-        let parent_symbols = item_set
-            .entries
-            .iter()
-            .filter_map(|ParseItemSetEntry { item, .. }| {
-                let variable_index = item.variable_index as usize;
-                if item.symbol(self.syntax_grammar) == Some(symbol)
-                    && !self.syntax_grammar.variables[variable_index].is_auxiliary()
-                {
-                    Some(Symbol::non_terminal(variable_index))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        AuxiliarySymbolInfo {
-            auxiliary_symbol: symbol,
-            parent_symbols,
-        }
-    }
-
     fn get_production_id(&mut self, item: &ParseItem) -> ProductionInfoId {
         debug_assert_ne!(item.prod_id, START_PRODUCTION_ID);
         if let Some(id) = self.production_info_ids_by_prod_id[item.prod_id as usize] {
@@ -1277,7 +1497,7 @@ pub fn build_parse_table<'a>(
     variable_info: &'a [VariableInfo],
     str_pool: &'a StrPool,
     diagnostics: &mut Vec<Diagnostic>,
-) -> BuildTableResult<(ParseTable<ParseTableEntry>, ParseStateInfo<'a>)> {
+) -> BuildTableResult<(ParseTable, ParseStateInfo<'a>)> {
     ParseTableBuilder::new(
         syntax_grammar,
         lexical_grammar,
