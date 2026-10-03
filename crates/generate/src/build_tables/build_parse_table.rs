@@ -878,15 +878,19 @@ impl<'a> ParseTableBuilder<'a> {
                 });
         }
 
-        for &(symbol, ref next_item_set) in non_terminal_successors {
-            preceding_symbols.push(symbol);
-            let next_state_id =
-                self.add_parse_state(&preceding_symbols, auxiliary_context, next_item_set);
-            preceding_symbols.pop();
-            self.parse_table.states[state_id as usize]
-                .nonterminal_entries
-                .push(symbol, GotoAction::Goto(next_state_id));
-        }
+        let gotos = non_terminal_successors
+            .iter()
+            .map(|(symbol, next_item_set)| {
+                preceding_symbols.push(*symbol);
+                let next_state_id =
+                    self.add_parse_state(&preceding_symbols, auxiliary_context, next_item_set);
+                preceding_symbols.pop();
+                (*symbol, GotoAction::Goto(next_state_id))
+            })
+            .collect::<Vec<_>>();
+        self.parse_table.states[state_id as usize]
+            .nonterminal_entries
+            .extend(gotos);
         self.successor_sets.recycle(successors);
 
         // For any symbol with multiple actions, perform conflict resolution.
@@ -1016,15 +1020,15 @@ impl<'a> ParseTableBuilder<'a> {
         state
             .terminal_entries
             .reserve_exact(self.terminal_entries.len());
-        for (symbol, entry) in self.terminal_entries.drain(..) {
-            let index = self
-                .parse_table
-                .action_lists
-                .intern(&mut self.action_list_ids, entry.actions);
-            state
-                .terminal_entries
-                .push(symbol, ActionListId::new(index, entry.reusable));
-        }
+        state
+            .terminal_entries
+            .extend(self.terminal_entries.drain(..).map(|(symbol, entry)| {
+                let index = self
+                    .parse_table
+                    .action_lists
+                    .intern(&mut self.action_list_ids, entry.actions);
+                (symbol, ActionListId::new(index, entry.reusable))
+            }));
         state.nonterminal_entries.shrink_to_fit();
 
         Ok(())
