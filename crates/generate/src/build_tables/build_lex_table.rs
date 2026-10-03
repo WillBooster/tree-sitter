@@ -15,6 +15,7 @@ use crate::{
     grammars::{LexicalGrammar, SyntaxGrammar},
     nfa::{CharacterSet, NfaCursor, NfaState},
     rules::{Symbol, TokenSet},
+    strpool::StrPool,
     tables::{
         AdvanceAction, LexState, LexStateId, LexTable, ParseAction, ParseStateId, ParseTable,
     },
@@ -41,10 +42,10 @@ pub fn build_lex_table(
     token_conflict_map: &TokenConflictMap,
     unsafe_keyword_pairs: &[(Symbol, Symbol)],
     immediate_keywords: &TokenSet,
-    str_pool: &crate::strpool::StrPool,
+    str_pool: &StrPool,
 ) -> LexTables {
     let keyword_lex_table = if syntax_grammar.word_token.is_some() {
-        let mut builder = LexTableBuilder::new(lexical_grammar);
+        let mut builder = LexTableBuilder::new(lexical_grammar, str_pool);
         builder.add_state_for_tokens(keywords);
         builder.table
     } else {
@@ -238,7 +239,7 @@ pub fn build_lex_table(
         }
     }
 
-    let mut builder = LexTableBuilder::new(lexical_grammar);
+    let mut builder = LexTableBuilder::new(lexical_grammar, str_pool);
     builder.word_token = syntax_grammar
         .word_token
         .filter(|token| token.is_terminal());
@@ -370,6 +371,7 @@ struct QueueEntry {
 
 struct LexTableBuilder<'a> {
     lexical_grammar: &'a LexicalGrammar,
+    str_pool: &'a StrPool,
     word_token: Option<Symbol>,
     immediate_keywords: TokenSet,
     word_guards: Vec<TokenSet>,
@@ -380,9 +382,10 @@ struct LexTableBuilder<'a> {
 }
 
 impl<'a> LexTableBuilder<'a> {
-    fn new(lexical_grammar: &'a LexicalGrammar) -> Self {
+    fn new(lexical_grammar: &'a LexicalGrammar, str_pool: &'a StrPool) -> Self {
         Self {
             lexical_grammar,
+            str_pool,
             word_token: None,
             immediate_keywords: TokenSet::new(),
             word_guards: vec![TokenSet::new()],
@@ -447,8 +450,15 @@ impl<'a> LexTableBuilder<'a> {
                 "entry point state: {state_id}, tokens: {:?}",
                 tokens
                     .iter()
-                    .filter(|t| t.is_terminal())
-                    .map(|t| &self.lexical_grammar.variables[t.index as usize].name)
+                    .map(|token| {
+                        if token.is_eof() {
+                            "<EOF>"
+                        } else {
+                            debug_assert!(token.is_terminal());
+                            self.str_pool
+                                .resolve(self.lexical_grammar.variables[token.index as usize].name)
+                        }
+                    })
                     .collect::<Vec<_>>()
             );
         }
