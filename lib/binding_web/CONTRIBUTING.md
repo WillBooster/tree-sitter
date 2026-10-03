@@ -43,8 +43,11 @@ by visiting the [Rust website][rust] and following the instructions there.
 If you use a local Emscripten installation, it must match the [version pinned in this repository][emscripten-version].
 
 > [!NOTE]
-> By default, the build process will emit an ES6 module. If you need a CommonJS module, export `CJS` to `true`, or just
-> run `CJS=true npm run build`.
+> By default, the build process emits an ES6 module. For a CommonJS module, set `CJS` to `true` when building.
+>
+> In a POSIX shell, run `CJS=true npm run build`.
+>
+> In [PowerShell](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables), run `$env:CJS = 'true'; npm run build`.
 
 > [!TIP]
 > To build the library with debug information, you can run `npm run build:debug`. The `CJS` environment variable is still
