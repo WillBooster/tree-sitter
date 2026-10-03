@@ -8,6 +8,7 @@ fn parse_reports_missing_hidden_tokens() {
         directory.path().join("src/grammar.json"),
         r#"{
             "name": "hidden_missing",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
             "rules": {
                 "source_file": {"type": "SEQ", "members": [
                     {"type": "STRING", "value": "."},
@@ -35,11 +36,11 @@ fn parse_reports_missing_hidden_tokens() {
         String::from_utf8_lossy(&generated.stderr)
     );
 
-    fs::write(directory.path().join("input.txt"), ".;").unwrap();
+    fs::write(directory.path().join("input.txt"), "\n.;").unwrap();
     let invalid = run(&["parse", "input.txt"]);
     let output = String::from_utf8(invalid.stdout).unwrap();
     assert_eq!(invalid.status.code(), Some(1), "{output}");
-    assert!(output.contains("ERROR in source_file"), "{output}");
+    assert!(output.contains("ERROR in id [1, 1] - [1, 1]"), "{output}");
 
     let summary = run(&["parse", "--json-summary", "input.txt"]);
     assert_eq!(summary.status.code(), Some(1));

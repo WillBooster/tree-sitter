@@ -623,9 +623,11 @@ pub fn parse_file_at_path(
 
         let mut first_error = None;
         let mut earliest_node_with_error = None;
+        let mut error_container = None;
         'outer: loop {
             let node = cursor.node();
             if node.has_error() {
+                error_container = Some(node);
                 if earliest_node_with_error.is_none() {
                     earliest_node_with_error = Some(node);
                 }
@@ -648,8 +650,11 @@ pub fn parse_file_at_path(
                                     first_error = Some(sibling);
                                     break 'outer;
                                 }
-                                if sibling.has_error() && cursor.goto_first_child() {
-                                    continue 'outer;
+                                if sibling.has_error() {
+                                    error_container = Some(sibling);
+                                    if cursor.goto_first_child() {
+                                        continue 'outer;
+                                    }
                                 }
                             }
                             break;
@@ -662,7 +667,7 @@ pub fn parse_file_at_path(
             }
         }
 
-        let first_error = first_error.or(earliest_node_with_error);
+        let first_error = first_error.or(error_container);
         if first_error.is_some() || opts.print_time {
             let path = path.to_string_lossy();
             write!(
