@@ -30,6 +30,40 @@ use crate::{
 };
 
 #[test]
+fn test_immediate_token_with_reused_anonymous_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "reused_anonymous_extra",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "program": {
+                "type": "SEQ",
+                "members": [
+                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                    {"type": "CHOICE", "members": [
+                        {"type": "PATTERN", "value": "\\s"},
+                        {"type": "BLANK"}
+                    ]}
+                ]
+            }
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language(&name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    for source in ["x", "x ", "x\n"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+    for source in [" x", "\tx", "\nx", " x "] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(tree.root_node().has_error(), "{source:?}");
+    }
+}
+
+#[test]
 fn test_parsing_simple_string() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();

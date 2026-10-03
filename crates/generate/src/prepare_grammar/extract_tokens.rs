@@ -338,6 +338,8 @@ pub(super) fn extract_tokens(
     for &root in &g.extra_roots {
         if let Some(s) = g.pool.node(root).symbol() {
             extra_symbols.push(replace_symbol(s));
+        } else if matches!(g.pool.node(root), Rule::Pattern(..)) {
+            separator_roots.push(root);
         } else if let Some(i) = extractor.find(&g.pool, root) {
             extra_symbols.push(Symbol::terminal(i as usize));
         } else {
