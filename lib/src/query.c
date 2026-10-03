@@ -2101,6 +2101,10 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       // Determine if this step is definite or has definite alternatives.
       bool parent_pattern_guaranteed = false;
       for (;;) {
+        if (step->is_dead_end) {
+          step = array_get(&self->steps, step->alternative_index);
+          continue;
+        }
         if (step->root_pattern_guaranteed) {
           parent_pattern_guaranteed = true;
           break;
