@@ -3,9 +3,10 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
-// Keep the require relative: Bun cannot embed an addon loaded through the computed root path.
+// Both standalone requires must stay relative so Bun embeds the addon and node-type metadata.
+const isStandaloneBun = typeof Bun !== "undefined" && Bun.isStandaloneExecutable;
 let binding;
-if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
+if (isStandaloneBun) {
   // Catching the require lets Bun compile apps that bundle this grammar without loading it or supplying a prebuild.
   try {
     binding = require(`../../prebuilds/${process.platform}-${process.arch}/tree-sitter-KEBAB_PARSER_NAME.node`);
@@ -17,7 +18,7 @@ if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
 }
 
 try {
-  const nodeTypes = typeof Bun !== "undefined" && Bun.isStandaloneExecutable
+  const nodeTypes = isStandaloneBun
     ? require("../../src/node-types.json")
     : (await import(`${root}/src/node-types.json`, { with: { type: "json" } })).default;
   binding.nodeTypeInfo = nodeTypes;
