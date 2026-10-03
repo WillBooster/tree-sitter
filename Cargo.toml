@@ -93,7 +93,7 @@ clap = { features = [
 clap_complete = "4.6.3"
 clap_complete_nushell = "4.5.10"
 crc32fast = "1.5.0"
-ctor = "0.6.3"
+ctor = "1.0.0"
 ctrlc = { features = [ "termination" ], version = "3.5.2" }
 dialoguer = { features = [ "fuzzy-select" ], version = "0.12.0" }
 etcetera = "0.11.0"
