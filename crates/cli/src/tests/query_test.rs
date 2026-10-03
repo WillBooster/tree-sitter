@@ -59,6 +59,24 @@ fn test_query_alternation_structure_is_order_independent() {
     }
 
     for pattern in [
+        "(arguments [(number)? (identifier) @id])",
+        "(arguments [(number)* (identifier) @id])",
+        "(arguments [[(number)? (identifier) @id] (string)])",
+        "(arguments [[(number)* (identifier) @id] (string)])",
+        "(arguments [(string) [(number)? (identifier) @id]])",
+        "(arguments [[(string) (number)?] (identifier) @id])",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+        let mut captured_ranges = Vec::new();
+        while let Some((matched, index)) = captures.next() {
+            captured_ranges.push(matched.captures()[*index].node.byte_range());
+        }
+        assert_eq!(captured_ranges, vec![2..3], "{pattern}");
+    }
+
+    for pattern in [
         r#"(arguments ["{" "}"]) @args"#,
         r#"(arguments ["}" "{"]) @args"#,
         r#"(arguments [["{" "}"] "~"]) @args"#,

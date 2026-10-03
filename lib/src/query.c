@@ -2465,7 +2465,7 @@ static TSQueryError ts_query__parse_pattern(
       while (
         start_step->alternative_index != NONE &&
         start_step->alternative_index > step_index &&
-        start_step->alternative_index < next_step_index
+        start_step->alternative_index < next_step_index - 1
       ) {
         step_index = start_step->alternative_index;
         start_step = array_get(&self->steps, step_index);
