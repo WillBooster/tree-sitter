@@ -617,6 +617,34 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
             let repeated = Query::new(&language, pattern).unwrap();
             assert_query_matches(&language, &repeated, "f(x)", &[(0, vec![("r", "(x)")])]);
         }
+        for (pattern, source, expected) in [
+            (
+                "(arguments ((number)? (identifier))? (regex) @r)",
+                "f(/r/)",
+                vec![("r", "/r/")],
+            ),
+            (
+                "(arguments ((string)? (identifier))* (regex) @r)",
+                "f(1, 2, /r/)",
+                vec![("r", "/r/")],
+            ),
+            (
+                "(arguments [(string) (number) (identifier)?]+ (number)) @r",
+                "f(x,1)",
+                vec![("r", "(x,1)")],
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, source, &[(0, expected)]);
+        }
+        let anchored = Query::new(
+            &language,
+            "(arguments . ((number)? (identifier) @i)* (number) @n)",
+        )
+        .unwrap();
+        for source in ["f(x, 1)", "f(x, y, 1)"] {
+            assert_query_matches(&language, &anchored, source, &[]);
+        }
         for pattern in [
             "[(number)? @n (identifier) @id]",
             "[((number)? (string))? @g (identifier) @id]",

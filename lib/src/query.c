@@ -4493,7 +4493,8 @@ static inline bool ts_query_cursor__advance(
           unsigned end_index = j + 1;
           for (unsigned k = j; k < end_index; k++) {
             QueryState *child_state = array_get(&self->states, k);
-            QueryStep *child_step = array_get(&self->query->steps, child_state->step_index);
+            uint16_t child_step_index = child_state->step_index;
+            QueryStep *child_step = array_get(&self->query->steps, child_step_index);
             if (child_step->alternative_branch_index != NONE) {
               QueryState *branch = ts_query_cursor__copy_state(self, &child_state);
               if (branch) {
@@ -4516,6 +4517,11 @@ static inline bool ts_query_cursor__advance(
               // via its alternative_index. When a state reaches a pass-through step, it splits
               // in order to process the alternative step, and then it advances to the next step.
               if (child_step->is_pass_through) {
+                if (child_step->alternative_is_skip && child_step->is_immediate &&
+                    child_step_index > 0 &&
+                    array_get(&self->query->steps, child_step_index - 1)->depth < child_step->depth) {
+                  child_state->seeking_immediate_match = true;
+                }
                 child_state->step_index++;
                 k--;
               }
@@ -4544,12 +4550,13 @@ static inline bool ts_query_cursor__advance(
                 end_index++;
                 copy_count++;
                 copy->step_index = child_step->alternative_index;
-                if (child_step->is_pass_through) {
+                if (child_step->is_pass_through && !child_step->alternative_is_skip) {
                   copy->seeking_immediate_match = true;
                 }
                 // Taking a `?`/`*` zero-skip means the quantified subpattern matched
                 // nothing. How an adjacent anchor behaves then depends on where it sat:
                 if (child_step->alternative_is_skip) {
+                  if (child_step->is_pass_through) copy->seeking_immediate_match = false;
                   if (!child_step->is_immediate) {
                     QueryStep *skip_target = array_get(
                       &self->query->steps,
@@ -4560,7 +4567,8 @@ static inline bool ts_query_cursor__advance(
                     // `B` match anywhere).
                     copy->skipped_quantifier = skip_target->depth == child_step->depth;
                   } else if (
-                    array_get(&self->query->steps, child_state->step_index - 1)->depth <
+                    child_step_index > 0 &&
+                    array_get(&self->query->steps, child_step_index - 1)->depth <
                     child_step->depth
                   ) {
                     // The skipped step was the parent's first child pattern and carried a
