@@ -724,7 +724,7 @@ mod tests {
         );
 
         let (grammar, interner) = flatten_named(|p| p.choice(&[])).unwrap();
-        assert!(prods(&grammar, 0, &interner).is_empty());
+        assert_eq!(prods(&grammar, 0, &interner), Vec::<ProdView>::new());
     }
 
     fn term(p: &mut RulePool, i: u32) -> RuleId {
