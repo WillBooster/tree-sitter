@@ -120,7 +120,7 @@ typedef struct {
   bool parent_pattern_guaranteed: 1;
   bool is_missing: 1;
   bool alternative_is_skip: 1;
-  bool is_repeated: 1;
+  bool is_last_child_repetition: 1;
 } QueryStep;
 
 /*
@@ -2755,6 +2755,20 @@ static TSQueryError ts_query__parse_pattern(
                 repeat_end->alternative_index < self->steps.size - 1
               ) {
                 repeat_end->is_last_child = true;
+                uint16_t step_index = repeat_end->alternative_index;
+                for (;;) {
+                  QueryStep *repeated_step = array_get(&self->steps, step_index);
+                  repeated_step->is_last_child_repetition = true;
+                  if (
+                    repeated_step->alternative_index != NONE &&
+                    repeated_step->alternative_index > step_index &&
+                    repeated_step->alternative_index < self->steps.size - 1
+                  ) {
+                    step_index = repeated_step->alternative_index;
+                  } else {
+                    break;
+                  }
+                }
               }
               if (
                 last_child_step->alternative_index != NONE &&
@@ -3005,22 +3019,6 @@ static TSQueryError ts_query__parse_pattern(
       break;
   }
 
-  if (quantifier == TSQuantifierOneOrMore || quantifier == TSQuantifierZeroOrMore) {
-    uint16_t step_index = starting_step_index;
-    for (;;) {
-      QueryStep *repeated_step = array_get(&self->steps, step_index);
-      repeated_step->is_repeated = true;
-      if (
-        repeated_step->alternative_index != NONE &&
-        repeated_step->alternative_index > step_index &&
-        repeated_step->alternative_index < self->steps.size - 1
-      ) {
-        step_index = repeated_step->alternative_index;
-      } else {
-        break;
-      }
-    }
-  }
 
   capture_quantifiers_mul(capture_quantifiers, quantifier);
 
@@ -4292,7 +4290,7 @@ static inline bool ts_query_cursor__advance(
           if ((step->is_immediate && is_named && !state->skipped_quantifier) || state->seeking_immediate_match) {
             later_sibling_can_match = false;
           }
-          if (step->is_last_child && !step->is_repeated && has_later_named_siblings) {
+          if (step->is_last_child && !step->is_last_child_repetition && has_later_named_siblings) {
             node_does_match = false;
           }
           if (step->supertype_symbol) {

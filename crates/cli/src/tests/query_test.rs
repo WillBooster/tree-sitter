@@ -1931,6 +1931,15 @@ fn test_query_matches_with_trailing_anchor_after_nested_repetition() {
         );
         assert_query_matches(&language, &query, "{ a(); const x = 1; }", &[]);
 
+        for pattern in [
+            "(program . [(expression_statement)+ (lexical_declaration)] @x .)",
+            "(program . ((expression_statement)+ @x (empty_statement)?) .)",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, "a(); const x = 1;", &[]);
+            assert_query_matches(&language, &query, "a(); b(); const x = 1;", &[]);
+        }
+
         let grouped = Query::new(
             &language,
             "(program . ((expression_statement) @call (empty_statement) @semi)+ .)",
