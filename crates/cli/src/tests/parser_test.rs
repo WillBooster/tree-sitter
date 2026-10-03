@@ -64,6 +64,38 @@ fn test_immediate_token_with_reused_anonymous_extra_pattern() {
 }
 
 #[test]
+fn test_regex_extra_preserves_matching_named_token() {
+    let grammar = serde_json::json!({
+        "name": "matching_named_extra",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "PATTERN", "value": "#.*"}
+        ],
+        "rules": {
+            "program": {
+                "type": "SEQ",
+                "members": [
+                    {"type": "STRING", "value": "x"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "comment"},
+                        {"type": "BLANK"}
+                    ]},
+                    {"type": "STRING", "value": "y"}
+                ]
+            },
+            "comment": {"type": "PATTERN", "value": "#.*"}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language(&name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse("x # hi\ny # there\n", None).unwrap();
+    assert!(!tree.root_node().has_error());
+    assert_eq!(tree.root_node().to_sexp(), "(program (comment) (comment))");
+}
+
+#[test]
 fn test_parsing_simple_string() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
