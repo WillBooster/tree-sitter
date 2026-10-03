@@ -273,6 +273,8 @@ fn populate_error_state(
         false,
     );
     let state = &mut parse_table.states[0];
+    let existing_symbols = state.terminal_entries.keys().copied().collect::<TokenSet>();
+    let mut recovery_entries = Vec::new();
 
     // Exclude from the error-recovery state any token that conflicts with one of
     // the *conflict-free tokens* identified above.
@@ -297,19 +299,21 @@ fn populate_error_state(
             "error recovery - include token {}",
             str_pool.resolve(lexical_grammar.variables[i].name)
         );
-        state
-            .terminal_entries
-            .insert_if_missing(symbol, recover_entry);
-    }
-
-    for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
-        if external_token.corresponding_internal_token.is_none() {
-            state
-                .terminal_entries
-                .insert_if_missing(Symbol::external(i), recover_entry);
+        if !existing_symbols.contains(symbol) {
+            recovery_entries.push((symbol, recover_entry));
         }
     }
 
+    for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
+        let symbol = Symbol::external(i);
+        if external_token.corresponding_internal_token.is_none()
+            && !existing_symbols.contains(symbol)
+        {
+            recovery_entries.push((symbol, recover_entry));
+        }
+    }
+
+    state.terminal_entries.extend(recovery_entries);
     state.terminal_entries.insert(Symbol::end(), recover_entry);
 }
 

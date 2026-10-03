@@ -320,10 +320,15 @@ impl<V> ParseStateEntries<V> {
         }
     }
 
-    pub fn insert_if_missing(&mut self, symbol: Symbol, value: V) {
-        if !self.contains_key(symbol) {
-            self.0.push((symbol, value));
-        }
+    pub fn extend(&mut self, entries: impl IntoIterator<Item = (Symbol, V)>) {
+        #[cfg(debug_assertions)]
+        let mut symbols = self.keys().copied().collect::<rustc_hash::FxHashSet<_>>();
+        self.0.extend(entries.into_iter().inspect(|(symbol, _)| {
+            #[cfg(debug_assertions)]
+            assert!(symbols.insert(*symbol));
+            #[cfg(not(debug_assertions))]
+            let _ = symbol;
+        }));
     }
 
     pub fn push(&mut self, symbol: Symbol, value: V) {
