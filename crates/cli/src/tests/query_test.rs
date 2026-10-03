@@ -32,6 +32,41 @@ static EXAMPLE_FILTER: LazyLock<Option<String>> =
     LazyLock::new(|| env::var("TREE_SITTER_TEST_EXAMPLE_FILTER").ok());
 
 #[test]
+fn test_query_alternation_structure_is_order_independent() {
+    let language = get_language("javascript");
+    let source = "f(x)";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+
+    for pattern in [
+        r#"(arguments ["{" (identifier)]) @args"#,
+        r#"(arguments [(identifier) "{"]) @args"#,
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+        let mut captured_ranges = Vec::new();
+        while let Some((matched, index)) = captures.next() {
+            captured_ranges.push(matched.captures()[*index].node.byte_range());
+        }
+        assert_eq!(captured_ranges, vec![1..4], "{pattern}");
+    }
+
+    for pattern in [
+        r#"(arguments ["{" "}"]) @args"#,
+        r#"(arguments ["}" "{"]) @args"#,
+    ] {
+        assert_eq!(
+            Query::new(&language, pattern).unwrap_err().kind,
+            QueryErrorKind::Structure,
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
 fn test_query_file_assertions_respect_multiline_capture_bounds() {
     let language = get_language("javascript");
     let directory = tempfile::tempdir().unwrap();

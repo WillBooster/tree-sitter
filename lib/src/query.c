@@ -1916,20 +1916,31 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     analysis_state_set__clear(&analysis.deeper_states, &analysis.state_pool);
     for (unsigned j = 0; j < subgraph->start_states.size; j++) {
       TSStateId parse_state = *array_get(&subgraph->start_states, j);
-      analysis_state_set__push(&analysis.states, &analysis.state_pool, &((AnalysisState) {
-        .step_index = parent_step_index + 1,
-        .stack = {
-          [0] = {
-            .parse_state = parse_state,
-            .parent_symbol = parent_symbol,
-            .child_index = 0,
-            .field_id = 0,
-            .done = false,
+      uint16_t first_step_index = parent_step_index + 1;
+      uint16_t step_index = first_step_index;
+      for (;;) {
+        analysis_state_set__push(&analysis.states, &analysis.state_pool, &((AnalysisState) {
+          .step_index = step_index,
+          .stack = {
+            [0] = {
+              .parse_state = parse_state,
+              .parent_symbol = parent_symbol,
+              .child_index = 0,
+              .field_id = 0,
+              .done = false,
+            },
           },
-        },
-        .depth = 1,
-        .root_symbol = parent_symbol,
-      }));
+          .depth = 1,
+          .root_symbol = parent_symbol,
+        }));
+        const QueryStep *step = array_get(&self->steps, step_index);
+        uint16_t alternative_index = step->alternative_index;
+        if (
+          alternative_index == NONE || alternative_index <= step_index ||
+          array_get(&self->steps, alternative_index)->depth != array_get(&self->steps, first_step_index)->depth
+        ) break;
+        step_index = alternative_index;
+      }
     }
 
     #ifdef DEBUG_ANALYZE_QUERY
