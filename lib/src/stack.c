@@ -35,6 +35,8 @@ struct StackNode {
   unsigned error_cost;
   unsigned node_count;
   int dynamic_precedence;
+  uint64_t pending_generation;
+  bool has_pending;
 };
 
 typedef struct {
@@ -68,6 +70,7 @@ struct Stack {
   StackNodeArray node_pool;
   StackNode *base_node;
   SubtreePool *subtree_pool;
+  uint64_t pending_generation;
 };
 
 typedef unsigned StackAction;
@@ -140,7 +143,8 @@ static StackNode *stack_node_new(
   Subtree subtree,
   bool is_pending,
   TSStateId state,
-  StackNodeArray *pool
+  StackNodeArray *pool,
+  uint64_t pending_generation
 ) {
   StackNode *node = pool->size > 0
     ? array_pop(pool)
@@ -148,7 +152,9 @@ static StackNode *stack_node_new(
   *node = (StackNode) {
     .ref_count = 1,
     .link_count = 0,
-    .state = state
+    .state = state,
+    .pending_generation = pending_generation,
+    .has_pending = is_pending,
   };
 
   if (previous_node) {
@@ -163,6 +169,11 @@ static StackNode *stack_node_new(
     node->error_cost = previous_node->error_cost;
     node->dynamic_precedence = previous_node->dynamic_precedence;
     node->node_count = previous_node->node_count;
+
+    if (subtree.ptr && ts_subtree_extra(subtree)) {
+      node->pending_generation = previous_node->pending_generation;
+      node->has_pending = previous_node->has_pending;
+    }
 
     if (subtree.ptr) {
       node->error_cost += ts_subtree_error_cost(subtree);
@@ -431,7 +442,7 @@ Stack *ts_stack_new(SubtreePool *subtree_pool) {
   array_reserve(&self->node_pool, MAX_NODE_POOL_SIZE);
 
   self->subtree_pool = subtree_pool;
-  self->base_node = stack_node_new(NULL, NULL_SUBTREE, false, 1, &self->node_pool);
+  self->base_node = stack_node_new(NULL, NULL_SUBTREE, false, 1, &self->node_pool, self->pending_generation);
   ts_stack_clear(self);
 
   return self;
@@ -517,7 +528,7 @@ void ts_stack_push(
   TSStateId state
 ) {
   StackHead *head = array_get(&self->heads, version);
-  StackNode *new_node = stack_node_new(head->node, subtree, pending, state, &self->node_pool);
+  StackNode *new_node = stack_node_new(head->node, subtree, pending, state, &self->node_pool, self->pending_generation);
   if (!subtree.ptr) head->node_count_at_last_error = new_node->node_count;
   head->node = new_node;
 }
@@ -550,10 +561,18 @@ forceinline StackAction pop_pending_callback(void *payload, const StackIterator 
 }
 
 StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version) {
+  StackNode *node = array_get(&self->heads, version)->node;
+  if (node->pending_generation == self->pending_generation && !node->has_pending) {
+    array_clear(&self->slices);
+    return self->slices;
+  }
   StackSliceArray pop = stack__iter(self, version, pop_pending_callback, NULL, 0);
   if (pop.size > 0) {
     ts_stack_renumber_version(self, array_get(&pop, 0)->version, version);
     array_get(&pop, 0)->version = version;
+  } else {
+    node->pending_generation = self->pending_generation;
+    node->has_pending = false;
   }
   return pop;
 }
@@ -707,6 +726,7 @@ StackVersion ts_stack_copy_version(Stack *self, StackVersion version) {
 
 bool ts_stack_merge(Stack *self, StackVersion version1, StackVersion version2) {
   if (!ts_stack_can_merge(self, version1, version2)) return false;
+  self->pending_generation++;
   StackHead *head1 = array_get(&self->heads, version1);
   StackHead *head2 = array_get(&self->heads, version2);
   for (uint32_t i = 0; i < head2->node->link_count; i++) {
@@ -764,6 +784,8 @@ Subtree ts_stack_resume(Stack *self, StackVersion version) {
 }
 
 void ts_stack_clear(Stack *self) {
+  self->base_node->pending_generation = self->pending_generation;
+  self->base_node->has_pending = false;
   stack_node_retain(self->base_node);
   for (uint32_t i = 0; i < self->heads.size; i++) {
     stack_head_delete(array_get(&self->heads, i), &self->node_pool, self->subtree_pool);
