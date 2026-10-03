@@ -17,8 +17,10 @@ if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
 }
 
 try {
-  const nodeTypes = await import(`${root}/src/node-types.json`, { with: { type: "json" } });
-  binding.nodeTypeInfo = nodeTypes.default;
+  const nodeTypes = typeof Bun !== "undefined" && Bun.isStandaloneExecutable
+    ? require("../../src/node-types.json")
+    : (await import(`${root}/src/node-types.json`, { with: { type: "json" } })).default;
+  binding.nodeTypeInfo = nodeTypes;
 } catch { }
 
 const queries = [
