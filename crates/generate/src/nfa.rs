@@ -479,9 +479,8 @@ impl Nfa {
     }
 
     #[must_use]
-    pub fn last_state_id(&self) -> u32 {
-        assert!(!self.states.is_empty());
-        self.states.len() as u32 - 1
+    pub const fn last_state_id(&self) -> u32 {
+        self.states.len().checked_sub(1).expect("NFA has no states") as u32
     }
 }
 
