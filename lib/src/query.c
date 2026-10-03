@@ -1323,6 +1323,7 @@ static void ts_query__perform_analysis(
 ) {
   unsigned recursion_depth_limit = 0;
   unsigned prev_final_step_count = 0;
+  QueryStepIndexArray transition_steps = array_new();
   array_clear(&analysis->final_step_indices);
   array_clear(&analysis->finished_parent_symbols);
 
@@ -1575,27 +1576,24 @@ static void ts_query__perform_analysis(
             continue;
           }
 
-          for (;;) {
+          array_clear(&transition_steps);
+          array_push(&transition_steps, next_state.step_index);
+          for (unsigned transition_index = 0; transition_index < transition_steps.size; transition_index++) {
+            next_state.step_index = *array_get(&transition_steps, transition_index);
+            next_step = array_get(&self->steps, next_state.step_index);
             if (does_match && next_step->alternative_branch_index != NONE) {
-              AnalysisState branch_state = next_state;
-              branch_state.step_index = next_step->alternative_branch_index;
-              analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &branch_state);
+              array_insert_sorted_by(&transition_steps, , next_step->alternative_branch_index);
             }
 
-            // Skip pass-through states. Although these states have alternatives, they are only
-            // used to implement repetitions, and query analysis does not need to process
-            // repetitions in order to determine whether steps are possible and definite.
+            // Repetition back-edges do not change structural possibility.
             if (next_step->is_pass_through) {
-              next_state.step_index++;
-              next_step++;
+              uint16_t continuation_index = next_state.step_index + 1;
+              array_insert_sorted_by(&transition_steps, , continuation_index);
               continue;
             }
 
-            // If the pattern is finished or hypothetical parent node is complete, then
-            // record that matching can terminate at this step of the pattern. Otherwise,
-            // add this state to the list of states to process on the next iteration.
             if (!next_step->is_dead_end) {
-              bool did_finish_pattern = array_get(&self->steps, next_state.step_index)->depth != step->depth;
+              bool did_finish_pattern = next_step->depth != step->depth;
               if (did_finish_pattern) {
                 array_insert_sorted_by(&analysis->finished_parent_symbols, , state->root_symbol);
               } else if (next_state.depth == 0) {
@@ -1605,19 +1603,12 @@ static void ts_query__perform_analysis(
               }
             }
 
-            // If the state has advanced to a step with an alternative step, then add another state
-            // at that alternative step. This process is simpler than the process of actually matching a
-            // pattern during query execution, because for the purposes of query analysis, there is no
-            // need to process repetitions.
             if (
               does_match &&
               next_step->alternative_index != NONE &&
               next_step->alternative_index > next_state.step_index
             ) {
-              next_state.step_index = next_step->alternative_index;
-              next_step = array_get(&self->steps, next_state.step_index);
-            } else {
-              break;
+              array_insert_sorted_by(&transition_steps, , next_step->alternative_index);
             }
           }
         }
@@ -1628,6 +1619,7 @@ static void ts_query__perform_analysis(
     analysis->states = analysis->next_states;
     analysis->next_states = _states;
   }
+  array_delete(&transition_steps);
 }
 
 #ifdef DEBUG_DUMP_STEPS
