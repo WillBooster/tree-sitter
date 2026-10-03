@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    exclude: [...configDefaults.exclude, 'test/browser/**'],
+    exclude: [...configDefaults.exclude, 'dist/**', 'test/browser/**'],
     coverage: {
       include: [
         'web-tree-sitter.js',
