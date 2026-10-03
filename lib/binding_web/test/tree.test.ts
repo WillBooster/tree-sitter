@@ -78,6 +78,7 @@ describe('Tree', () => {
       );
 
       let variableNode = tree.rootNode.firstChild!.firstChild!.lastChild;
+      expect(variableNode!.startIndex).toBe(input.indexOf('cde'));
 
       [input, edit] = spliceInput(input, input.indexOf('δ'), 0, '👍 * ');
       expect(input).toBe('αβ👍 * δ + cde');

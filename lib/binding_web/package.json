@@ -131,7 +131,7 @@
     "test:watch": "vitest",
     "prepack": "cp ../../LICENSE .",
     "postpack": "rm LICENSE",
-    "prepublishOnly": "tsx script/check-artifacts-fresh.ts"
+    "prepublishOnly": "node script/checkDslTypes.js && tsx script/check-artifacts-fresh.ts"
   },
   "publishConfig": {
     "access": "public",

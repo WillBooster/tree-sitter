@@ -252,6 +252,9 @@ For more information on the module options you can pass in, see the [emscripten 
 [node bindings]: https://github.com/tree-sitter/node-tree-sitter
 [wasi-sdk]: https://github.com/WebAssembly/wasi-sdk
 
+For grammar verification, enable `strict` and `noUncheckedIndexedAccess` so an unknown rule lookup is rejected.
+Use the injected `sym(name)` helper for intentionally synthetic alias or external names.
+
 ## Development
 
 For changes to the bindings or DSL declarations, read [the contributor guide](https://github.com/WillBooster/tree-sitter/blob/main/lib/binding_web/CONTRIBUTING.md).
