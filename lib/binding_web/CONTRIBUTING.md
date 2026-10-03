@@ -47,7 +47,7 @@ If you use a local Emscripten installation, it must match the [version pinned in
 >
 > In a POSIX shell, run `CJS=true npm run build`.
 >
-> In [PowerShell](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables), run `$env:CJS = 'true'; npm run build`.
+> On Windows, run `cmd /d /c 'set CJS=true&& npm run build'` from PowerShell. The [child shell](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) confines `CJS` to that build.
 
 > [!TIP]
 > To build the library with debug information, you can run `npm run build:debug`. The `CJS` environment variable is still
