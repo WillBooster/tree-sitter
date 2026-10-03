@@ -2007,6 +2007,57 @@ fn test_keyword_boundary_with_retained_immediate_prefix() {
 }
 
 #[test]
+fn test_keyword_boundary_preserves_competing_precedence() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "keyword_boundary_preserves_competing_precedence",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "SYMBOL", "name": "raw_statement"},
+                    {"type": "SYMBOL", "name": "keyword_statement"}
+                ]},
+                "raw_statement": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "raw"},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]},
+                "keyword_statement": {"type": "SEQ", "members": [
+                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "othermatch"}},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]},
+                "raw": {"type": "TOKEN", "content": {"type": "PREC", "value": 3, "content": {"type": "PATTERN", "value": "other[0-9]?"}}},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#,
+    ).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    for source in ["othermatchbox", "other1matchbox", "other box"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(program (raw_statement (raw) (identifier)))"
+        );
+        assert!(!tree.root_node().has_error());
+        let raw = tree
+            .root_node()
+            .named_child(0)
+            .unwrap()
+            .named_child(0)
+            .unwrap();
+        assert_eq!(raw.start_byte(), 0);
+        assert_eq!(
+            raw.end_byte(),
+            if source.starts_with("other1") { 6 } else { 5 }
+        );
+    }
+}
+
+#[test]
 fn test_keyword_boundary_for_reserved_immediate() {
     let (parser_name, parser_code) = generate_parser(
         r#"{

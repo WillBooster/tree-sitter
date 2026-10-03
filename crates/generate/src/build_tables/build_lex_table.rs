@@ -554,7 +554,7 @@ impl<'a> LexTableBuilder<'a> {
             if let Some((completed_id, completed_precedence)) = completion
                 && !(guard_id != 0
                     && (self.word_guards[guard_id].contains(Symbol::terminal(completed_id))
-                        || guarded_keyword_pending)
+                        || (retained_immediate_complete && guarded_keyword_pending))
                     && self.word_token.is_some_and(|word| {
                         self.lexical_grammar
                             .variable_indices_for_nfa_states(&transition.states)
