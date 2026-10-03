@@ -693,7 +693,22 @@ impl Minimizer<'_> {
         }
 
         let mut action_list_ids = FxHashMap::default();
+        let indexer = self.indexer;
+        let mut positions = vec![None; indexer.symbol_count() as usize];
         for state_index in 0..self.parse_table.states.len() {
+            set_positions(
+                &self.parse_table.states[state_index].nonterminal_entries,
+                &mut positions,
+                indexer,
+            );
+            let nonterminal_action = |state: &ParseState, symbol: Symbol| {
+                positions[indexer.index(symbol)].map(|position| {
+                    let (entry_symbol, action) =
+                        state.nonterminal_entries.get_index(position).unwrap();
+                    debug_assert_eq!(*entry_symbol, symbol);
+                    *action
+                })
+            };
             let mut done = false;
             while !done {
                 done = true;
@@ -709,8 +724,8 @@ impl Minimizer<'_> {
                         other_state_id,
                         |symbol| {
                             done = false;
-                            match state.nonterminal_entries.get(*symbol) {
-                                Some(GotoAction::Goto(state_id)) => *state_id,
+                            match nonterminal_action(state, *symbol) {
+                                Some(GotoAction::Goto(state_id)) => state_id,
                                 _ => other_state_id,
                             }
                         },
@@ -728,10 +743,10 @@ impl Minimizer<'_> {
                         if let ParseAction::Shift { state: target, .. } = action
                             && let Some(symbol) = unit_reduction_symbols_by_state.get(target)
                             && let Some(GotoAction::Goto(new_target)) =
-                                state.nonterminal_entries.get(*symbol)
-                            && *new_target != *target
+                                nonterminal_action(state, *symbol)
+                            && new_target != *target
                         {
-                            *target = *new_target;
+                            *target = new_target;
                             changed = true;
                             done = false;
                         }
@@ -742,6 +757,12 @@ impl Minimizer<'_> {
                             ActionListId::new(index, old_id.reusable());
                     }
                 }
+            }
+            for symbol in self.parse_table.states[state_index]
+                .nonterminal_entries
+                .keys()
+            {
+                positions[indexer.index(*symbol)] = None;
             }
         }
     }

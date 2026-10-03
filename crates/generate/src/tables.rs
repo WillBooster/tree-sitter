@@ -282,15 +282,6 @@ impl<V> ParseStateEntries<V> {
     }
 
     #[must_use]
-    pub fn get(&self, symbol: impl std::borrow::Borrow<Symbol>) -> Option<&V> {
-        let symbol = *symbol.borrow();
-        self.0
-            .iter()
-            .find(|(entry_symbol, _)| *entry_symbol == symbol)
-            .map(|(_, value)| value)
-    }
-
-    #[must_use]
     pub fn get_index(&self, index: usize) -> Option<(&Symbol, &V)> {
         self.0.get(index).map(|(symbol, value)| (symbol, value))
     }
