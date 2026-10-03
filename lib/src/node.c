@@ -519,7 +519,8 @@ bool ts_node_has_changes(TSNode self) {
 }
 
 bool ts_node_has_error(TSNode self) {
-  return ts_subtree_error_cost(ts_node__subtree(self)) > 0;
+  Subtree subtree = ts_node__subtree(self);
+  return ts_subtree_is_error(subtree) || ts_subtree_error_cost(subtree) > 0;
 }
 
 bool ts_node_is_error(TSNode self) {
