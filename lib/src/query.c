@@ -3015,9 +3015,6 @@ static TSQueryError ts_query__parse_pattern(
       repeat_step.is_pass_through = true;
       array_push(&self->steps, repeat_step);
 
-      // Stop when `step->alternative_index` is `NONE` or it points to
-      // `repeat_step` or beyond. Note that having just been pushed,
-      // `repeat_step` occupies slot `self->steps.size - 1`.
       initial_steps = query_step__initial_indices(
         self->steps.contents, starting_step_index, self->steps.size - 1
       );
