@@ -319,10 +319,7 @@ pub(super) fn extract_tokens(
             extra_symbols.push(replace_symbol(s));
         } else if let Some(i) = extractor.find(&g.pool, root) {
             if matches!(g.pool.node(root), Rule::Pattern(..))
-                && matches!(
-                    extractor.lexical[i as usize].kind,
-                    VariableType::Anonymous | VariableType::Auxiliary
-                )
+                && extractor.lexical[i as usize].kind == VariableType::Auxiliary
             {
                 separator_roots.push(root);
             } else {

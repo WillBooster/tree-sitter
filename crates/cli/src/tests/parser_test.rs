@@ -65,34 +65,41 @@ fn test_immediate_token_with_reused_anonymous_extra_pattern() {
 
 #[test]
 fn test_regex_extra_preserves_matching_named_token() {
-    let grammar = serde_json::json!({
-        "name": "matching_named_extra",
-        "extras": [
-            {"type": "PATTERN", "value": "\\s"},
-            {"type": "PATTERN", "value": "#.*"}
-        ],
-        "rules": {
-            "program": {
-                "type": "SEQ",
-                "members": [
-                    {"type": "STRING", "value": "x"},
-                    {"type": "CHOICE", "members": [
-                        {"type": "SYMBOL", "name": "comment"},
-                        {"type": "BLANK"}
-                    ]},
-                    {"type": "STRING", "value": "y"}
-                ]
-            },
-            "comment": {"type": "PATTERN", "value": "#.*"}
-        }
-    });
-    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-    let language = get_test_language(&name, &parser_code, None);
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    let tree = parser.parse("x # hi\ny # there\n", None).unwrap();
-    assert!(!tree.root_node().has_error());
-    assert_eq!(tree.root_node().to_sexp(), "(program (comment) (comment))");
+    for (suffix, token_name) in [("named", "comment"), ("hidden", "_comment")] {
+        let grammar = serde_json::json!({
+            "name": format!("matching_declared_extra{suffix}"),
+            "extras": [
+                {"type": "PATTERN", "value": "\\s"},
+                {"type": "PATTERN", "value": "#.*"}
+            ],
+            "rules": {
+                "program": {
+                    "type": "SEQ",
+                    "members": [
+                        {"type": "STRING", "value": "x"},
+                        {"type": "CHOICE", "members": [
+                            {"type": "SYMBOL", "name": token_name},
+                            {"type": "BLANK"}
+                        ]},
+                        {"type": "STRING", "value": "y"}
+                    ]
+                },
+                token_name: {"type": "PATTERN", "value": "#.*"}
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &parser_code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("x # hi\ny # there\n", None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let expected = if token_name == "comment" {
+            "(program (comment) (comment))"
+        } else {
+            "(program)"
+        };
+        assert_eq!(tree.root_node().to_sexp(), expected);
+    }
 }
 
 #[test]
