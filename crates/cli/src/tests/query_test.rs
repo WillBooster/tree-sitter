@@ -79,10 +79,26 @@ fn test_query_alternation_structure_is_order_independent() {
     }
 
     for pattern in [
+        r#"(arguments (((identifier)? "["))*)"#,
+        r#"(arguments (((identifier)? "["))?)"#,
+        r#"(arguments (((identifier)? "["))*) @args"#,
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let expected = if pattern.ends_with("@args") {
+            vec![(0, vec![("args", "(x)")])]
+        } else {
+            vec![(0, vec![])]
+        };
+        assert_query_matches(&language, &query, source, &expected);
+    }
+
+    for pattern in [
         r#"(arguments ["{" "}"]) @args"#,
         r#"(arguments ["}" "{"]) @args"#,
         r#"(arguments [["{" "}"] "~"]) @args"#,
         r#"(arguments ["~" ["{" "}"]]) @args"#,
+        r#"(arguments (((identifier)? "["))* "{")"#,
+        r#"(arguments (((identifier)? "["))+)"#,
     ] {
         assert_eq!(
             Query::new(&language, pattern).unwrap_err().kind,

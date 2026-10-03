@@ -1942,6 +1942,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     analysis_state_set__clear(&analysis.states, &analysis.state_pool);
     analysis_state_set__clear(&analysis.deeper_states, &analysis.state_pool);
     Array(uint16_t) initial_steps = array_new();
+    bool initial_path_finishes_parent = false;
     for (unsigned j = 0; j < subgraph->start_states.size; j++) {
       TSStateId parse_state = *array_get(&subgraph->start_states, j);
       uint16_t first_step_index = parent_step_index + 1;
@@ -1967,11 +1968,17 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
         uint16_t alternatives[] = {step->alternative_index, step->alternative_branch_index, step->is_pass_through ? step_index + 1 : NONE};
         for (unsigned alternative = 0; alternative < 3; alternative++) {
           uint16_t alternative_index = alternatives[alternative];
-          if (
-            alternative_index != NONE && alternative_index > step_index &&
-            array_get(&self->steps, alternative_index)->depth == array_get(&self->steps, first_step_index)->depth
-          ) {
-            array_insert_sorted_by(&initial_steps, , alternative_index);
+          if (alternative_index != NONE && alternative_index > step_index) {
+            const QueryStep *alternative_step = array_get(&self->steps, alternative_index);
+            uint16_t child_depth = array_get(&self->steps, first_step_index)->depth;
+            if (alternative_step->depth == child_depth) {
+              array_insert_sorted_by(&initial_steps, , alternative_index);
+            } else if (
+              alternative_step->depth == PATTERN_DONE_MARKER ||
+              alternative_step->depth < child_depth
+            ) {
+              initial_path_finishes_parent = true;
+            }
           }
         }
       }
@@ -1987,6 +1994,9 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
 
     analysis.did_abort = false;
     ts_query__perform_analysis(self, &subgraphs, &analysis);
+    if (initial_path_finishes_parent) {
+      array_insert_sorted_by(&analysis.finished_parent_symbols, , parent_symbol);
+    }
 
     // If this pattern could not be fully analyzed, then every step should
     // be considered fallible.
