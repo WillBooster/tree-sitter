@@ -2827,20 +2827,16 @@ static TSQueryError ts_query__parse_pattern(
                 repeat_end->alternative_index < self->steps.size - 1
               ) {
                 repeat_end->is_last_child = true;
-                uint16_t repeated_step_index = repeat_end->alternative_index;
-                for (;;) {
-                  QueryStep *repeated_step = array_get(&self->steps, repeated_step_index);
-                  repeated_step->is_last_child_repetition = true;
-                  if (
-                    repeated_step->alternative_index != NONE &&
-                    repeated_step->alternative_index > repeated_step_index &&
-                    repeated_step->alternative_index < self->steps.size - 1
-                  ) {
-                    repeated_step_index = repeated_step->alternative_index;
-                  } else {
-                    break;
+                QueryStepIndexArray repeated_steps = query_step__initial_indices(
+                  self->steps.contents, repeat_end->alternative_index, self->steps.size - 1
+                );
+                for (unsigned i = 0; i < repeated_steps.size; i++) {
+                  QueryStep *repeated_step = array_get(&self->steps, *array_get(&repeated_steps, i));
+                  if (!repeated_step->is_pass_through && !repeated_step->is_dead_end) {
+                    repeated_step->is_last_child_repetition = true;
                   }
                 }
+                array_delete(&repeated_steps);
               }
               array_delete(&initial_steps);
             }

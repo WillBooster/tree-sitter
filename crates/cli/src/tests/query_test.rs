@@ -626,6 +626,25 @@ fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
                 assert_query_matches(&language, &leading, source, &[(0, vec![])]);
             }
         }
+        for quantifier in ['*', '+'] {
+            let anchored_repeat = Query::new(
+                &language,
+                &format!("(arguments . ((number)? @n (identifier) @i){quantifier} .) @r"),
+            )
+            .unwrap();
+            assert_query_matches(
+                &language,
+                &anchored_repeat,
+                "f(1,x)",
+                &[(0, vec![("r", "(1,x)"), ("n", "1"), ("i", "x")])],
+            );
+            assert_query_matches(
+                &language,
+                &anchored_repeat,
+                "f(x)",
+                &[(0, vec![("r", "(x)"), ("i", "x")])],
+            );
+        }
         let leading_empty = Query::new(
             &language,
             "(arguments . ((number)? @n (identifier) @i)? (regex) @r)",
