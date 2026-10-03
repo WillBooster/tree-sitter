@@ -1007,6 +1007,28 @@ fn test_node_is_error() {
 }
 
 #[test]
+fn test_leaf_error_nodes_report_errors() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("json")).unwrap();
+    let tree = parser.parse("1 + }", None).unwrap();
+    let root = tree.root_node();
+    let error = root.named_child(1).unwrap();
+    let leaf_error = error.named_child(0).unwrap();
+
+    assert!(root.has_error());
+    assert!(error.is_error());
+    assert!(error.has_error());
+    assert!(leaf_error.is_error());
+    assert_eq!(leaf_error.child_count(), 0);
+    assert_eq!(leaf_error.byte_range(), 2..3);
+    assert!(leaf_error.has_error());
+
+    let number = root.named_child(0).unwrap();
+    assert_eq!(number.kind(), "number");
+    assert!(!number.has_error());
+}
+
+#[test]
 fn test_edit_point() {
     let edit = InputEdit {
         start_byte: 5,
