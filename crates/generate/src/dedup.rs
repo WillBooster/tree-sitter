@@ -24,8 +24,6 @@ pub trait SplitCriterion<S> {
         false
     }
 
-    /// Called before a group's states are compared, e.g. to reset what
-    /// [`Self::compatible_with_all`] keeps.
     fn start_group(&mut self) {}
 
     /// Whether `state` can stay in its group with all of `kept`.
