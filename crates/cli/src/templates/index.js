@@ -10,7 +10,7 @@ if (typeof Bun !== "undefined" && Bun.isStandaloneExecutable) {
   try {
     binding = require(`../../prebuilds/${process.platform}-${process.arch}/tree-sitter-KEBAB_PARSER_NAME.node`);
   } catch (error) {
-    throw new Error("The grammar's native prebuild is unavailable; provide a target prebuild and recompile the standalone executable", { cause: error });
+    throw new Error(`Failed to load the grammar's native prebuild: ${String(error)}`, { cause: error });
   }
 } else {
   binding = (await import("node-gyp-build")).default(root);
