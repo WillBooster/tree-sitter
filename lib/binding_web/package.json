@@ -50,7 +50,10 @@
         "default": "./debug/web-tree-sitter.cjs"
       }
     },
-    "./debug/web-tree-sitter.wasm": "./debug/web-tree-sitter.wasm"
+    "./debug/web-tree-sitter.wasm": "./debug/web-tree-sitter.wasm",
+    "./dsl": {
+      "types": "./dsl.d.ts"
+    }
   },
   "browser": {
     "fs": false,
@@ -62,6 +65,9 @@
     "*": {
       "debug": [
         "web-tree-sitter.d.ts"
+      ],
+      "dsl": [
+        "dsl.d.ts"
       ]
     }
   },
@@ -89,7 +95,8 @@
     "web-tree-sitter.d.ts",
     "web-tree-sitter.d.ts.map",
     "web-tree-sitter.d.cts",
-    "web-tree-sitter.d.cts.map"
+    "web-tree-sitter.d.cts.map",
+    "dsl.d.ts"
   ],
   "dependencies": {
     "@types/emscripten": "^1.41.5"
@@ -124,7 +131,7 @@
     "test:watch": "vitest",
     "prepack": "cp ../../LICENSE .",
     "postpack": "rm LICENSE",
-    "prepublishOnly": "tsx script/check-artifacts-fresh.ts"
+    "prepublishOnly": "node script/checkDslTypes.js && tsx script/check-artifacts-fresh.ts"
   },
   "publishConfig": {
     "access": "public",
