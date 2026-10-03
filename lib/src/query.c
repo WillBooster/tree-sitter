@@ -4343,13 +4343,9 @@ static inline bool ts_query_cursor__advance(
             continue;
           }
 
-          // Some patterns can match their root node in multiple ways, capturing different
-          // children. If this pattern step could match later children within the same
-          // parent, then this query state cannot simply be updated in place. It must be
-          // split into two states: one that matches this node, and one which skips over
-          // this node, to preserve the possibility of matching later siblings.
           if (later_sibling_can_match && (
             step->contains_captures ||
+            step->is_last_child_repetition ||
             ts_query__step_is_fallible(self->query, state->step_index)
           )) {
             if (ts_query_cursor__copy_state(self, &state)) {
@@ -4450,9 +4446,6 @@ static inline bool ts_query_cursor__advance(
                 continue;
               }
 
-              // A "pass-through" step exists only to add a branch into the step sequence,
-              // via its alternative_index. When a state reaches a pass-through step, it splits
-              // in order to process the alternative step, and then it advances to the next step.
               if (child_step->is_pass_through) {
                 if (child_step->is_last_child) {
                   bool repetition_has_later_named_siblings = has_later_named_siblings;
@@ -4484,9 +4477,6 @@ static inline bool ts_query_cursor__advance(
                 k--;
               }
 
-              // A `?`/`*` zero-skip past a step that carries a trailing last-child
-              // anchor transfers that requirement to the last matched node. The
-              // skip is only valid if that node really is the last named child.
               if (
                 child_step->alternative_is_skip &&
                 (child_state->needs_repeated_match ||

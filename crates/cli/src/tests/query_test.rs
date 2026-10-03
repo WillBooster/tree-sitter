@@ -1915,6 +1915,37 @@ fn test_query_matches_with_trailing_anchor_after_repetition() {
 }
 
 #[test]
+fn test_query_matches_with_trailing_anchor_after_uncaptured_repetition() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        for (pattern, source, expected, rejected) in [
+            (
+                "(program (empty_statement)+ .)",
+                "a();;b();;",
+                vec![],
+                "a();;b();",
+            ),
+            (
+                "(program (empty_statement)+ .) @p",
+                "a();;b();;",
+                vec![("p", "a();;b();;")],
+                "a();;b();",
+            ),
+            (
+                "(statement_block (empty_statement)+ .) @b",
+                "{ a(); ; b(); ; }",
+                vec![("b", "{ a(); ; b(); ; }")],
+                "{ a(); ; b(); }",
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, source, &[(0, expected)]);
+            assert_query_matches(&language, &query, rejected, &[]);
+        }
+    });
+}
+
+#[test]
 fn test_query_matches_with_trailing_anchor_after_nested_repetition() {
     allocations::record(|| {
         let language = get_language("javascript");
