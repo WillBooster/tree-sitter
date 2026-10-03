@@ -96,7 +96,7 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@types/node": "26.2.0",
+    "@types/node": "26.6.3",
     "@vitest/browser": "5.0.2",
     "@vitest/coverage-v8": "5.0.2",
     "dts-buddy": "0.8.3",
