@@ -8,6 +8,34 @@ use crate::{
 };
 
 #[test]
+fn test_print_dot_graph_for_deep_tree() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let depth = 10_000;
+            let source = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+            let mut parser = Parser::new();
+            parser.set_language(&get_language("json")).unwrap();
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+
+            let graph = tempfile::NamedTempFile::new().unwrap();
+            tree.print_dot_graph(graph.as_file());
+            let output = std::fs::read_to_string(graph.path()).unwrap();
+            assert!(output.starts_with("digraph tree {\n"));
+            assert!(output.ends_with("}\n"));
+            assert!(output.contains("[label=\"number\""));
+            assert!(output.contains(&format!("range: 0 - {}\n", source.len())));
+            let node_count = output.matches("[label=").count();
+            assert!(node_count > depth);
+            assert_eq!(output.matches(" -> ").count(), node_count - 1);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn test_tree_edit() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
