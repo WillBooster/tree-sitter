@@ -190,7 +190,7 @@ impl CharacterSet {
             self.ranges.push(start..end);
             return index;
         }
-        while i < self.ranges.len() {
+        loop {
             let range = &mut self.ranges[i];
             if range.start > end {
                 self.ranges.insert(i, start..end);
@@ -210,8 +210,6 @@ impl CharacterSet {
             }
             i += 1;
         }
-        self.ranges.push(start..end);
-        i
     }
 
     #[must_use]
