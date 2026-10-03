@@ -65,6 +65,8 @@ fn test_query_alternation_structure_is_order_independent() {
         "(arguments [[(number)* (identifier) @id] (string)])",
         "(arguments [(string) [(number)? (identifier) @id]])",
         "(arguments [[(string) (number)?] (identifier) @id])",
+        r#"(arguments "(" ("{"? "}")? (identifier) @id)"#,
+        r#"(arguments "(" ("{"? "}")* (identifier) @id)"#,
     ] {
         let query = Query::new(&language, pattern).unwrap();
         let mut cursor = QueryCursor::new();

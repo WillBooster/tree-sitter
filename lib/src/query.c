@@ -1585,6 +1585,14 @@ static void ts_query__perform_analysis(
               array_insert_sorted_by(&transition_steps, , next_step->alternative_branch_index);
             }
 
+            if (
+              does_match &&
+              next_step->alternative_index != NONE &&
+              next_step->alternative_index > next_state.step_index
+            ) {
+              array_insert_sorted_by(&transition_steps, , next_step->alternative_index);
+            }
+
             // Repetition back-edges do not change structural possibility.
             if (next_step->is_pass_through) {
               uint16_t continuation_index = next_state.step_index + 1;
@@ -1601,14 +1609,6 @@ static void ts_query__perform_analysis(
               } else {
                 analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &next_state);
               }
-            }
-
-            if (
-              does_match &&
-              next_step->alternative_index != NONE &&
-              next_step->alternative_index > next_state.step_index
-            ) {
-              array_insert_sorted_by(&transition_steps, , next_step->alternative_index);
             }
           }
         }
