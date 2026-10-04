@@ -63,7 +63,14 @@ fn get_test_fixture_language_internal(name: &str, wasm: bool) -> Language {
     let grammar_dir_path = fixtures_dir().join("test_grammars").join(name);
     let grammar_json = load_grammar_file(&grammar_dir_path.join("grammar.js"), None).unwrap();
     let (parser_name, parser_code) = generate_parser(&grammar_json).unwrap();
-    get_test_language_internal(&parser_name, &parser_code, Some(&grammar_dir_path), wasm)
+    get_test_language_internal(
+        &parser_name,
+        &parser_code,
+        Some(&grammar_dir_path),
+        tree_sitter::PARSER_HEADER,
+        wasm,
+        None,
+    )
 }
 
 pub fn get_language_queries_path(language_name: &str) -> PathBuf {
@@ -104,16 +111,39 @@ pub fn get_tags_config(language_name: &str) -> TagsConfiguration {
 }
 
 pub fn get_test_language(name: &str, parser_code: &str, path: Option<&Path>) -> Language {
-    get_test_language_internal(name, parser_code, path, false)
+    get_test_language_internal(
+        name,
+        parser_code,
+        path,
+        tree_sitter::PARSER_HEADER,
+        false,
+        None,
+    )
+}
+
+pub fn get_test_language_with_header(
+    name: &str,
+    parser_code: &str,
+    parser_header: &str,
+) -> Language {
+    let src_dir = tempfile::Builder::new()
+        .prefix("header-")
+        .tempdir_in(scratch_dir())
+        .unwrap()
+        .keep();
+    get_test_language_internal(name, parser_code, None, parser_header, false, Some(src_dir))
 }
 
 fn get_test_language_internal(
     name: &str,
     parser_code: &str,
     path: Option<&Path>,
+    parser_header: &str,
     wasm: bool,
+    src_dir: Option<PathBuf>,
 ) -> Language {
-    let src_dir = scratch_dir().join("src").join(name);
+    let fresh_build = src_dir.is_some();
+    let src_dir = src_dir.unwrap_or_else(|| scratch_dir().join("src").join(name));
     fs::create_dir_all(&src_dir).unwrap();
 
     let parser_path = src_dir.join("parser.c");
@@ -148,22 +178,24 @@ fn get_test_language_internal(
         for (file, content) in [
             ("alloc.h", ALLOC_HEADER),
             ("array.h", ARRAY_HEADER),
-            ("parser.h", tree_sitter::PARSER_HEADER),
+            ("parser.h", parser_header),
         ] {
             let path = header_path.join(file);
-            fs::write(&path, content)
-                .with_context(|| format!("Failed to write {}", path.display()))
-                .unwrap();
+            if !fs::read_to_string(&path).is_ok_and(|existing| existing == content) {
+                fs::write(&path, content)
+                    .with_context(|| format!("Failed to write {}", path.display()))
+                    .unwrap();
+            }
         }
     }
 
-    let paths_to_check = if let Some(scanner_path) = &scanner_path {
-        vec![parser_path, scanner_path.clone()]
-    } else {
-        vec![parser_path]
-    };
-
-    let mut config = CompileConfig::new(&src_dir, Some(&paths_to_check), None);
+    let mut paths_to_check = vec![parser_path, header_path.join("parser.h")];
+    if let Some(scanner_path) = &scanner_path {
+        paths_to_check.push(scanner_path.clone());
+    }
+    let output_path =
+        fresh_build.then(|| src_dir.join(format!("{name}.{}", env::consts::DLL_EXTENSION)));
+    let mut config = CompileConfig::new(&src_dir, Some(&paths_to_check), output_path);
     config.header_paths = vec![&HEADER_DIR];
     config.name = name.to_string();
 

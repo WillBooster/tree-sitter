@@ -251,7 +251,12 @@ pub fn build_lex_table(
     }
 
     let mut main_lex_table = mem::take(&mut builder.table);
-    minimize_lex_table(&mut main_lex_table, parse_table);
+    loop {
+        minimize_lex_table(&mut main_lex_table, parse_table);
+        if !coalesce_lex_transitions(&mut main_lex_table) {
+            break;
+        }
+    }
     sort_states(&mut main_lex_table, parse_table);
 
     let mut large_character_sets = Vec::new();
@@ -680,6 +685,30 @@ fn merge_token_set(
 
     tokens.insert_all(other);
     true
+}
+
+fn coalesce_lex_transitions(table: &mut LexTable) -> bool {
+    let mut changed = false;
+    let mut action_indices = FxHashMap::<(LexStateId, bool), usize>::default();
+    for state in &mut table.states {
+        action_indices.clear();
+        let mut actions: Vec<(CharacterSet, AdvanceAction)> = Vec::new();
+        for (chars, action) in mem::take(&mut state.advance_actions) {
+            let key = (action.state, action.in_main_token);
+            if let Some(&index) = action_indices.get(&key) {
+                let (existing_chars, _) = &mut actions[index];
+                *existing_chars = mem::take(existing_chars).add(&chars);
+                changed = true;
+            } else {
+                action_indices.insert(key, actions.len());
+                actions.push((chars, action));
+            }
+        }
+        // Preserve small-first ordering for the renderer's dispatch-map prefix.
+        actions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        state.advance_actions = actions;
+    }
+    changed
 }
 
 fn minimize_lex_table(table: &mut LexTable, parse_table: &mut ParseTable) {
