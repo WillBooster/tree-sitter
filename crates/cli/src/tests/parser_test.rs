@@ -132,6 +132,55 @@ fn test_generated_lexer_character_boundaries_with_abi15_header() {
 }
 
 #[test]
+fn test_character_set_constants_do_not_shadow_grammar_symbols() {
+    let names = [
+        "word_character_set_1",
+        "word_character_set_1_ascii",
+        "ts_lex_sym_word_character_set_1_ascii",
+    ];
+    let mut rules = serde_json::Map::new();
+    rules.insert(
+        "source_file".into(),
+        serde_json::json!({"type": "REPEAT", "content": {"type": "SYMBOL", "name": "item"}}),
+    );
+    rules.insert(
+        "item".into(),
+        serde_json::json!({"type": "CHOICE", "members": std::iter::once("word").chain(names).map(|name| {
+            serde_json::json!({"type": "SYMBOL", "name": name})
+        }).collect::<Vec<_>>()}),
+    );
+    rules.insert(
+        "word".into(),
+        serde_json::json!({"type": "PATTERN", "value": "[acegikmoqsuwy\\u0080\\u0100\\u0370\\u2000\\u3042\\U0001f600]+"}),
+    );
+    for (name, value) in names.into_iter().zip(["!", "?", "#"]) {
+        rules.insert(
+            name.into(),
+            serde_json::json!({"type": "STRING", "value": value}),
+        );
+    }
+    let grammar =
+        serde_json::json!({"name": "character_set_symbol_collision", "extras": [], "rules": rules});
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_header(
+        &name,
+        &parser_code,
+        include_str!("../../../../test/fixtures/parserAbi15.h"),
+    );
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "ace!?#あ😀";
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.end_byte(), source.len());
+    assert_eq!(
+        root.to_sexp(),
+        "(source_file (item (word)) (item (word_character_set_1)) (item (word_character_set_1_ascii)) (item (ts_lex_sym_word_character_set_1_ascii)) (item (word)))"
+    );
+}
+
+#[test]
 fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
     let names = [
         "α", "u03b12", "u03b1", " α", "u03b122", "u03b12 ", "α ", "  α",

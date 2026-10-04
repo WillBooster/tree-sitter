@@ -26,6 +26,7 @@ use super::{
 };
 
 const SMALL_STATE_THRESHOLD: usize = 64;
+const MAX_OPTIMIZED_LEXER_STATES: usize = 4096;
 pub const ABI_VERSION_MIN: usize = 14;
 pub const ABI_VERSION_MAX: usize = LANGUAGE_VERSION;
 const ABI_VERSION_WITH_RESERVED_WORDS: usize = 15;
@@ -301,9 +302,9 @@ impl Generator {
             let count = character_set_counts.entry(*symbol).or_insert(0);
             *count += 1;
             let constant_name = if let Some(symbol) = symbol {
-                format!("{}_character_set_{}", self.symbol_ids[symbol], count)
+                format!("ts_lex_{}_character_set_{}", self.symbol_ids[symbol], count)
             } else {
-                format!("extras_character_set_{count}")
+                format!("ts_lex_extras_character_set_{count}")
             };
             self.large_character_set_info.push(LargeCharacterSetInfo {
                 constant_name,
@@ -398,6 +399,19 @@ impl Generator {
         );
         add_line!(self, "#endif");
         add_line!(self, "");
+
+        if self.main_lex_table.states.len() > MAX_OPTIMIZED_LEXER_STATES
+            || self.keyword_lex_table.states.len() > MAX_OPTIMIZED_LEXER_STATES
+        {
+            add_line!(self, "#ifdef _MSC_VER");
+            add_line!(self, "#pragma optimize(\"\", off)");
+            add_line!(self, "#elif defined(__clang__)");
+            add_line!(self, "#pragma clang optimize off");
+            add_line!(self, "#elif defined(__GNUC__)");
+            add_line!(self, "#pragma GCC optimize (\"O0\", \"jump-tables\")");
+            add_line!(self, "#endif");
+            add_line!(self, "");
+        }
     }
 
     fn add_stats(&mut self) {
