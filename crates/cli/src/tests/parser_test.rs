@@ -30,6 +30,104 @@ use crate::{
 };
 
 #[test]
+fn test_generated_lexer_character_boundaries() {
+    let ascii_literals = [
+        "z9", "a0", "t8", "b1", "r7", "d2", "p6", "f3", "n5", "h4", "c5", "e6", "g7", "i8", "j9",
+        "k0",
+    ];
+    let mut mixed_literals = ascii_literals.to_vec();
+    mixed_literals.extend(["\u{a0}0", "\u{ffff}1", "\u{1f600}2", "\\\0"]);
+    for (suffix, literals) in [
+        ("mixed", mixed_literals.as_slice()),
+        ("ascii", ascii_literals.as_slice()),
+    ] {
+        let mut alternatives = literals
+            .iter()
+            .map(|literal| serde_json::json!({"type": "STRING", "value": literal}))
+            .collect::<Vec<_>>();
+        alternatives.push(serde_json::json!({"type": "SYMBOL", "name": "word"}));
+        let grammar = serde_json::json!({
+            "name": format!("lexer_character_boundaries_{suffix}"),
+            "extras": [],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "item"}},
+                "item": {"type": "CHOICE", "members": alternatives},
+                "word": {"type": "PATTERN", "value": "[acegikmoqsuwy\\u0080\\u0100\\u0370\\u2000\\u3042\\U0001f600]+"}
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &parser_code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for &literal in literals {
+            let tree = parser.parse(literal, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (item))",
+                "{literal:?}"
+            );
+            assert!(!tree.root_node().has_error(), "{literal:?}");
+            assert_eq!(tree.root_node().end_byte(), literal.len());
+        }
+        for word in [
+            "acegikmoqsuwy",
+            "\u{80}\u{100}\u{370}\u{2000}\u{3042}\u{1f600}",
+        ] {
+            let expected = "(source_file (item (word)))";
+            let tree = parser.parse(word, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), word.len());
+            let utf16 = word.encode_utf16().collect::<Vec<_>>();
+            let tree = parser.parse_utf16_le(&utf16, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
+        }
+        for invalid in [
+            "b",
+            "z",
+            "\0",
+            "\\",
+            "\u{7f}",
+            "\u{81}",
+            "\u{101}",
+            "\u{1f601}",
+        ] {
+            let tree = parser.parse(invalid, None).unwrap();
+            assert!(tree.root_node().has_error(), "{invalid:?}");
+        }
+
+        let mut source = b"a0b1d2f3h4".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut deleted_length = 2;
+        for literal in literals {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length,
+                    inserted_text: literal.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            deleted_length = literal.len();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (item) (item) (item) (item) (item))"
+            );
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_immediate_token_with_reused_anonymous_extra_pattern() {
     let grammar = serde_json::json!({
         "name": "reused_anonymous_extra",

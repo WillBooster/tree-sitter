@@ -335,18 +335,47 @@ impl Generator {
             self.supertype_symbol_map.clear();
         }
 
-        // Determine which states should use the "small state" representation, and which should
-        // use the normal array representation.
-        let threshold = cmp::min(SMALL_STATE_THRESHOLD, self.parse_table.symbols.len() / 2);
-        self.large_state_count = self
+        self.large_state_count = self.count_large_states();
+    }
+
+    fn count_large_states(&self) -> usize {
+        let minimum = self
             .parse_table
             .states
             .iter()
             .enumerate()
             .take_while(|(i, s)| {
-                *i <= 1 || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
+                *i <= 1
+                    || s.terminal_entries.len() + s.nonterminal_entries.len()
+                        > SMALL_STATE_THRESHOLD
             })
             .count();
+        let dense_bytes = (self.parse_table.symbols.len() * size_of::<u16>()) as i64;
+        let mut terminal_groups = FxHashSet::default();
+        let mut nonterminal_groups = FxHashSet::default();
+        let mut savings = 0;
+        let mut best_savings = 0;
+        let mut count = minimum;
+        for (i, state) in self.parse_table.states.iter().enumerate().skip(minimum) {
+            terminal_groups.clear();
+            terminal_groups.extend(state.terminal_entries.values().copied());
+            nonterminal_groups.clear();
+            nonterminal_groups.extend(state.nonterminal_entries.values().map(
+                |action| match action {
+                    GotoAction::Goto(id) => *id,
+                    GotoAction::ShiftExtra => i as u32,
+                },
+            ));
+            let entries = state.terminal_entries.len() + state.nonterminal_entries.len();
+            let groups = terminal_groups.len() + nonterminal_groups.len();
+            let sparse_bytes = (1 + 2 * groups + entries) * size_of::<u16>() + size_of::<u32>();
+            savings += sparse_bytes as i64 - dense_bytes;
+            if savings >= best_savings {
+                best_savings = savings;
+                count = i + 1;
+            }
+        }
+        count
     }
 
     fn add_header(&mut self) {
@@ -367,20 +396,6 @@ impl Generator {
         );
         add_line!(self, "#endif");
         add_line!(self, "");
-
-        // Compiling large lexer functions with optimization can be very slow, so
-        // disable most optimizations for large lexers. GCC 15 and later also
-        // disable jump tables at O0, which makes the lexer much slower at runtime.
-        if self.main_lex_table.states.len() > 300 {
-            add_line!(self, "#ifdef _MSC_VER");
-            add_line!(self, "#pragma optimize(\"\", off)");
-            add_line!(self, "#elif defined(__clang__)");
-            add_line!(self, "#pragma clang optimize off");
-            add_line!(self, "#elif defined(__GNUC__)");
-            add_line!(self, "#pragma GCC optimize (\"O0\", \"jump-tables\")");
-            add_line!(self, "#endif");
-            add_line!(self, "");
-        }
     }
 
     fn add_stats(&mut self) {
@@ -450,6 +465,8 @@ impl Generator {
         add_line!(self, "enum ts_symbol_identifiers {{");
         indent!(self);
         self.symbol_order.insert(Symbol::end(), 0);
+        self.symbol_order
+            .insert(Symbol::end_of_nonterminal_extra(), 0);
         let mut i = 1;
         for symbol in &self.parse_table.symbols {
             if *symbol != Symbol::end() {
@@ -864,14 +881,14 @@ impl Generator {
         indent!(self);
 
         add_line!(self, "START_LEXER();");
-        add_line!(self, "eof = lexer->eof(lexer);");
+        add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
         add_line!(self, "switch (state) {{");
 
         indent!(self);
         for (i, state) in lex_table.states.into_iter().enumerate() {
             add_line!(self, "case {i}:");
             indent!(self);
-            self.add_lex_state(i, state);
+            self.add_lex_state(state);
             dedent!(self);
         }
 
@@ -888,7 +905,7 @@ impl Generator {
         add_line!(self, "");
     }
 
-    fn add_lex_state(&mut self, _state_ix: usize, state: LexState) {
+    fn add_lex_state(&mut self, state: LexState) {
         if let Some(accept_action) = state.accept_action {
             add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
         }
@@ -901,11 +918,6 @@ impl Generator {
         let mut large_set = CharacterSet::empty();
         let mut ruled_out_chars = CharacterSet::empty();
 
-        // The transitions in a lex state are sorted with the single-character
-        // transitions first. If there are many single-character transitions,
-        // then implement them using an array of (lookahead character, state)
-        // pairs, instead of individual if statements, in order to reduce compile
-        // time.
         let mut leading_simple_transition_count = 0;
         let mut leading_simple_transition_range_count = 0;
         for (chars, action) in &state.advance_actions {
@@ -926,23 +938,18 @@ impl Generator {
         }
 
         if leading_simple_transition_range_count >= 8 {
-            add_line!(self, "ADVANCE_MAP(");
-            indent!(self);
+            let mut transitions = Vec::new();
             for (chars, action) in &state.advance_actions[0..leading_simple_transition_count] {
                 for range in chars.ranges() {
-                    add_whitespace!(self);
-                    self.add_character(*range.start());
-                    add!(self, ", {},\n", action.state);
+                    transitions.push((*range.start(), action.state));
                     if range.end() > range.start() {
-                        add_whitespace!(self);
-                        self.add_character(*range.end());
-                        add!(self, ", {},\n", action.state);
+                        transitions.push((*range.end(), action.state));
                     }
                 }
                 ruled_out_chars = ruled_out_chars.add(chars);
             }
-            dedent!(self);
-            add_line!(self, ");");
+            transitions.sort_unstable();
+            self.add_advance_map(&transitions);
         } else {
             leading_simple_transition_count = 0;
         }
@@ -1036,9 +1043,10 @@ impl Generator {
                 char_set_info.is_used = true;
                 add!(
                     self,
-                    "set_contains({}, {}, lookahead)",
+                    "set_contains_with_ascii({}_ascii, {}, {}, lookahead)",
                     char_set_info.constant_name,
-                    large_set.range_count(),
+                    char_set_info.constant_name,
+                    large_set.ranges().filter(|r| *r.end() >= '\u{80}').count(),
                 );
                 if check_eof {
                     add!(self, ")");
@@ -1096,6 +1104,41 @@ impl Generator {
         }
 
         add_line!(self, "END_STATE();");
+    }
+
+    fn add_advance_map(&mut self, transitions: &[(char, u32)]) {
+        let first = transitions[0].0 as u32;
+        let span = transitions.last().unwrap().0 as u32 - first + 1;
+        if span <= 128
+            && span as usize <= transitions.len() * 2
+            && transitions
+                .iter()
+                .all(|(_, state)| *state < u32::from(u16::MAX))
+        {
+            add_line!(self, "ADVANCE_MAP_DENSE({first},");
+            indent!(self);
+            let mut transitions = transitions.iter().peekable();
+            for character in first..first + span {
+                if let Some(&(next_character, state)) = transitions.peek()
+                    && *next_character as u32 == character
+                {
+                    add_line!(self, "{state},");
+                    transitions.next();
+                } else {
+                    add_line!(self, "UINT16_MAX,");
+                }
+            }
+        } else {
+            add_line!(self, "ADVANCE_MAP_SORTED(");
+            indent!(self);
+            for &(character, state) in transitions {
+                add_whitespace!(self);
+                self.add_character(character);
+                add!(self, ", {state},\n");
+            }
+        }
+        dedent!(self);
+        add_line!(self, ");");
     }
 
     fn add_character_range_conditions(
@@ -1169,6 +1212,22 @@ impl Generator {
             return;
         }
 
+        let mut ascii = [0u32; 4];
+        for character in 0..128 {
+            if characters.contains(char::from_u32(character).unwrap()) {
+                ascii[character as usize / 32] |= 1 << (character % 32);
+            }
+        }
+        add_line!(
+            self,
+            "static const uint32_t {}_ascii[] = {{0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x}}};",
+            info.constant_name,
+            ascii[0],
+            ascii[1],
+            ascii[2],
+            ascii[3],
+        );
+
         add_line!(
             self,
             "static const TSCharacterRange {}[] = {{",
@@ -1176,7 +1235,14 @@ impl Generator {
         );
 
         indent!(self);
-        for (ix, range) in characters.ranges().enumerate() {
+        let unicode_ranges = characters
+            .ranges()
+            .filter(|range| *range.end() >= '\u{80}')
+            .collect::<Vec<_>>();
+        if unicode_ranges.is_empty() {
+            add_line!(self, "{{0, 0}},");
+        }
+        for (ix, range) in unicode_ranges.into_iter().enumerate() {
             let column = ix % 8;
             if column == 0 {
                 if ix > 0 {
@@ -1187,7 +1253,7 @@ impl Generator {
                 add!(self, " ");
             }
             add!(self, "{{");
-            self.add_character(*range.start());
+            self.add_character(cmp::max(*range.start(), '\u{80}'));
             add!(self, ", ");
             self.add_character(*range.end());
             add!(self, "}},");
@@ -1414,8 +1480,14 @@ impl Generator {
                     .saturating_sub(self.large_state_count),
             );
             let mut symbols_by_value = FxHashMap::<(u32, SymbolType), Vec<Symbol>>::default();
-            for state in self.parse_table.states.iter().skip(self.large_state_count) {
-                small_state_indices.push(next_table_index);
+            let mut row_offsets = FxHashMap::default();
+            for (state_id, state) in self
+                .parse_table
+                .states
+                .iter()
+                .enumerate()
+                .skip(self.large_state_count)
+            {
                 symbols_by_value.clear();
 
                 terminal_entries.clear();
@@ -1440,9 +1512,7 @@ impl Generator {
                 for (symbol, action) in state.nonterminal_entries.iter() {
                     let state_id = match action {
                         GotoAction::Goto(i) => *i,
-                        GotoAction::ShiftExtra => {
-                            (self.large_state_count + small_state_indices.len() - 1) as u32
-                        }
+                        GotoAction::ShiftExtra => state_id as u32,
                     };
                     symbols_by_value
                         .entry((state_id, SymbolType::NonTerminal))
@@ -1454,6 +1524,23 @@ impl Generator {
                 values_with_symbols.sort_unstable_by_key(|((value, kind), symbols)| {
                     (symbols.len(), *kind, *value, symbols[0])
                 });
+
+                let mut row = vec![values_with_symbols.len() as u32];
+                for ((value, _), symbols) in &mut values_with_symbols {
+                    symbols.sort_unstable();
+                    row.extend([*value, symbols.len() as u32]);
+                    row.extend(
+                        symbols
+                            .iter()
+                            .map(|symbol| self.symbol_order[symbol] as u32),
+                    );
+                }
+                if let Some(&offset) = row_offsets.get(&row) {
+                    small_state_indices.push(offset);
+                    continue;
+                }
+                small_state_indices.push(next_table_index);
+                row_offsets.insert(row, next_table_index);
 
                 add_line!(
                     self,
@@ -1471,7 +1558,6 @@ impl Generator {
                         add_line!(self, "ACTIONS({value}), {},", symbols.len());
                     }
 
-                    symbols.sort_unstable();
                     indent!(self);
                     for symbol in symbols {
                         add_line!(self, "{},", self.symbol_ids[symbol]);
