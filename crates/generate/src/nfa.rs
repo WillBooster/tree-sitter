@@ -218,6 +218,25 @@ impl CharacterSet {
         self.first_overlap(other).is_some()
     }
 
+    pub fn does_intersect_chars(&self, other: &Self) -> bool {
+        let mut other_ranges = other.ranges().peekable();
+        for range in self.ranges() {
+            while other_ranges
+                .peek()
+                .is_some_and(|other| other.end() < range.start())
+            {
+                other_ranges.next();
+            }
+            let Some(other) = other_ranges.peek() else {
+                return false;
+            };
+            if other.start() <= range.end() {
+                return true;
+            }
+        }
+        false
+    }
+
     fn first_overlap(&self, other: &Self) -> Option<(usize, usize)> {
         let mut left_index = 0;
         let mut right_index = 0;
