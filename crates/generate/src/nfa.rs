@@ -38,6 +38,7 @@ pub struct NfaCursor<'a> {
     pub(crate) state_ids: Vec<u32>,
     nfa: &'a Nfa,
     visited_states: Vec<bool>,
+    pending_states: Vec<u32>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -534,27 +535,30 @@ impl<'a> NfaCursor<'a> {
             nfa,
             state_ids: Vec::new(),
             visited_states: vec![false; nfa.states.len()],
+            pending_states: Vec::new(),
         };
         result.reset(states);
         result
     }
 
-    pub fn reset(&mut self, mut states: Vec<u32>) {
+    pub fn reset(&mut self, states: impl IntoIterator<Item = u32>) {
         self.state_ids.clear();
+        self.pending_states.clear();
+        self.pending_states.extend(states);
         let mut i = 0;
-        while i < states.len() {
-            let state_id = states[i];
+        while i < self.pending_states.len() {
+            let state_id = self.pending_states[i];
             i += 1;
             if std::mem::replace(&mut self.visited_states[state_id as usize], true) {
                 continue;
             }
             if let NfaState::Split(left, right) = self.nfa.states[state_id as usize] {
-                states.extend([left, right]);
+                self.pending_states.extend([left, right]);
             } else {
                 self.state_ids.push(state_id);
             }
         }
-        for state_id in states {
+        for &state_id in &self.pending_states {
             self.visited_states[state_id as usize] = false;
         }
         self.state_ids.sort_unstable();

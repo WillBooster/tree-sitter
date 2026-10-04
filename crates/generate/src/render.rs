@@ -5,7 +5,8 @@ use std::{
     mem::swap,
 };
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use indexmap::IndexMap;
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -21,9 +22,7 @@ use super::{
     rules::Alias,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::{StrId, StrPool},
-    tables::{
-        AdvanceAction, FieldLocation, GotoAction, LexState, LexTable, ParseAction, ParseTable,
-    },
+    tables::{AdvanceAction, GotoAction, LexState, LexTable, ParseAction, ParseTable},
 };
 
 const SMALL_STATE_THRESHOLD: usize = 64;
@@ -99,6 +98,7 @@ struct Generator {
     alias_ids: FxHashMap<Alias, String>,
     unique_aliases: Vec<Alias>,
     symbol_map: FxHashMap<Symbol, Symbol>,
+    symbols_by_node_identity: FxHashMap<(StrId, VariableType), Vec<Symbol>>,
     reserved_word_sets: Vec<TokenSet>,
     reserved_word_set_ids_by_parse_state: Vec<usize>,
     field_names: Vec<StrId>,
@@ -202,82 +202,60 @@ impl Generator {
             self.symbol_ids[&Symbol::end()].clone(),
         );
 
-        self.symbol_map = FxHashMap::default();
-
-        for symbol in &self.parse_table.symbols {
-            let mut mapping = symbol;
-
-            // There can be multiple symbols in the grammar that have the same name and kind,
-            // due to simple aliases. When that happens, ensure that they map to the same
-            // public-facing symbol. If one of the symbols is not aliased, choose that one
-            // to be the public-facing symbol. Otherwise, pick the symbol with the lowest
-            // numeric value.
-            if let Some(alias) = self.default_aliases.get(symbol) {
-                let kind = alias.kind();
-                for other_symbol in &self.parse_table.symbols {
-                    if let Some(other_alias) = self.default_aliases.get(other_symbol) {
-                        if other_symbol < mapping && other_alias == alias {
-                            mapping = other_symbol;
-                        }
-                    } else if self.metadata_for_symbol(*other_symbol) == (alias.value, kind) {
-                        mapping = other_symbol;
-                        break;
-                    }
-                }
-            }
-            // Two anonymous tokens with different flags but the same string value
-            // should be represented with the same symbol in the public API. Examples:
-            // * "<" and token(prec(1, "<"))
-            // * "(" and token.immediate("(")
-            else if symbol.is_terminal() {
-                let metadata = self.metadata_for_symbol(*symbol);
-                for other_symbol in &self.parse_table.symbols {
-                    let other_metadata = self.metadata_for_symbol(*other_symbol);
-                    if other_metadata == metadata {
-                        if let Some(mapped) = self.symbol_map.get(other_symbol)
-                            && mapped == symbol
-                        {
-                            break;
-                        }
-                        mapping = other_symbol;
-                        break;
-                    }
-                }
-            }
-
-            self.symbol_map.insert(*symbol, *mapping);
+        let mut first_symbol_by_metadata = FxHashMap::default();
+        let mut first_unaliased_symbol_by_metadata = FxHashMap::default();
+        let mut minimum_symbol_by_alias = FxHashMap::default();
+        for &symbol in &self.parse_table.symbols {
+            let metadata = self.metadata_for_symbol(symbol);
+            first_symbol_by_metadata.entry(metadata).or_insert(symbol);
+            let identity = if let Some(&alias) = self.default_aliases.get(&symbol) {
+                let minimum = minimum_symbol_by_alias.entry(alias).or_insert(symbol);
+                *minimum = (*minimum).min(symbol);
+                (alias.value, alias.kind())
+            } else {
+                first_unaliased_symbol_by_metadata
+                    .entry(metadata)
+                    .or_insert(symbol);
+                metadata
+            };
+            self.symbols_by_node_identity
+                .entry(identity)
+                .or_default()
+                .push(symbol);
         }
 
-        for production_info in &self.parse_table.production_infos {
-            // Build a list of all field names
-            for &field_name in production_info.field_map.keys() {
-                if let Err(i) = self.field_names.binary_search_by(|&sid| {
-                    self.str_pool
-                        .resolve(sid)
-                        .cmp(self.str_pool.resolve(field_name))
-                }) {
-                    self.field_names.insert(i, field_name);
+        for symbol in &self.parse_table.symbols {
+            let mapping = if let Some(alias) = self.default_aliases.get(symbol) {
+                first_unaliased_symbol_by_metadata
+                    .get(&(alias.value, alias.kind()))
+                    .copied()
+                    .unwrap_or_else(|| minimum_symbol_by_alias[alias])
+            } else if symbol.is_terminal() {
+                let first = first_symbol_by_metadata[&self.metadata_for_symbol(*symbol)];
+                // Avoid making a cycle when the first symbol already maps to this one.
+                if self.symbol_map.get(&first) == Some(symbol) {
+                    *symbol
+                } else {
+                    first
                 }
-            }
+            } else {
+                *symbol
+            };
+            self.symbol_map.insert(*symbol, mapping);
+        }
 
-            // Generate a mapping from aliases to C identifiers.
+        let mut field_names = FxHashSet::default();
+        for production_info in &self.parse_table.production_infos {
+            field_names.extend(production_info.field_map.keys().copied());
             for &alias in production_info.alias_sequence.iter().flatten() {
-                // Some aliases match an existing symbol in the grammar.
+                if self.alias_ids.contains_key(&alias) {
+                    continue;
+                }
                 let alias_id = if let Some(existing_symbol) = self.symbols_for_alias(alias).first()
                 {
                     self.symbol_ids[&self.symbol_map[existing_symbol]].clone()
-                }
-                // Other aliases don't match any existing symbol, and need their own
-                // identifiers.
-                else {
-                    if let Err(i) = self.unique_aliases.binary_search_by(|candidate| {
-                        self.str_pool
-                            .resolve(candidate.value)
-                            .cmp(self.str_pool.resolve(alias.value))
-                            .then_with(|| candidate.is_named.cmp(&alias.is_named))
-                    }) {
-                        self.unique_aliases.insert(i, alias);
-                    }
+                } else {
+                    self.unique_aliases.push(alias);
 
                     if alias.is_named {
                         format!("alias_sym_{}", self.sanitize_identifier(alias.value))
@@ -286,16 +264,23 @@ impl Generator {
                     }
                 };
 
-                self.alias_ids.entry(alias).or_insert(alias_id);
+                self.alias_ids.insert(alias, alias_id);
             }
         }
+        self.field_names.extend(field_names);
+        self.field_names
+            .sort_unstable_by(|&a, &b| self.str_pool.resolve(a).cmp(self.str_pool.resolve(b)));
+        self.unique_aliases.sort_unstable_by(|a, b| {
+            self.str_pool
+                .resolve(a.value)
+                .cmp(self.str_pool.resolve(b.value))
+                .then_with(|| a.is_named.cmp(&b.is_named))
+        });
 
-        for (ix, (symbol, _)) in self.large_character_sets.iter().enumerate() {
-            let count = self.large_character_sets[0..ix]
-                .iter()
-                .filter(|(sym, _)| sym == symbol)
-                .count()
-                + 1;
+        let mut character_set_counts = FxHashMap::default();
+        for (symbol, _) in &self.large_character_sets {
+            let count = character_set_counts.entry(*symbol).or_insert(0);
+            *count += 1;
             let constant_name = if let Some(symbol) = symbol {
                 format!("{}_character_set_{}", self.symbol_ids[symbol], count)
             } else {
@@ -307,19 +292,17 @@ impl Generator {
             });
         }
 
-        // Assign an id to each unique reserved word set
-        self.reserved_word_sets.push(TokenSet::new());
+        let empty_reserved_words = TokenSet::new();
+        let mut reserved_word_set_ids = FxHashMap::default();
+        reserved_word_set_ids.insert(&empty_reserved_words, 0);
+        self.reserved_word_sets.push(empty_reserved_words.clone());
         for state in &self.parse_table.states {
-            let id = if let Some(ix) = self
-                .reserved_word_sets
-                .iter()
-                .position(|set| *set == state.reserved_words)
-            {
-                ix
-            } else {
-                self.reserved_word_sets.push(state.reserved_words.clone());
-                self.reserved_word_sets.len() - 1
-            };
+            let id = *reserved_word_set_ids
+                .entry(&state.reserved_words)
+                .or_insert_with(|| {
+                    self.reserved_word_sets.push(state.reserved_words.clone());
+                    self.reserved_word_sets.len() - 1
+                });
             self.reserved_word_set_ids_by_parse_state.push(id);
         }
 
@@ -699,13 +682,9 @@ impl Generator {
     }
 
     fn add_field_sequences(&mut self) {
-        let mut flat_field_maps = vec![];
+        let mut flat_field_maps = IndexMap::with_hasher(FxBuildHasher);
         let mut next_flat_field_map_index = 0;
-        Self::get_field_map_id(
-            Vec::new(),
-            &mut flat_field_maps,
-            &mut next_flat_field_map_index,
-        );
+        flat_field_maps.insert(Vec::new(), 0);
 
         let mut field_map_ids = Vec::with_capacity(self.parse_table.production_infos.len());
         for production_info in &self.parse_table.production_infos {
@@ -722,14 +701,12 @@ impl Generator {
                     self.str_pool.resolve(*a).cmp(self.str_pool.resolve(*b))
                 });
                 let field_map_len = flat_field_map.len();
-                field_map_ids.push((
-                    Self::get_field_map_id(
-                        flat_field_map,
-                        &mut flat_field_maps,
-                        &mut next_flat_field_map_index,
-                    ),
-                    field_map_len,
-                ));
+                let id = *flat_field_maps.entry(flat_field_map).or_insert_with(|| {
+                    let id = next_flat_field_map_index;
+                    next_flat_field_map_index += field_map_len;
+                    id
+                });
+                field_map_ids.push((id, field_map_len));
             }
         }
 
@@ -755,7 +732,7 @@ impl Generator {
             "static const TSFieldMapEntry ts_field_map_entries[] = {{",
         );
         indent!(self);
-        for (row_index, field_pairs) in flat_field_maps.into_iter().skip(1) {
+        for (field_pairs, row_index) in flat_field_maps.into_iter().skip(1) {
             add_line!(self, "[{row_index}] =");
             indent!(self);
             for (field_name, location) in field_pairs {
@@ -810,8 +787,8 @@ impl Generator {
                             self.alias_ids.get(alias).cloned().map_or_else(
                                 || {
                                     self.symbols_for_alias(*alias)
-                                        .into_iter()
-                                        .map(|s| self.symbol_ids.get(&s).cloned())
+                                        .iter()
+                                        .map(|s| self.symbol_ids.get(s).cloned())
                                         .collect()
                                 },
                                 |a| vec![Some(a)],
@@ -1744,21 +1721,6 @@ impl Generator {
         }
     }
 
-    fn get_field_map_id(
-        flat_field_map: Vec<(StrId, FieldLocation)>,
-        flat_field_maps: &mut Vec<(usize, Vec<(StrId, FieldLocation)>)>,
-        next_flat_field_map_index: &mut usize,
-    ) -> usize {
-        if let Some((index, _)) = flat_field_maps.iter().find(|(_, e)| *e == *flat_field_map) {
-            return *index;
-        }
-
-        let result = *next_flat_field_map_index;
-        *next_flat_field_map_index += flat_field_map.len();
-        flat_field_maps.push((result, flat_field_map));
-        result
-    }
-
     fn external_token_id(&self, token_idx: usize) -> String {
         let token = &self.syntax_grammar.external_tokens[token_idx];
         format!("ts_external_token_{}", self.sanitize_identifier(token.name))
@@ -1817,21 +1779,10 @@ impl Generator {
         }
     }
 
-    fn symbols_for_alias(&self, alias: Alias) -> Vec<Symbol> {
-        self.parse_table
-            .symbols
-            .iter()
-            .copied()
-            .filter(move |symbol| {
-                self.default_aliases.get(symbol).map_or_else(
-                    || {
-                        let (name, kind) = self.metadata_for_symbol(*symbol);
-                        name == alias.value && kind == alias.kind()
-                    },
-                    |&default_alias| default_alias == alias,
-                )
-            })
-            .collect()
+    fn symbols_for_alias(&self, alias: Alias) -> &[Symbol] {
+        self.symbols_by_node_identity
+            .get(&(alias.value, alias.kind()))
+            .map_or(&[], Vec::as_slice)
     }
 
     fn sanitize_identifier(&self, name: StrId) -> String {

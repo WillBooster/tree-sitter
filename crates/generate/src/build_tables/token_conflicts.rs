@@ -41,6 +41,13 @@ pub struct TokenConflictMap {
     pub(crate) row_words: usize,
 }
 
+#[derive(Default)]
+struct ConflictScratch {
+    visited_state_sets: FxHashSet<u64>,
+    state_set_queue: Vec<Vec<u32>>,
+    current_states: Vec<u32>,
+}
+
 impl TokenConflictMap {
     #[must_use]
     pub fn starting_chars(&self) -> &[CharacterSet] {
@@ -61,7 +68,7 @@ impl TokenConflictMap {
     #[must_use]
     pub fn new(grammar: &LexicalGrammar, following_tokens: Vec<TokenSet>) -> Self {
         let mut cursor = NfaCursor::new(&grammar.nfa, Vec::new());
-        let starting_chars = get_starting_chars(&mut cursor, grammar);
+        let (starting_chars, nullable_tokens) = get_token_starts(&mut cursor, grammar);
         let following_chars = get_following_chars(&starting_chars, &following_tokens);
 
         // Pre-compute O(1) lookup: NFA state ID->owning variable index.
@@ -72,16 +79,34 @@ impl TokenConflictMap {
 
         let n = grammar.variables.len();
         let mut status_matrix = vec![TokenConflictStatus::empty(); n * n];
+        let mut scratch = ConflictScratch::default();
         for i in 0..grammar.variables.len() {
             for j in 0..i {
-                let status = compute_conflict_status(
-                    &mut cursor,
-                    grammar,
-                    &following_chars,
-                    &nfa_state_to_var,
-                    i,
-                    j,
-                );
+                let status = if !nullable_tokens[i]
+                    && !nullable_tokens[j]
+                    && !starting_chars[i].does_intersect(&starting_chars[j])
+                {
+                    // Without an empty match or a shared first character, every transition
+                    // belongs to only one token, so the traversal only records divergence.
+                    let different = |chars: &CharacterSet| {
+                        if chars.is_empty() {
+                            TokenConflictStatus::empty()
+                        } else {
+                            TokenConflictStatus::MATCHES_DIFFERENT_STRING
+                        }
+                    };
+                    (different(&starting_chars[i]), different(&starting_chars[j]))
+                } else {
+                    compute_conflict_status(
+                        &mut cursor,
+                        grammar,
+                        &following_chars,
+                        &nfa_state_to_var,
+                        i,
+                        j,
+                        &mut scratch,
+                    )
+                };
                 status_matrix[matrix_index(n, i, j)] = status.0;
                 status_matrix[matrix_index(n, j, i)] = status.1;
             }
@@ -305,17 +330,22 @@ const fn matrix_index(variable_count: usize, i: usize, j: usize) -> usize {
     variable_count * i + j
 }
 
-fn get_starting_chars(cursor: &mut NfaCursor, grammar: &LexicalGrammar) -> Vec<CharacterSet> {
+fn get_token_starts(
+    cursor: &mut NfaCursor,
+    grammar: &LexicalGrammar,
+) -> (Vec<CharacterSet>, Vec<bool>) {
     let mut result = Vec::with_capacity(grammar.variables.len());
+    let mut nullable = Vec::with_capacity(grammar.variables.len());
     for variable in &grammar.variables {
-        cursor.reset(vec![variable.start_state]);
+        cursor.reset([variable.start_state]);
+        nullable.push(cursor.completions().next().is_some());
         let mut all_chars = CharacterSet::empty();
         for (chars, _) in cursor.transition_chars() {
             all_chars = all_chars.add(chars);
         }
         result.push(all_chars);
     }
-    result
+    (result, nullable)
 }
 
 fn get_following_chars(
@@ -359,16 +389,20 @@ fn compute_conflict_status(
     nfa_state_to_var: &[usize],
     i: usize,
     j: usize,
+    scratch: &mut ConflictScratch,
 ) -> (TokenConflictStatus, TokenConflictStatus) {
-    let mut visited_state_sets = FxHashSet::<u64>::default();
-    let mut state_set_queue = Vec::with_capacity(4);
-    state_set_queue.push(vec![
+    scratch.visited_state_sets.clear();
+    scratch.current_states.clear();
+    scratch.current_states.extend([
         grammar.variables[i].start_state,
         grammar.variables[j].start_state,
     ]);
+    scratch
+        .state_set_queue
+        .push(std::mem::take(&mut scratch.current_states));
     let mut result = (TokenConflictStatus::empty(), TokenConflictStatus::empty());
 
-    while let Some(state_set) = state_set_queue.pop() {
+    while let Some(state_set) = scratch.state_set_queue.pop() {
         // If only one of the two tokens could possibly match from this state, then
         // there is no reason to analyze any of its successors. Just record the fact
         // that the token matches a string that the other token does not match.
@@ -386,14 +420,13 @@ fn compute_conflict_status(
                     .1
                     .insert(TokenConflictStatus::MATCHES_DIFFERENT_STRING);
             }
+            scratch.reuse_states(state_set);
             continue;
         }
+        cursor.reset(state_set.iter().copied());
+        scratch.reuse_states(state_set);
 
-        // Don't pursue states where there's no potential for conflict.
-        cursor.reset(state_set);
-
-        // Compute lazily: most BFS states have no completions, so
-        // `within_separator` is never needed in those iterations.
+        // Separator status is only needed when a token completes.
         let mut within_separator: Option<bool> = None;
 
         // Examine each possible completed token in this state.
@@ -497,12 +530,25 @@ fn compute_conflict_status(
                 }
             }
 
-            if can_advance && visited_state_sets.insert(hash_state_set(&transition.states)) {
-                state_set_queue.push(transition.states);
+            if can_advance
+                && scratch
+                    .visited_state_sets
+                    .insert(hash_state_set(&transition.states))
+            {
+                scratch.state_set_queue.push(transition.states);
             }
         }
     }
     result
+}
+
+impl ConflictScratch {
+    fn reuse_states(&mut self, states: Vec<u32>) {
+        // Single-token successors must not shrink the workspace needed for the next pair.
+        if states.capacity() > self.current_states.capacity() {
+            self.current_states = states;
+        }
+    }
 }
 
 #[cfg(test)]
