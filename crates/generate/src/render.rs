@@ -194,8 +194,13 @@ impl Generator {
 
     fn init(&mut self) {
         let mut symbol_identifiers = FxHashSet::default();
+        let mut symbol_identifier_suffixes = FxHashMap::default();
         for i in 0..self.parse_table.symbols.len() {
-            self.assign_symbol_id(self.parse_table.symbols[i], &mut symbol_identifiers);
+            self.assign_symbol_id(
+                self.parse_table.symbols[i],
+                &mut symbol_identifiers,
+                &mut symbol_identifier_suffixes,
+            );
         }
         self.symbol_ids.insert(
             Symbol::end_of_nonterminal_extra(),
@@ -1726,7 +1731,12 @@ impl Generator {
         format!("ts_external_token_{}", self.sanitize_identifier(token.name))
     }
 
-    fn assign_symbol_id(&mut self, symbol: Symbol, used_identifiers: &mut FxHashSet<String>) {
+    fn assign_symbol_id(
+        &mut self,
+        symbol: Symbol,
+        used_identifiers: &mut FxHashSet<String>,
+        suffixes: &mut FxHashMap<String, usize>,
+    ) {
         let mut id;
         if symbol == Symbol::end() {
             id = "ts_builtin_sym_end".to_string();
@@ -1740,13 +1750,17 @@ impl Generator {
                 }
             };
 
-            let mut suffix_number = 1;
-            let mut suffix = String::new();
-            while used_identifiers.contains(&id) {
-                id.drain(id.len() - suffix.len()..);
-                suffix_number += 1;
-                suffix = suffix_number.to_string();
-                id += &suffix;
+            if used_identifiers.contains(&id) {
+                let base_len = id.len();
+                let suffix = suffixes.entry(id.clone()).or_insert(1);
+                loop {
+                    *suffix += 1;
+                    id.truncate(base_len);
+                    write!(&mut id, "{suffix}").unwrap();
+                    if !used_identifiers.contains(&id) {
+                        break;
+                    }
+                }
             }
         }
 
