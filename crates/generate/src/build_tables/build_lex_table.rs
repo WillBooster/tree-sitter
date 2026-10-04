@@ -159,9 +159,7 @@ pub fn build_lex_table(
                             && follow != word_token
                             && follow != pair_kw
                             && !keywords.contains(follow)
-                            && starting_chars[follow.index as usize]
-                                .chars()
-                                .any(|character| forced.contains(character))
+                            && starting_chars[follow.index as usize].does_intersect_chars(&forced)
                     });
                 if let Some(follow) = culprit {
                     retained.push(pair_kw);
