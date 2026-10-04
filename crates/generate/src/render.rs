@@ -342,15 +342,14 @@ impl Generator {
     }
 
     fn count_large_states(&self) -> usize {
+        let threshold = cmp::min(SMALL_STATE_THRESHOLD, self.parse_table.symbols.len() / 2);
         let minimum = self
             .parse_table
             .states
             .iter()
             .enumerate()
             .take_while(|(i, s)| {
-                *i <= 1
-                    || s.terminal_entries.len() + s.nonterminal_entries.len()
-                        > SMALL_STATE_THRESHOLD
+                *i <= 1 || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
             })
             .count();
         let dense_bytes = (self.parse_table.symbols.len() * size_of::<u16>()) as i64;
