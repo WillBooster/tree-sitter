@@ -400,6 +400,8 @@ impl Generator {
         add_line!(self, "#endif");
         add_line!(self, "");
 
+        // Optimizing huge switches can take minutes. Keep GCC jump tables enabled
+        // at O0 so reducing compilation cost does not slow lexer state dispatch.
         if self.main_lex_table.states.len() > MAX_OPTIMIZED_LEXER_STATES
             || self.keyword_lex_table.states.len() > MAX_OPTIMIZED_LEXER_STATES
         {

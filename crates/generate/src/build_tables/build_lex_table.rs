@@ -704,6 +704,7 @@ fn coalesce_lex_transitions(table: &mut LexTable) -> bool {
                 actions.push((chars, action));
             }
         }
+        // Preserve small-first ordering for the renderer's dispatch-map prefix.
         actions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         state.advance_actions = actions;
     }
