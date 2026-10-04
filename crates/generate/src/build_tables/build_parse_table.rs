@@ -349,6 +349,7 @@ struct ParseTableBuilder<'a> {
     state_ids_by_item_set: IndexMap<ParseItemSet<'a>, ParseStateId, BuildHasherDefault<FxHasher>>,
     preceding_symbols_by_id: Vec<SymbolSequence>,
     production_info_ids_by_prod_id: Vec<Option<ProductionInfoId>>,
+    production_info_ids: HashTable<ProductionInfoId>,
     parse_state_queue: VecDeque<ParseStateQueueEntry>,
     auxiliary_contexts: AuxiliarySymbolContexts,
     non_terminal_extra_states: Vec<(Symbol, ParseStateId)>,
@@ -559,6 +560,7 @@ impl<'a> ParseTableBuilder<'a> {
             core_ids_by_core: FxHashMap::default(),
             preceding_symbols_by_id: Vec::new(),
             production_info_ids_by_prod_id: vec![None; syntax_grammar.productions.len()],
+            production_info_ids: HashTable::new(),
             parse_state_queue: VecDeque::new(),
             auxiliary_contexts: AuxiliarySymbolContexts::default(),
             actual_conflicts: syntax_grammar.expected_conflicts.iter().cloned().collect(),
@@ -586,6 +588,11 @@ impl<'a> ParseTableBuilder<'a> {
         self.parse_table
             .production_infos
             .push(ProductionInfo::default());
+        self.production_info_ids.insert_unique(
+            FxBuildHasher.hash_one(&self.parse_table.production_infos[0]),
+            0,
+            |&id| FxBuildHasher.hash_one(&self.parse_table.production_infos[id as usize]),
+        );
 
         // Add the error state at index 0.
         self.add_parse_state(&Vec::new(), None, &ParseItemSet::default());
@@ -1495,17 +1502,20 @@ impl<'a> ParseTableBuilder<'a> {
                 item.production(self.syntax_grammar).steps.len();
         }
 
-        let id = if let Some(index) = self
-            .parse_table
-            .production_infos
-            .iter()
-            .position(|seq| *seq == production_info)
-        {
-            index
-        } else {
-            self.parse_table.production_infos.push(production_info);
-            self.parse_table.production_infos.len() - 1
-        } as ProductionInfoId;
+        let production_infos = &mut self.parse_table.production_infos;
+        let id = match self.production_info_ids.entry(
+            FxBuildHasher.hash_one(&production_info),
+            |&id| production_infos[id as usize] == production_info,
+            |&id| FxBuildHasher.hash_one(&production_infos[id as usize]),
+        ) {
+            hash_table::Entry::Occupied(entry) => *entry.get(),
+            hash_table::Entry::Vacant(entry) => {
+                let id = production_infos.len() as ProductionInfoId;
+                entry.insert(id);
+                production_infos.push(production_info);
+                id
+            }
+        };
         self.production_info_ids_by_prod_id[item.prod_id as usize] = Some(id);
         id
     }

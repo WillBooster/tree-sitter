@@ -1012,11 +1012,12 @@ fn sort_subtype_map_topologically(
             }
         }
     }
-    subtype_map.sort_by(|a, b| {
-        let a_idx = sorted_node_types.iter().position(|n| *n == a.0).unwrap();
-        let b_idx = sorted_node_types.iter().position(|n| *n == b.0).unwrap();
-        a_idx.cmp(&b_idx)
-    });
+    let ranks = sorted_node_types
+        .into_iter()
+        .enumerate()
+        .map(|(i, node_type)| (node_type, i))
+        .collect::<FxHashMap<_, _>>();
+    subtype_map.sort_by_key(|(supertype, _)| ranks[supertype]);
     Ok(())
 }
 

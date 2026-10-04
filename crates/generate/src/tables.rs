@@ -352,13 +352,13 @@ pub struct ParseState {
     pub has_eof_gated_reduce: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct FieldLocation {
     pub index: u32,
     pub inherited: bool,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Hash)]
 pub struct ProductionInfo {
     pub alias_sequence: Vec<Option<Alias>>,
     pub field_map: BTreeMap<StrId, Vec<FieldLocation>>,
