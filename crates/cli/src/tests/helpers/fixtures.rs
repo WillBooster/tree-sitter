@@ -181,9 +181,11 @@ fn get_test_language_internal(
             ("parser.h", parser_header),
         ] {
             let path = header_path.join(file);
-            fs::write(&path, content)
-                .with_context(|| format!("Failed to write {}", path.display()))
-                .unwrap();
+            if !fs::read_to_string(&path).is_ok_and(|existing| existing == content) {
+                fs::write(&path, content)
+                    .with_context(|| format!("Failed to write {}", path.display()))
+                    .unwrap();
+            }
         }
     }
 
