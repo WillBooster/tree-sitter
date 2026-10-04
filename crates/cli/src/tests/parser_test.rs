@@ -31,40 +31,40 @@ use crate::{
 
 #[test]
 fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
-    let grammar = serde_json::json!({
-        "name": "colliding_symbol_identifiers",
-        "rules": {
-            "program": {"type": "SEQ", "members": [
-                {"type": "SYMBOL", "name": "α"},
-                {"type": "SYMBOL", "name": "_2"},
-                {"type": "SYMBOL", "name": "β"},
-                {"type": "SYMBOL", "name": "γ"},
-                {"type": "SYMBOL", "name": "δ2"},
-                {"type": "SYMBOL", "name": "_23"},
-                {"type": "SYMBOL", "name": "ε"},
-                {"type": "SYMBOL", "name": "ζ2"}
-            ]},
-            "α": {"type": "STRING", "value": "a"},
-            "_2": {"type": "STRING", "value": "b"},
-            "β": {"type": "STRING", "value": "c"},
-            "γ": {"type": "STRING", "value": "d"},
-            "δ2": {"type": "STRING", "value": "e"},
-            "_23": {"type": "STRING", "value": "f"},
-            "ε": {"type": "STRING", "value": "g"},
-            "ζ2": {"type": "STRING", "value": "h"}
-        }
-    });
+    let names = [
+        "α", "u03b12", "u03b1", " α", "u03b122", "u03b12 ", "α ", "  α",
+    ];
+    let mut rules = serde_json::Map::new();
+    rules.insert(
+        "program".into(),
+        serde_json::json!({
+            "type": "SEQ", "members": names.iter().map(|name| serde_json::json!({
+                "type": "SYMBOL", "name": name
+            })).collect::<Vec<_>>()
+        }),
+    );
+    for (name, value) in names.iter().zip("abcdefgh".chars()) {
+        rules.insert(
+            (*name).into(),
+            serde_json::json!({"type": "STRING", "value": value.to_string()}),
+        );
+    }
+    let grammar = serde_json::json!({"name": "colliding_symbol_identifiers", "rules": rules});
     let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
     let language = get_test_language(&name, &parser_code, None);
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let tree = parser.parse("abcdefgh", None).unwrap();
-    assert!(!tree.root_node().has_error());
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.end_byte(), 8);
+    let mut cursor = root.walk();
     assert_eq!(
-        tree.root_node().to_sexp(),
-        "(program (α) (β) (γ) (δ2) (ε) (ζ2))"
+        root.named_children(&mut cursor)
+            .map(|node| node.kind())
+            .collect::<Vec<_>>(),
+        names
     );
-    assert_eq!(tree.root_node().end_byte(), 8);
 }
 
 #[test]
