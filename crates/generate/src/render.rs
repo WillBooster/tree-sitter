@@ -90,6 +90,7 @@ struct Generator {
     large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
     large_character_set_info: Vec<LargeCharacterSetInfo>,
     large_state_count: usize,
+    uses_advance_map: bool,
     syntax_grammar: SyntaxGrammar,
     lexical_grammar: LexicalGrammar,
     default_aliases: AliasMap,
@@ -162,11 +163,9 @@ impl Generator {
             self.add_lex_function("ts_lex_keywords", keyword_lex_table);
         }
 
-        // Once the lex functions are generated, and we've determined which large
-        // character sets are actually used, we can generate the large character set
-        // constants. Insert them into the output buffer before the lex functions.
         let lex_functions = self.buffer[buffer_offset_before_lex_functions..].to_string();
         self.buffer.truncate(buffer_offset_before_lex_functions);
+        self.add_lexer_helpers();
         for ix in 0..self.large_character_sets.len() {
             self.add_character_set(ix);
         }
@@ -190,6 +189,21 @@ impl Generator {
         self.add_parser_export();
 
         Ok(self.buffer)
+    }
+
+    fn add_lexer_helpers(&mut self) {
+        if self
+            .large_character_set_info
+            .iter()
+            .any(|info| info.is_used)
+        {
+            self.buffer
+                .push_str(include_str!("templates/character_set.h"));
+        }
+        if self.uses_advance_map {
+            self.buffer
+                .push_str(include_str!("templates/advance_map.h"));
+        }
     }
 
     fn init(&mut self) {
@@ -1025,7 +1039,7 @@ impl Generator {
                 char_set_info.is_used = true;
                 add!(
                     self,
-                    "set_contains_with_ascii({}_ascii, {}, {}, lookahead)",
+                    "ts_lex_set_contains_with_ascii({}_ascii, {}, {}, lookahead)",
                     char_set_info.constant_name,
                     char_set_info.constant_name,
                     large_set.ranges().filter(|r| *r.end() >= '\u{80}').count(),
@@ -1089,6 +1103,7 @@ impl Generator {
     }
 
     fn add_advance_map(&mut self, transitions: &[(char, u32)]) {
+        self.uses_advance_map = true;
         let first = transitions[0].0 as u32;
         let span = transitions.last().unwrap().0 as u32 - first + 1;
         if span <= 128
@@ -1097,7 +1112,7 @@ impl Generator {
                 .iter()
                 .all(|(_, state)| *state < u32::from(u16::MAX))
         {
-            add_line!(self, "ADVANCE_MAP_DENSE({first},");
+            add_line!(self, "TS_LEX_ADVANCE_MAP_DENSE({first},");
             indent!(self);
             let mut transitions = transitions.iter().peekable();
             for character in first..first + span {
@@ -1111,7 +1126,7 @@ impl Generator {
                 }
             }
         } else {
-            add_line!(self, "ADVANCE_MAP_SORTED(");
+            add_line!(self, "TS_LEX_ADVANCE_MAP_SORTED(");
             indent!(self);
             for &(character, state) in transitions {
                 add_whitespace!(self);

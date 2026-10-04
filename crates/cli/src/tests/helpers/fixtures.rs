@@ -63,7 +63,13 @@ fn get_test_fixture_language_internal(name: &str, wasm: bool) -> Language {
     let grammar_dir_path = fixtures_dir().join("test_grammars").join(name);
     let grammar_json = load_grammar_file(&grammar_dir_path.join("grammar.js"), None).unwrap();
     let (parser_name, parser_code) = generate_parser(&grammar_json).unwrap();
-    get_test_language_internal(&parser_name, &parser_code, Some(&grammar_dir_path), wasm)
+    get_test_language_internal(
+        &parser_name,
+        &parser_code,
+        Some(&grammar_dir_path),
+        tree_sitter::PARSER_HEADER,
+        wasm,
+    )
 }
 
 pub fn get_language_queries_path(language_name: &str) -> PathBuf {
@@ -104,13 +110,22 @@ pub fn get_tags_config(language_name: &str) -> TagsConfiguration {
 }
 
 pub fn get_test_language(name: &str, parser_code: &str, path: Option<&Path>) -> Language {
-    get_test_language_internal(name, parser_code, path, false)
+    get_test_language_internal(name, parser_code, path, tree_sitter::PARSER_HEADER, false)
+}
+
+pub fn get_test_language_with_header(
+    name: &str,
+    parser_code: &str,
+    parser_header: &str,
+) -> Language {
+    get_test_language_internal(name, parser_code, None, parser_header, false)
 }
 
 fn get_test_language_internal(
     name: &str,
     parser_code: &str,
     path: Option<&Path>,
+    parser_header: &str,
     wasm: bool,
 ) -> Language {
     let src_dir = scratch_dir().join("src").join(name);
@@ -148,7 +163,7 @@ fn get_test_language_internal(
         for (file, content) in [
             ("alloc.h", ALLOC_HEADER),
             ("array.h", ARRAY_HEADER),
-            ("parser.h", tree_sitter::PARSER_HEADER),
+            ("parser.h", parser_header),
         ] {
             let path = header_path.join(file);
             fs::write(&path, content)

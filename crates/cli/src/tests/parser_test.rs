@@ -17,7 +17,7 @@ use tree_sitter_proc_macro::retry;
 use super::helpers::{
     allocations,
     edits::ReadRecorder,
-    fixtures::{get_language, get_test_language},
+    fixtures::{get_language, get_test_language, get_test_language_with_header},
 };
 use crate::{
     fuzz::edits::Edit,
@@ -30,7 +30,7 @@ use crate::{
 };
 
 #[test]
-fn test_generated_lexer_character_boundaries() {
+fn test_generated_lexer_character_boundaries_with_abi15_header() {
     let ascii_literals = [
         "z9", "a0", "t8", "b1", "r7", "d2", "p6", "f3", "n5", "h4", "c5", "e6", "g7", "i8", "j9",
         "k0",
@@ -56,7 +56,11 @@ fn test_generated_lexer_character_boundaries() {
             }
         });
         let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-        let language = get_test_language(&name, &parser_code, None);
+        let language = get_test_language_with_header(
+            &name,
+            &parser_code,
+            include_str!("../../../../test/fixtures/parserAbi15.h"),
+        );
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
 
