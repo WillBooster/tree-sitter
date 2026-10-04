@@ -52,6 +52,7 @@ pub struct ParseItemSetBuilder<'a> {
     pub lookaheads: LookaheadSetPool,
     transitive_closure_additions: Vec<Vec<TransitiveClosureAddition<'a>>>,
     closure_scratch: ClosureEntries<'a>,
+    closure_follow_contexts: Vec<Option<(LookaheadSetId, ReservedWordSetId)>>,
 }
 
 fn push_unique<T: Eq + Hash>(vector: &mut Vec<T>, indices: &mut HashTable<u32>, value: T) {
@@ -249,6 +250,7 @@ impl<'a> ParseItemSetBuilder<'a> {
             lookaheads: LookaheadSetPool::new(),
             transitive_closure_additions: Vec::new(),
             closure_scratch: ClosureEntries::default(),
+            closure_follow_contexts: vec![None; syntax_grammar.variables.len()],
         };
 
         // For each grammar symbol, populate the FIRST and LAST sets: the set of
@@ -519,23 +521,24 @@ impl<'a> ParseItemSetBuilder<'a> {
 
     #[must_use]
     pub fn transitive_closure(&mut self, item_set: &ParseItemSet<'a>) -> ParseItemSet<'a> {
-        for entry in &item_set.entries {
-            if let Some(ids) = self
-                .inlines
-                .inlined_prod_ids(entry.item.prod_id, entry.item.step_index)
-            {
-                for &id in ids {
-                    self.add_item(&ParseItemSetEntry {
-                        item: entry
-                            .item
-                            .substitute_production(id, self.key_map.keys_for(id)),
-                        lookaheads: entry.lookaheads,
-                        following_reserved_word_set: entry.following_reserved_word_set,
-                    });
-                }
-            } else {
-                self.add_item(entry);
-            }
+        let inlines = self.inlines;
+        let key_map = self.key_map;
+        let kernel_entries = item_set.entries.iter().flat_map(|entry| {
+            let ids = inlines.inlined_prod_ids(entry.item.prod_id, entry.item.step_index);
+            ids.unwrap_or_default()
+                .iter()
+                .map(move |&id| ParseItemSetEntry {
+                    item: entry.item.substitute_production(id, key_map.keys_for(id)),
+                    lookaheads: entry.lookaheads,
+                    following_reserved_word_set: entry.following_reserved_word_set,
+                })
+                .chain(ids.is_none().then(|| entry.clone()))
+        });
+        for entry in kernel_entries.clone() {
+            self.accumulate_follow_context(&entry);
+        }
+        for entry in kernel_entries {
+            self.add_item(&entry);
         }
 
         self.closure_scratch.take_item_set()
@@ -557,43 +560,60 @@ impl<'a> ParseItemSetBuilder<'a> {
         &self.last_sets[&symbol]
     }
 
+    fn accumulate_follow_context(&mut self, entry: &ParseItemSetEntry<'a>) {
+        if let Some(index) = entry
+            .item
+            .symbol(self.syntax_grammar)
+            .and_then(Symbol::non_terminal_index)
+        {
+            let (following_tokens, following_reserved_tokens) =
+                if let Some(next_step) = entry.item.successor().step(self.syntax_grammar) {
+                    (
+                        self.first_set_ids[&next_step.symbol()],
+                        self.reserved_first_sets[&next_step.symbol()],
+                    )
+                } else {
+                    (entry.lookaheads, entry.following_reserved_word_set)
+                };
+            let following_reserved_tokens = if self
+                .syntax_grammar
+                .word_token
+                .is_some_and(|word| self.lookaheads.get(following_tokens).contains(word))
+            {
+                following_reserved_tokens
+            } else {
+                ReservedWordSetId::default()
+            };
+            let context = self.closure_follow_contexts[index]
+                .get_or_insert_with(|| (LookaheadSetPool::EMPTY, ReservedWordSetId::default()));
+            context.0 = self.lookaheads.union(context.0, following_tokens);
+            context.1 = context.1.max(following_reserved_tokens);
+        }
+    }
+
     fn add_item(&mut self, entry: &ParseItemSetEntry<'a>) {
         if let Some(index) = entry
             .item
-            .step(self.syntax_grammar)
-            .and_then(|step| step.symbol().non_terminal_index())
+            .symbol(self.syntax_grammar)
+            .and_then(Symbol::non_terminal_index)
         {
-            let next_step = entry.item.successor().step(self.syntax_grammar);
-
-            // Determine which tokens can follow this non-terminal.
-            let (following_tokens, following_reserved_tokens) = if let Some(next_step) = next_step {
-                (
-                    self.first_set_ids[&next_step.symbol()],
-                    self.reserved_first_sets[&next_step.symbol()],
-                )
-            } else {
-                (entry.lookaheads, entry.following_reserved_word_set)
-            };
-
-            // Use the pre-computed *additions* to expand the non-terminal.
-            for addition in &self.transitive_closure_additions[index] {
-                let e = self.closure_scratch.addition_entry(addition);
-                e.lookaheads = self
-                    .lookaheads
-                    .union(e.lookaheads, addition.info.lookaheads);
-
-                if addition.info.contains_word {
-                    e.following_reserved_word_set = e
-                        .following_reserved_word_set
-                        .max(addition.info.reserved_lookaheads);
-                }
-
-                if addition.info.propagates_lookaheads {
-                    e.lookaheads = self.lookaheads.union(e.lookaheads, following_tokens);
-
-                    if let Some(word_token) = self.syntax_grammar.word_token
-                        && self.lookaheads.get(following_tokens).contains(word_token)
-                    {
+            // Expand at the first occurrence to preserve the representative item chosen
+            // for each first-step rank, after combining every kernel's follow context.
+            if let Some((following_tokens, following_reserved_tokens)) =
+                self.closure_follow_contexts[index].take()
+            {
+                for addition in &self.transitive_closure_additions[index] {
+                    let e = self.closure_scratch.addition_entry(addition);
+                    e.lookaheads = self
+                        .lookaheads
+                        .union(e.lookaheads, addition.info.lookaheads);
+                    if addition.info.contains_word {
+                        e.following_reserved_word_set = e
+                            .following_reserved_word_set
+                            .max(addition.info.reserved_lookaheads);
+                    }
+                    if addition.info.propagates_lookaheads {
+                        e.lookaheads = self.lookaheads.union(e.lookaheads, following_tokens);
                         e.following_reserved_word_set =
                             e.following_reserved_word_set.max(following_reserved_tokens);
                     }

@@ -432,7 +432,7 @@ fn identify_keywords(
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
-            cursor.reset(vec![variable.start_state]);
+            cursor.reset([variable.start_state]);
             if all_chars_are_alphabetical(&cursor)
                 && token_conflict_map.does_match_same_string(i, word_token.index as usize)
                 && !token_conflict_map.does_match_different_string(i, word_token.index as usize)

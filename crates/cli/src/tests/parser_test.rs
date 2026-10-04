@@ -30,6 +30,44 @@ use crate::{
 };
 
 #[test]
+fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
+    let names = [
+        "α", "u03b12", "u03b1", " α", "u03b122", "u03b12 ", "α ", "  α",
+    ];
+    let mut rules = serde_json::Map::new();
+    rules.insert(
+        "program".into(),
+        serde_json::json!({
+            "type": "SEQ", "members": names.iter().map(|name| serde_json::json!({
+                "type": "SYMBOL", "name": name
+            })).collect::<Vec<_>>()
+        }),
+    );
+    for (name, value) in names.iter().zip("abcdefgh".chars()) {
+        rules.insert(
+            (*name).into(),
+            serde_json::json!({"type": "STRING", "value": value.to_string()}),
+        );
+    }
+    let grammar = serde_json::json!({"name": "colliding_symbol_identifiers", "rules": rules});
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language(&name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse("abcdefgh", None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.end_byte(), 8);
+    let mut cursor = root.walk();
+    assert_eq!(
+        root.named_children(&mut cursor)
+            .map(|node| node.kind())
+            .collect::<Vec<_>>(),
+        names
+    );
+}
+
+#[test]
 fn test_immediate_token_with_reused_anonymous_extra_pattern() {
     let grammar = serde_json::json!({
         "name": "reused_anonymous_extra",

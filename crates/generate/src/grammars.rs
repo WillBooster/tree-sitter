@@ -11,7 +11,7 @@ use super::{
     rules::{Symbol, TokenSet},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VariableType {
     Hidden,
     Auxiliary,

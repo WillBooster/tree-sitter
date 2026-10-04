@@ -299,8 +299,8 @@ fn word_continuation_chars(
     let mut w_cursor = NfaCursor::new(&grammar.nfa, Vec::new());
     let mut k_cursor = NfaCursor::new(&grammar.nfa, Vec::new());
 
-    let expand = |cursor: &mut NfaCursor, states: Vec<u32>| -> Vec<u32> {
-        cursor.reset(states);
+    let expand = |cursor: &mut NfaCursor, states: &[u32]| -> Vec<u32> {
+        cursor.reset(states.iter().copied());
         cursor.state_ids.clone()
     };
 
@@ -308,13 +308,10 @@ fn word_continuation_chars(
     let mut visited: FxHashSet<(Vec<u32>, Vec<u32>)> = FxHashSet::default();
     let mut queue: Vec<(Vec<u32>, Vec<u32>)> = Vec::with_capacity(8);
     queue.push((
-        expand(
-            &mut w_cursor,
-            vec![grammar.variables[word_index].start_state],
-        ),
+        expand(&mut w_cursor, &[grammar.variables[word_index].start_state]),
         expand(
             &mut k_cursor,
-            vec![grammar.variables[keyword_index].start_state],
+            &[grammar.variables[keyword_index].start_state],
         ),
     ));
 
@@ -330,7 +327,7 @@ fn word_continuation_chars(
             )
         });
 
-        w_cursor.reset(ws.clone());
+        w_cursor.reset(ws);
         let w_transitions = w_cursor.transitions();
 
         if k_complete {
@@ -350,8 +347,8 @@ fn word_continuation_chars(
                     continue;
                 }
                 queue.push((
-                    expand(&mut w_cursor, wt.states.clone()),
-                    expand(&mut k_cursor, kt.states.clone()),
+                    expand(&mut w_cursor, &wt.states),
+                    expand(&mut k_cursor, &kt.states),
                 ));
             }
         }
@@ -431,9 +428,8 @@ impl<'a> LexTableBuilder<'a> {
             .collect();
         if guard_id != 0 && !tokens.contains(self.word_token.unwrap()) {
             let word = self.word_token.unwrap();
-            self.cursor.reset(vec![
-                self.lexical_grammar.variables[word.index as usize].start_state,
-            ]);
+            self.cursor
+                .reset([self.lexical_grammar.variables[word.index as usize].start_state]);
             nfa_states.extend(self.cursor.state_ids.iter().copied().filter(|&id| {
                 !matches!(
                     self.lexical_grammar.nfa.states[id as usize],
