@@ -132,6 +132,41 @@ fn test_generated_lexer_character_boundaries_with_abi15_header() {
 }
 
 #[test]
+fn test_header_override_does_not_reuse_another_headers_library() {
+    let grammar = serde_json::json!({
+        "name": "header_override_cache",
+        "rules": {"program": {"type": "STRING", "value": "x"}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let header = include_str!("../../../../test/fixtures/parserAbi15.h");
+    let mut parser = Parser::new();
+    for language in [
+        get_test_language(&name, &parser_code, None),
+        get_test_language_with_header(&name, &parser_code, header),
+    ] {
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("x", None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(program)");
+        assert!(!tree.root_node().has_error());
+    }
+    let broken_header = format!("{header}\n#error requested_header_must_be_used\n");
+    for _ in 0..2 {
+        assert!(
+            std::panic::catch_unwind(|| {
+                get_test_language_with_header(&name, &parser_code, &broken_header)
+            })
+            .is_err()
+        );
+        let language = get_test_language_with_header(&name, &parser_code, header);
+        parser.set_language(&language).unwrap();
+        assert_eq!(
+            parser.parse("x", None).unwrap().root_node().to_sexp(),
+            "(program)"
+        );
+    }
+}
+
+#[test]
 fn test_character_set_constants_do_not_shadow_grammar_symbols() {
     let names = [
         "word_character_set_1",
