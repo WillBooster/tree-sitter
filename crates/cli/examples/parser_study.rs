@@ -14,6 +14,7 @@ fn main() -> Result<()> {
         args.len() >= 4,
         "usage: parser_study <native|wasm> <language> <src-directory|wasm-file> <input>..."
     );
+    let language_name = args[1].replace('-', "_");
     let mut parser = Parser::new();
     let language = match args[0].as_str() {
         "native" => {
@@ -25,14 +26,14 @@ fn main() -> Result<()> {
                 .join(format!("parser.{}", env::consts::DLL_EXTENSION));
             let mut config = CompileConfig::new(src, None, Some(output));
             config.scanner_path = loader.get_scanner_path(src);
-            config.name.clone_from(&args[1]);
+            config.name.clone_from(&language_name);
             loader.load_language_at_path_with_name(config)?
         }
         #[cfg(feature = "wasm")]
         "wasm" => {
             let engine = tree_sitter::wasmtime::Engine::default();
             let mut store = tree_sitter::WasmStore::new(&engine)?;
-            let language = store.load_language(&args[1], &fs::read(&args[2])?)?;
+            let language = store.load_language(&language_name, &fs::read(&args[2])?)?;
             parser.set_wasm_store(store)?;
             language
         }
@@ -62,8 +63,7 @@ fn measure(parser: &mut Parser, path: &str) -> Result<()> {
     }
     let fresh_us = start.elapsed().as_secs_f64() * 1e6 / f64::from(count);
     let mut incremental_us = None;
-    let mut incremental_hash = hash;
-    let mut incremental_matches_fresh = true;
+    let mut incremental_result = None;
     if let Some(position) = source
         .iter()
         .enumerate()
@@ -107,9 +107,10 @@ fn measure(parser: &mut Parser, path: &str) -> Result<()> {
             }
         }
         incremental_us = Some(start.elapsed().as_secs_f64() * 1e6 / f64::from(count));
-        incremental_hash = tree_hash(&tree);
+        let incremental_hash = tree_hash(&tree);
         let fresh = parser.parse(&source, None).context("parse cancelled")?;
-        incremental_matches_fresh = incremental_hash == tree_hash(&fresh);
+        let incremental_matches_fresh = incremental_hash == tree_hash(&fresh);
+        incremental_result = Some((incremental_hash, incremental_matches_fresh));
         ensure!(
             error || incremental_matches_fresh,
             "incremental tree differs from fresh tree for valid input: {path}"
@@ -120,8 +121,8 @@ fn measure(parser: &mut Parser, path: &str) -> Result<()> {
         serde_json::json!({
             "path": path, "bytes": source.len(), "hash": format!("{hash:016x}"), "error": error,
             "fresh_us": fresh_us, "incremental_us": incremental_us,
-            "incremental_hash": format!("{incremental_hash:016x}"),
-            "incremental_matches_fresh": incremental_matches_fresh,
+            "incremental_hash": incremental_result.map(|(hash, _)| format!("{hash:016x}")),
+            "incremental_matches_fresh": incremental_result.map(|(_, matches)| matches),
         })
     );
     Ok(())
