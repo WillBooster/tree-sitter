@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
     ensure!(
         args.len() >= 4,
-        "usage: parser_study <native|wasm> <language> <src-directory|wasm-file> <input>..."
+        "usage: cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- <native|wasm> <language> <src-directory|wasm-file> <input>..."
     );
     let language_name = args[1].replace('-', "_");
     let mut parser = Parser::new();
@@ -39,11 +39,17 @@ fn main() -> Result<()> {
         }
         #[cfg(not(feature = "wasm"))]
         "wasm" => {
-            anyhow::bail!("Wasm measurements require building parser_study with --features wasm")
+            anyhow::bail!(
+                "Wasm measurements require cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- wasm <language> <wasm-file> <input>..."
+            )
         }
         backend => anyhow::bail!("unsupported backend: {backend}"),
     };
     parser.set_language(&language)?;
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "parser_study: debug assertions are enabled; use cargo run --release for comparable performance measurements"
+    );
     for path in &args[3..] {
         measure(&mut parser, path)?;
     }
