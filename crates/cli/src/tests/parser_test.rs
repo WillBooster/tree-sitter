@@ -30,6 +30,114 @@ use crate::{
 };
 
 #[test]
+fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
+    let keywords = (0..64)
+        .map(|i| format!("keyword_{i:04}_{}", "x".repeat(80)))
+        .collect::<Vec<_>>();
+    for separate_keywords in [false, true] {
+        let mut members = keywords
+            .iter()
+            .map(|word| serde_json::json!({"type": "STRING", "value": word}))
+            .collect::<Vec<_>>();
+        members.push(serde_json::json!({"type": "SYMBOL", "name": "identifier"}));
+        let mut grammar = serde_json::json!({
+            "name": format!("large_lexer_{separate_keywords}"),
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": members}},
+                "identifier": {"type": "PATTERN", "value": "[a-z_][a-z_0-9]*"}
+            }
+        });
+        if separate_keywords {
+            grammar
+                .as_object_mut()
+                .unwrap()
+                .insert("word".into(), serde_json::json!("identifier"));
+        }
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, None))
+            .unwrap();
+        let mut source = format!(
+            "{} {}_suffix {}9",
+            keywords.join(" "),
+            keywords[0],
+            keywords.last().unwrap()
+        )
+        .into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.child_count() as usize, keywords.len() + 2);
+        assert_eq!(root.to_sexp(), "(source_file (identifier) (identifier))");
+        let mut offset = 0;
+        for (i, keyword) in keywords.iter().enumerate() {
+            let node = root.child(i as u32).unwrap();
+            assert_eq!(node.kind(), keyword);
+            assert_eq!(node.byte_range(), offset..offset + keyword.len());
+            offset += keyword.len() + 1;
+        }
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: 0,
+                deleted_length: keywords[0].len(),
+                inserted_text: format!("{}_suffix", keywords[0]).into_bytes(),
+            },
+        )
+        .unwrap();
+        let incremental = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            "(source_file (identifier) (identifier) (identifier))"
+        );
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+        assert!(!incremental.root_node().has_error());
+    }
+}
+
+#[test]
+fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
+    let (name, code) = generate_parser(
+        r#"{
+        "name": "unicode_identifiers",
+        "extras": [],
+        "rules": {
+            "identifier": {"type": "PATTERN", "value": "[_\\p{XID_Start}][_\\p{XID_Continue}]*"}
+        }
+    }"#,
+    )
+    .unwrap();
+    let language = get_test_language_with_header(
+        &name,
+        &code,
+        include_str!("../../../../test/fixtures/parserAbi15.h"),
+    );
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["_name", "café", "日本語", "𝔘nicode", "e\u{301}"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(identifier)");
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().end_byte(), source.len());
+        let source = source.encode_utf16().collect::<Vec<_>>();
+        let tree = parser.parse_utf16_le(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(identifier)");
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().end_byte(), source.len() * 2);
+    }
+    for source in [b"\0".as_slice(), b"\xff", "😀".as_bytes(), b"~"] {
+        assert!(parser.parse(source, None).unwrap().root_node().has_error());
+    }
+}
+
+#[test]
 fn test_generated_lexer_character_boundaries_with_abi15_header() {
     let ascii_literals = [
         "z9", "a0", "t8", "b1", "r7", "d2", "p6", "f3", "n5", "h4", "c5", "e6", "g7", "i8", "j9",

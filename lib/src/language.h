@@ -91,6 +91,15 @@ static inline uint16_t ts_language_lookup(
     for (unsigned i = 0; i < group_count; i++) {
       uint16_t section_value = *(data++);
       uint16_t symbol_count = *(data++);
+      while (symbol_count >= 4) {
+        bool matches = data[0] == symbol;
+        matches |= data[1] == symbol;
+        matches |= data[2] == symbol;
+        matches |= data[3] == symbol;
+        if (matches) return section_value;
+        data += 4;
+        symbol_count -= 4;
+      }
       for (unsigned j = 0; j < symbol_count; j++) {
         if (*(data++) == symbol) return section_value;
       }
