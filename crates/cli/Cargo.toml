@@ -13,7 +13,7 @@ documentation = "https://docs.rs/tree-sitter-cli"
 license.workspace = true
 keywords.workspace = true
 categories.workspace = true
-include = [ "build.rs", "README.md", "LICENSE", "benches/*", "src/**" ]
+include = [ "build.rs", "README.md", "LICENSE", "benches/*", "examples/*", "src/**" ]
 
 [lints]
 workspace = true
@@ -29,10 +29,6 @@ path = "src/main.rs"
 [[bench]]
 harness = false
 name = "benchmark"
-
-[[bench]]
-harness = false
-name = "parser_study"
 
 [features]
 default = [ "qjs-rt" ]
