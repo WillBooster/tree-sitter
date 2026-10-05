@@ -37,6 +37,10 @@ fn main() -> Result<()> {
             parser.set_wasm_store(store)?;
             language
         }
+        #[cfg(not(feature = "wasm"))]
+        "wasm" => {
+            anyhow::bail!("Wasm measurements require building parser_study with --features wasm")
+        }
         backend => anyhow::bail!("unsupported backend: {backend}"),
     };
     parser.set_language(&language)?;
