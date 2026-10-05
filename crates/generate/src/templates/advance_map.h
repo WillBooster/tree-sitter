@@ -1,6 +1,5 @@
-#define TS_LEX_ADVANCE_MAP_SORTED(...)                                      \
+#define TS_LEX_ADVANCE_MAP_SORTED(map)                                      \
   {                                                                 \
-    static const uint16_t map[] = { __VA_ARGS__ };                    \
     uint32_t low = 0;                                                \
     uint32_t high = sizeof(map) / sizeof(map[0]) / 2;                 \
     while (low < high) {                                             \
@@ -16,9 +15,8 @@
     }                                                               \
   }
 
-#define TS_LEX_ADVANCE_MAP_DENSE(first, ...)                                \
+#define TS_LEX_ADVANCE_MAP_DENSE(first, map)                                \
   {                                                                 \
-    static const uint16_t map[] = { __VA_ARGS__ };                    \
     uint32_t index = (uint32_t)lookahead - (first);                   \
     if (index < sizeof(map) / sizeof(map[0]) && map[index] != UINT16_MAX) { \
       state = map[index];                                            \

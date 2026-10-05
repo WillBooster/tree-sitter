@@ -47,6 +47,12 @@ pub fn build_lex_table(
     let keyword_lex_table = if syntax_grammar.word_token.is_some() {
         let mut builder = LexTableBuilder::new(lexical_grammar, str_pool);
         builder.add_state_for_tokens(keywords);
+        loop {
+            minimize_lex_table(&mut builder.table);
+            if !coalesce_lex_transitions(&mut builder.table) {
+                break;
+            }
+        }
         builder.table
     } else {
         LexTable::default()
@@ -252,7 +258,10 @@ pub fn build_lex_table(
 
     let mut main_lex_table = mem::take(&mut builder.table);
     loop {
-        minimize_lex_table(&mut main_lex_table, parse_table);
+        let state_map = minimize_lex_table(&mut main_lex_table);
+        for state in &mut parse_table.states {
+            state.lex_state_id = state_map[state.lex_state_id as usize];
+        }
         if !coalesce_lex_transitions(&mut main_lex_table) {
             break;
         }
@@ -711,7 +720,7 @@ fn coalesce_lex_transitions(table: &mut LexTable) -> bool {
     changed
 }
 
-fn minimize_lex_table(table: &mut LexTable, parse_table: &mut ParseTable) {
+fn minimize_lex_table(table: &mut LexTable) -> Vec<LexStateId> {
     // Initially group the states by their accept action and their
     // valid lookahead characters.
     let mut state_ids_by_signature = FxHashMap::default();
@@ -771,11 +780,8 @@ fn minimize_lex_table(table: &mut LexTable, parse_table: &mut ParseTable) {
         new_states.push(new_state);
     }
 
-    for state in &mut parse_table.states {
-        state.lex_state_id = group_ids_by_state_id[state.lex_state_id as usize];
-    }
-
     table.states = new_states;
+    group_ids_by_state_id
 }
 
 struct LexStateSplit;
