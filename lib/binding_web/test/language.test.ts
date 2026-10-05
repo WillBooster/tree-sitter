@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language } from '../src';
+import { LookaheadIterator, Language, Query } from '../src';
 import { Parser } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
@@ -23,7 +23,6 @@ describe('Language', () => {
       expect(lang.name).toBe('javascript');
       expect(lang.abiVersion).toBe(15);
 
-      // Verify the language actually works by parsing a snippet
       const parser = new Parser();
       parser.setLanguage(lang);
       const tree = parser.parse('const x = 1;');
@@ -54,6 +53,46 @@ describe('Language', () => {
   });
 
   describe('.load', () => {
+    it('parses, edits, and queries compact ABI 16 tables', async () => {
+      const lang = await Language.load(languageURL('javascript').replace('.wasm', '-abi16.wasm'));
+      const parser = new Parser();
+      parser.setLanguage(lang);
+      const input = 'const x = {field: 1};';
+      const tree = parser.parse(input)!;
+      const query = new Query(lang, '(pair key: (property_identifier) @key)');
+      try {
+        expect(tree.rootNode.hasError).toBe(false);
+        expect(query.captures(tree.rootNode).map(capture => capture.node.text)).toEqual(['field']);
+        const position = input.indexOf('1');
+        tree.edit({
+          startIndex: position,
+          oldEndIndex: position + 1,
+          newEndIndex: position + 1,
+          startPosition: { row: 0, column: position },
+          oldEndPosition: { row: 0, column: position + 1 },
+          newEndPosition: { row: 0, column: position + 1 },
+        });
+        const edited = input.replace('1', '2');
+        const incremental = parser.parse(edited, tree)!;
+        const fresh = parser.parse(edited)!;
+        const malformed = parser.parse('const x = {field: };')!;
+        try {
+          expect(incremental.rootNode.toString()).toBe(fresh.rootNode.toString());
+          expect(incremental.rootNode.text).toBe(edited);
+          expect(incremental.rootNode.hasError).toBe(false);
+          expect(malformed.rootNode.hasError).toBe(true);
+        } finally {
+          incremental.delete();
+          fresh.delete();
+          malformed.delete();
+        }
+      } finally {
+        query.delete();
+        tree.delete();
+        parser.delete();
+      }
+    });
+
     it('loads a language from a file URL', async () => {
       const wasmURL = pathToFileURL(languageURL('javascript'));
       expect(wasmURL).toBeInstanceOf(URL);
@@ -61,7 +100,6 @@ describe('Language', () => {
       const lang = await Language.load(wasmURL);
       expect(lang.name).toBe('javascript');
 
-      // Verify the language actually works by parsing a snippet
       const parser = new Parser();
       parser.setLanguage(lang);
       const tree = parser.parse('const x = 1;');
