@@ -25,7 +25,8 @@ fn main() -> Result<()> {
                 .join(format!("parser.{}", env::consts::DLL_EXTENSION));
             let mut config = CompileConfig::new(src, None, Some(output));
             config.scanner_path = loader.get_scanner_path(src);
-            loader.load_language_at_path(config)?
+            config.name.clone_from(&args[1]);
+            loader.load_language_at_path_with_name(config)?
         }
         #[cfg(feature = "wasm")]
         "wasm" => {
