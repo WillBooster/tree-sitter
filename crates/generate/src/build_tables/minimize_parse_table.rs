@@ -103,17 +103,11 @@ pub fn minimize_parse_table(
         simple_aliases,
         str_pool,
     };
-    loop {
-        let state_count = minimizer.parse_table.states.len();
-        if optimizations.contains(OptLevel::MergeStates) {
-            minimizer.merge_compatible_states();
-        }
-        minimizer.remove_unit_reductions();
-        minimizer.remove_unused_states();
-        if minimizer.parse_table.states.len() == state_count {
-            break;
-        }
+    if optimizations.contains(OptLevel::MergeStates) {
+        minimizer.merge_compatible_states();
     }
+    minimizer.remove_unit_reductions();
+    minimizer.remove_unused_states();
     minimizer.reorder_states_by_descending_size();
 }
 
@@ -774,15 +768,6 @@ impl Minimizer<'_> {
     }
 
     fn merge_compatible_states(&mut self) {
-        let original_ids = self
-            .parse_table
-            .states
-            .iter()
-            .map(|state| state.id)
-            .collect::<Vec<_>>();
-        for (id, state) in self.parse_table.states.iter_mut().enumerate() {
-            state.id = id as u32;
-        }
         let core_count = 1 + self
             .parse_table
             .states
@@ -800,12 +785,6 @@ impl Minimizer<'_> {
         for (i, state) in self.parse_table.states.iter().enumerate() {
             state_ids_by_group_id[state.core_id as usize].push(i as u32);
             group_ids_by_state_id.push(state.core_id);
-        }
-        state_ids_by_group_id.retain(|states| !states.is_empty());
-        for (group_id, states) in state_ids_by_group_id.iter().enumerate() {
-            for &state_id in states {
-                group_ids_by_state_id[state_id as usize] = group_id as u32;
-            }
         }
 
         // Precompute per-state sorted shift actions, for both passes.
@@ -916,9 +895,6 @@ impl Minimizer<'_> {
         self.parse_table.states = new_states;
         self.parse_table
             .remap_terminal_references(|state_id| group_ids_by_state_id[state_id as usize]);
-        for state in &mut self.parse_table.states {
-            state.id = original_ids[state.id as usize];
-        }
     }
 
     fn states_conflict(
