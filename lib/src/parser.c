@@ -452,7 +452,7 @@ static bool ts_parser__external_scanner_scan(
     bool result = ts_wasm_store_call_scanner_scan(
       self->wasm_store,
       (uintptr_t)self->external_scanner_payload,
-      external_lex_state * self->language->external_token_count
+      external_lex_state * ts_language_external_state_stride(self->language)
     );
     if (ts_wasm_store_has_error(self->wasm_store)) {
       self->has_scanner_error = true;
@@ -656,20 +656,49 @@ static Subtree ts_parser__lex(
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
       uint32_t end_byte = self->lexer.token_end_position.bytes;
-      ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-      ts_lexer_start(&self->lexer);
+      uint32_t start_byte = self->lexer.token_start_position.bytes;
+      bool bulk_keyword = false;
+      if (self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
+          && self->language->keyword_lookup_fn && self->lexer.input.encoding == TSInputEncodingUTF8
+          && start_byte >= self->lexer.chunk_start
+          && end_byte >= start_byte && end_byte - self->lexer.chunk_start <= self->lexer.chunk_size) {
+        for (uint32_t i = 0; i < self->lexer.included_range_count; i++) {
+          TSRange range = self->lexer.included_ranges[i];
+          if (start_byte >= range.start_byte && end_byte <= range.end_byte) {
+            const char *text = self->lexer.chunk + start_byte - self->lexer.chunk_start;
+            uint32_t keyword;
+            if (ts_language_is_wasm(self->language)) {
+              bulk_keyword = ts_wasm_store_call_keyword_lookup(self->wasm_store, text, end_byte - start_byte, &keyword);
+            } else {
+              keyword = self->language->keyword_lookup_fn(text, end_byte - start_byte);
+              bulk_keyword = true;
+            }
+            if (bulk_keyword) {
+              is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
+              TSSymbol candidate = (TSSymbol)keyword;
+              if (candidate && (ts_language_has_actions(self->language, parse_state, candidate)
+                  || ts_language_is_reserved_word(self->language, parse_state, candidate))) symbol = candidate;
+            }
+            break;
+          }
+        }
+      }
+      if (!bulk_keyword) {
+        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+        ts_lexer_start(&self->lexer);
 
-      is_keyword = ts_parser__call_keyword_lex_fn(self);
+        is_keyword = ts_parser__call_keyword_lex_fn(self);
 
-      if (
-        is_keyword &&
-        self->lexer.token_end_position.bytes == end_byte &&
-        (
-          ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
-        )
-      ) {
-        symbol = self->lexer.data.result_symbol;
+        if (
+          is_keyword &&
+          self->lexer.token_end_position.bytes == end_byte &&
+          (
+            ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
+            ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
+          )
+        ) {
+          symbol = self->lexer.data.result_symbol;
+        }
       }
     }
 

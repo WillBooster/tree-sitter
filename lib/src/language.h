@@ -11,6 +11,8 @@ extern "C" {
 #define ts_builtin_sym_error_repeat (ts_builtin_sym_error - 1)
 
 #define LANGUAGE_VERSION_WITH_RESERVED_WORDS 15
+#define LANGUAGE_VERSION_WITH_COMPACT_TABLES 16
+#define SMALL_STATE_PAIR_FLAG UINT32_C(0x80000000)
 #define LANGUAGE_VERSION_WITH_PRIMARY_STATES 14
 
 typedef struct {
@@ -32,6 +34,7 @@ typedef struct {
   uint16_t table_value;
   uint16_t group_count;
   bool is_small_state;
+  bool is_pair_state;
   LookaheadPhase phase;
 
   const TSParseAction *actions;
@@ -86,11 +89,34 @@ static inline uint16_t ts_language_lookup(
 ) {
   if (state >= self->large_state_count) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
+    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_PAIR_FLAG)) {
+      const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
+      uint32_t low = 0, high = *(pairs++);
+      while (low < high) {
+        uint32_t mid = low + (high - low) / 2;
+        TSSymbol candidate = pairs[mid * 2];
+        if (candidate < symbol) low = mid + 1;
+        else if (candidate > symbol) high = mid;
+        else return pairs[mid * 2 + 1];
+      }
+      return 0;
+    }
     const uint16_t *data = &self->small_parse_table[index];
     uint16_t group_count = *(data++);
     for (unsigned i = 0; i < group_count; i++) {
       uint16_t section_value = *(data++);
       uint16_t symbol_count = *(data++);
+      if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && symbol_count >= 16) {
+        uint32_t low = 0, high = symbol_count;
+        while (low < high) {
+          uint32_t mid = low + (high - low) / 2;
+          if (data[mid] < symbol) low = mid + 1;
+          else if (data[mid] > symbol) high = mid;
+          else return section_value;
+        }
+        data += symbol_count;
+        continue;
+      }
       while (symbol_count >= 4) {
         bool matches = data[0] == symbol;
         matches |= data[1] == symbol;
@@ -132,11 +158,14 @@ static inline LookaheadIterator ts_language_lookaheads(
   const uint16_t *data;
   const uint16_t *group_end = NULL;
   uint16_t group_count = 0;
+  bool is_pair_state = false;
   if (is_small_state) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
-    data = &self->small_parse_table[index];
+    is_pair_state = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_PAIR_FLAG);
+    data = &self->small_parse_table[is_pair_state ? index & ~SMALL_STATE_PAIR_FLAG : index];
     group_end = data + 1;
     group_count = *data;
+    if (is_pair_state) data++;
   } else {
     data = &self->parse_table[state * self->symbol_count];
   }
@@ -146,6 +175,7 @@ static inline LookaheadIterator ts_language_lookaheads(
     .group_end = group_end,
     .group_count = group_count,
     .is_small_state = is_small_state,
+    .is_pair_state = is_pair_state,
     .phase = LookaheadFresh,
     .symbol = UINT16_MAX,
     .next_state = 0,
@@ -155,25 +185,32 @@ static inline LookaheadIterator ts_language_lookaheads(
 static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
   if (self->phase == LookaheadDone) return false;
 
-  // For small parse states, valid symbols are listed explicitly,
-  // grouped by their value. There's no need to look up the actions
-  // again until moving to the next group.
   if (self->is_small_state) {
-    self->data++;
-    if (self->data == self->group_end) {
+    if (self->is_pair_state) {
       if (self->group_count == 0) {
         self->phase = LookaheadDone;
         return false;
       }
       self->group_count--;
+      self->symbol = *(self->data++);
       self->table_value = *(self->data++);
-      unsigned symbol_count = *(self->data++);
-      self->group_end = self->data + symbol_count;
-      self->symbol = *self->data;
     } else {
-      self->symbol = *self->data;
-      self->phase = LookaheadPositioned;
-      return true;
+      self->data++;
+      if (self->data == self->group_end) {
+        if (self->group_count == 0) {
+          self->phase = LookaheadDone;
+          return false;
+        }
+        self->group_count--;
+        self->table_value = *(self->data++);
+        unsigned symbol_count = *(self->data++);
+        self->group_end = self->data + symbol_count;
+        self->symbol = *self->data;
+      } else {
+        self->symbol = *self->data;
+        self->phase = LookaheadPositioned;
+        return true;
+      }
     }
   }
 
@@ -219,6 +256,11 @@ static inline bool ts_language_state_is_primary(
   }
 }
 
+static inline uint32_t ts_language_external_state_stride(const TSLanguage *self) {
+  return self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->external_state_stride
+    ? self->external_state_stride : self->external_token_count;
+}
+
 static inline const bool *ts_language_enabled_external_tokens(
   const TSLanguage *self,
   unsigned external_scanner_state
@@ -226,27 +268,25 @@ static inline const bool *ts_language_enabled_external_tokens(
   if (external_scanner_state == 0) {
     return NULL;
   } else {
-    return self->external_scanner.states + self->external_token_count * external_scanner_state;
+    return self->external_scanner.states + ts_language_external_state_stride(self) * external_scanner_state;
   }
 }
 
-static inline const TSSymbol *ts_language_alias_sequence(
-  const TSLanguage *self,
-  uint32_t production_id
-) {
-  return production_id ?
-    &self->alias_sequences[production_id * self->max_alias_sequence_length] :
-    NULL;
+static inline uint32_t ts_language_alias_sequence_offset(const TSLanguage *self, uint32_t production_id) {
+  if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->alias_sequence_offsets) {
+    return self->alias_sequence_offsets[production_id];
+  }
+  return production_id * self->max_alias_sequence_length;
 }
 
-static inline TSSymbol ts_language_alias_at(
-  const TSLanguage *self,
-  uint32_t production_id,
-  uint32_t child_index
-) {
-  return production_id ?
-    self->alias_sequences[production_id * self->max_alias_sequence_length + child_index] :
-    0;
+static inline const TSSymbol *ts_language_alias_sequence(const TSLanguage *self, uint32_t production_id) {
+  uint32_t offset = ts_language_alias_sequence_offset(self, production_id);
+  return offset ? self->alias_sequences + offset : NULL;
+}
+
+static inline TSSymbol ts_language_alias_at(const TSLanguage *self, uint32_t production_id, uint32_t child_index) {
+  uint32_t offset = ts_language_alias_sequence_offset(self, production_id);
+  return offset ? self->alias_sequences[offset + child_index] : 0;
 }
 
 static inline void ts_language_field_map(

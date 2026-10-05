@@ -9,11 +9,20 @@ use tree_sitter::{InputEdit, Parser, Point, Tree};
 use tree_sitter_loader::{CompileConfig, Loader};
 
 fn main() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
+    let mut args = env::args().skip(1).collect::<Vec<_>>();
+    let profile_path = if args.first().is_some_and(|arg| arg == "--profile") {
+        ensure!(args.len() >= 2, "--profile requires an output path");
+        let path = args[1].clone();
+        args.drain(..2);
+        Some(path)
+    } else {
+        None
+    };
     ensure!(
         args.len() >= 4,
-        "usage: parser_study <native|wasm> <language> <src-directory|wasm-file> <input>..."
+        "usage: parser_study [--profile <output.json>] <native|wasm> <language> <src-directory|wasm-file> <input>..."
     );
+    let language_name = args[1].replace('-', "_");
     let mut parser = Parser::new();
     let language = match args[0].as_str() {
         "native" => {
@@ -25,15 +34,20 @@ fn main() -> Result<()> {
                 .join(format!("parser.{}", env::consts::DLL_EXTENSION));
             let mut config = CompileConfig::new(src, None, Some(output));
             config.scanner_path = loader.get_scanner_path(src);
-            loader.load_language_at_path(config)?
+            config.name.clone_from(&language_name);
+            loader.load_language_at_path_with_name(config)?
         }
         #[cfg(feature = "wasm")]
         "wasm" => {
             let engine = tree_sitter::wasmtime::Engine::default();
             let mut store = tree_sitter::WasmStore::new(&engine)?;
-            let language = store.load_language(&args[1], &fs::read(&args[2])?)?;
+            let language = store.load_language(&language_name, &fs::read(&args[2])?)?;
             parser.set_wasm_store(store)?;
             language
+        }
+        #[cfg(not(feature = "wasm"))]
+        "wasm" => {
+            anyhow::bail!("Wasm measurements require building parser_study with --features wasm")
         }
         backend => anyhow::bail!("unsupported backend: {backend}"),
     };
@@ -41,6 +55,82 @@ fn main() -> Result<()> {
     for path in &args[3..] {
         measure(&mut parser, path)?;
     }
+    if let Some(path) = profile_path {
+        record_profile(&mut parser, &args, &path)?;
+    }
+    Ok(())
+}
+
+fn record_profile(parser: &mut Parser, args: &[String], output: &str) -> Result<()> {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+    let parser_path = if args[0] == "native" {
+        Path::new(&args[2]).join("parser.c")
+    } else {
+        Path::new(&args[2])
+            .parent()
+            .context("Wasm file must have a parent")?
+            .join("src/parser.c")
+    };
+    let source = fs::read_to_string(parser_path)?;
+    let count = |name: &str| -> Result<usize> {
+        source
+            .lines()
+            .find_map(|line| line.strip_prefix(&format!("#define {name} ")))
+            .context("profile requires an ABI 16 parser")?
+            .parse()
+            .context("invalid state count")
+    };
+    let state_count = count("STATE_COUNT")?;
+    let counters = Arc::new(Mutex::new((
+        vec![0u64; state_count],
+        vec![0u64; count("LEX_STATE_COUNT")?],
+        BTreeMap::<(u32, u32), u64>::new(),
+        None::<u32>,
+    )));
+    let captured = counters.clone();
+    parser.set_logger(Some(Box::new(move |_, message| {
+        let Some(state) = message
+            .split_once("state:")
+            .and_then(|(_, s)| s.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            return;
+        };
+        let mut counters = captured.lock().unwrap();
+        if message.starts_with("process ") && state < counters.0.len() {
+            counters.0[state] += 1;
+            if let Some(previous) = counters.3 {
+                *counters.2.entry((previous, state as u32)).or_default() += 1;
+            }
+            counters.3 = Some(state as u32);
+        } else if message.starts_with("lex_internal ") && state < counters.1.len() {
+            counters.1[state] += 1;
+        }
+    })));
+    for path in &args[3..] {
+        counters.lock().unwrap().3 = None;
+        parser
+            .parse(fs::read(path)?, None)
+            .context("profile parse cancelled")?;
+    }
+    parser.set_logger(None);
+    let counters = counters.lock().unwrap();
+    let profile = tree_sitter_generate::GenerationProfile {
+        fingerprint: tree_sitter_generate::parser_fingerprint(&source),
+        parse_states: counters.0.clone(),
+        lex_states: counters.1.clone(),
+        edges: counters
+            .2
+            .iter()
+            .map(|(&(a, b), &count)| (a, b, count))
+            .collect(),
+        max_dense_states: state_count.min(256),
+    };
+    drop(counters);
+    fs::write(output, serde_json::to_vec(&profile)?)?;
     Ok(())
 }
 
@@ -61,8 +151,7 @@ fn measure(parser: &mut Parser, path: &str) -> Result<()> {
     }
     let fresh_us = start.elapsed().as_secs_f64() * 1e6 / f64::from(count);
     let mut incremental_us = None;
-    let mut incremental_hash = hash;
-    let mut incremental_matches_fresh = true;
+    let mut incremental_result = None;
     if let Some(position) = source
         .iter()
         .enumerate()
@@ -106,9 +195,10 @@ fn measure(parser: &mut Parser, path: &str) -> Result<()> {
             }
         }
         incremental_us = Some(start.elapsed().as_secs_f64() * 1e6 / f64::from(count));
-        incremental_hash = tree_hash(&tree);
+        let incremental_hash = tree_hash(&tree);
         let fresh = parser.parse(&source, None).context("parse cancelled")?;
-        incremental_matches_fresh = incremental_hash == tree_hash(&fresh);
+        let incremental_matches_fresh = incremental_hash == tree_hash(&fresh);
+        incremental_result = Some((incremental_hash, incremental_matches_fresh));
         ensure!(
             error || incremental_matches_fresh,
             "incremental tree differs from fresh tree for valid input: {path}"
@@ -119,8 +209,8 @@ fn measure(parser: &mut Parser, path: &str) -> Result<()> {
         serde_json::json!({
             "path": path, "bytes": source.len(), "hash": format!("{hash:016x}"), "error": error,
             "fresh_us": fresh_us, "incremental_us": incremental_us,
-            "incremental_hash": format!("{incremental_hash:016x}"),
-            "incremental_matches_fresh": incremental_matches_fresh,
+            "incremental_hash": incremental_result.map(|(hash, _)| format!("{hash:016x}")),
+            "incremental_matches_fresh": incremental_result.map(|(_, matches)| matches),
         })
     );
     Ok(())

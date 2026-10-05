@@ -31,11 +31,36 @@ const LEXER_CHUNK_SIZE: usize = 256;
 pub const ABI_VERSION_MIN: usize = 14;
 pub const ABI_VERSION_MAX: usize = LANGUAGE_VERSION;
 const ABI_VERSION_WITH_RESERVED_WORDS: usize = 15;
+pub const ABI_VERSION_WITH_COMPACT_TABLES: usize = 16;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerationProfile {
+    pub fingerprint: String,
+    pub parse_states: Vec<u64>,
+    pub lex_states: Vec<u64>,
+    pub edges: Vec<(u32, u32, u64)>,
+    pub max_dense_states: usize,
+}
+
+#[must_use]
+pub fn parser_fingerprint(source: &str) -> String {
+    let hash = source
+        .bytes()
+        .fold(14_695_981_039_346_656_037u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
+        });
+    format!("{hash:016x}")
+}
 
 pub type RenderResult<T> = Result<T, RenderError>;
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum RenderError {
+    #[error("Sparse parse table offset {0} exceeds the ABI 16 address limit")]
+    SparseTable(usize),
+    #[error("Invalid generation profile: {0}")]
+    Profile(String),
     #[error("Parse table action count {0} exceeds maximum value of {max}", max=u16::MAX)]
     ParseTable(usize),
     #[error(
@@ -92,6 +117,12 @@ struct Generator {
     large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
     large_character_set_info: Vec<LargeCharacterSetInfo>,
     large_state_count: usize,
+    alias_sequence_count: usize,
+    lex_mode_count: usize,
+    uses_reserved_word_slices: bool,
+    external_state_stride: usize,
+    uses_keyword_table: bool,
+    profile: Option<GenerationProfile>,
     advance_maps: IndexMap<Vec<(char, u32)>, usize, FxBuildHasher>,
     ascii_sets: IndexMap<[u32; 4], usize, FxBuildHasher>,
     uses_lex_repeat: bool,
@@ -135,6 +166,7 @@ struct Metadata {
 
 impl Generator {
     fn generate(mut self) -> RenderResult<String> {
+        self.apply_profile()?;
         self.init();
         self.add_header();
         self.add_includes();
@@ -171,7 +203,24 @@ impl Generator {
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            self.add_lex_function("ts_lex_keywords", keyword_lex_table);
+            if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+                && keyword_lex_table.states.len() >= 64
+                && keyword_lex_table.states.len() < u16::MAX as usize
+                && keyword_lex_table.states.iter().all(|state| {
+                    state.eof_action.is_none()
+                        && state.advance_actions.iter().all(|(set, action)| {
+                            action.in_main_token
+                                && set
+                                    .ranges()
+                                    .all(|range| *range.start() > '\0' && range.end().is_ascii())
+                        })
+                })
+            {
+                self.uses_keyword_table = true;
+                self.add_keyword_table(&keyword_lex_table);
+            } else {
+                self.add_lex_function("ts_lex_keywords", keyword_lex_table);
+            }
         }
 
         let lex_functions = self.buffer[buffer_offset_before_lex_functions..].to_string();
@@ -202,14 +251,173 @@ impl Generator {
         Ok(self.buffer)
     }
 
+    fn apply_profile(&mut self) -> RenderResult<()> {
+        let Some(profile) = &mut self.profile else {
+            return Ok(());
+        };
+        let n = self.parse_table.states.len();
+        if self.abi_version < ABI_VERSION_WITH_COMPACT_TABLES
+            || profile.parse_states.len() != n
+            || profile.lex_states.len() != self.main_lex_table.states.len()
+            || profile
+                .edges
+                .iter()
+                .any(|&(a, b, _)| a as usize >= n || b as usize >= n)
+            || !(2..=n).contains(&profile.max_dense_states)
+        {
+            return Err(RenderError::Profile("requires ABI 16, matching state counts, valid edges, and a dense-state limit between 2 and STATE_COUNT".into()));
+        }
+        let mut order = (2..n).collect::<Vec<_>>();
+        order.sort_unstable_by_key(|&i| (std::cmp::Reverse(profile.parse_states[i]), i));
+        let mut available = order
+            .iter()
+            .enumerate()
+            .map(|(rank, &id)| (id, rank))
+            .collect::<FxHashMap<_, _>>();
+        let mut edges = vec![Vec::new(); n];
+        for &(a, b, count) in &profile.edges {
+            if b > 1 {
+                edges[a as usize].push((b as usize, count));
+            }
+        }
+        for row in &mut edges {
+            row.sort_unstable_by_key(|&(id, count)| (std::cmp::Reverse(count), id));
+        }
+        let mut ranked = vec![0, 1];
+        let mut cursor = 0;
+        while !available.is_empty() {
+            while cursor < order.len() && !available.contains_key(&order[cursor]) {
+                cursor += 1;
+            }
+            let hottest = order[cursor];
+            let previous = *ranked.last().unwrap();
+            let next = edges[previous]
+                .iter()
+                .find_map(|&(id, count)| {
+                    (available.contains_key(&id)
+                        && u128::from(count) * 2 >= u128::from(profile.parse_states[hottest]))
+                    .then_some(id)
+                })
+                .unwrap_or(hottest);
+            available.remove(&next);
+            ranked.push(next);
+        }
+        let mut inverse = vec![0u32; n];
+        for (new, &old) in ranked.iter().enumerate() {
+            inverse[old] = new as u32;
+        }
+        self.parse_table.states = ranked
+            .iter()
+            .map(|&old| {
+                let mut state = std::mem::take(&mut self.parse_table.states[old]);
+                state.update_nonterminal_references(|id, _| inverse[id as usize]);
+                state
+            })
+            .collect();
+        self.parse_table
+            .remap_terminal_references(|id| inverse[id as usize]);
+        profile.parse_states = ranked
+            .iter()
+            .map(|&old| profile.parse_states[old])
+            .collect();
+        let mut lex_order = (0..self.main_lex_table.states.len()).collect::<Vec<_>>();
+        lex_order[1..].sort_unstable_by_key(|&i| (std::cmp::Reverse(profile.lex_states[i]), i));
+        let mut lex_inverse = vec![0; lex_order.len()];
+        for (new, &old) in lex_order.iter().enumerate() {
+            lex_inverse[old] = new as u32;
+        }
+        self.main_lex_table.states = lex_order
+            .iter()
+            .map(|&old| {
+                let mut state = std::mem::take(&mut self.main_lex_table.states[old]);
+                if let Some(action) = &mut state.eof_action {
+                    action.state = lex_inverse[action.state as usize];
+                }
+                for (_, action) in &mut state.advance_actions {
+                    action.state = lex_inverse[action.state as usize];
+                }
+                state
+            })
+            .collect();
+        for state in &mut self.parse_table.states {
+            if state.lex_state_id != u32::MAX {
+                state.lex_state_id = lex_inverse[state.lex_state_id as usize];
+            }
+        }
+        Ok(())
+    }
+
+    fn add_keyword_table(&mut self, table: &LexTable) {
+        add_line!(
+            self,
+            "typedef struct {{ uint32_t index; uint16_t count; TSSymbol accept; }} TSKeywordState;"
+        );
+        add_line!(
+            self,
+            "typedef struct {{ uint8_t first, last; uint16_t state; }} TSKeywordTransition;"
+        );
+        add_line!(
+            self,
+            "static const TSKeywordTransition ts_keyword_transitions[] = {{"
+        );
+        indent!(self);
+        let mut transitions = Vec::new();
+        let mut rows = Vec::new();
+        for state in &table.states {
+            let index = transitions.len();
+            let mut ranges = state
+                .advance_actions
+                .iter()
+                .flat_map(|(set, action)| {
+                    set.ranges()
+                        .map(move |range| (*range.start() as u8, *range.end() as u8, action.state))
+                })
+                .collect::<Vec<_>>();
+            ranges.sort_unstable();
+            rows.push((index, ranges.len(), state.accept_action));
+            transitions.extend(ranges);
+        }
+        for (first, last, state) in transitions {
+            add_line!(self, "{{ {first}, {last}, {state} }},");
+        }
+        dedent!(self);
+        add_line!(self, "}};");
+        add_line!(self, "static const TSKeywordState ts_keyword_states[] = {{");
+        indent!(self);
+        for (index, count, accept) in rows {
+            let accept = accept.map_or_else(
+                || "0".to_string(),
+                |symbol| self.symbol_ids[&symbol].clone(),
+            );
+            add_line!(self, "{{ {index}, {count}, {accept} }},");
+        }
+        dedent!(self);
+        add_line!(self, "}};");
+        self.buffer
+            .push_str(include_str!("templates/keyword_table.h"));
+    }
+
     fn add_lexer_helpers(&mut self) {
         if self
             .large_character_set_info
             .iter()
-            .any(|info| info.is_used)
+            .any(|info| info.is_used && info.unicode_pages.is_none())
         {
             self.buffer
                 .push_str(include_str!("templates/character_set.h"));
+        }
+        for width in [8, 16] {
+            if self.large_character_set_info.iter().any(|info| {
+                info.is_used
+                    && info.unicode_pages.as_ref().is_some_and(|pages| {
+                        width == if pages.blocks.len() <= 256 { 8 } else { 16 }
+                    })
+            }) {
+                self.buffer.push_str(
+                    &include_str!("templates/character_set_pages.h")
+                        .replace("WIDTH", &width.to_string()),
+                );
+            }
         }
         let advance_maps = std::mem::take(&mut self.advance_maps);
         for (map, &id) in &advance_maps {
@@ -397,16 +605,34 @@ impl Generator {
     }
 
     fn count_large_states(&self) -> usize {
+        if let Some(profile) = &self.profile {
+            let total = profile
+                .parse_states
+                .iter()
+                .map(|&n| u128::from(n))
+                .sum::<u128>();
+            let mut count = 2;
+            let mut covered =
+                u128::from(profile.parse_states[0]) + u128::from(profile.parse_states[1]);
+            while count < profile.max_dense_states && covered * 10 < total * 9 {
+                covered += u128::from(profile.parse_states[count]);
+                count += 1;
+            }
+            return count;
+        }
         let threshold = cmp::min(SMALL_STATE_THRESHOLD, self.parse_table.symbols.len() / 2);
-        let minimum = self
-            .parse_table
-            .states
-            .iter()
-            .enumerate()
-            .take_while(|(i, s)| {
-                *i <= 1 || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
-            })
-            .count();
+        let minimum = if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
+            self.parse_table.states.len().min(2)
+        } else {
+            self.parse_table
+                .states
+                .iter()
+                .enumerate()
+                .take_while(|(i, s)| {
+                    *i <= 1 || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
+                })
+                .count()
+        };
         let dense_bytes = self.parse_table.symbols.len() * size_of::<u16>();
         let mut terminal_groups = FxHashSet::default();
         let mut nonterminal_groups = FxHashSet::default();
@@ -444,7 +670,17 @@ impl Generator {
             let next_id = row_counts.len();
             let id = *row_ids.entry(row).or_insert_with(|| {
                 row_counts.push(0usize);
-                row_bytes.push((1 + 2 * groups + entries) * size_of::<u16>());
+                let grouped = 1 + 2 * groups + entries;
+                let words = if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
+                    if groups >= 8 || entries <= groups * 2 {
+                        1 + 2 * entries
+                    } else {
+                        grouped
+                    }
+                } else {
+                    grouped
+                };
+                row_bytes.push(words * size_of::<u16>());
                 next_id
             });
             row_counts[id] += 1;
@@ -514,6 +750,13 @@ impl Generator {
             self.parse_table.states.len()
         );
         add_line!(self, "#define LARGE_STATE_COUNT {}", self.large_state_count);
+        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
+            add_line!(
+                self,
+                "#define LEX_STATE_COUNT {}",
+                self.main_lex_table.states.len()
+            );
+        }
 
         add_line!(
             self,
@@ -706,6 +949,11 @@ impl Generator {
     }
 
     fn add_alias_sequences(&mut self) {
+        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
+            self.add_shared_alias_sequences();
+            return;
+        }
+
         add_line!(
             self,
             "static const TSSymbol ts_alias_sequences[PRODUCTION_ID_COUNT][MAX_ALIAS_SEQUENCE_LENGTH] = {{",
@@ -734,6 +982,51 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}};");
         add_line!(self, "");
+    }
+
+    fn add_shared_alias_sequences(&mut self) {
+        let mut rows = IndexMap::<Vec<Option<Alias>>, usize, FxBuildHasher>::default();
+        let mut symbols = vec![None];
+        let mut offsets = Vec::new();
+        for info in &self.parse_table.production_infos {
+            if info.alias_sequence.is_empty() {
+                offsets.push(0);
+                continue;
+            }
+            let mut row = info.alias_sequence.clone();
+            row.resize(self.parse_table.max_aliased_production_length, None);
+            let offset = *rows.entry(row.clone()).or_insert_with(|| {
+                let offset = symbols.len();
+                symbols.extend(row);
+                offset
+            });
+            offsets.push(offset);
+        }
+        self.alias_sequence_count = symbols.len();
+        add_line!(
+            self,
+            "static const uint32_t ts_alias_sequence_offsets[PRODUCTION_ID_COUNT] = {{"
+        );
+        indent!(self);
+        for (id, offset) in offsets.into_iter().enumerate() {
+            add_line!(self, "[{id}] = {offset},");
+        }
+        dedent!(self);
+        add_line!(self, "}};\n");
+        add_line!(
+            self,
+            "static const TSSymbol ts_alias_sequences[{}] = {{",
+            symbols.len()
+        );
+        indent!(self);
+        add_line!(self, "[0] = 0,");
+        for (id, alias) in symbols.into_iter().enumerate() {
+            if let Some(alias) = alias {
+                add_line!(self, "[{id}] = {},", self.alias_ids[&alias]);
+            }
+        }
+        dedent!(self);
+        add_line!(self, "}};\n");
     }
 
     fn add_non_terminal_alias_map(&mut self) {
@@ -1569,6 +1862,10 @@ impl Generator {
     }
 
     fn add_lex_modes(&mut self) {
+        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES && self.add_shared_lex_modes() {
+            return;
+        }
+
         add_line!(
             self,
             "static const {} ts_lex_modes[STATE_COUNT] = {{",
@@ -1610,7 +1907,94 @@ impl Generator {
         add_line!(self, "");
     }
 
+    fn add_shared_lex_modes(&mut self) -> bool {
+        let mut modes = IndexMap::<(u32, u32, usize), usize, FxBuildHasher>::default();
+        let mut ids = Vec::new();
+        for (id, state) in self.parse_table.states.iter().enumerate() {
+            let mode = if state.is_end_of_non_terminal_extra() {
+                (u32::from(u16::MAX), 0, 0)
+            } else {
+                (
+                    state.lex_state_id,
+                    state.external_lex_state_id,
+                    self.reserved_word_set_ids_by_parse_state[id],
+                )
+            };
+            let next = modes.len();
+            ids.push(*modes.entry(mode).or_insert(next));
+        }
+        if modes.len() * 6 + ids.len() * 2 >= ids.len() * 6 {
+            return false;
+        }
+        self.lex_mode_count = modes.len();
+        add_line!(self, "static const TSLexerMode ts_lex_modes[] = {{");
+        indent!(self);
+        for (&(lex, external, reserved), &id) in &modes {
+            add_line!(
+                self,
+                "[{id}] = {{.lex_state = {lex}, .external_lex_state = {external}, .reserved_word_set_id = {reserved}}},"
+            );
+        }
+        dedent!(self);
+        add_line!(self, "}};\n");
+        add_line!(
+            self,
+            "static const uint16_t ts_lex_mode_ids[STATE_COUNT] = {{"
+        );
+        indent!(self);
+        for chunk in ids.chunks(16) {
+            add_whitespace!(self);
+            for id in chunk {
+                add!(self, "{id}, ");
+            }
+            add!(self, "\n");
+        }
+        dedent!(self);
+        add_line!(self, "}};\n");
+        true
+    }
+
     fn add_reserved_word_sets(&mut self) {
+        let total = self
+            .reserved_word_sets
+            .iter()
+            .map(TokenSet::len)
+            .sum::<usize>();
+        let maximum = self
+            .reserved_word_sets
+            .iter()
+            .map(TokenSet::len)
+            .max()
+            .unwrap_or(0);
+        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+            && u16::try_from(total).is_ok()
+            && total * 2 + self.reserved_word_sets.len() * 4
+                < maximum * self.reserved_word_sets.len() * 2
+        {
+            self.uses_reserved_word_slices = true;
+            add_line!(self, "static const TSSymbol ts_reserved_words[] = {{");
+            indent!(self);
+            for set in &self.reserved_word_sets {
+                for token in set.iter() {
+                    add_line!(self, "{},", self.symbol_ids[&token]);
+                }
+            }
+            dedent!(self);
+            add_line!(self, "}};");
+            add_line!(
+                self,
+                "static const TSMapSlice ts_reserved_word_slices[] = {{"
+            );
+            indent!(self);
+            let mut offset = 0;
+            for set in &self.reserved_word_sets {
+                add_line!(self, "{{.index = {offset}, .length = {}}},", set.len());
+                offset += set.len();
+            }
+            dedent!(self);
+            add_line!(self, "}};");
+            return;
+        }
         add_line!(
             self,
             "static const TSSymbol ts_reserved_words[{}][MAX_RESERVED_WORD_SET_SIZE] = {{",
@@ -1669,6 +2053,37 @@ impl Generator {
     }
 
     fn add_external_scanner_states_list(&mut self) {
+        let tokens = self.syntax_grammar.external_tokens.len();
+        let stride = tokens.div_ceil(8);
+        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+            && self.parse_table.external_lex_states.len() * (tokens - stride) > 128
+        {
+            self.external_state_stride = stride;
+            add_line!(
+                self,
+                "static const uint8_t ts_external_scanner_states[{}][{stride}] = {{",
+                self.parse_table.external_lex_states.len()
+            );
+            indent!(self);
+            for (i, state) in self.parse_table.external_lex_states.iter().enumerate() {
+                let mut bytes = vec![0u8; stride];
+                for token in state.iter() {
+                    bytes[token.index as usize / 8] |= 1 << (token.index as usize % 8);
+                }
+                add_line!(
+                    self,
+                    "[{i}] = {{ {} }},",
+                    bytes
+                        .iter()
+                        .map(u8::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            dedent!(self);
+            add_line!(self, "}};");
+            return;
+        }
         add_line!(
             self,
             "static const bool ts_external_scanner_states[{}][EXTERNAL_TOKEN_COUNT] = {{",
@@ -1823,7 +2238,11 @@ impl Generator {
 
                 let mut row = vec![values_with_symbols.len() as u32];
                 for ((value, _), symbols) in &mut values_with_symbols {
-                    symbols.sort_unstable();
+                    if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
+                        symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
+                    } else {
+                        symbols.sort_unstable();
+                    }
                     row.extend([*value, symbols.len() as u32]);
                     row.extend(
                         symbols
@@ -1831,12 +2250,54 @@ impl Generator {
                             .map(|symbol| self.symbol_order[symbol] as u32),
                     );
                 }
-                if let Some(&offset) = row_offsets.get(&row) {
+                let entry_count = values_with_symbols
+                    .iter()
+                    .map(|(_, symbols)| symbols.len())
+                    .sum::<usize>();
+                let pairs = self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+                    && (values_with_symbols.len() >= 8
+                        || entry_count <= 2 * values_with_symbols.len());
+                let mut entries = Vec::new();
+                if pairs {
+                    for ((value, kind), symbols) in &values_with_symbols {
+                        entries.extend(symbols.iter().map(|symbol| (*symbol, *value, *kind)));
+                    }
+                    entries.sort_unstable_by_key(|(symbol, _, _)| self.symbol_order[symbol]);
+                    row.clear();
+                    row.push(entry_count as u32);
+                    for (symbol, value, _) in &entries {
+                        row.extend([self.symbol_order[symbol] as u32, *value]);
+                    }
+                }
+                let key = (pairs, row);
+                if let Some(&offset) = row_offsets.get(&key) {
                     small_state_indices.push(offset);
                     continue;
                 }
-                small_state_indices.push(next_table_index);
-                row_offsets.insert(row, next_table_index);
+                if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+                    && next_table_index >= 0x8000_0000
+                {
+                    return Err(RenderError::SparseTable(next_table_index));
+                }
+                let offset = next_table_index | if pairs { 0x8000_0000 } else { 0 };
+                small_state_indices.push(offset);
+                row_offsets.insert(key, offset);
+                if pairs {
+                    add_line!(self, "[{next_table_index}] = {entry_count},");
+                    indent!(self);
+                    next_table_index += 1;
+                    for (symbol, value, kind) in entries {
+                        let macro_name = if kind == SymbolType::Terminal {
+                            "ACTIONS"
+                        } else {
+                            "STATE"
+                        };
+                        add_line!(self, "{}, {macro_name}({value}),", self.symbol_ids[&symbol]);
+                        next_table_index += 2;
+                    }
+                    dedent!(self);
+                    continue;
+                }
 
                 add_line!(
                     self,
@@ -1979,6 +2440,25 @@ impl Generator {
             add_line!(self, "");
         }
 
+        if self.external_state_stride > 0 {
+            add_line!(
+                self,
+                "static bool ts_external_scanner_scan(void *payload, TSLexer *lexer, const bool *states) {{"
+            );
+            indent!(self);
+            add_line!(self, "const uint8_t *bits = (const uint8_t *)states;");
+            add_line!(self, "bool valid[EXTERNAL_TOKEN_COUNT];");
+            add_line!(
+                self,
+                "for (unsigned i = 0; i < EXTERNAL_TOKEN_COUNT; i++) valid[i] = (bits[i / 8] >> (i % 8)) & 1;"
+            );
+            add_line!(
+                self,
+                "return {external_scanner_name}_scan(payload, lexer, valid);"
+            );
+            dedent!(self);
+            add_line!(self, "}}");
+        }
         add_line!(self, "#ifdef TREE_SITTER_HIDE_SYMBOLS");
         add_line!(self, "#define TS_PUBLIC");
         add_line!(self, "#elif defined(_WIN32)");
@@ -2041,14 +2521,31 @@ impl Generator {
         add_line!(self, ".public_symbol_map = ts_symbol_map,");
         add_line!(self, ".alias_map = ts_non_terminal_alias_map,");
         if !self.parse_table.production_infos.is_empty() {
-            add_line!(self, ".alias_sequences = &ts_alias_sequences[0][0],");
+            if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
+                add_line!(self, ".alias_sequences = ts_alias_sequences,");
+                add_line!(self, ".alias_sequence_offsets = ts_alias_sequence_offsets,");
+                add_line!(
+                    self,
+                    ".alias_sequence_count = {},",
+                    self.alias_sequence_count
+                );
+            } else {
+                add_line!(self, ".alias_sequences = &ts_alias_sequences[0][0],");
+            }
         }
 
         // Lexing
         add_line!(self, ".lex_modes = (const void*)ts_lex_modes,");
+        if self.lex_mode_count > 0 {
+            add_line!(self, ".lex_mode_ids = ts_lex_mode_ids,");
+            add_line!(self, ".lex_mode_count = {},", self.lex_mode_count);
+        }
         add_line!(self, ".lex_fn = ts_lex,");
         if let Some(keyword_capture_token) = self.syntax_grammar.word_token {
             add_line!(self, ".keyword_lex_fn = ts_lex_keywords,");
+            if self.uses_keyword_table {
+                add_line!(self, ".keyword_lookup_fn = ts_keyword_lookup,");
+            }
             add_line!(
                 self,
                 ".keyword_capture_token = {},",
@@ -2059,24 +2556,40 @@ impl Generator {
         if !self.syntax_grammar.external_tokens.is_empty() {
             add_line!(self, ".external_scanner = {{");
             indent!(self);
-            add_line!(self, "&ts_external_scanner_states[0][0],");
+            add_line!(self, "(const bool *)&ts_external_scanner_states[0][0],");
             add_line!(self, "ts_external_scanner_symbol_map,");
             add_line!(self, "{external_scanner_name}_create,");
             add_line!(self, "{external_scanner_name}_destroy,");
-            add_line!(self, "{external_scanner_name}_scan,");
+            if self.external_state_stride > 0 {
+                add_line!(self, "ts_external_scanner_scan,");
+            } else {
+                add_line!(self, "{external_scanner_name}_scan,");
+            }
             add_line!(self, "{external_scanner_name}_serialize,");
             add_line!(self, "{external_scanner_name}_deserialize,");
             dedent!(self);
             add_line!(self, "}},");
         }
 
+        if self.external_state_stride > 0 {
+            add_line!(
+                self,
+                ".external_state_stride = {},",
+                self.external_state_stride
+            );
+        }
         add_line!(self, ".primary_state_ids = ts_primary_state_ids,");
 
         if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
             add_line!(self, ".name = \"{}\",", self.language_name);
 
             if self.reserved_word_sets.len() > 1 {
-                add_line!(self, ".reserved_words = &ts_reserved_words[0][0],");
+                if self.uses_reserved_word_slices {
+                    add_line!(self, ".reserved_words = ts_reserved_words,");
+                    add_line!(self, ".reserved_word_slices = ts_reserved_word_slices,");
+                } else {
+                    add_line!(self, ".reserved_words = &ts_reserved_words[0][0],");
+                }
             }
 
             add_line!(
@@ -2374,6 +2887,7 @@ pub fn render_c_code(
     abi_version: usize,
     semantic_version: Option<(u8, u8, u8)>,
     supertype_symbol_map: BTreeMap<Symbol, Vec<ChildType>>,
+    profile: Option<&GenerationProfile>,
 ) -> RenderResult<String> {
     if !(ABI_VERSION_MIN..=ABI_VERSION_MAX).contains(&abi_version) {
         Err(RenderError::ABI(abi_version))?;
@@ -2381,6 +2895,7 @@ pub fn render_c_code(
 
     Generator {
         language_name: str_pool.resolve(name).to_string(),
+        profile: profile.cloned(),
         parse_table: tables.parse_table,
         main_lex_table: tables.main_lex_table,
         keyword_lex_table: tables.keyword_lex_table,

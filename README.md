@@ -22,6 +22,28 @@ Releases from v1.0.7 on carry the CLI as `tree-sitter-cli-<platform>.tar.gz` for
 `tree-sitter fuzz` on this runtime without building it. A workflow attaches the archives after a release is published,
 so the newest release lacks them for a while.
 
+## Parser generation and tuning
+
+The CLI defaults to ABI 15. Use `tree-sitter generate --abi 16` for compact parse tables and metadata. These parsers require a runtime supporting ABI 16. Measure parsing as well as file size: a smaller sparse table can cost more lookups.
+
+To record state visits, generate an unprofiled ABI 16 parser first. From this repository's checkout, run the measurement example on representative grammar inputs:
+
+```sh
+mise exec -- cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- \
+  --profile /path/to/grammar/profile.json native bash /path/to/grammar/src /path/to/training.sh
+```
+
+Then, from the grammar directory:
+
+```sh
+tree-sitter generate --abi 16 --profile profile.json
+tree-sitter build --optimization s
+```
+
+A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The example also supports `wasm` with a module path in place of the source directory.
+
+`build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `s`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
+
 Tree-sitter is a parser generator tool and an incremental parsing library. It can build a concrete syntax tree for a source file and efficiently update the syntax tree as the source file is edited. Tree-sitter aims to be:
 
 - **General** enough to parse any programming language

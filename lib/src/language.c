@@ -89,10 +89,15 @@ bool ts_language_is_parseable(const TSLanguage *self) {
 const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
 #ifdef __wasm__
   if (self && ts_language_is_parseable(self)) {
-    TSUnparseableLanguage *result = ts_malloc(sizeof(TSUnparseableLanguage));
-    result->language = *self;
+    TSUnparseableLanguage *result = ts_calloc(1, sizeof(TSUnparseableLanguage));
+    size_t language_size = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES ? sizeof(TSLanguage) :
+      self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? offsetof(TSLanguage, alias_sequence_offsets) :
+      self->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES ? offsetof(TSLanguage, name) :
+      offsetof(TSLanguage, primary_state_ids);
+    memcpy(&result->language, self, language_size);
     result->language.lex_fn = NULL;
     result->language.keyword_lex_fn = NULL;
+    result->language.keyword_lookup_fn = NULL;
     result->language.external_scanner.states = (const bool *)&result->language;
     result->language.external_scanner.create = NULL;
     result->language.external_scanner.destroy = NULL;
@@ -191,6 +196,9 @@ TSLexerMode ts_language_lex_mode_for_state(
       .reserved_word_set_id = 0,
     };
   } else {
+    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->lex_mode_ids) {
+      state = self->lex_mode_ids[state];
+    }
     return self->lex_modes[state];
   }
 }
@@ -204,6 +212,11 @@ bool ts_language_is_reserved_word(
   if (lex_mode.reserved_word_set_id > 0) {
     unsigned start = lex_mode.reserved_word_set_id * self->max_reserved_word_set_size;
     unsigned end = start + self->max_reserved_word_set_size;
+    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->reserved_word_slices) {
+      TSMapSlice slice = self->reserved_word_slices[lex_mode.reserved_word_set_id];
+      start = slice.index;
+      end = start + slice.length;
+    }
     for (unsigned i = start; i < end; i++) {
       if (self->reserved_words[i] == symbol) return true;
       if (self->reserved_words[i] == 0) break;

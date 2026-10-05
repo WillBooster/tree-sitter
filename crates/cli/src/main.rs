@@ -92,6 +92,9 @@ struct Init {
 #[derive(Args)]
 #[command(alias = "gen", alias = "g")]
 struct Generate {
+    /// Apply state frequencies recorded from the same unprofiled ABI 16 parser
+    #[arg(long, conflicts_with = "no_parser")]
+    pub profile: Option<PathBuf>,
     /// The path to the grammar file
     #[arg(index = 1)]
     pub grammar_path: Option<PathBuf>,
@@ -173,6 +176,9 @@ struct Generate {
 #[derive(Args)]
 #[command(alias = "b")]
 struct Build {
+    /// Compiler optimization: 2, 3, s (size), or z (minimum size); defaults to 2 natively and s for Wasm
+    #[arg(long, conflicts_with = "debug", value_name = "LEVEL")]
+    pub optimization: Option<loader::OptimizationLevel>,
     /// Build a Wasm module instead of a dynamic library
     #[arg(short, long)]
     pub wasm: bool,
@@ -959,7 +965,14 @@ impl Generate {
         };
 
         let mut diagnostics = Vec::new();
-        let result = tree_sitter_generate::generate_parser_in_directory(
+        let profile = self
+            .profile
+            .as_ref()
+            .map(|path| -> Result<tree_sitter_generate::GenerationProfile> {
+                Ok(serde_json::from_slice(&fs::read(path)?)?)
+            })
+            .transpose()?;
+        let result = tree_sitter_generate::generate_parser_in_directory_with_profile(
             current_dir,
             self.output.as_deref(),
             self.grammar_path.as_deref(),
@@ -973,6 +986,7 @@ impl Generate {
                 OptLevel::default()
             },
             &mut diagnostics,
+            profile.as_ref(),
         );
         if json_summary {
             #[derive(serde::Serialize)]
@@ -1016,6 +1030,9 @@ impl Build {
         let grammar_path = current_dir.join(self.path.unwrap_or_default());
 
         loader.debug_build(self.debug);
+        if let Some(level) = self.optimization {
+            loader.optimization_level(level);
+        }
         loader.verbose_build(self.verbose);
 
         if self.wasm {

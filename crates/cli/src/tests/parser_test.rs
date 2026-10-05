@@ -23,11 +23,255 @@ use crate::{
     fuzz::edits::Edit,
     parse::perform_edit,
     tests::{
-        generate_parser,
+        generate_parser, generate_parser_with_abi,
         helpers::fixtures::{fixtures_dir, get_test_fixture_language},
         invert_edit,
     },
 };
+
+#[test]
+fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
+    use tree_sitter_generate::{
+        GenerationProfile, OptLevel, generate_parser_in_directory_with_profile, parser_fingerprint,
+    };
+
+    let directory = tempfile::Builder::new()
+        .prefix("profile-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let grammar_path = root.join("src/grammar.json");
+    let grammar = serde_json::json!({
+        "name": "profiled_statements",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "statement"}},
+            "statement": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "let"}, {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "="}, {"type": "SYMBOL", "name": "number"}, {"type": "STRING", "value": ";"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}, {"type": "SYMBOL", "name": "block"}
+                ]}
+            ]},
+            "block": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "{"}, {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "statement"}}, {"type": "STRING", "value": "}"}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"},
+            "number": {"type": "PATTERN", "value": "[0-9]+"}
+        }
+    });
+    fs::write(&grammar_path, grammar.to_string()).unwrap();
+    fs::write(
+        root.join("tree-sitter.json"),
+        r#"{"metadata":{"version":"0.0.0"}}"#,
+    )
+    .unwrap();
+    let generate = |profile: Option<&GenerationProfile>| {
+        generate_parser_in_directory_with_profile(
+            root,
+            None::<&Path>,
+            Some(&grammar_path),
+            16,
+            None,
+            None,
+            true,
+            OptLevel::default(),
+            &mut Vec::new(),
+            profile,
+        )
+    };
+    generate(None).unwrap();
+    let parser_path = root.join("src/parser.c");
+    let code = fs::read_to_string(&parser_path).unwrap();
+    let count = |name: &str| {
+        code.lines()
+            .find_map(|line| line.strip_prefix(&format!("#define {name} ")))
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+    };
+    let counters = Arc::new(Mutex::new((
+        vec![0u64; count("STATE_COUNT")],
+        vec![0u64; count("LEX_STATE_COUNT")],
+        BTreeMap::<(u32, u32), u64>::new(),
+        None::<u32>,
+    )));
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language_with_header(
+            "profiled_statements",
+            &code,
+            tree_sitter_generate::PARSER_HEADER,
+        ))
+        .unwrap();
+    let captured = counters.clone();
+    parser.set_logger(Some(Box::new(move |_, message| {
+        let Some(state) = message
+            .split_once("state:")
+            .and_then(|(_, value)| value.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            return;
+        };
+        let mut counts = captured.lock().unwrap();
+        if message.starts_with("process ") && state < counts.0.len() {
+            counts.0[state] += 1;
+            if let Some(previous) = counts.3 {
+                *counts.2.entry((previous, state as u32)).or_default() += 1;
+            }
+            counts.3 = Some(state as u32);
+        } else if message.starts_with("lex_internal ") && state < counts.1.len() {
+            counts.1[state] += 1;
+        }
+    })));
+    let source = "let value = 123; if ready { let item = 9; }";
+    let expected = parser.parse(source, None).unwrap();
+    assert!(!expected.root_node().has_error());
+    parser.set_logger(None);
+    let counts = counters.lock().unwrap();
+    let profile = GenerationProfile {
+        fingerprint: parser_fingerprint(&code),
+        parse_states: counts.0.clone(),
+        lex_states: counts.1.clone(),
+        edges: counts
+            .2
+            .iter()
+            .map(|(&(a, b), &count)| (a, b, count))
+            .collect(),
+        max_dense_states: 2,
+    };
+    drop(counts);
+    let profile_path = root.join("profile.json");
+    fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let profile: GenerationProfile =
+        serde_json::from_slice(&fs::read(profile_path).unwrap()).unwrap();
+    generate(Some(&profile)).unwrap();
+    let optimized = fs::read_to_string(&parser_path).unwrap();
+    parser
+        .set_language(&get_test_language_with_header(
+            "profiled_statements",
+            &optimized,
+            tree_sitter_generate::PARSER_HEADER,
+        ))
+        .unwrap();
+    for input in [source, "let value = ; if ready { let item = 9;"] {
+        let actual = parser.parse(input, None).unwrap();
+        let mut baseline = Parser::new();
+        baseline
+            .set_language(&get_test_language_with_header(
+                "profiled_statements",
+                &code,
+                tree_sitter_generate::PARSER_HEADER,
+            ))
+            .unwrap();
+        let expected = baseline.parse(input, None).unwrap();
+        assert_eq!(actual.root_node().to_sexp(), expected.root_node().to_sexp());
+        assert_eq!(
+            actual.root_node().byte_range(),
+            expected.root_node().byte_range()
+        );
+        assert_eq!(
+            actual.root_node().has_error(),
+            expected.root_node().has_error()
+        );
+    }
+    let changed = grammar.to_string().replace("[0-9]+", "[0-9a-f]+");
+    fs::write(&grammar_path, changed).unwrap();
+    assert!(
+        generate(Some(&profile))
+            .unwrap_err()
+            .to_string()
+            .contains("fingerprint")
+    );
+    assert_eq!(fs::read_to_string(parser_path).unwrap(), optimized);
+}
+
+#[test]
+fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
+    let keyword = format!("keyword_{}", "x".repeat(80));
+    let grammar = serde_json::json!({
+        "name": "keyword_input_boundaries",
+        "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "STRING", "value": keyword},
+                {"type": "SYMBOL", "name": "identifier"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[a-z_]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let languages = [
+        get_test_language(&name, &code, None),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        let source = format!("{keyword} {keyword}_suffix");
+        let expected = parser.parse(&source, None).unwrap();
+        let streamed = parser
+            .parse_with_options(
+                &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            streamed.root_node().to_sexp(),
+            expected.root_node().to_sexp()
+        );
+        assert_eq!(streamed.root_node().child(0).unwrap().kind(), keyword);
+        assert_eq!(streamed.root_node().child(1).unwrap().kind(), "identifier");
+        let utf16 = parser
+            .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+            .unwrap();
+        assert_eq!(utf16.root_node().to_sexp(), expected.root_node().to_sexp());
+        assert_eq!(utf16.root_node().child(0).unwrap().kind(), keyword);
+        let split = keyword.len() / 2;
+        let excluded = format!("{}@@@@@{}", &keyword[..split], &keyword[split..]);
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: split,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, split),
+                },
+                Range {
+                    start_byte: split + 5,
+                    end_byte: excluded.len(),
+                    start_point: Point::new(0, split + 5),
+                    end_point: Point::new(0, excluded.len()),
+                },
+            ])
+            .unwrap();
+        let tree = parser.parse(&excluded, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let node = tree.root_node().child(0).unwrap();
+        assert_eq!(node.kind(), keyword);
+        assert_eq!(node.byte_range(), 0..excluded.len());
+    }
+}
 
 #[test]
 fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
@@ -104,7 +348,7 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
 
 #[test]
 fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
-    let (name, code) = generate_parser(
+    let (name, code) = generate_parser_with_abi(
         r#"{
         "name": "unicode_identifiers",
         "extras": [],
@@ -112,6 +356,7 @@ fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
             "identifier": {"type": "PATTERN", "value": "[_\\p{XID_Start}][_\\p{XID_Continue}]*"}
         }
     }"#,
+        15,
     )
     .unwrap();
     let language = get_test_language_with_header(
@@ -163,7 +408,7 @@ fn test_generated_lexer_character_boundaries_with_abi15_header() {
                 "word": {"type": "PATTERN", "value": "[acegikmoqsuwy\\u0080\\u0100\\u0370\\u2000\\u3042\\U0001f600]+"}
             }
         });
-        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let (name, parser_code) = generate_parser_with_abi(&grammar.to_string(), 15).unwrap();
         let language = get_test_language_with_header(
             &name,
             &parser_code,
@@ -245,7 +490,7 @@ fn test_header_override_does_not_reuse_another_headers_library() {
         "name": "header_override_cache",
         "rules": {"program": {"type": "STRING", "value": "x"}}
     });
-    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let (name, parser_code) = generate_parser_with_abi(&grammar.to_string(), 15).unwrap();
     let header = include_str!("../../../../test/fixtures/parserAbi15.h");
     let mut parser = Parser::new();
     for language in [
@@ -304,7 +549,7 @@ fn test_character_set_constants_do_not_shadow_grammar_symbols() {
     }
     let grammar =
         serde_json::json!({"name": "character_set_symbol_collision", "extras": [], "rules": rules});
-    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let (name, parser_code) = generate_parser_with_abi(&grammar.to_string(), 15).unwrap();
     let language = get_test_language_with_header(
         &name,
         &parser_code,
