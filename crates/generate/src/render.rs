@@ -206,10 +206,23 @@ impl Generator {
         if self
             .large_character_set_info
             .iter()
-            .any(|info| info.is_used)
+            .any(|info| info.is_used && info.unicode_pages.is_none())
         {
             self.buffer
                 .push_str(include_str!("templates/character_set.h"));
+        }
+        for width in [8, 16] {
+            if self.large_character_set_info.iter().any(|info| {
+                info.is_used
+                    && info.unicode_pages.as_ref().is_some_and(|pages| {
+                        width == if pages.blocks.len() <= 256 { 8 } else { 16 }
+                    })
+            }) {
+                self.buffer.push_str(
+                    &include_str!("templates/character_set_pages.h")
+                        .replace("WIDTH", &width.to_string()),
+                );
+            }
         }
         let advance_maps = std::mem::take(&mut self.advance_maps);
         for (map, &id) in &advance_maps {
