@@ -483,6 +483,52 @@ fn test_incremental_recovery_before_changed_nonterminal_extra() {
 }
 
 #[test]
+fn test_incremental_recovery_with_ambiguous_lookahead() {
+    let language = get_test_fixture_language("ambiguous_reuse");
+    for utf16 in [false, true] {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let mut parse = |source: &str, old: Option<&tree_sitter::Tree>| {
+            if utf16 {
+                parser
+                    .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), old)
+                    .unwrap()
+            } else {
+                parser.parse(source, old).unwrap()
+            }
+        };
+        let original = "{switch(x){f\ny+;}return;}";
+        let edited = "{switch(x)#else\n{f\ny+;}return;}";
+        let scale = if utf16 { 2 } else { 1 };
+        let mut tree = parse(original, None);
+        for source in [edited, original, edited, original] {
+            let inserting = source == edited;
+            tree.edit(&InputEdit {
+                start_byte: 10 * scale,
+                old_end_byte: if inserting { 10 } else { 16 } * scale,
+                new_end_byte: if inserting { 16 } else { 10 } * scale,
+                start_position: Point::new(0, 10 * scale),
+                old_end_position: if inserting {
+                    Point::new(0, 10 * scale)
+                } else {
+                    Point::new(1, 0)
+                },
+                new_end_position: if inserting {
+                    Point::new(1, 0)
+                } else {
+                    Point::new(0, 10 * scale)
+                },
+            });
+            tree = parse(source, Some(&tree));
+            let fresh = parse(source, None);
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().range(), fresh.root_node().range());
+            assert!(tree.root_node().has_error());
+        }
+    }
+}
+
+#[test]
 fn test_incremental_lexing_after_nonterminal_extra() {
     let language = get_test_fixture_language("incremental_nonterminal_extra");
     let mut parser = Parser::new();
