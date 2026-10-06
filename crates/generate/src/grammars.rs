@@ -308,6 +308,28 @@ pub struct SyntaxGrammar {
 }
 
 impl SyntaxGrammar {
+    pub fn supertype_alias(&self, symbol: Symbol, aliases: &AliasMap) -> Option<Symbol> {
+        if !self.supertype_symbols.contains(&symbol) {
+            return None;
+        }
+        let alias = aliases.get(&symbol)?;
+        if !alias.is_named
+            || self.variables.iter().enumerate().any(|(index, _)| {
+                self.variable_prod_ids(index).any(|id| {
+                    self.production(id).steps.iter().any(|step| {
+                        step.symbol() == symbol && step.alias().is_some_and(|other| other != *alias)
+                    })
+                })
+            })
+        {
+            return None;
+        }
+        self.supertype_symbols.iter().copied().find(|target| {
+            self.variables[target.index as usize].name == alias.value
+                && !aliases.contains_key(target)
+        })
+    }
+
     #[must_use]
     pub fn production(&self, id: u32) -> ProdRef<'_> {
         self.productions[id as usize].contents(&self.steps)

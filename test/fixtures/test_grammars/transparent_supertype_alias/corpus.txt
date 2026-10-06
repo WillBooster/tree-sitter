@@ -1,0 +1,19 @@
+==================
+Canonical expression
+==================
+
+general 12
+
+---
+
+(source_file (number))
+
+==================
+Restricted expression
+==================
+
+restricted x
+
+---
+
+(source_file (identifier))
