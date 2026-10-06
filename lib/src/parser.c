@@ -799,6 +799,14 @@ static Subtree ts_parser__reuse_node(
       reason = "is_missing";
     } else if (ts_subtree_is_fragile(result)) {
       reason = "is_fragile";
+    } else if (
+      ts_subtree_child_count(result) > 0 &&
+      !ts_subtree_extra(result) &&
+      reusable_node_precedes_unstable_extra(&self->reusable_node)
+    ) {
+      // Nonterminal extras can postpone reductions. Reusing this reduced subtree would hide
+      // intermediate states that recovery inside the following extra may need.
+      reason = "precedes_unstable_extra";
     } else if (ts_parser__has_included_range_difference(
                  self,
                  byte_offset,
