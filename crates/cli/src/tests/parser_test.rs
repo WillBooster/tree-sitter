@@ -440,8 +440,8 @@ fn test_recovery_through_many_nonterminal_extras() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let line = "#pragma warning disable x #:x\n";
-    let measure = |parser: &mut Parser, count: usize| {
-        let source = format!("{}x;", line.repeat(count));
+    let measure = |parser: &mut Parser, count: usize, blocks: usize| {
+        let source = format!("{}x;", line.repeat(count)).repeat(blocks);
         let mut fastest = Duration::MAX;
         for _ in 0..3 {
             let started = time::Instant::now();
@@ -454,8 +454,13 @@ fn test_recovery_through_many_nonterminal_extras() {
                 samples += 1;
                 let root = tree.root_node();
                 assert!(root.has_error());
-                assert_eq!(root.named_child_count(), count + 1);
-                assert_eq!(root.named_child(count as u32).unwrap().kind(), "statement");
+                assert_eq!(root.named_child_count(), (count + 1) * blocks);
+                assert_eq!(
+                    root.named_child(((count + 1) * blocks - 1) as u32)
+                        .unwrap()
+                        .kind(),
+                    "statement"
+                );
                 assert_eq!(root.end_byte(), source.len());
                 if started.elapsed() >= Duration::from_millis(30) {
                     break;
@@ -465,10 +470,15 @@ fn test_recovery_through_many_nonterminal_extras() {
         }
         fastest
     };
-    measure(&mut parser, 1000);
-    let small = measure(&mut parser, 1000);
-    let large = measure(&mut parser, 10_000);
-    assert!(large < small * 18, "small: {small:?}, large: {large:?}");
+    for blocks in [1, 2, 3] {
+        measure(&mut parser, 1000, blocks);
+        let small = measure(&mut parser, 1000, blocks);
+        let large = measure(&mut parser, 10_000, blocks);
+        assert!(
+            large < small * 18,
+            "blocks: {blocks}, small: {small:?}, large: {large:?}"
+        );
+    }
 }
 
 #[test]

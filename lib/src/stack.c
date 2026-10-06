@@ -11,6 +11,7 @@
 #define MAX_LINK_COUNT 8
 #define MAX_NODE_POOL_SIZE 50
 #define MAX_ITERATOR_COUNT 64
+#define MAX_EXTRA_CHAIN_COUNT 64
 
 #if defined _WIN32 && !defined __GNUC__
 #define forceinline __forceinline
@@ -48,6 +49,11 @@ typedef struct {
 
 typedef Array(StackNode *) StackNodeArray;
 
+typedef struct {
+  StackNode *start;
+  StackNode *end;
+} ExtraChain;
+
 typedef enum {
   StackStatusActive,
   StackStatusPaused,
@@ -71,9 +77,7 @@ struct Stack {
   StackNode *base_node;
   SubtreePool *subtree_pool;
   uint64_t pending_generation;
-  StackNode *extra_chain_start;
-  StackNode *extra_chain_end;
-  bool extra_chain_valid;
+  Array(ExtraChain) extra_chains;
 };
 
 typedef unsigned StackAction;
@@ -213,10 +217,13 @@ static bool stack__subtree_is_equivalent(Subtree left, Subtree right) {
 
 static void stack__invalidate_extra_chains(Stack *stack, const StackNode *node) {
   // A merge can change an ancestor shared by several stack versions.
-  if (stack->extra_chain_valid &&
-      node->position.bytes >= stack->extra_chain_end->position.bytes &&
-      node->position.bytes <= stack->extra_chain_start->position.bytes) {
-    stack->extra_chain_valid = false;
+  for (uint32_t i = 0; i < stack->extra_chains.size; i++) {
+    ExtraChain chain = *array_get(&stack->extra_chains, i);
+    if (node->position.bytes >= chain.end->position.bytes &&
+        node->position.bytes <= chain.start->position.bytes) {
+      stack_node_release(chain.start, &stack->node_pool, stack->subtree_pool);
+      array_erase(&stack->extra_chains, i--);
+    }
   }
 }
 
@@ -349,24 +356,33 @@ static void ts_stack__add_slice(
 
 static StackNode *stack__skip_extra_chains(Stack *self, StackNode *node) {
   StackNode *start = node;
+  uint32_t cached_index = UINT32_MAX;
+  unsigned steps = 0;
   while (node->link_count == 1 && node->links[0].subtree.ptr &&
          ts_subtree_extra(node->links[0].subtree) && node->state == node->links[0].node->state) {
-    if (self->extra_chain_valid && node == self->extra_chain_start) {
-      node = self->extra_chain_end;
-    } else {
-      node = node->links[0].node;
+    for (uint32_t i = 0; i < self->extra_chains.size; i++) {
+      ExtraChain chain = *array_get(&self->extra_chains, i);
+      if (node == chain.start) {
+        cached_index = i;
+        node = chain.end;
+        break;
+      }
     }
+    if (cached_index != UINT32_MAX) break;
+    node = node->links[0].node;
+    steps++;
   }
-  if (node != start && (!self->extra_chain_valid ||
-      start->position.bytes - node->position.bytes >=
-      self->extra_chain_start->position.bytes - self->extra_chain_end->position.bytes)) {
+  // Single links do not save traversal and can evict useful directive chains.
+  if (steps > 1 || cached_index != UINT32_MAX) {
     stack_node_retain(start);
-    if (self->extra_chain_start) {
-      stack_node_release(self->extra_chain_start, &self->node_pool, self->subtree_pool);
+    if (cached_index == UINT32_MAX && self->extra_chains.size == MAX_EXTRA_CHAIN_COUNT) {
+      cached_index = 0;
     }
-    self->extra_chain_start = start;
-    self->extra_chain_end = node;
-    self->extra_chain_valid = true;
+    if (cached_index != UINT32_MAX) {
+      stack_node_release(array_get(&self->extra_chains, cached_index)->start, &self->node_pool, self->subtree_pool);
+      array_erase(&self->extra_chains, cached_index);
+    }
+    array_push(&self->extra_chains, ((ExtraChain) {.start = start, .end = node}));
   }
   return node;
 }
@@ -506,9 +522,10 @@ Stack *ts_stack_new(SubtreePool *subtree_pool) {
 }
 
 void ts_stack_delete(Stack *self) {
-  if (self->extra_chain_start) {
-    stack_node_release(self->extra_chain_start, &self->node_pool, self->subtree_pool);
+  for (uint32_t i = 0; i < self->extra_chains.size; i++) {
+    stack_node_release(array_get(&self->extra_chains, i)->start, &self->node_pool, self->subtree_pool);
   }
+  array_delete(&self->extra_chains);
   if (self->slices.contents)
     array_delete(&self->slices);
   if (self->iterators.contents)
@@ -856,12 +873,10 @@ Subtree ts_stack_resume(Stack *self, StackVersion version) {
 }
 
 void ts_stack_clear(Stack *self) {
-  if (self->extra_chain_start) {
-    stack_node_release(self->extra_chain_start, &self->node_pool, self->subtree_pool);
-    self->extra_chain_start = NULL;
-    self->extra_chain_end = NULL;
-    self->extra_chain_valid = false;
+  for (uint32_t i = 0; i < self->extra_chains.size; i++) {
+    stack_node_release(array_get(&self->extra_chains, i)->start, &self->node_pool, self->subtree_pool);
   }
+  array_clear(&self->extra_chains);
   self->base_node->pending_generation = self->pending_generation;
   self->base_node->has_pending = false;
   stack_node_retain(self->base_node);
