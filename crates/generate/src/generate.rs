@@ -386,6 +386,9 @@ where
     {
         return Err(RenderError::Profile("requires parser generation with ABI 16".into()).into());
     }
+    if profile.is_some() && report_symbol_name.is_some() {
+        return Err(RenderError::Profile("cannot be combined with a state report".into()).into());
+    }
     let mut repo_path: PathBuf = repo_path.into();
 
     // Populate a new empty grammar directory.

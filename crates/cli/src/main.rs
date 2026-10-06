@@ -93,7 +93,7 @@ struct Init {
 #[command(alias = "gen", alias = "g")]
 struct Generate {
     /// Apply state frequencies recorded from the same unprofiled ABI 16 parser
-    #[arg(long, conflicts_with = "no_parser")]
+    #[arg(long, conflicts_with_all = ["no_parser", "report_states_for_rule"])]
     pub profile: Option<PathBuf>,
     /// The path to the grammar file
     #[arg(index = 1)]
