@@ -662,9 +662,15 @@ static Subtree ts_parser__lex(
           && self->language->keyword_lookup_fn && self->lexer.input.encoding == TSInputEncodingUTF8
           && start_byte >= self->lexer.chunk_start
           && end_byte >= start_byte && end_byte - self->lexer.chunk_start <= self->lexer.chunk_size) {
-        for (uint32_t i = 0; i < self->lexer.included_range_count; i++) {
-          TSRange range = self->lexer.included_ranges[i];
-          if (start_byte >= range.start_byte && end_byte <= range.end_byte) {
+        uint32_t low = 0, high = self->lexer.included_range_count;
+        while (low < high) {
+          uint32_t mid = low + (high - low) / 2;
+          if (self->lexer.included_ranges[mid].end_byte < end_byte) low = mid + 1;
+          else high = mid;
+        }
+        if (low < self->lexer.included_range_count) {
+          TSRange range = self->lexer.included_ranges[low];
+          if (start_byte >= range.start_byte) {
             const char *text = self->lexer.chunk + start_byte - self->lexer.chunk_start;
             uint32_t keyword;
             if (ts_language_is_wasm(self->language)) {
@@ -679,7 +685,6 @@ static Subtree ts_parser__lex(
               if (candidate && (ts_language_has_actions(self->language, parse_state, candidate)
                   || ts_language_is_reserved_word(self->language, parse_state, candidate))) symbol = candidate;
             }
-            break;
           }
         }
       }

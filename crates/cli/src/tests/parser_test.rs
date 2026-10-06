@@ -270,6 +270,46 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
         let node = tree.root_node().child(0).unwrap();
         assert_eq!(node.kind(), keyword);
         assert_eq!(node.byte_range(), 0..excluded.len());
+
+        let mut embedded = String::new();
+        let mut ranges = Vec::new();
+        let mut expected_tokens = Vec::new();
+        for i in 0..64 {
+            embedded.push_str("@@@@@");
+            let start = embedded.len();
+            let token = if i % 2 == 0 {
+                keyword.clone()
+            } else {
+                format!("{keyword}_suffix")
+            };
+            embedded.push_str(&token);
+            if i != 63 {
+                embedded.push(' ');
+            }
+            let end = embedded.len();
+            ranges.push(Range {
+                start_byte: start,
+                end_byte: end,
+                start_point: Point::new(0, start),
+                end_point: Point::new(0, end),
+            });
+            expected_tokens.push((start, token));
+        }
+        parser.set_included_ranges(&ranges).unwrap();
+        let tree = parser.parse(&embedded, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        assert_eq!(
+            tree.root_node().child_count() as usize,
+            expected_tokens.len()
+        );
+        for (i, (start, token)) in expected_tokens.iter().enumerate() {
+            let node = tree.root_node().child(i as u32).unwrap();
+            assert_eq!(
+                node.kind(),
+                if i % 2 == 0 { &keyword } else { "identifier" }
+            );
+            assert_eq!(node.byte_range(), *start..start + token.len());
+        }
     }
 }
 

@@ -217,8 +217,18 @@ uint16_t ts_language_lookup_small_compact(
       data += symbol_count;
       continue;
     }
-    if (ts_language_group_contains(data, symbol_count, symbol)) return section_value;
-    data += symbol_count;
+    while (symbol_count >= 4) {
+      bool matches = data[0] == symbol;
+      matches |= data[1] == symbol;
+      matches |= data[2] == symbol;
+      matches |= data[3] == symbol;
+      if (matches) return section_value;
+      data += 4;
+      symbol_count -= 4;
+    }
+    for (unsigned j = 0; j < symbol_count; j++) {
+      if (*(data++) == symbol) return section_value;
+    }
   }
   return 0;
 }
