@@ -1083,7 +1083,6 @@ static inline int analysis_state__compare(
   AnalysisState *const *self,
   AnalysisState *const *other
 ) {
-  if ((*self)->depth < (*other)->depth) return 1;
   for (unsigned i = 0; i < (*self)->depth; i++) {
     if (i >= (*other)->depth) return -1;
     AnalysisStateEntry s1 = (*self)->stack[i];
@@ -1097,6 +1096,7 @@ static inline int analysis_state__compare(
     if (s1.field_id < s2.field_id) return -1;
     if (s1.field_id > s2.field_id) return 1;
   }
+  if ((*self)->depth < (*other)->depth) return 1;
   if ((*self)->step_index < (*other)->step_index) return -1;
   if ((*self)->step_index > (*other)->step_index) return 1;
   return 0;

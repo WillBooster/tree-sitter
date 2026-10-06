@@ -36,14 +36,19 @@ pub fn record_profile(
     let captured = counters.clone();
     parser.set_logger(Some(Box::new(move |_, message| {
         let Some(state) = message
-            .split_once("state:")
+            .split_once("from_state:")
+            .or_else(|| message.split_once("state:"))
             .and_then(|(_, s)| s.split(|c: char| !c.is_ascii_digit()).next())
             .and_then(|s| s.parse::<usize>().ok())
         else {
             return;
         };
         let mut counters = captured.lock().unwrap();
-        if message.starts_with("process ") && state < counters.0.len() {
+        if ["shift ", "shift_extra ", "reduce ", "accept "]
+            .iter()
+            .any(|prefix| message.starts_with(prefix))
+            && state < counters.0.len()
+        {
             counters.0[state] += 1;
             if let Some(previous) = counters.3 {
                 *counters.2.entry((previous, state as u32)).or_default() += 1;

@@ -155,6 +155,105 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
 }
 
 #[test]
+fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
+    use std::{collections::BTreeSet, fmt::Write};
+
+    let keywords = (0..24)
+        .map(|i| format!("command_{i:02}"))
+        .collect::<Vec<_>>();
+    let grammar = serde_json::json!({
+        "name": "commands_with_comments",
+        "word": "identifier",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "command"}},
+            "command": {"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": keywords.iter().map(|keyword| serde_json::json!({"type": "STRING", "value": keyword})).collect::<Vec<_>>()},
+                {"type": "SYMBOL", "name": "identifier"},
+                {"type": "STRING", "value": ";"}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z_][a-z_0-9]*"},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "/*"},
+                {"type": "PATTERN", "value": "[a-z ]+"},
+                {"type": "STRING", "value": "*/"}
+            ]}
+        }
+    });
+    let mut source = String::new();
+    for keyword in &keywords {
+        writeln!(source, "{keyword} value /* gap */;").unwrap();
+    }
+    let languages = [15, 16].map(|abi| {
+        let (name, code) = generate_parser_with_abi(&grammar.to_string(), abi).unwrap();
+        [
+            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm(&name, &code),
+        ]
+    });
+    for (legacy, compact) in languages[0].iter().zip(&languages[1]) {
+        assert_eq!(legacy.abi_version(), 15);
+        assert_eq!(compact.abi_version(), 16);
+        let mut parsers = [legacy, compact].map(|language| {
+            let mut parser = Parser::new();
+            #[cfg(feature = "wasm")]
+            if language.is_wasm() {
+                parser
+                    .set_wasm_store(
+                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                    )
+                    .unwrap();
+            }
+            parser.set_language(language).unwrap();
+            parser
+        });
+        for input in [&source, &source.replace("value", "")] {
+            let trees = parsers
+                .each_mut()
+                .map(|parser| parser.parse(input, None).unwrap());
+            assert_eq!(
+                trees[0].root_node().to_sexp(),
+                trees[1].root_node().to_sexp()
+            );
+            assert_eq!(
+                trees[0].root_node().byte_range(),
+                trees[1].root_node().byte_range()
+            );
+            assert_eq!(
+                trees[0].root_node().has_error(),
+                trees[1].root_node().has_error()
+            );
+            if input == &source {
+                assert!(!trees[1].root_node().has_error());
+                for i in 0..trees[0].root_node().child_count() {
+                    let nodes = trees
+                        .each_ref()
+                        .map(|tree| tree.root_node().child(i).unwrap());
+                    let names = [legacy, compact]
+                        .into_iter()
+                        .zip(nodes)
+                        .map(|(language, node)| {
+                            language
+                                .lookahead_iterator(node.next_parse_state())
+                                .unwrap()
+                                .iter_names()
+                                .map(str::to_owned)
+                                .collect::<BTreeSet<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(names[0], names[1]);
+                    assert!(names[1].contains("command_00"));
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
     let keyword = format!("keyword_{}", "x".repeat(80));
     let grammar = serde_json::json!({
@@ -873,10 +972,10 @@ fn test_parsing_with_logging() {
         )
         .unwrap();
 
-    assert!(messages.contains(&(
-        LogType::Parse,
-        "reduce sym:struct_item, child_count:3".to_string()
-    )));
+    assert!(messages.iter().any(|(kind, message)| {
+        *kind == LogType::Parse
+            && message.starts_with("reduce sym:struct_item, child_count:3, state:")
+    }));
     assert!(messages.contains(&(LogType::Lex, "skip character:' '".to_string())));
 
     let mut row_starts_from_0 = false;

@@ -12,6 +12,7 @@ extern "C" {
 
 #define LANGUAGE_VERSION_WITH_RESERVED_WORDS 15
 #define LANGUAGE_VERSION_WITH_COMPACT_TABLES 16
+#define SMALL_STATE_BITMAP_FLAG 0x40000000u
 #define SMALL_STATE_PAIR_FLAG 0x80000000u
 #define LANGUAGE_VERSION_WITH_PRIMARY_STATES 14
 
@@ -35,6 +36,8 @@ typedef struct {
   uint16_t group_count;
   bool is_small_state;
   bool is_pair_state;
+  bool is_bitmap_state;
+  TSStateId state;
   LookaheadPhase phase;
 
   const TSParseAction *actions;
@@ -42,6 +45,9 @@ typedef struct {
   TSStateId next_state;
   uint16_t action_count;
 } LookaheadIterator;
+
+static inline uint32_t ts_language__count_ones(uint32_t bits);
+static inline uint32_t ts_language__trailing_zeros(uint32_t bits);
 
 uint16_t ts_language_lookup_small_compact(const TSLanguage *self, uint32_t index, TSSymbol symbol);
 void ts_language_table_entry(const TSLanguage *self, TSStateId state, TSSymbol symbol, TableEntry *result);
@@ -88,7 +94,9 @@ static inline uint16_t ts_language_lookup(
   if (state >= self->large_state_count) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
     if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES) {
-      return ts_language_lookup_small_compact(self, index, symbol);
+      uint16_t value = ts_language_lookup_small_compact(self, index, symbol);
+      if (symbol >= self->token_count && value == UINT16_MAX && self->state_count <= UINT16_MAX) return state;
+      return value;
     }
     const uint16_t *data = &self->small_parse_table[index];
     uint16_t group_count = *(data++);
@@ -137,10 +145,15 @@ static inline LookaheadIterator ts_language_lookaheads(
   const uint16_t *group_end = NULL;
   uint16_t group_count = 0;
   bool is_pair_state = false;
+  bool is_bitmap_state = false;
   if (is_small_state) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
     is_pair_state = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_PAIR_FLAG);
-    data = &self->small_parse_table[is_pair_state ? index & ~SMALL_STATE_PAIR_FLAG : index];
+    is_bitmap_state = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_BITMAP_FLAG);
+    uint32_t offset = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
+      ? index & ~(SMALL_STATE_PAIR_FLAG | SMALL_STATE_BITMAP_FLAG)
+      : index;
+    data = &self->small_parse_table[offset];
     group_end = data + 1;
     group_count = *data;
     if (is_pair_state) data++;
@@ -154,6 +167,8 @@ static inline LookaheadIterator ts_language_lookaheads(
     .group_count = group_count,
     .is_small_state = is_small_state,
     .is_pair_state = is_pair_state,
+    .is_bitmap_state = is_bitmap_state,
+    .state = state,
     .phase = LookaheadFresh,
     .symbol = UINT16_MAX,
     .next_state = 0,
@@ -164,7 +179,22 @@ static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
   if (self->phase == LookaheadDone) return false;
 
   if (self->is_small_state) {
-    if (self->is_pair_state) {
+    if (self->is_bitmap_state) {
+      uint32_t symbol = self->phase == LookaheadFresh ? 0 : self->symbol + 1;
+      uint32_t blocks = (self->language->symbol_count + 15) / 16;
+      uint32_t block = symbol / 16;
+      uint32_t bits = block < blocks ? self->data[block * 2] & (0xffffu << (symbol % 16)) : 0;
+      while (!bits && ++block < blocks) bits = self->data[block * 2];
+      if (block >= blocks) {
+        self->phase = LookaheadDone;
+        return false;
+      }
+      self->symbol = block * 16 + ts_language__trailing_zeros(bits);
+      uint32_t rank = self->data[block * 2 + 1] + ts_language__count_ones(
+        self->data[block * 2] & ((1u << (self->symbol % 16)) - 1)
+      );
+      self->table_value = self->data[blocks * 2 + rank];
+    } else if (self->is_pair_state) {
       if (self->group_count == 0) {
         self->phase = LookaheadDone;
         return false;
@@ -216,6 +246,10 @@ static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
   } else {
     self->action_count = 0;
     self->next_state = self->table_value;
+    if (self->is_small_state && self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES &&
+        self->table_value == UINT16_MAX && self->language->state_count <= UINT16_MAX) {
+      self->next_state = self->state;
+    }
   }
   self->phase = LookaheadPositioned;
   return true;
@@ -331,6 +365,30 @@ static inline void ts_language_write_symbol_as_dot_string(
         break;
     }
   }
+}
+
+static inline uint32_t ts_language__count_ones(uint32_t bits) {
+#if defined(__clang__) || defined(__GNUC__)
+  return __builtin_popcount(bits);
+#else
+  bits -= (bits >> 1) & 0x5555u;
+  bits = (bits & 0x3333u) + ((bits >> 2) & 0x3333u);
+  bits = (bits + (bits >> 4)) & 0x0f0fu;
+  return ((bits * 0x0101u) >> 8) & 0x1fu;
+#endif
+}
+
+static inline uint32_t ts_language__trailing_zeros(uint32_t bits) {
+#if defined(__clang__) || defined(__GNUC__)
+  return __builtin_ctz(bits);
+#else
+  uint32_t count = 0;
+  while (!(bits & 1)) {
+    bits >>= 1;
+    count++;
+  }
+  return count;
+#endif
 }
 
 #ifdef __cplusplus

@@ -24,9 +24,9 @@ so the newest release lacks them for a while.
 
 ## Parser generation and tuning
 
-The CLI defaults to ABI 15. Use `tree-sitter generate --abi 16` for compact parse tables and metadata. These parsers require a runtime supporting ABI 16. Measure parsing as well as file size: a smaller sparse table can cost more lookups.
+The CLI defaults to ABI 15. Use `tree-sitter generate --abi 16` for shared parse rows, bitmap-ranked sparse lookup, and compact metadata. These parsers require a runtime supporting ABI 16.
 
-To record state visits, generate an unprofiled ABI 16 parser first. From this repository's checkout, run the measurement example on representative grammar inputs:
+To record parse-action and lexer-entry frequencies, generate an unprofiled ABI 16 parser first. From this repository's checkout, run the measurement example on representative grammar inputs:
 
 ```sh
 mise exec -- cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- \
@@ -37,7 +37,7 @@ Then, from the grammar directory:
 
 ```sh
 tree-sitter generate --abi 16 --profile profile.json
-tree-sitter build --optimization s
+tree-sitter build
 ```
 
 A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The example also supports `wasm` with a module path in place of the source directory. When recording a Wasm profile, that module's directory must contain `src/parser.c` from the exact unprofiled generation used to build the module.

@@ -194,6 +194,16 @@ uint16_t ts_language_lookup_small_compact(
   uint32_t index,
   TSSymbol symbol
 ) {
+  if (index & SMALL_STATE_BITMAP_FLAG) {
+    if (symbol >= self->symbol_count) return 0;
+    const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG];
+    uint32_t block = symbol / 16;
+    uint32_t bit = 1u << (symbol % 16);
+    uint32_t bits = data[block * 2];
+    if (!(bits & bit)) return 0;
+    uint32_t rank = data[block * 2 + 1] + ts_language__count_ones(bits & (bit - 1));
+    return data[2 * ((self->symbol_count + 15) / 16) + rank];
+  }
   if (index & SMALL_STATE_PAIR_FLAG) {
     const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
     uint32_t low = 0, high = *(pairs++);

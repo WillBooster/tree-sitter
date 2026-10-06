@@ -1726,10 +1726,10 @@ static bool ts_parser__advance(
           TSStateId next_state;
           if (action.shift.extra) {
             next_state = state;
-            LOG("shift_extra");
+            LOG("shift_extra state:%u", state);
           } else {
             next_state = action.shift.state;
-            LOG("shift state:%u", next_state);
+            LOG("shift state:%u, from_state:%u", next_state, state);
           }
 
           if (ts_subtree_child_count(lookahead) > 0) {
@@ -1745,7 +1745,7 @@ static bool ts_parser__advance(
         case TSParseActionTypeReduce: {
           bool is_fragile = table_entry.action_count > 1;
           bool end_of_non_terminal_extra = lookahead.ptr == NULL;
-          LOG("reduce sym:%s, child_count:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count);
+          LOG("reduce sym:%s, child_count:%u, state:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count, state);
           StackVersion reduction_version = ts_parser__reduce(
             self, version, action.reduce.symbol, action.reduce.child_count,
             action.reduce.dynamic_precedence, action.reduce.production_id,
@@ -1759,7 +1759,7 @@ static bool ts_parser__advance(
         }
 
         case TSParseActionTypeAccept: {
-          LOG("accept");
+          LOG("accept state:%u", state);
           ts_parser__accept(self, version, lookahead);
           return true;
         }

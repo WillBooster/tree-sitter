@@ -26,6 +26,9 @@ use super::{
 };
 
 const SMALL_STATE_THRESHOLD: usize = 64;
+const BITMAP_STATE_MIN_ENTRIES: usize = 16;
+const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
+const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
 const LEXER_CHUNK_SIZE: usize = 256;
 const KEYWORD_SKIP_FLAG: usize = 1 << 15;
@@ -661,27 +664,24 @@ impl Generator {
             terminal_groups.clear();
             terminal_groups.extend(state.terminal_entries.values().copied());
             nonterminal_groups.clear();
-            nonterminal_groups.extend(state.nonterminal_entries.values().map(
-                |action| match action {
-                    GotoAction::Goto(id) => *id,
-                    GotoAction::ShiftExtra => i as u32,
-                },
-            ));
+            nonterminal_groups.extend(
+                state
+                    .nonterminal_entries
+                    .values()
+                    .map(|action| self.small_goto_value(*action, i)),
+            );
             let entries = state.terminal_entries.len() + state.nonterminal_entries.len();
             let groups = terminal_groups.len() + nonterminal_groups.len();
             let mut row = state
                 .terminal_entries
                 .iter()
                 .map(|(&symbol, id)| (symbol, (id.index() as u32) * 2 + u32::from(id.reusable())))
-                .chain(state.nonterminal_entries.iter().map(|(&symbol, action)| {
-                    (
-                        symbol,
-                        match action {
-                            GotoAction::Goto(id) => *id,
-                            GotoAction::ShiftExtra => i as u32,
-                        },
-                    )
-                }))
+                .chain(
+                    state
+                        .nonterminal_entries
+                        .iter()
+                        .map(|(&symbol, action)| (symbol, self.small_goto_value(*action, i))),
+                )
                 .collect::<Vec<_>>();
             row.sort_unstable_by_key(|&(symbol, _)| symbol);
             let next_id = row_counts.len();
@@ -689,7 +689,9 @@ impl Generator {
                 row_counts.push(0usize);
                 let grouped = 1 + 2 * groups + entries;
                 let words = if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-                    if groups >= 8 || entries <= groups * 2 {
+                    if entries >= BITMAP_STATE_MIN_ENTRIES {
+                        2 * self.parse_table.symbols.len().div_ceil(16) + entries
+                    } else if groups >= 8 || entries <= groups * 2 {
                         1 + 2 * entries
                     } else {
                         grouped
@@ -2091,6 +2093,7 @@ impl Generator {
         let tokens = self.syntax_grammar.external_tokens.len();
         let stride = tokens.div_ceil(8);
         if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+            && self.profile.is_none()
             && self.parse_table.external_lex_states.len() * (tokens - stride) > 128
         {
             self.external_state_stride = stride;
@@ -2256,10 +2259,7 @@ impl Generator {
                         .push(**symbol);
                 }
                 for (symbol, action) in state.nonterminal_entries.iter() {
-                    let state_id = match action {
-                        GotoAction::Goto(i) => *i,
-                        GotoAction::ShiftExtra => state_id as u32,
-                    };
+                    let state_id = self.small_goto_value(*action, state_id);
                     symbols_by_value
                         .entry((state_id, SymbolType::NonTerminal))
                         .or_default()
@@ -2289,33 +2289,72 @@ impl Generator {
                     .iter()
                     .map(|(_, symbols)| symbols.len())
                     .sum::<usize>();
-                let pairs = self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+                let bitmap = self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+                    && entry_count >= BITMAP_STATE_MIN_ENTRIES;
+                let pairs = !bitmap
+                    && self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
                     && (values_with_symbols.len() >= 8
                         || entry_count <= 2 * values_with_symbols.len());
                 let mut entries = Vec::new();
-                if pairs {
+                if pairs || bitmap {
                     for ((value, kind), symbols) in &values_with_symbols {
                         entries.extend(symbols.iter().map(|symbol| (*symbol, *value, *kind)));
                     }
                     entries.sort_unstable_by_key(|(symbol, _, _)| self.symbol_order[symbol]);
                     row.clear();
-                    row.push(entry_count as u32);
-                    for (symbol, value, _) in &entries {
-                        row.extend([self.symbol_order[symbol] as u32, *value]);
+                    if bitmap {
+                        let blocks = self.parse_table.symbols.len().div_ceil(16);
+                        row.resize(blocks * 2, 0);
+                        for (symbol, _, _) in &entries {
+                            let symbol = self.symbol_order[symbol];
+                            row[(symbol / 16) * 2] |= 1 << (symbol % 16);
+                        }
+                        let mut rank = 0;
+                        for block in 0..blocks {
+                            row[block * 2 + 1] = rank;
+                            rank += row[block * 2].count_ones();
+                        }
+                        row.extend(entries.iter().map(|(_, value, _)| *value));
+                    } else {
+                        row.push(entry_count as u32);
+                        for (symbol, value, _) in &entries {
+                            row.extend([self.symbol_order[symbol] as u32, *value]);
+                        }
                     }
                 }
-                let key = (pairs, row);
+                let flag = if bitmap {
+                    SMALL_STATE_BITMAP_FLAG
+                } else if pairs {
+                    SMALL_STATE_PAIR_FLAG
+                } else {
+                    0
+                };
+                let key = (flag, row);
                 if let Some(&offset) = row_offsets.get(&key) {
                     small_state_indices.push(offset);
                     continue;
                 }
                 if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-                    && next_table_index >= 0x8000_0000
+                    && next_table_index >= SMALL_STATE_BITMAP_FLAG
                 {
                     return Err(RenderError::SparseTable(next_table_index));
                 }
-                let offset = next_table_index | if pairs { 0x8000_0000 } else { 0 };
+                let offset = next_table_index | flag;
                 small_state_indices.push(offset);
+                if bitmap {
+                    add_line!(self, "[{next_table_index}] =");
+                    indent!(self);
+                    for chunk in key.1.chunks(16) {
+                        for value in chunk {
+                            add!(self, "{value}, ");
+                        }
+                        add_line!(self, "");
+                    }
+                    dedent!(self);
+                    next_table_index += key.1.len();
+                    row_offsets.insert(key, offset);
+                    continue;
+                }
                 row_offsets.insert(key, offset);
                 if pairs {
                     add_line!(self, "[{next_table_index}] = {entry_count},");
@@ -2394,6 +2433,21 @@ impl Generator {
         self.add_parse_action_list(parse_table_entries);
 
         Ok(())
+    }
+
+    fn small_goto_value(&self, action: GotoAction, state_id: usize) -> u32 {
+        let destination = match action {
+            GotoAction::Goto(id) => id,
+            GotoAction::ShiftExtra => state_id as u32,
+        };
+        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
+            && u16::try_from(self.parse_table.states.len()).is_ok()
+            && destination == state_id as u32
+        {
+            u32::from(u16::MAX)
+        } else {
+            destination
+        }
     }
 
     fn add_parse_action_list(&mut self, parse_table_entries: Vec<(u32, ActionListId)>) {
