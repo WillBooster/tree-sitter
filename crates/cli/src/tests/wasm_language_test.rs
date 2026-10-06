@@ -2,11 +2,92 @@ use std::fs;
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor, WasmError, WasmErrorKind, WasmStore};
+use tree_sitter_loader::Loader;
 
+use crate::tests::generate_parser_with_abi;
 use crate::tests::helpers::{
     allocations,
-    fixtures::{ENGINE, WASM_DIR, get_test_fixture_language_wasm},
+    fixtures::{ENGINE, WASM_DIR, get_test_fixture_language_wasm, scratch_dir},
 };
+
+#[test]
+fn test_load_wasm_rejects_inconsistent_alias_metadata() {
+    let grammar = serde_json::json!({
+        "name": "compact_aliases",
+        "rules": {
+            "source": {
+                "type": "SEQ",
+                "members": [
+                    {"type": "ALIAS", "named": true, "value": "item", "content": {"type": "STRING", "value": "a"}},
+                    {"type": "STRING", "value": "b"},
+                    {"type": "STRING", "value": "c"},
+                    {"type": "STRING", "value": "d"},
+                    {"type": "STRING", "value": "e"},
+                    {"type": "STRING", "value": "f"},
+                    {"type": "STRING", "value": "g"},
+                    {"type": "STRING", "value": "h"}
+                ]
+            }
+        }
+    });
+    let (name, code) = generate_parser_with_abi(&grammar.to_string(), 16).unwrap();
+    let directory = tempfile::tempdir_in(scratch_dir()).unwrap();
+    let src = directory.path();
+    fs::create_dir(src.join("tree_sitter")).unwrap();
+    fs::write(src.join("tree_sitter/parser.h"), tree_sitter::PARSER_HEADER).unwrap();
+    let output = src.join("parser.wasm");
+    let loader = Loader::with_parser_lib_path(src.to_path_buf());
+    fs::write(src.join("parser.c"), &code).unwrap();
+    loader
+        .compile_parser_to_wasm(&name, src, None, &output)
+        .unwrap();
+    let mut store = WasmStore::new(&ENGINE).unwrap();
+    let language = store
+        .load_language(&name, &fs::read(&output).unwrap())
+        .unwrap();
+    let mut parser = Parser::new();
+    parser.set_wasm_store(store).unwrap();
+    parser.set_language(&language).unwrap();
+    assert_eq!(
+        parser
+            .parse("abcdefgh", None)
+            .unwrap()
+            .root_node()
+            .to_sexp(),
+        "(source (item))"
+    );
+
+    for field in [
+        "max_alias_sequence_length",
+        "production_id_count",
+        "alias_sequence_count",
+    ] {
+        let malformed = code
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with(&format!(".{field} =")) {
+                    format!("    .{field} = 0,")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(src.join("parser.c"), malformed).unwrap();
+        loader
+            .compile_parser_to_wasm(&name, src, None, &output)
+            .unwrap();
+        let mut store = WasmStore::new(&ENGINE).unwrap();
+        assert_eq!(
+            store
+                .load_language(&name, &fs::read(&output).unwrap())
+                .unwrap_err()
+                .kind,
+            WasmErrorKind::Instantiate,
+            "accepted inconsistent {field}"
+        );
+    }
+}
 
 #[test]
 fn test_wasm_supertype_metadata_and_queries() {

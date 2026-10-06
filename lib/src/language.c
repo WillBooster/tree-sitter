@@ -89,10 +89,15 @@ bool ts_language_is_parseable(const TSLanguage *self) {
 const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
 #ifdef __wasm__
   if (self && ts_language_is_parseable(self)) {
-    TSUnparseableLanguage *result = ts_malloc(sizeof(TSUnparseableLanguage));
-    result->language = *self;
+    TSUnparseableLanguage *result = ts_calloc(1, sizeof(TSUnparseableLanguage));
+    size_t language_size = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES ? sizeof(TSLanguage) :
+      self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? offsetof(TSLanguage, alias_sequence_offsets) :
+      self->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES ? offsetof(TSLanguage, name) :
+      offsetof(TSLanguage, primary_state_ids);
+    memcpy(&result->language, self, language_size);
     result->language.lex_fn = NULL;
     result->language.keyword_lex_fn = NULL;
+    result->language.keyword_lookup_fn = NULL;
     result->language.external_scanner.states = (const bool *)&result->language;
     result->language.external_scanner.create = NULL;
     result->language.external_scanner.destroy = NULL;
@@ -184,6 +189,65 @@ void ts_language_table_entry(
   }
 }
 
+uint16_t ts_language_lookup_small_compact(
+  const TSLanguage *self,
+  uint32_t index,
+  TSSymbol symbol
+) {
+  if (index & SMALL_STATE_BITMAP_FLAG) {
+    if (symbol >= self->symbol_count) return 0;
+    const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG];
+    uint32_t block = symbol / 16;
+    uint32_t bit = 1u << (symbol % 16);
+    uint32_t bits = data[block * 2];
+    if (!(bits & bit)) return 0;
+    uint32_t rank = data[block * 2 + 1] + ts_language__count_ones(bits & (bit - 1));
+    return data[2 * ((self->symbol_count + 15) / 16) + rank];
+  }
+  if (index & SMALL_STATE_PAIR_FLAG) {
+    const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
+    uint32_t low = 0, high = *(pairs++);
+    while (low < high) {
+      uint32_t mid = low + (high - low) / 2;
+      TSSymbol candidate = pairs[mid * 2];
+      if (candidate < symbol) low = mid + 1;
+      else if (candidate > symbol) high = mid;
+      else return pairs[mid * 2 + 1];
+    }
+    return 0;
+  }
+  const uint16_t *data = &self->small_parse_table[index];
+  uint16_t group_count = *(data++);
+  for (unsigned i = 0; i < group_count; i++) {
+    uint16_t section_value = *(data++);
+    uint16_t symbol_count = *(data++);
+    if (symbol_count >= 16) {
+      uint32_t low = 0, high = symbol_count;
+      while (low < high) {
+        uint32_t mid = low + (high - low) / 2;
+        if (data[mid] < symbol) low = mid + 1;
+        else if (data[mid] > symbol) high = mid;
+        else return section_value;
+      }
+      data += symbol_count;
+      continue;
+    }
+    while (symbol_count >= 4) {
+      bool matches = data[0] == symbol;
+      matches |= data[1] == symbol;
+      matches |= data[2] == symbol;
+      matches |= data[3] == symbol;
+      if (matches) return section_value;
+      data += 4;
+      symbol_count -= 4;
+    }
+    for (unsigned j = 0; j < symbol_count; j++) {
+      if (*(data++) == symbol) return section_value;
+    }
+  }
+  return 0;
+}
+
 TSLexerMode ts_language_lex_mode_for_state(
    const TSLanguage *self,
    TSStateId state
@@ -196,6 +260,9 @@ TSLexerMode ts_language_lex_mode_for_state(
       .reserved_word_set_id = 0,
     };
   } else {
+    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->lex_mode_ids) {
+      state = self->lex_mode_ids[state];
+    }
     return self->lex_modes[state];
   }
 }
@@ -209,6 +276,11 @@ bool ts_language_is_reserved_word(
   if (lex_mode.reserved_word_set_id > 0) {
     unsigned start = lex_mode.reserved_word_set_id * self->max_reserved_word_set_size;
     unsigned end = start + self->max_reserved_word_set_size;
+    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->reserved_word_slices) {
+      TSMapSlice slice = self->reserved_word_slices[lex_mode.reserved_word_set_id];
+      start = slice.index;
+      end = start + slice.length;
+    }
     for (unsigned i = start; i < end; i++) {
       if (self->reserved_words[i] == symbol) return true;
       if (self->reserved_words[i] == 0) break;
