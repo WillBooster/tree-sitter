@@ -136,9 +136,14 @@ const TSSymbol *ts_language_subtypes(
 ) {
   if (
     self->abi_version < LANGUAGE_VERSION_WITH_RESERVED_WORDS ||
-    supertype >= ts_language_symbol_count(self) ||
-    !ts_language_symbol_metadata(self, supertype).supertype
+    supertype >= ts_language_symbol_count(self)
   ) {
+    *length = 0;
+    return NULL;
+  }
+
+  supertype = ts_language_public_symbol(self, supertype);
+  if (!ts_language_symbol_metadata(self, supertype).supertype) {
     *length = 0;
     return NULL;
   }

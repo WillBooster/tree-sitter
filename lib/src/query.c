@@ -1109,9 +1109,9 @@ static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
   return &self->stack[self->depth - 1];
 }
 
-static inline bool analysis_state__has_supertype(AnalysisState *self, TSSymbol symbol) {
+static inline bool analysis_state__has_supertype(AnalysisState *self, const TSLanguage *language, TSSymbol symbol) {
   for (unsigned i = 0; i < self->depth; i++) {
-    if (self->stack[i].parent_symbol == symbol) return true;
+    if (ts_language_public_symbol(language, self->stack[i].parent_symbol) == symbol) return true;
   }
   return false;
 }
@@ -1512,15 +1512,15 @@ static void ts_query__perform_analysis(
             }
             if (
               step->supertype_symbol &&
-              !analysis_state__has_supertype(state, step->supertype_symbol)
+              !analysis_state__has_supertype(state, self->language, step->supertype_symbol)
             ) does_match = false;
           }
 
-          // If this child is hidden, then descend into it and walk through its children.
-          // If the top entry of the stack is at the end of its rule, then that entry can
-          // be replaced. Otherwise, push a new entry onto the stack.
           else if (sym >= self->language->token_count) {
-            if (!next_state_top->done) {
+            if (
+              !next_state_top->done ||
+              self->language->symbol_metadata[next_state_top->parent_symbol].supertype
+            ) {
               if (next_state.depth + 1 >= MAX_ANALYSIS_STATE_DEPTH) {
                 #ifdef DEBUG_ANALYZE_QUERY
                   printf("Exceeded depth limit for state %u\n", j);
