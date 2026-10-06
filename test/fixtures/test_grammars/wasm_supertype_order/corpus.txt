@@ -1,0 +1,13 @@
+==================
+Both supertype families
+==================
+
+first abc first 123 second "text" second true
+
+---
+
+(source_file
+  (identifier)
+  (number)
+  (string)
+  (boolean))
