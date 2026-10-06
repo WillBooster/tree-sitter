@@ -86,6 +86,43 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
 }
 
 #[test]
+fn test_keyword_recovery_preserves_contextual_method_names() {
+    use tree_sitter::{Query, StreamingIterator};
+    for language in ["javascript", "typescript/typescript", "typescript/tsx"] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        for (source, error_text) in [
+            ("{with finally(){}};", "with"),
+            ("class A { x finally() {} }", "x"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let query = Query::new(
+                &parser.language().unwrap(),
+                "(method_definition name: (property_identifier) @name) (ERROR) @error",
+            )
+            .unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+            let mut captures = Vec::new();
+            while let Some(m) = matches.next() {
+                for capture in m.captures() {
+                    captures.push((
+                        query.capture_names()[capture.index as usize],
+                        capture.node.utf8_text(source.as_bytes()).unwrap(),
+                    ));
+                }
+            }
+            assert_eq!(
+                captures,
+                vec![("error", error_text), ("name", "finally")],
+                "{language}: {source}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+#[test]
 fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
     let keywords = (0..64)
         .map(|i| format!("keyword_{i:04}_{}", "x".repeat(80)))

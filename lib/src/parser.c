@@ -669,7 +669,23 @@ static Subtree ts_parser__lex(
         bool keyword_is_valid =
           ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
           ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol);
-        if (keyword_is_valid || !ts_language_has_actions(self->language, parse_state, symbol)) {
+        bool recovery_accepts_keyword = false;
+        if (!keyword_is_valid && !ts_language_has_actions(self->language, parse_state, symbol)) {
+          if (parse_state != ERROR_STATE) {
+            ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
+          }
+          StackSummary *summary = ts_stack_get_summary(self->stack, version);
+          if (summary) {
+            for (unsigned i = 0; i < summary->size; i++) {
+              TSStateId state = array_get(summary, i)->state;
+              if (state != ERROR_STATE && ts_language_has_actions(self->language, state, self->lexer.data.result_symbol)) {
+                recovery_accepts_keyword = true;
+                break;
+              }
+            }
+          }
+        }
+        if (keyword_is_valid || recovery_accepts_keyword) {
           is_keyword = keyword_is_valid;
           symbol = self->lexer.data.result_symbol;
         }
