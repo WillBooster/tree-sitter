@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rustc_hash::FxHashMap;
-#[cfg(feature = "load")]
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(feature = "load")]
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
