@@ -414,7 +414,8 @@ static StackSliceArray stack__iter(
   array_push(&self->iterators, new_iterator);
 
   while (self->iterators.size > 0) {
-    // Summary paths that meet at the same depth have identical remaining entries.
+    // Coalescing bounds summary-only traversal. The order-dependent summary callback
+    // can change candidate selection when duplicate visits are removed.
     if (!include_subtrees) {
       for (uint32_t i = 0; i < self->iterators.size; i++) {
         for (uint32_t j = i + 1; j < self->iterators.size; j++) {
