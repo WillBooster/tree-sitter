@@ -28,8 +28,10 @@ use super::{
 const SMALL_STATE_THRESHOLD: usize = 64;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
 const LEXER_CHUNK_SIZE: usize = 256;
+const KEYWORD_SKIP_FLAG: usize = 1 << 15;
 pub const ABI_VERSION_MIN: usize = 14;
 pub const ABI_VERSION_MAX: usize = LANGUAGE_VERSION;
+pub const ABI_VERSION_DEFAULT: usize = 15;
 const ABI_VERSION_WITH_RESERVED_WORDS: usize = 15;
 pub const ABI_VERSION_WITH_COMPACT_TABLES: usize = 16;
 
@@ -205,14 +207,12 @@ impl Generator {
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
             if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
                 && keyword_lex_table.states.len() >= 64
-                && keyword_lex_table.states.len() < u16::MAX as usize
+                && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
                 && keyword_lex_table.states.iter().all(|state| {
                     state.eof_action.is_none()
-                        && state.advance_actions.iter().all(|(set, action)| {
-                            action.in_main_token
-                                && set
-                                    .ranges()
-                                    .all(|range| *range.start() > '\0' && range.end().is_ascii())
+                        && state.advance_actions.iter().all(|(set, _)| {
+                            set.ranges()
+                                .all(|range| *range.start() > '\0' && range.end().is_ascii())
                         })
                 })
             {
@@ -348,6 +348,12 @@ impl Generator {
     }
 
     fn add_keyword_table(&mut self, table: &LexTable) {
+        add_line!(self, "#define TS_KEYWORD_SKIP {KEYWORD_SKIP_FLAG}u");
+        add_line!(
+            self,
+            "#define TS_KEYWORD_STATE_MASK {}u",
+            KEYWORD_SKIP_FLAG - 1
+        );
         add_line!(
             self,
             "typedef struct {{ uint32_t index; uint16_t count; TSSymbol accept; }} TSKeywordState;"
@@ -369,8 +375,14 @@ impl Generator {
                 .advance_actions
                 .iter()
                 .flat_map(|(set, action)| {
+                    let destination = action.state
+                        | if action.in_main_token {
+                            0
+                        } else {
+                            KEYWORD_SKIP_FLAG as u32
+                        };
                     set.ranges()
-                        .map(move |range| (*range.start() as u8, *range.end() as u8, action.state))
+                        .map(move |range| (*range.start() as u8, *range.end() as u8, destination))
                 })
                 .collect::<Vec<_>>();
             ranges.sort_unstable();

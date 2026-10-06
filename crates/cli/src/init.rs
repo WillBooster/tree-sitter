@@ -23,8 +23,8 @@ use tree_sitter_loader::{
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLI_VERSION_PLACEHOLDER: &str = "CLI_VERSION";
 
-const ABI_VERSION_MAX: usize = tree_sitter::LANGUAGE_VERSION;
-const ABI_VERSION_MAX_PLACEHOLDER: &str = "ABI_VERSION_MAX";
+const DEFAULT_GENERATE_ABI_VERSION: usize = tree_sitter_generate::ABI_VERSION_DEFAULT;
+const DEFAULT_GENERATE_ABI_VERSION_PLACEHOLDER: &str = "DEFAULT_GENERATE_ABI_VERSION";
 
 const PARSER_NAME_PLACEHOLDER: &str = "PARSER_NAME";
 const CAMEL_PARSER_NAME_PLACEHOLDER: &str = "CAMEL_PARSER_NAME";
@@ -1447,7 +1447,10 @@ fn generate_file(
         .replace(PARSER_NAME_PLACEHOLDER, language_name)
         .replace(CLI_VERSION_PLACEHOLDER, CLI_VERSION)
         .replace(RUST_BINDING_VERSION_PLACEHOLDER, RUST_BINDING_VERSION)
-        .replace(ABI_VERSION_MAX_PLACEHOLDER, &ABI_VERSION_MAX.to_string())
+        .replace(
+            DEFAULT_GENERATE_ABI_VERSION_PLACEHOLDER,
+            &DEFAULT_GENERATE_ABI_VERSION.to_string(),
+        )
         .replace(
             PARSER_VERSION_PLACEHOLDER,
             &generate_opts.version.to_string(),

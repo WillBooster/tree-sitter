@@ -23,8 +23,8 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
     }
     uint16_t next = ts_keyword_next(state, (uint32_t)lexer->lookahead);
     if (next == UINT16_MAX) return result;
-    state = next;
-    lexer->advance(lexer, false);
+    state = next & TS_KEYWORD_STATE_MASK;
+    lexer->advance(lexer, (next & TS_KEYWORD_SKIP) != 0);
   }
 }
 
@@ -33,8 +33,9 @@ static uint32_t ts_keyword_lookup(const char *text, uint32_t length) {
   uint32_t prefix = 0;
   for (uint32_t i = 0; i < length; i++) {
     if (ts_keyword_states[state].accept) prefix = TS_KEYWORD_PREFIX;
-    state = ts_keyword_next(state, (uint8_t)text[i]);
-    if (state == UINT16_MAX) return prefix;
+    uint16_t next = ts_keyword_next(state, (uint8_t)text[i]);
+    if (next == UINT16_MAX) return prefix;
+    state = next & TS_KEYWORD_STATE_MASK;
   }
   TSSymbol accept = ts_keyword_states[state].accept;
   return prefix | (accept ? TS_KEYWORD_PREFIX | accept : 0);

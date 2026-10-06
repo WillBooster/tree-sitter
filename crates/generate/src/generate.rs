@@ -40,7 +40,8 @@ use parse_grammar::parse_grammar;
 pub use prepare_grammar::PrepareGrammarError;
 use prepare_grammar::prepare_grammar;
 pub use render::{
-    ABI_VERSION_MAX, ABI_VERSION_MIN, GenerationProfile, RenderError, parser_fingerprint,
+    ABI_VERSION_DEFAULT, ABI_VERSION_MAX, ABI_VERSION_MIN, GenerationProfile, RenderError,
+    parser_fingerprint,
 };
 use render::{ABI_VERSION_WITH_COMPACT_TABLES, render_c_code};
 
@@ -499,7 +500,7 @@ pub fn generate_parser_for_grammar(
 ) -> GenerateResult<(String, String)> {
     generate_parser_for_grammar_with_abi(
         grammar_json,
-        LANGUAGE_VERSION,
+        ABI_VERSION_DEFAULT,
         semantic_version,
         optimizations,
         diagnostics,

@@ -31,14 +31,9 @@ use crate::{
 
 #[test]
 fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        path::Path,
-        sync::{Arc, Mutex},
-    };
+    use std::{fs, path::Path};
     use tree_sitter_generate::{
-        GenerationProfile, OptLevel, generate_parser_in_directory_with_profile, parser_fingerprint,
+        GenerationProfile, OptLevel, generate_parser_in_directory_with_profile,
     };
 
     let directory = tempfile::Builder::new()
@@ -92,19 +87,6 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
     generate(None).unwrap();
     let parser_path = root.join("src/parser.c");
     let code = fs::read_to_string(&parser_path).unwrap();
-    let count = |name: &str| {
-        code.lines()
-            .find_map(|line| line.strip_prefix(&format!("#define {name} ")))
-            .unwrap()
-            .parse::<usize>()
-            .unwrap()
-    };
-    let counters = Arc::new(Mutex::new((
-        vec![0u64; count("STATE_COUNT")],
-        vec![0u64; count("LEX_STATE_COUNT")],
-        BTreeMap::<(u32, u32), u64>::new(),
-        None::<u32>,
-    )));
     let mut parser = Parser::new();
     parser
         .set_language(&get_test_language_with_header(
@@ -113,49 +95,26 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
             tree_sitter_generate::PARSER_HEADER,
         ))
         .unwrap();
-    let captured = counters.clone();
-    parser.set_logger(Some(Box::new(move |_, message| {
-        let Some(state) = message
-            .split_once("state:")
-            .and_then(|(_, value)| value.split(|c: char| !c.is_ascii_digit()).next())
-            .and_then(|value| value.parse::<usize>().ok())
-        else {
-            return;
-        };
-        let mut counts = captured.lock().unwrap();
-        if message.starts_with("process ") && state < counts.0.len() {
-            counts.0[state] += 1;
-            if let Some(previous) = counts.3 {
-                *counts.2.entry((previous, state as u32)).or_default() += 1;
-            }
-            counts.3 = Some(state as u32);
-        } else if message.starts_with("lex_internal ") && state < counts.1.len() {
-            counts.1[state] += 1;
-        }
-    })));
     let source = "let value = 123; if ready { let item = 9; }";
     let expected = parser.parse(source, None).unwrap();
     assert!(!expected.root_node().has_error());
-    parser.set_logger(None);
-    let counts = counters.lock().unwrap();
-    let profile = GenerationProfile {
-        fingerprint: parser_fingerprint(&code),
-        parse_states: counts.0.clone(),
-        lex_states: counts.1.clone(),
-        edges: counts
-            .2
-            .iter()
-            .map(|(&(a, b), &count)| (a, b, count))
-            .collect(),
-        max_dense_states: 2,
-    };
-    drop(counts);
+    let mut profile = crate::generation_profile::record_profile(
+        &mut parser,
+        &code,
+        &[source.as_bytes().to_vec()],
+    )
+    .unwrap();
+    assert!(profile.parse_states.iter().any(|&count| count > 0));
+    assert!(profile.lex_states.iter().any(|&count| count > 0));
+    assert!(profile.edges.iter().any(|&(_, _, count)| count > 0));
+    profile.max_dense_states = 2;
     let profile_path = root.join("profile.json");
     fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
     let profile: GenerationProfile =
         serde_json::from_slice(&fs::read(profile_path).unwrap()).unwrap();
     generate(Some(&profile)).unwrap();
     let optimized = fs::read_to_string(&parser_path).unwrap();
+    assert_ne!(optimized, code);
     parser
         .set_language(&get_test_language_with_header(
             "profiled_statements",
@@ -210,7 +169,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             "identifier": {"type": "PATTERN", "value": "[a-z_]+"}
         }
     });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let (name, code) = generate_parser_with_abi(&grammar.to_string(), 16).unwrap();
     let languages = [
         get_test_language(&name, &code, None),
         #[cfg(feature = "wasm")]

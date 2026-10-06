@@ -113,6 +113,9 @@ struct Clippy {
 
 #[derive(Args)]
 struct GenerateFixtures {
+    /// ABI version for native fixture generation
+    #[arg(long, default_value_t = tree_sitter_generate::ABI_VERSION_DEFAULT, conflicts_with = "wasm")]
+    abi: usize,
     /// Generates the parser to Wasm
     #[arg(long, short)]
     wasm: bool,

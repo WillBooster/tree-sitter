@@ -73,6 +73,23 @@ jobs:
         run: |
           cargo build --release --locked -p tree-sitter-cli --features wasm
           ./target/release/tree-sitter test --help | grep -q -- --wasm
+  test-compact:
+    name: test (ABI 16)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - run: touch lib/binding_web/web-tree-sitter.js lib/binding_web/web-tree-sitter.wasm
+      - run: rustup toolchain install
+      - uses: ./.github/actions/cache
+        id: cache
+        with:
+          variant: native-abi16
+      - run: cargo xtask fetch-fixtures
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: cargo xtask generate-fixtures --abi 16
+      - run: cargo test --workspace --locked
   # code-gauge compiles the library for wasm32-wasip1 (Cloudflare Workers), and ultra-uni for Wasm as well.
   wasm:
     name: wasm (${{ matrix.target }})
@@ -147,6 +164,7 @@ jobs:
     needs:
       - lint
       - test
+      - test-compact
       - wasm
       - web
     runs-on: ubuntu-latest

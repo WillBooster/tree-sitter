@@ -27,4 +27,5 @@ regex.workspace = true
 schemars.workspace = true
 serde_json.workspace = true
 tree-sitter-cli = { path = "../cli/" }
+tree-sitter-generate.workspace = true
 tree-sitter-loader = { path = "../loader/" }

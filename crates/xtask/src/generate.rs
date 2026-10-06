@@ -53,7 +53,7 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
             let output = Command::new(&tree_sitter_binary)
                 .arg("generate")
                 .arg("src/grammar.json")
-                .arg("--abi=latest")
+                .arg(format!("--abi={}", args.abi))
                 .current_dir(grammar_dir)
                 .spawn()?
                 .wait_with_output()?;
