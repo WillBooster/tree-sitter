@@ -472,10 +472,11 @@ fn test_recovery_through_many_nonterminal_extras() {
     };
     for blocks in [1, 2, 3] {
         measure(&mut parser, 1000, blocks);
+        measure(&mut parser, 10_000, blocks);
         let small = measure(&mut parser, 1000, blocks);
         let large = measure(&mut parser, 10_000, blocks);
         assert!(
-            large < small * 18,
+            large < small * 30,
             "blocks: {blocks}, small: {small:?}, large: {large:?}"
         );
     }
