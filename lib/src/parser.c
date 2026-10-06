@@ -233,8 +233,12 @@ static void ts_parser__breakdown_lookahead(
 ) {
   bool did_descend = false;
   Subtree tree = reusable_node_tree(reusable_node);
-  while (ts_subtree_child_count(tree) > 0 && ts_subtree_parse_state(tree) != state) {
-    LOG("state_mismatch sym:%s", TREE_NAME(tree));
+  // Reductions can fork the stack after lookahead selection. Shift leaves on
+  // every branch so competing recovery paths can merge at the same position.
+  while (ts_subtree_child_count(tree) > 0 && (
+    ts_subtree_parse_state(tree) != state || ts_stack_version_count(self->stack) > 1
+  )) {
+    LOG("breakdown_lookahead sym:%s", TREE_NAME(tree));
     reusable_node_descend(reusable_node);
     tree = reusable_node_tree(reusable_node);
     did_descend = true;

@@ -1,0 +1,6 @@
+==================
+Switch and return
+==================
+{switch(x){f y;}return;}
+---
+(source_file (statement (compound (statement (switch (identifier) (statement (compound (declaration (type (identifier)) (identifier)))))) (statement (return_statement)))))
