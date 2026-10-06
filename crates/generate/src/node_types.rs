@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rustc_hash::FxHashMap;
-#[cfg(feature = "load")]
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 #[cfg(feature = "load")]
 use serde::ser::{SerializeMap, SerializeSeq, SerializeStruct};
@@ -216,7 +214,7 @@ pub fn get_variable_info(
     Ok(result)
 }
 
-/// Reject aliases that have the same public identity as a canonical supertype.
+/// Concrete aliases cannot have the same public identity as a canonical supertype.
 /// The node-types schema cannot represent one identity as both an abstract supertype
 /// and a concrete aliased node.
 fn validate_supertype_aliases(
@@ -231,10 +229,11 @@ fn validate_supertype_aliases(
             value: supertype.name,
             is_named: true,
         };
-        if aliases_by_symbol
-            .values()
-            .any(|aliases| aliases.contains(&Some(collision)))
-        {
+        if aliases_by_symbol.iter().any(|(symbol, aliases)| {
+            aliases.contains(&Some(collision))
+                && syntax_grammar.supertype_alias(*symbol, default_aliases)
+                    != Some(*supertype_symbol)
+        }) {
             return Err(VariableInfoError::SupertypeAliasCollision(
                 str_pool.resolve(supertype.name).to_string(),
             ));
@@ -564,27 +563,84 @@ pub fn get_supertype_symbol_map(
     default_aliases: &AliasMap,
     variable_info: &[VariableInfo],
 ) -> BTreeMap<Symbol, Vec<ChildType>> {
-    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, default_aliases);
     let mut supertype_symbol_map = BTreeMap::new();
-
-    let mut symbols_by_alias = FxHashMap::default();
-    for (symbol, aliases) in &aliases_by_symbol {
-        for alias in aliases.iter().flatten() {
-            symbols_by_alias
-                .entry(alias)
-                .or_insert_with(Vec::new)
-                .push(*symbol);
-        }
-    }
+    let merged_supertypes: FxHashSet<_> = syntax_grammar
+        .supertype_symbols
+        .iter()
+        .filter_map(|symbol| syntax_grammar.supertype_alias(*symbol, default_aliases))
+        .collect();
 
     for (i, info) in variable_info.iter().enumerate() {
         let symbol = Symbol::non_terminal(i);
         if syntax_grammar.supertype_symbols.contains(&symbol) {
             let subtypes = info.children.types.clone();
-            supertype_symbol_map.insert(symbol, subtypes);
+            let symbol = syntax_grammar
+                .supertype_alias(symbol, default_aliases)
+                .unwrap_or(symbol);
+            supertype_symbol_map
+                .entry(symbol)
+                .or_insert_with(Vec::new)
+                .extend(subtypes);
+        }
+    }
+    for subtypes in supertype_symbol_map.values_mut() {
+        for child in subtypes {
+            match child {
+                ChildType::Normal(symbol) => {
+                    *symbol = syntax_grammar
+                        .supertype_alias(*symbol, default_aliases)
+                        .unwrap_or(*symbol);
+                }
+                ChildType::Aliased(alias) if alias.is_named => {
+                    if let Some(symbol) = merged_supertypes.iter().find(|symbol| {
+                        syntax_grammar.variables[symbol.index as usize].name == alias.value
+                    }) {
+                        *child = ChildType::Normal(*symbol);
+                    }
+                }
+                ChildType::Aliased(_) => {}
+            }
+        }
+    }
+    for root in merged_supertypes {
+        let reachable = reachable_supertypes(&supertype_symbol_map, root);
+        let component: BTreeSet<_> = reachable
+            .into_iter()
+            .filter(|symbol| reachable_supertypes(&supertype_symbol_map, *symbol).contains(&root))
+            .collect();
+        let subtypes: BTreeSet<_> = component
+            .iter()
+            .flat_map(|symbol| &supertype_symbol_map[symbol])
+            .filter(
+                |child| !matches!(child, ChildType::Normal(symbol) if component.contains(symbol)),
+            )
+            .cloned()
+            .collect();
+        for symbol in component {
+            supertype_symbol_map.insert(symbol, subtypes.iter().cloned().collect());
         }
     }
     supertype_symbol_map
+}
+
+fn reachable_supertypes(map: &BTreeMap<Symbol, Vec<ChildType>>, root: Symbol) -> BTreeSet<Symbol> {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(symbol) = pending.pop() {
+        if !seen.insert(symbol) {
+            continue;
+        }
+        if let Some(children) = map.get(&symbol) {
+            for child in children {
+                if let ChildType::Normal(child) = child
+                    && map.contains_key(child)
+                {
+                    pending.push(*child);
+                }
+            }
+        }
+    }
+    seen
 }
 
 #[cfg(feature = "load")]
@@ -829,12 +885,10 @@ fn build_supertype_entries(
     extra_node_types: &FxHashSet<NodeTypeRef>,
 ) -> Vec<(NodeTypeRef, Vec<NodeTypeRef>)> {
     let mut subtype_map = Vec::new();
-    for (i, info) in variable_info.iter().enumerate() {
-        let symbol = Symbol::non_terminal(i);
-        if !syntax_grammar.supertype_symbols.contains(&symbol) {
-            continue;
-        }
-        let variable = &syntax_grammar.variables[i];
+    for (symbol, children) in
+        get_supertype_symbol_map(syntax_grammar, default_aliases, variable_info)
+    {
+        let variable = &syntax_grammar.variables[symbol.index as usize];
         let node_type = NodeTypeRef {
             kind: variable.name,
             named: true,
@@ -850,9 +904,7 @@ fn build_supertype_entries(
                 children: None,
                 subtypes: None,
             });
-        let mut subtypes = info
-            .children
-            .types
+        let mut subtypes = children
             .iter()
             .map(|t| child_type_to_node_type(t, syntax_grammar, lexical_grammar, default_aliases))
             .collect::<Vec<_>>();
@@ -905,9 +957,13 @@ fn build_regular_entries(
         // contributes to multiple entries in the final JSON.
         for alias in aliases_by_symbol.get(&symbol).unwrap_or(&empty) {
             // The canonical supertype is emitted separately with its subtypes.
-            // An alias of that supertype is treated as a regular, visible node
-            // and handled here.
-            if is_supertype && alias.is_none() {
+            // Only aliases that do not identify another supertype become visible nodes.
+            if is_supertype
+                && (alias.is_none()
+                    || syntax_grammar
+                        .supertype_alias(symbol, default_aliases)
+                        .is_some())
+            {
                 continue;
             }
             let (kind, is_named) = if let Some(alias) = alias {
