@@ -3142,6 +3142,14 @@ fn test_query_matches_with_transparent_supertype_aliases() {
     let query = Query::new(&language, "(expression/identifier) @value").unwrap();
     let supertype = language.id_for_node_kind("expression", true);
     assert_eq!(language.supertypes(), &[supertype]);
+    for id in 0..u16::try_from(language.node_kind_count()).unwrap() {
+        if language.node_kind_is_supertype(id) {
+            assert_eq!(
+                language.subtypes_for_supertype(id),
+                language.subtypes_for_supertype(supertype)
+            );
+        }
+    }
     let mut subtypes: Vec<_> = language
         .subtypes_for_supertype(supertype)
         .iter()
