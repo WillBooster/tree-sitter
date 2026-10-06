@@ -550,7 +550,7 @@ void ts_tree_cursor_current_status(
 
     // Record any supertypes
     if (entry_metadata.supertype && *supertype_count < max_supertypes) {
-      supertypes[*supertype_count] = entry_symbol;
+      supertypes[*supertype_count] = self->tree->language->public_symbol_map[entry_symbol];
       (*supertype_count)++;
     }
 

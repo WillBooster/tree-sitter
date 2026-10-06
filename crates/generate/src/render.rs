@@ -312,7 +312,12 @@ impl Generator {
         }
 
         for symbol in &self.parse_table.symbols {
-            let mapping = if let Some(alias) = self.default_aliases.get(symbol) {
+            let mapping = if let Some(target) = self
+                .syntax_grammar
+                .supertype_alias(*symbol, &self.default_aliases)
+            {
+                target
+            } else if let Some(alias) = self.default_aliases.get(symbol) {
                 first_unaliased_symbol_by_metadata
                     .get(&(alias.value, alias.kind()))
                     .copied()
@@ -676,7 +681,15 @@ impl Generator {
         for symbol in &self.parse_table.symbols {
             add_line!(self, "[{}] = {{", self.symbol_ids[symbol]);
             indent!(self);
-            if let Some(Alias { is_named, .. }) = self.default_aliases.get(symbol) {
+            if self
+                .syntax_grammar
+                .supertype_alias(*symbol, &self.default_aliases)
+                .is_some()
+            {
+                add_line!(self, ".visible = false,");
+                add_line!(self, ".named = true,");
+                add_line!(self, ".supertype = true,");
+            } else if let Some(Alias { is_named, .. }) = self.default_aliases.get(symbol) {
                 add_line!(self, ".visible = true,");
                 add_line!(self, ".named = {is_named},");
             } else {

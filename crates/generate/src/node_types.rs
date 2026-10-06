@@ -216,7 +216,7 @@ pub fn get_variable_info(
     Ok(result)
 }
 
-/// Reject aliases that have the same public identity as a canonical supertype.
+/// Concrete aliases cannot have the same public identity as a canonical supertype.
 /// The node-types schema cannot represent one identity as both an abstract supertype
 /// and a concrete aliased node.
 fn validate_supertype_aliases(
@@ -231,10 +231,11 @@ fn validate_supertype_aliases(
             value: supertype.name,
             is_named: true,
         };
-        if aliases_by_symbol
-            .values()
-            .any(|aliases| aliases.contains(&Some(collision)))
-        {
+        if aliases_by_symbol.iter().any(|(symbol, aliases)| {
+            aliases.contains(&Some(collision))
+                && syntax_grammar.supertype_alias(*symbol, default_aliases)
+                    != Some(*supertype_symbol)
+        }) {
             return Err(VariableInfoError::SupertypeAliasCollision(
                 str_pool.resolve(supertype.name).to_string(),
             ));
@@ -581,7 +582,13 @@ pub fn get_supertype_symbol_map(
         let symbol = Symbol::non_terminal(i);
         if syntax_grammar.supertype_symbols.contains(&symbol) {
             let subtypes = info.children.types.clone();
-            supertype_symbol_map.insert(symbol, subtypes);
+            let symbol = syntax_grammar
+                .supertype_alias(symbol, default_aliases)
+                .unwrap_or(symbol);
+            supertype_symbol_map
+                .entry(symbol)
+                .or_insert_with(Vec::new)
+                .extend(subtypes);
         }
     }
     supertype_symbol_map
@@ -828,13 +835,16 @@ fn build_supertype_entries(
     str_pool: &StrPool,
     extra_node_types: &FxHashSet<NodeTypeRef>,
 ) -> Vec<(NodeTypeRef, Vec<NodeTypeRef>)> {
-    let mut subtype_map = Vec::new();
+    let mut subtype_map = BTreeMap::new();
     for (i, info) in variable_info.iter().enumerate() {
         let symbol = Symbol::non_terminal(i);
         if !syntax_grammar.supertype_symbols.contains(&symbol) {
             continue;
         }
-        let variable = &syntax_grammar.variables[i];
+        let public_symbol = syntax_grammar
+            .supertype_alias(symbol, default_aliases)
+            .unwrap_or(symbol);
+        let variable = &syntax_grammar.variables[public_symbol.index as usize];
         let node_type = NodeTypeRef {
             kind: variable.name,
             named: true,
@@ -856,6 +866,9 @@ fn build_supertype_entries(
             .iter()
             .map(|t| child_type_to_node_type(t, syntax_grammar, lexical_grammar, default_aliases))
             .collect::<Vec<_>>();
+        if let Some(previous) = &node_type_json.subtypes {
+            subtypes.extend(previous.iter().copied());
+        }
         sort_node_type_refs(&mut subtypes, str_pool);
         subtypes.dedup();
         let supertype = NodeTypeRef {
@@ -867,11 +880,11 @@ fn build_supertype_entries(
         // A supertype may have zero subtypes if its children are all
         // hidden (e.g., wrapping a hidden external token).
         if !subtypes.is_empty() {
-            subtype_map.push((supertype, subtypes.clone()));
+            subtype_map.insert(supertype, subtypes.clone());
         }
         node_type_json.subtypes = Some(subtypes);
     }
-    subtype_map
+    subtype_map.into_iter().collect()
 }
 
 /// Add JSON entries for visible non-supertype rules and aliased supertypes (treated
@@ -905,9 +918,13 @@ fn build_regular_entries(
         // contributes to multiple entries in the final JSON.
         for alias in aliases_by_symbol.get(&symbol).unwrap_or(&empty) {
             // The canonical supertype is emitted separately with its subtypes.
-            // An alias of that supertype is treated as a regular, visible node
-            // and handled here.
-            if is_supertype && alias.is_none() {
+            // Only aliases that do not identify another supertype become visible nodes.
+            if is_supertype
+                && (alias.is_none()
+                    || syntax_grammar
+                        .supertype_alias(symbol, default_aliases)
+                        .is_some())
+            {
                 continue;
             }
             let (kind, is_named) = if let Some(alias) = alias {

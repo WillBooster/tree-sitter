@@ -29,6 +29,30 @@ Tree-sitter is a parser generator tool and an incremental parsing library. It ca
 - **Robust** enough to provide useful results even in the presence of syntax errors
 - **Dependency-free** so that the runtime library (which is written in pure C) can be embedded in any application
 
+## Restricted rules with canonical supertype queries
+
+This fork supports aliasing one declared supertype to another while keeping both hidden in the syntax tree. This lets a
+restricted grammar context retain queries such as `(expression/identifier)` without introducing a visible wrapper node.
+Generate the parser and run its queries with this fork's generator and runtime.
+
+Declare both rules in `supertypes`, use the same named alias at every reference to the restricted rule, and leave the
+canonical supertype unaliased. The generated node schema combines their subtypes under the canonical name. Concrete-node
+aliases and inconsistent aliases still cannot reuse a canonical supertype's name.
+
+```js
+supertypes: $ => [$.expression, $._restricted_expression],
+rules: {
+  source_file: $ => choice(
+    seq('general', $.expression),
+    seq('restricted', alias($._restricted_expression, $.expression)),
+  ),
+  expression: $ => choice($.identifier, $.number),
+  _restricted_expression: $ => $.identifier,
+  identifier: () => /[a-z]+/,
+  number: () => /[0-9]+/,
+},
+```
+
 ## Links
 
 - [Tree-sitter documentation](https://tree-sitter.github.io) (upstream)

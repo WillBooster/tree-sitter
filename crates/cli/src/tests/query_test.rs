@@ -3056,6 +3056,136 @@ fn test_query_matches_with_anonymous_tokens() {
 }
 
 #[test]
+fn test_transparent_supertype_alias_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    let grammar = super::helpers::fixtures::fixtures_dir()
+        .join("test_grammars/transparent_supertype_alias/grammar.js");
+    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        tree_sitter::LANGUAGE_VERSION,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = schema.as_array().unwrap();
+    let expressions: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry["type"] == "expression")
+        .collect();
+    assert_eq!(expressions.len(), 1);
+    assert_eq!(
+        expressions[0]["subtypes"],
+        serde_json::json!([
+            {"type": "identifier", "named": true}, {"type": "number", "named": true}
+        ])
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|entry| entry["type"] == "_restricted_expression")
+    );
+    let root = entries
+        .iter()
+        .find(|entry| entry["type"] == "source_file")
+        .unwrap();
+    assert_eq!(
+        root["fields"]["value"]["types"],
+        serde_json::json!([{"type": "expression", "named": true}])
+    );
+}
+
+#[test]
+fn test_supertype_alias_rejects_mixed_visible_uses() {
+    let grammar_path = super::helpers::fixtures::fixtures_dir()
+        .join("test_grammars/transparent_supertype_alias/grammar.js");
+    let mut grammar: serde_json::Value =
+        serde_json::from_str(&load_grammar_file(&grammar_path, None).unwrap()).unwrap();
+    grammar["rules"]["source_file"]["members"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "type": "SEQ", "members": [
+                {"type": "STRING", "value": "raw"},
+                {"type": "SYMBOL", "name": "_restricted_expression"}
+            ]
+        }));
+    let error = generate_parser(&grammar.to_string()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Named alias `expression` conflicts with a supertype"),
+        "{error}"
+    );
+}
+
+#[test]
+fn test_query_matches_with_transparent_supertype_aliases() {
+    let language = get_test_fixture_language("transparent_supertype_alias");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let query = Query::new(&language, "(expression/identifier) @value").unwrap();
+    let supertype = language.id_for_node_kind("expression", true);
+    assert_eq!(language.supertypes(), &[supertype]);
+    let mut subtypes: Vec<_> = language
+        .subtypes_for_supertype(supertype)
+        .iter()
+        .map(|id| language.node_kind_for_id(*id).unwrap())
+        .collect();
+    subtypes.sort_unstable();
+    assert_eq!(subtypes, ["identifier", "number"]);
+    for source in ["general x", "restricted x"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().named_child_count(), 1);
+        let value = tree.root_node().child_by_field_name("value").unwrap();
+        assert_eq!(value.kind(), "identifier");
+        assert_eq!(value.utf8_text(source.as_bytes()).unwrap(), "x");
+        assert_query_matches(&language, &query, source, &[(0, vec![("value", "x")])]);
+    }
+    let mut tree = parser.parse("general x", None).unwrap();
+    tree.edit(&InputEdit {
+        start_byte: 0,
+        old_end_byte: 7,
+        new_end_byte: 10,
+        start_position: Point::new(0, 0),
+        old_end_position: Point::new(0, 7),
+        new_end_position: Point::new(0, 10),
+    });
+    let source = "restricted x";
+    let incremental = parser.parse(source, Some(&tree)).unwrap();
+    let fresh = parser.parse(source, None).unwrap();
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    let mut cursor = QueryCursor::new();
+    let captures = collect_captures(
+        cursor.captures(&query, incremental.root_node(), source.as_bytes()),
+        &query,
+        source,
+    );
+    let mut fresh_cursor = QueryCursor::new();
+    let expected = collect_captures(
+        fresh_cursor.captures(&query, fresh.root_node(), source.as_bytes()),
+        &query,
+        source,
+    );
+    assert_eq!(captures, expected);
+}
+
+#[test]
 fn test_query_matches_with_supertypes() {
     allocations::record(|| {
         let language = get_language("python");
