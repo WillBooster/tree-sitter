@@ -969,7 +969,10 @@ impl Generate {
             .profile
             .as_ref()
             .map(|path| -> Result<tree_sitter_generate::GenerationProfile> {
-                Ok(serde_json::from_slice(&fs::read(path)?)?)
+                let bytes = fs::read(path)
+                    .with_context(|| format!("Failed to read profile {}", path.display()))?;
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("Failed to parse profile {}", path.display()))
             })
             .transpose()?;
         let result = tree_sitter_generate::generate_parser_in_directory_with_profile(
