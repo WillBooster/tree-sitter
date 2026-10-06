@@ -679,6 +679,54 @@ fn test_regex_extra_preserves_matching_named_token() {
 }
 
 #[test]
+fn test_incremental_recovery_before_changed_nonterminal_extra() {
+    let language = get_test_fixture_language("incremental_extra_recovery");
+    for prefix in ["a ", "a /*gap*/ ", "a #pragma warning disable y\n "] {
+        for utf16 in [false, true] {
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let mut parse = |source: &str, old: Option<&tree_sitter::Tree>| {
+                if utf16 {
+                    parser
+                        .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), old)
+                        .unwrap()
+                } else {
+                    parser.parse(source, old).unwrap()
+                }
+            };
+            let mut source = format!("{prefix}#pragma warning disable x\n b;");
+            let position = prefix.len() + "#pragma ".len();
+            let mut tree = parse(&source, None);
+            let original = tree.root_node().to_sexp();
+            assert!(!tree.root_node().has_error());
+            let scale = if utf16 { 2 } else { 1 };
+            for replacement in [" ", "w", " ", "w"] {
+                source.replace_range(position..=position, replacement);
+                let before = &source[..position];
+                let row = before.bytes().filter(|byte| *byte == b'\n').count();
+                let column = before.rsplit('\n').next().unwrap().len() * scale;
+                tree.edit(&InputEdit {
+                    start_byte: position * scale,
+                    old_end_byte: (position + 1) * scale,
+                    new_end_byte: (position + 1) * scale,
+                    start_position: Point::new(row, column),
+                    old_end_position: Point::new(row, column + scale),
+                    new_end_position: Point::new(row, column + scale),
+                });
+                tree = parse(&source, Some(&tree));
+                let fresh = parse(&source, None);
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(tree.root_node().range(), fresh.root_node().range());
+                assert_eq!(tree.root_node().has_error(), replacement == " ");
+                if replacement == "w" {
+                    assert_eq!(tree.root_node().to_sexp(), original);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_incremental_lexing_after_nonterminal_extra() {
     let language = get_test_fixture_language("incremental_nonterminal_extra");
     let mut parser = Parser::new();
