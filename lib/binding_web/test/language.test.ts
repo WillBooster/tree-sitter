@@ -55,6 +55,7 @@ describe('Language', () => {
   describe('.load', () => {
     it('parses, edits, and queries compact ABI 16 tables', async () => {
       const lang = await Language.load(languageURL('javascript').replace('.wasm', '-abi16.wasm'));
+      expect(lang.abiVersion).toBe(16);
       const parser = new Parser();
       parser.setLanguage(lang);
       const input = 'const x = {field: 1};';

@@ -57,7 +57,7 @@ typedef uint32_t (*TSDecodeFunction)(
   int32_t *code_point
 );
 
-// Deprecated alias to be removed in ABI 16
+// Deprecated alias retained for source compatibility.
 typedef TSDecodeFunction DecodeFunction;
 
 typedef enum TSInputEncoding {
