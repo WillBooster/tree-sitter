@@ -3206,10 +3206,16 @@ fn test_query_matches_with_transparent_supertype_aliases() {
         );
         assert_eq!(captures, expected);
         if fixture == "indirect_supertype_alias" {
-            let query = Query::new(&language, "(primary_expression) @value").unwrap();
-            assert_query_matches(&language, &query, "general x", &[(0, vec![("value", "x")])]);
-            assert_query_matches(&language, &query, "general 12", &[]);
-            assert_query_matches(&language, &query, "restricted x", &[]);
+            for pattern in [
+                "(primary_expression) @value",
+                "(source_file \"general\" value: (primary_expression) @value)",
+                "(source_file \"general\" value: (primary_expression/identifier) @value)",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                assert_query_matches(&language, &query, "general x", &[(0, vec![("value", "x")])]);
+                assert_query_matches(&language, &query, "general 12", &[]);
+                assert_query_matches(&language, &query, "restricted x", &[]);
+            }
         }
     }
 }

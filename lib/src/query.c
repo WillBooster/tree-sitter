@@ -1516,11 +1516,11 @@ static void ts_query__perform_analysis(
             ) does_match = false;
           }
 
-          // If this child is hidden, then descend into it and walk through its children.
-          // If the top entry of the stack is at the end of its rule, then that entry can
-          // be replaced. Otherwise, push a new entry onto the stack.
           else if (sym >= self->language->token_count) {
-            if (!next_state_top->done) {
+            if (
+              !next_state_top->done ||
+              self->language->symbol_metadata[next_state_top->parent_symbol].supertype
+            ) {
               if (next_state.depth + 1 >= MAX_ANALYSIS_STATE_DEPTH) {
                 #ifdef DEBUG_ANALYZE_QUERY
                   printf("Exceeded depth limit for state %u\n", j);
