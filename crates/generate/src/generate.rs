@@ -39,11 +39,11 @@ pub use parse_grammar::ParseGrammarError;
 use parse_grammar::parse_grammar;
 pub use prepare_grammar::PrepareGrammarError;
 use prepare_grammar::prepare_grammar;
+use render::render_c_code;
 pub use render::{
     ABI_VERSION_DEFAULT, ABI_VERSION_MAX, ABI_VERSION_MIN, GenerationProfile, RenderError,
     parser_fingerprint,
 };
-use render::{ABI_VERSION_WITH_COMPACT_TABLES, render_c_code};
 
 use crate::{
     grammars::InputGrammar, prepare_grammar::PreparedGrammar, rules::Alias, strpool::StrPool,
@@ -381,7 +381,9 @@ where
     U: Into<PathBuf>,
     V: Into<PathBuf>,
 {
-    if profile.is_some() && (!generate_parser || abi_version < ABI_VERSION_WITH_COMPACT_TABLES) {
+    if profile.is_some()
+        && (!generate_parser || abi_version < render::ABI_VERSION_WITH_COMPACT_TABLES)
+    {
         return Err(RenderError::Profile("requires parser generation with ABI 16".into()).into());
     }
     let mut repo_path: PathBuf = repo_path.into();

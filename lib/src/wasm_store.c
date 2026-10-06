@@ -1649,6 +1649,8 @@ const TSLanguage *ts_wasm_store_load_language(
   }
 
   if (wasm_language.alias_sequence_offsets) {
+    if (!language->alias_sequences || !language->max_alias_sequence_length ||
+        !language->production_id_count || !language->alias_sequence_count) goto invalid_language_memory;
     language->alias_sequence_offsets = copy(&wasm_memory, wasm_language.alias_sequence_offsets,
       (size_t)wasm_language.production_id_count * sizeof(uint32_t), &valid_wasm_memory);
     if (!valid_wasm_memory) goto invalid_language_memory;
