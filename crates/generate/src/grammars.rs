@@ -313,7 +313,15 @@ impl SyntaxGrammar {
             return None;
         }
         let alias = aliases.get(&symbol)?;
-        if !alias.is_named {
+        if !alias.is_named
+            || self.variables.iter().enumerate().any(|(index, _)| {
+                self.variable_prod_ids(index).any(|id| {
+                    self.production(id).steps.iter().any(|step| {
+                        step.symbol() == symbol && step.alias().is_some_and(|other| other != *alias)
+                    })
+                })
+            })
+        {
             return None;
         }
         self.supertype_symbols.iter().copied().find(|target| {

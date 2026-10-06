@@ -764,6 +764,16 @@ impl Generator {
 
     fn add_non_terminal_alias_map(&mut self) {
         let mut alias_ids_by_symbol = FxHashMap::default();
+        for symbol in &self.syntax_grammar.supertype_symbols {
+            if self
+                .syntax_grammar
+                .supertype_alias(*symbol, &self.default_aliases)
+                .is_some()
+                && let Some(id) = self.symbol_ids.get(symbol)
+            {
+                alias_ids_by_symbol.insert(*symbol, vec![id]);
+            }
+        }
         for i in 0..self.syntax_grammar.variables.len() {
             for prod_id in self.syntax_grammar.variable_prod_ids(i) {
                 for step in self.syntax_grammar.production(prod_id).steps {

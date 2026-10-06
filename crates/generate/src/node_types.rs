@@ -565,18 +565,12 @@ pub fn get_supertype_symbol_map(
     default_aliases: &AliasMap,
     variable_info: &[VariableInfo],
 ) -> BTreeMap<Symbol, Vec<ChildType>> {
-    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, default_aliases);
     let mut supertype_symbol_map = BTreeMap::new();
-
-    let mut symbols_by_alias = FxHashMap::default();
-    for (symbol, aliases) in &aliases_by_symbol {
-        for alias in aliases.iter().flatten() {
-            symbols_by_alias
-                .entry(alias)
-                .or_insert_with(Vec::new)
-                .push(*symbol);
-        }
-    }
+    let merged_supertypes: FxHashSet<_> = syntax_grammar
+        .supertype_symbols
+        .iter()
+        .filter_map(|symbol| syntax_grammar.supertype_alias(*symbol, default_aliases))
+        .collect();
 
     for (i, info) in variable_info.iter().enumerate() {
         let symbol = Symbol::non_terminal(i);
@@ -589,6 +583,22 @@ pub fn get_supertype_symbol_map(
                 .entry(symbol)
                 .or_insert_with(Vec::new)
                 .extend(subtypes);
+        }
+    }
+    for (symbol, subtypes) in &mut supertype_symbol_map {
+        if merged_supertypes.contains(symbol) {
+            subtypes.retain(|child| match child {
+                ChildType::Normal(child) => {
+                    syntax_grammar
+                        .supertype_alias(*child, default_aliases)
+                        .unwrap_or(*child)
+                        != *symbol
+                }
+                ChildType::Aliased(alias) => {
+                    !alias.is_named
+                        || alias.value != syntax_grammar.variables[symbol.index as usize].name
+                }
+            });
         }
     }
     supertype_symbol_map
@@ -868,6 +878,11 @@ fn build_supertype_entries(
             .collect::<Vec<_>>();
         if let Some(previous) = &node_type_json.subtypes {
             subtypes.extend(previous.iter().copied());
+        }
+        if syntax_grammar.supertype_symbols.iter().any(|source| {
+            syntax_grammar.supertype_alias(*source, default_aliases) == Some(public_symbol)
+        }) {
+            subtypes.retain(|subtype| *subtype != node_type);
         }
         sort_node_type_refs(&mut subtypes, str_pool);
         subtypes.dedup();

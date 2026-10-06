@@ -1109,9 +1109,9 @@ static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
   return &self->stack[self->depth - 1];
 }
 
-static inline bool analysis_state__has_supertype(AnalysisState *self, TSSymbol symbol) {
+static inline bool analysis_state__has_supertype(AnalysisState *self, const TSLanguage *language, TSSymbol symbol) {
   for (unsigned i = 0; i < self->depth; i++) {
-    if (self->stack[i].parent_symbol == symbol) return true;
+    if (ts_language_public_symbol(language, self->stack[i].parent_symbol) == symbol) return true;
   }
   return false;
 }
@@ -1512,7 +1512,7 @@ static void ts_query__perform_analysis(
             }
             if (
               step->supertype_symbol &&
-              !analysis_state__has_supertype(state, step->supertype_symbol)
+              !analysis_state__has_supertype(state, self->language, step->supertype_symbol)
             ) does_match = false;
           }
 

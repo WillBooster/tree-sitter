@@ -3110,24 +3110,28 @@ fn test_transparent_supertype_alias_node_schema() {
 fn test_supertype_alias_rejects_mixed_visible_uses() {
     let grammar_path = super::helpers::fixtures::fixtures_dir()
         .join("test_grammars/transparent_supertype_alias/grammar.js");
-    let mut grammar: serde_json::Value =
+    let grammar: serde_json::Value =
         serde_json::from_str(&load_grammar_file(&grammar_path, None).unwrap()).unwrap();
-    grammar["rules"]["source_file"]["members"]
-        .as_array_mut()
-        .unwrap()
-        .push(serde_json::json!({
-            "type": "SEQ", "members": [
-                {"type": "STRING", "value": "raw"},
-                {"type": "SYMBOL", "name": "_restricted_expression"}
-            ]
-        }));
-    let error = generate_parser(&grammar.to_string()).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("Named alias `expression` conflicts with a supertype"),
-        "{error}"
-    );
+    for value in [
+        serde_json::json!({"type": "SYMBOL", "name": "_restricted_expression"}),
+        serde_json::json!({"type": "ALIAS", "named": true, "value": "other_expression",
+            "content": {"type": "SYMBOL", "name": "_restricted_expression"}}),
+    ] {
+        let mut grammar = grammar.clone();
+        grammar["rules"]["source_file"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "SEQ", "members": [{"type": "STRING", "value": "other"}, value]
+            }));
+        let error = generate_parser(&grammar.to_string()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Named alias `expression` conflicts with a supertype"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -3153,6 +3157,13 @@ fn test_query_matches_with_transparent_supertype_aliases() {
         assert_eq!(value.kind(), "identifier");
         assert_eq!(value.utf8_text(source.as_bytes()).unwrap(), "x");
         assert_query_matches(&language, &query, source, &[(0, vec![("value", "x")])]);
+    }
+    for (source, keyword) in [("general x", "general"), ("restricted x", "restricted")] {
+        for child in ["identifier", "expression/identifier"] {
+            let pattern = format!("(source_file \"{keyword}\" value: ({child}) @value)");
+            let query = Query::new(&language, &pattern).unwrap();
+            assert_query_matches(&language, &query, source, &[(0, vec![("value", "x")])]);
+        }
     }
     let mut tree = parser.parse("general x", None).unwrap();
     tree.edit(&InputEdit {
