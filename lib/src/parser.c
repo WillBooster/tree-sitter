@@ -665,15 +665,14 @@ static Subtree ts_parser__lex(
 
       is_keyword = ts_parser__call_keyword_lex_fn(self);
 
-      if (
-        is_keyword &&
-        self->lexer.token_end_position.bytes == end_byte &&
-        (
+      if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
+        bool keyword_is_valid =
           ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
-        )
-      ) {
-        symbol = self->lexer.data.result_symbol;
+          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol);
+        if (keyword_is_valid || !ts_language_has_actions(self->language, parse_state, symbol)) {
+          is_keyword = keyword_is_valid;
+          symbol = self->lexer.data.result_symbol;
+        }
       }
     }
 

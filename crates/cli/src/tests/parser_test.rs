@@ -31,9 +31,10 @@ use crate::{
 
 #[test]
 fn test_recovery_lexer_preserves_keyword_tokens() {
-    let (name, code) = generate_parser(
+    for precedence in [0, 1] {
+        let grammar =
         r#"{
-            "name": "recovery_keywords",
+            "name": "recovery_keywords_VARIANT",
             "word": "identifier",
             "extras": [{"type": "PATTERN", "value": "\\s"}],
             "rules": {
@@ -49,38 +50,38 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
                     {"type": "STRING", "value": ";"}
                 ]},
                 "class_declaration": {"type": "SEQ", "members": [
-                    {"type": "STRING", "value": "class"},
+                    {"type": "TOKEN", "content": {"type": "PREC", "value": PRECEDENCE, "content": {"type": "STRING", "value": "class"}}},
                     {"type": "SYMBOL", "name": "identifier"},
                     {"type": "STRING", "value": ";"}
                 ]},
                 "identifier": {"type": "PATTERN", "value": "[a-z]+"}
             }
-        }"#,
-    )
-    .unwrap();
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_test_language(&name, &code, None))
-        .unwrap();
-    for (source, word, expected) in [
-        ("let x = y class;", "class", "class"),
-        ("let x = y classmate;", "classmate", "identifier"),
-        ("let x = class;", "class", "identifier"),
-        ("class c;", "class", "class"),
-    ] {
-        let tree = parser.parse(source, None).unwrap();
-        let start = source.find(word).unwrap();
-        let node = tree
-            .root_node()
-            .descendant_for_byte_range(start, start + word.len())
+        }"#.replace("PRECEDENCE", &precedence.to_string()).replace("VARIANT", &precedence.to_string());
+        let (name, code) = generate_parser(&grammar).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, None))
             .unwrap();
-        assert_eq!(
-            node.kind(),
-            expected,
-            "{source}: {}",
-            tree.root_node().to_sexp()
-        );
-        assert_eq!(node.byte_range(), start..start + word.len());
+        for (source, word, expected) in [
+            ("let x = y class;", "class", "class"),
+            ("let x = y classmate;", "classmate", "identifier"),
+            ("let x = class;", "class", "identifier"),
+            ("class c;", "class", "class"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let start = source.find(word).unwrap();
+            let node = tree
+                .root_node()
+                .descendant_for_byte_range(start, start + word.len())
+                .unwrap();
+            assert_eq!(
+                node.kind(),
+                expected,
+                "{source}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(node.byte_range(), start..start + word.len());
+        }
     }
 }
 

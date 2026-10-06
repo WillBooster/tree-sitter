@@ -198,11 +198,7 @@ pub fn build_lex_table(
                     let immediate_syntax = lexical_grammar.variables[token.index as usize]
                         .is_immediate
                         && has_entry(token);
-                    if i != 0
-                        && keywords.contains(token)
-                        && !retained.contains(&token)
-                        && !immediate_syntax
-                    {
+                    if keywords.contains(token) && !retained.contains(&token) && !immediate_syntax {
                         syntax_grammar.word_token
                     } else {
                         Some(token)
