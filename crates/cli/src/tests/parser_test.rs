@@ -156,7 +156,7 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
 
 #[test]
 fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
-    use std::{collections::BTreeSet, fmt::Write};
+    use std::fmt::Write;
 
     let keywords = (0..24)
         .map(|i| format!("command_{i:02}"))
@@ -237,16 +237,18 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
                         .into_iter()
                         .zip(nodes)
                         .map(|(language, node)| {
-                            language
+                            let mut names = language
                                 .lookahead_iterator(node.next_parse_state())
                                 .unwrap()
                                 .iter_names()
                                 .map(str::to_owned)
-                                .collect::<BTreeSet<_>>()
+                                .collect::<Vec<_>>();
+                            names.sort_unstable();
+                            names
                         })
                         .collect::<Vec<_>>();
                     assert_eq!(names[0], names[1]);
-                    assert!(names[1].contains("command_00"));
+                    assert!(names[1].iter().any(|name| name == "command_00"));
                 }
             }
         }
