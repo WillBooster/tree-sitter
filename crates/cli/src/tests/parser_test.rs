@@ -444,13 +444,10 @@ fn test_recovery_through_many_nonterminal_extras() {
         let source = format!("{}x;", line.repeat(count)).repeat(blocks);
         let mut fastest = Duration::MAX;
         for _ in 0..3 {
-            let started = time::Instant::now();
+            let started = cpu_time::ThreadTime::now();
             let mut samples = 0;
-            let mut elapsed = Duration::ZERO;
-            loop {
-                let start = time::Instant::now();
+            let elapsed = loop {
                 let tree = parser.parse(&source, None).unwrap();
-                elapsed += start.elapsed();
                 samples += 1;
                 let root = tree.root_node();
                 assert!(root.has_error());
@@ -462,10 +459,11 @@ fn test_recovery_through_many_nonterminal_extras() {
                     "statement"
                 );
                 assert_eq!(root.end_byte(), source.len());
-                if started.elapsed() >= Duration::from_millis(30) {
-                    break;
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(100) {
+                    break elapsed;
                 }
-            }
+            };
             fastest = fastest.min(elapsed / samples);
         }
         fastest
