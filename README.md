@@ -36,8 +36,10 @@ restricted grammar context retain queries such as `(expression/identifier)` with
 Generate the parser and run its queries with this fork's generator and runtime.
 
 Declare both rules in `supertypes`, use the same named alias at every reference to the restricted rule, and leave the
-canonical supertype unaliased. The generated node schema combines their subtypes under the canonical name. Concrete-node
-aliases and inconsistent aliases still cannot reuse a canonical supertype's name.
+canonical supertype unaliased. Reference the canonical rule as a symbol in a reachable production, as `$.expression`
+in the general branch below does. A rule named only as an alias target is removed as unused, leaving an ordinary visible
+alias instead of a transparent supertype. The generated node schema combines the retained supertypes under the canonical
+name. Concrete-node aliases and inconsistent aliases still cannot reuse a canonical supertype's name.
 
 ```js
 supertypes: $ => [$.expression, $._restricted_expression],
