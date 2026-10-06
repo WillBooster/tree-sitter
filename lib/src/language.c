@@ -184,6 +184,45 @@ void ts_language_table_entry(
   }
 }
 
+uint16_t ts_language_lookup_small_compact(
+  const TSLanguage *self,
+  uint32_t index,
+  TSSymbol symbol
+) {
+  if (index & SMALL_STATE_PAIR_FLAG) {
+    const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
+    uint32_t low = 0, high = *(pairs++);
+    while (low < high) {
+      uint32_t mid = low + (high - low) / 2;
+      TSSymbol candidate = pairs[mid * 2];
+      if (candidate < symbol) low = mid + 1;
+      else if (candidate > symbol) high = mid;
+      else return pairs[mid * 2 + 1];
+    }
+    return 0;
+  }
+  const uint16_t *data = &self->small_parse_table[index];
+  uint16_t group_count = *(data++);
+  for (unsigned i = 0; i < group_count; i++) {
+    uint16_t section_value = *(data++);
+    uint16_t symbol_count = *(data++);
+    if (symbol_count >= 16) {
+      uint32_t low = 0, high = symbol_count;
+      while (low < high) {
+        uint32_t mid = low + (high - low) / 2;
+        if (data[mid] < symbol) low = mid + 1;
+        else if (data[mid] > symbol) high = mid;
+        else return section_value;
+      }
+      data += symbol_count;
+      continue;
+    }
+    if (ts_language_group_contains(data, symbol_count, symbol)) return section_value;
+    data += symbol_count;
+  }
+  return 0;
+}
+
 TSLexerMode ts_language_lex_mode_for_state(
    const TSLanguage *self,
    TSStateId state

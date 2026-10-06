@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language, Query } from '../src';
+import { LookaheadIterator, Language, Query, Edit } from '../src';
 import { Parser } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
@@ -64,14 +64,14 @@ describe('Language', () => {
         expect(tree.rootNode.hasError).toBe(false);
         expect(query.captures(tree.rootNode).map(capture => capture.node.text)).toEqual(['field']);
         const position = input.indexOf('1');
-        tree.edit({
+        tree.edit(new Edit({
           startIndex: position,
           oldEndIndex: position + 1,
           newEndIndex: position + 1,
           startPosition: { row: 0, column: position },
           oldEndPosition: { row: 0, column: position + 1 },
           newEndPosition: { row: 0, column: position + 1 },
-        });
+        }));
         const edited = input.replace('1', '2');
         const incremental = parser.parse(edited, tree)!;
         const fresh = parser.parse(edited)!;

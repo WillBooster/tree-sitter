@@ -43,6 +43,8 @@ typedef struct {
   uint16_t action_count;
 } LookaheadIterator;
 
+static inline bool ts_language_group_contains(const uint16_t *data, uint16_t count, TSSymbol symbol);
+uint16_t ts_language_lookup_small_compact(const TSLanguage *self, uint32_t index, TSSymbol symbol);
 void ts_language_table_entry(const TSLanguage *self, TSStateId state, TSSymbol symbol, TableEntry *result);
 TSLexerMode ts_language_lex_mode_for_state(const TSLanguage *self, TSStateId state);
 bool ts_language_is_reserved_word(const TSLanguage *self, TSStateId state, TSSymbol symbol);
@@ -79,9 +81,6 @@ static inline bool ts_language_has_reduce_action(
 //
 // For non-terminal symbols, the table value represents a successor state.
 // For terminal symbols, it represents an index in the actions table.
-// For 'large' parse states, this is a direct lookup. For 'small' parse
-// states, this requires searching through the symbol groups to find
-// the given symbol.
 static inline uint16_t ts_language_lookup(
   const TSLanguage *self,
   TSStateId state,
@@ -89,51 +88,37 @@ static inline uint16_t ts_language_lookup(
 ) {
   if (state >= self->large_state_count) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
-    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_PAIR_FLAG)) {
-      const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
-      uint32_t low = 0, high = *(pairs++);
-      while (low < high) {
-        uint32_t mid = low + (high - low) / 2;
-        TSSymbol candidate = pairs[mid * 2];
-        if (candidate < symbol) low = mid + 1;
-        else if (candidate > symbol) high = mid;
-        else return pairs[mid * 2 + 1];
-      }
-      return 0;
+    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES) {
+      return ts_language_lookup_small_compact(self, index, symbol);
     }
     const uint16_t *data = &self->small_parse_table[index];
     uint16_t group_count = *(data++);
     for (unsigned i = 0; i < group_count; i++) {
       uint16_t section_value = *(data++);
       uint16_t symbol_count = *(data++);
-      if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && symbol_count >= 16) {
-        uint32_t low = 0, high = symbol_count;
-        while (low < high) {
-          uint32_t mid = low + (high - low) / 2;
-          if (data[mid] < symbol) low = mid + 1;
-          else if (data[mid] > symbol) high = mid;
-          else return section_value;
-        }
-        data += symbol_count;
-        continue;
-      }
-      while (symbol_count >= 4) {
-        bool matches = data[0] == symbol;
-        matches |= data[1] == symbol;
-        matches |= data[2] == symbol;
-        matches |= data[3] == symbol;
-        if (matches) return section_value;
-        data += 4;
-        symbol_count -= 4;
-      }
-      for (unsigned j = 0; j < symbol_count; j++) {
-        if (*(data++) == symbol) return section_value;
-      }
+      if (ts_language_group_contains(data, symbol_count, symbol)) return section_value;
+      data += symbol_count;
     }
     return 0;
   } else {
     return self->parse_table[state * self->symbol_count + symbol];
   }
+}
+
+static inline bool ts_language_group_contains(const uint16_t *data, uint16_t count, TSSymbol symbol) {
+  while (count >= 4) {
+    bool matches = data[0] == symbol;
+    matches |= data[1] == symbol;
+    matches |= data[2] == symbol;
+    matches |= data[3] == symbol;
+    if (matches) return true;
+    data += 4;
+    count -= 4;
+  }
+  for (unsigned i = 0; i < count; i++) {
+    if (data[i] == symbol) return true;
+  }
+  return false;
 }
 
 static inline bool ts_language_has_actions(
