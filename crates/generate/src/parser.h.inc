@@ -104,7 +104,7 @@ typedef struct {
   int32_t end;
 } TSCharacterRange;
 
-#define TS_KEYWORD_PREFIX (UINT32_C(1) << 16)
+#define TS_KEYWORD_PREFIX 0x10000u
 
 struct TSLanguage {
   uint32_t abi_version;
