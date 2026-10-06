@@ -435,6 +435,43 @@ fn test_regex_extra_preserves_matching_named_token() {
 }
 
 #[test]
+fn test_recovery_through_many_nonterminal_extras() {
+    let language = get_test_fixture_language("recovery_extra_chain");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let line = "#pragma warning disable x #:x\n";
+    let measure = |parser: &mut Parser, count: usize| {
+        let source = format!("{}x;", line.repeat(count));
+        let mut fastest = Duration::MAX;
+        for _ in 0..3 {
+            let started = time::Instant::now();
+            let mut samples = 0;
+            let mut elapsed = Duration::ZERO;
+            loop {
+                let start = time::Instant::now();
+                let tree = parser.parse(&source, None).unwrap();
+                elapsed += start.elapsed();
+                samples += 1;
+                let root = tree.root_node();
+                assert!(root.has_error());
+                assert_eq!(root.named_child_count(), count + 1);
+                assert_eq!(root.named_child(count as u32).unwrap().kind(), "statement");
+                assert_eq!(root.end_byte(), source.len());
+                if started.elapsed() >= Duration::from_millis(30) {
+                    break;
+                }
+            }
+            fastest = fastest.min(elapsed / samples);
+        }
+        fastest
+    };
+    measure(&mut parser, 1000);
+    let small = measure(&mut parser, 1000);
+    let large = measure(&mut parser, 10_000);
+    assert!(large < small * 18, "small: {small:?}, large: {large:?}");
+}
+
+#[test]
 fn test_incremental_recovery_before_changed_nonterminal_extra() {
     let language = get_test_fixture_language("incremental_extra_recovery");
     for prefix in ["a ", "a /*gap*/ ", "a #pragma warning disable y\n "] {
