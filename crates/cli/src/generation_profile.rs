@@ -9,11 +9,11 @@ use tree_sitter_generate::{GenerationProfile, parser_fingerprint};
 
 use crate::test::{TestEntry, TestExpectation};
 
-pub fn collect_corpus_inputs(entry: TestEntry, language: &str, inputs: &mut Vec<Vec<u8>>) {
+pub fn collect_corpus_inputs(entry: TestEntry, languages: &[String], inputs: &mut Vec<Vec<u8>>) {
     match entry {
         TestEntry::Group { children, .. } => {
             for child in children {
-                collect_corpus_inputs(child, language, inputs);
+                collect_corpus_inputs(child, languages, inputs);
             }
         }
         TestEntry::Example {
@@ -21,10 +21,9 @@ pub fn collect_corpus_inputs(entry: TestEntry, language: &str, inputs: &mut Vec<
         } => {
             if attributes.platform
                 && attributes.expectation != TestExpectation::Skip
-                && attributes
-                    .languages
-                    .iter()
-                    .any(|name| name.is_empty() || name.as_ref() == language)
+                && attributes.languages.iter().any(|name| {
+                    name.is_empty() || languages.iter().any(|language| name.as_ref() == language)
+                })
             {
                 inputs.push(input);
             }

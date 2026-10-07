@@ -37,7 +37,22 @@ tree-sitter generate --abi 16 --profile profile.json
 tree-sitter build
 ```
 
-A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. `profile` accepts additional source files and repeated `--corpus` paths relative to the working directory. Use `--grammar-path` to select a grammar in a repository with several grammars. Pass `--disable-optimizations` to both generation and recording when using that generation mode. Corpus examples marked as skipped, excluded on this platform, or restricted to other languages are omitted. Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout.
+A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Pass `--disable-optimizations` to both generation and recording when using that generation mode. Corpus examples marked as skipped, excluded on this platform, or restricted to other languages are omitted. Language tags match the selected grammar's names in `tree-sitter.json`, including aliases sharing its path; without a matching configuration, they match the grammar name.
+
+`profile` accepts additional source files and repeated `--corpus` paths. Corpus, source, and output paths resolve relative to the process working directory, even when `--grammar-path` selects a different directory. For example, from a repository root with a grammar in `typescript/` and shared examples in `test/corpus/`:
+
+```sh
+tree-sitter generate typescript/grammar.js --abi 16
+tree-sitter profile --grammar-path typescript --output profile.json --corpus test/corpus
+tree-sitter generate typescript/grammar.js --abi 16 --profile profile.json
+```
+
+Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The [parser_study example](crates/cli/examples/parser_study.rs) measures both and reports tree hashes and error status:
+
+```sh
+cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- native <language> <src-directory> <input>...
+cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- wasm <language> <wasm-file> <input>...
+```
 
 `build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `s`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
 

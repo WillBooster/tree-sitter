@@ -97,10 +97,10 @@ struct Profile {
     /// The path to the grammar directory containing the unprofiled parser
     #[arg(long, short = 'p')]
     grammar_path: Option<PathBuf>,
-    /// Write the generation profile to this file
+    /// Write the generation profile to this file, relative to the working directory
     #[arg(long, short)]
     output: PathBuf,
-    /// Read training examples from a corpus file or directory (repeatable)
+    /// Read a corpus file or directory, relative to the working directory (repeatable)
     #[arg(long)]
     corpus: Vec<PathBuf>,
     /// Match a parser generated with --disable-optimizations
@@ -1092,11 +1092,12 @@ impl Profile {
             source == baseline,
             "profile requires unprofiled source from this generator; run tree-sitter generate --abi 16 with matching optimization options first"
         );
+        let languages = Self::corpus_languages(current_dir, language.name().unwrap_or_default())?;
         let mut inputs = Vec::new();
         for path in self.corpus {
             tree_sitter_cli::generation_profile::collect_corpus_inputs(
                 test::parse_tests(&path)?,
-                language.name().unwrap_or_default(),
+                &languages,
                 &mut inputs,
             );
         }
@@ -1116,6 +1117,29 @@ impl Profile {
         fs::write(&self.output, serde_json::to_vec(&profile)?)
             .with_context(|| format!("Failed to write profile {}", self.output.display()))?;
         Ok(())
+    }
+
+    fn corpus_languages(grammar_path: &Path, fallback: &str) -> Result<Vec<String>> {
+        let grammar_path = grammar_path.canonicalize()?;
+        for root in grammar_path.ancestors() {
+            if root.join("tree-sitter.json").exists() {
+                let languages = loader::TreeSitterJSON::from_file(root)?
+                    .grammars
+                    .into_iter()
+                    .filter(|grammar| {
+                        root.join(grammar.path.as_deref().unwrap_or_else(|| Path::new(".")))
+                            .canonicalize()
+                            .is_ok_and(|path| path == grammar_path)
+                    })
+                    .map(|grammar| grammar.name)
+                    .collect::<Vec<_>>();
+                if !languages.is_empty() {
+                    return Ok(languages);
+                }
+                break;
+            }
+        }
+        Ok(vec![fallback.to_owned()])
     }
 }
 

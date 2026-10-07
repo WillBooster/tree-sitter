@@ -169,6 +169,65 @@ fn profile_requires_matching_generation_optimization_mode() {
 }
 
 #[test]
+fn profile_uses_configured_language_aliases_and_working_directory_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let cache = root.join("cache");
+    fs::create_dir_all(root.join("grammars/words/src")).unwrap();
+    fs::write(root.join("grammars/words/src/grammar.json"), r#"{"name":"my_lang","rules":{"source":{"type":"REPEAT","content":{"type":"PATTERN","value":"[a-z]+"}}}}"#).unwrap();
+    fs::write(root.join("tree-sitter.json"), r#"{"grammars":[{"name":"my-lang","scope":"source.words","path":"grammars/words"},{"name":"word-alias","scope":"source.alias","path":"grammars/words/."},{"name":"other","scope":"source.other","path":"grammars/other"}],"metadata":{"version":"1.0.0"}}"#).unwrap();
+    fs::create_dir_all(root.join("test/corpus")).unwrap();
+    let corpus = |tag: &str| {
+        format!("===\nWords\n:language({tag})\n===\none two three four\n---\n(source)\n")
+    };
+    fs::write(root.join("test/corpus/words.txt"), corpus("my-lang")).unwrap();
+    let generated = profile_command(
+        root,
+        &cache,
+        &["generate", "grammars/words/src/grammar.json", "--abi", "16"],
+    )
+    .output()
+    .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let args = [
+        "profile",
+        "--grammar-path",
+        "grammars/words",
+        "--output",
+        "profile.json",
+        "--corpus",
+        "test/corpus",
+    ];
+    let recorded = profile_command(root, &cache, &args).output().unwrap();
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    let profile = fs::read(root.join("profile.json")).unwrap();
+    assert!(!root.join("grammars/words/profile.json").exists());
+    fs::write(root.join("test/corpus/words.txt"), corpus("word-alias")).unwrap();
+    let alias = profile_command(root, &cache, &args).output().unwrap();
+    assert!(
+        alias.status.success(),
+        "{}",
+        String::from_utf8_lossy(&alias.stderr)
+    );
+    assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
+    for tag in ["my_lang", "other"] {
+        fs::write(root.join("test/corpus/words.txt"), corpus(tag)).unwrap();
+        let rejected = profile_command(root, &cache, &args).output().unwrap();
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("at least one training input"));
+        assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
+    }
+}
+
+#[test]
 fn concurrent_same_name_checkouts_record_their_own_parser() {
     let directory = tempfile::tempdir().unwrap();
     let cache = directory.path().join("shared-cache");
