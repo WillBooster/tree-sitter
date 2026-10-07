@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
+use log::warn;
 use tree_sitter::Parser;
 use tree_sitter_generate::{GenerationProfile, parser_fingerprint};
 
@@ -34,8 +35,8 @@ pub fn collect_corpus_inputs(
                             .iter()
                             .any(|language| tag.as_ref() == language)
                     {
-                        eprintln!(
-                            "Warning: {}: corpus example '{name}' references unknown language '{tag}'",
+                        warn!(
+                            "{}: corpus example '{name}' references unknown language '{tag}'",
                             file_name.as_deref().unwrap_or("corpus")
                         );
                     }

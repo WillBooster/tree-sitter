@@ -1125,7 +1125,7 @@ impl Profile {
             tree_sitter_cli::generation_profile::record_profile(&mut parser, &source, &inputs)?;
         fs::write(&self.output, serde_json::to_vec(&profile)?)
             .with_context(|| format!("Failed to write profile {}", self.output.display()))?;
-        eprintln!(
+        info!(
             "Recorded a generation profile from {corpus_inputs} corpus inputs ({corpus_examples} examples examined) and {source_files} source files"
         );
         Ok(())
