@@ -3578,6 +3578,38 @@ fn test_parsing_external_indentation_at_eof_after_padding() {
 }
 
 #[test]
+fn test_parsing_truncated_bash_with_missing_tokens_at_eof() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("bash")).unwrap();
+
+    for (source, expected) in [
+        (
+            "\n(\n  ./start-server --port=80\n) &\n\ntime ( cd tests && sh run-tests.sh ",
+            "(program (subshell (command name: (command_name (word)) argument: (word))) (command name: (command_name (word)) (subshell (list (command name: (command_name (word)) argument: (word)) (command name: (command_name (word)) argument: (word))) (MISSING \")\"))))",
+        ),
+        (
+            "\nif (( 1 < 2 ? 1 : 2 )); then\n\treturn 1\n",
+            "(program (if_statement condition: (command name: (command_name (arithmetic_expansion (ternary_expression condition: (binary_expression left: (number) right: (number)) consequence: (number) alternative: (number))))) (command name: (command_name (word)) argument: (number)) (MISSING \"fi\")))",
+        ),
+        (
+            "\nwhoami | cat\ncat foo | ",
+            "(program (pipeline (command name: (command_name (word))) (command name: (command_name (word)))) (pipeline (command name: (command_name (word)) argument: (word)) (command name: (command_name (MISSING word)))))",
+        ),
+        (
+            "\na | b && c && d; d e f || ",
+            "(program (list (list (pipeline (command name: (command_name (word))) (command name: (command_name (word)))) (command name: (command_name (word)))) (command name: (command_name (word)))) (list (command name: (command_name (word)) argument: (word) argument: (word)) (command name: (command_name (MISSING word)))))",
+        ),
+        (
+            "\n$(eval ec",
+            "(program (command name: (command_name (command_substitution (command name: (command_name (word)) argument: (word)) (MISSING \")\")))))",
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
+    }
+}
+
+#[test]
 fn test_parsing_by_halting_at_offset() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();

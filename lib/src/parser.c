@@ -514,6 +514,8 @@ static bool ts_parser__can_reuse_first_leaf(
     keyword_is_reusable;
 }
 
+static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
+
 static Subtree ts_parser__lex(
   TSParser *self,
   StackVersion version,
@@ -581,23 +583,14 @@ static Subtree ts_parser__lex(
           external_scanner_state_len
         );
 
-        // Avoid infinite loops caused by the external scanner returning empty tokens.
-        // Empty tokens are needed in some circumstances, e.g. indent/dedent tokens
-        // in Python. Ignore the following classes of empty tokens:
-        //
-        // * Tokens produced during error recovery. When recovering from an error,
-        //   all tokens are allowed, so it's easy to accidentally return unwanted
-        //   empty tokens.
-        // * Tokens that are marked as 'extra' in the grammar. These don't change
-        //   the parse state, so they would definitely cause an infinite loop.
-        if (
-          self->lexer.token_end_position.bytes <= current_position.bytes &&
-          (!external_scanner_state_changed || recovery_at_eof)
-        ) {
+        if (self->lexer.token_end_position.bytes <= current_position.bytes) {
           TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
+          bool unusable_eof_token = internal_eof && !recovery_at_eof &&
+            !ts_parser__eof_token_is_usable(self, version, symbol);
           TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
           bool token_is_extra = (next_parse_state == parse_state);
-          if (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra) {
+          if ((!external_scanner_state_changed || recovery_at_eof || unusable_eof_token) &&
+              (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra)) {
             LOG(
               "ignore_empty_external_token symbol:%s",
               SYM_NAME(self->language->external_scanner.symbol_map[self->lexer.data.result_symbol])
@@ -808,6 +801,30 @@ static Subtree ts_parser__lex(
     ts_subtree_total_size(result).bytes
   );
   return result;
+}
+
+static bool ts_parser__eof_token_is_usable(
+  TSParser *self,
+  StackVersion version,
+  TSSymbol lookahead
+) {
+  ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
+  StackSummary *summary = ts_stack_get_summary(self->stack, version);
+  for (unsigned i = 0; i < summary->size; i++) {
+    TSStateId state = array_get(summary, i)->state;
+    if (state == ERROR_STATE) continue;
+    if (ts_language_has_actions(self->language, state, lookahead)) return true;
+    LookaheadIterator iterator = ts_language_lookaheads(self->language, state);
+    while (ts_lookahead_iterator__next(&iterator)) {
+      if (iterator.symbol == 0 || iterator.symbol >= self->language->token_count) continue;
+      TSStateId next_state = ts_language_next_state(self->language, state, iterator.symbol);
+      if (next_state != 0 && next_state != state &&
+          ts_language_has_reduce_action(self->language, next_state, lookahead)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 static Subtree ts_parser__get_cached_token(
