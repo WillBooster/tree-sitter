@@ -30,6 +30,110 @@ use crate::{
 };
 
 #[test]
+fn test_recovery_lexer_preserves_keyword_tokens() {
+    for (abi, precedence) in [(15, 0), (15, 1), (16, 0), (16, 1)] {
+        let grammar =
+        r#"{
+            "name": "recovery_keywords_VARIANT",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "declaration"},
+                    {"type": "SYMBOL", "name": "class_declaration"}
+                ]}},
+                "declaration": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "let"},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "="},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": ";"}
+                ]},
+                "class_declaration": {"type": "SEQ", "members": [
+                    {"type": "TOKEN", "content": {"type": "PREC", "value": PRECEDENCE, "content": {"type": "STRING", "value": "class"}}},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": ";"}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#.replace("PRECEDENCE", &precedence.to_string()).replace("VARIANT", &format!("{abi}_{precedence}"));
+        let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+        let keywords = (0..64)
+            .map(|i| serde_json::json!({"type": "STRING", "value": format!("keyword{}{}", char::from(b'a' + i / 26), char::from(b'a' + i % 26))}))
+            .collect::<Vec<_>>();
+        grammar["rules"]["source_file"]["content"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": keywords}, {"type": "STRING", "value": ";"}
+            ]}));
+        let (name, code) = generate_parser_with_abi(&grammar.to_string(), abi).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, None))
+            .unwrap();
+        assert_eq!(parser.language().unwrap().abi_version(), abi);
+        for (source, word, expected) in [
+            ("let x = y class;", "class", "class"),
+            ("let x = y classmate;", "classmate", "identifier"),
+            ("let x = class;", "class", "identifier"),
+            ("class c;", "class", "class"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let start = source.find(word).unwrap();
+            let node = tree
+                .root_node()
+                .descendant_for_byte_range(start, start + word.len())
+                .unwrap();
+            assert_eq!(
+                node.kind(),
+                expected,
+                "{source}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(node.byte_range(), start..start + word.len());
+        }
+    }
+}
+
+#[test]
+fn test_keyword_recovery_preserves_contextual_method_names() {
+    use tree_sitter::{Query, StreamingIterator};
+    for language in ["javascript", "typescript/typescript", "typescript/tsx"] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        for (source, error_text) in [
+            ("{with finally(){}};", "with"),
+            ("class A { x finally() {} }", "x"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let query = Query::new(
+                &parser.language().unwrap(),
+                "(method_definition name: (property_identifier) @name) (ERROR) @error",
+            )
+            .unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+            let mut captures = Vec::new();
+            while let Some(m) = matches.next() {
+                for capture in m.captures() {
+                    captures.push((
+                        query.capture_names()[capture.index as usize],
+                        capture.node.utf8_text(source.as_bytes()).unwrap(),
+                    ));
+                }
+            }
+            assert_eq!(
+                captures,
+                vec![("error", error_text), ("name", "finally")],
+                "{language}: {source}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+#[test]
 fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
     use std::{fs, path::Path};
     use tree_sitter_generate::{

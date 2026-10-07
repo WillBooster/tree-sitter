@@ -677,10 +677,10 @@ static Subtree ts_parser__lex(
     if (found_external_token) {
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
-      TSStateId keyword_state = error_mode ? ERROR_STATE : parse_state;
       uint32_t end_byte = self->lexer.token_end_position.bytes;
       uint32_t start_byte = self->lexer.token_start_position.bytes;
       bool bulk_keyword = false;
+      TSSymbol candidate = 0;
       if (self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
           && self->language->keyword_lookup_fn && self->lexer.input.encoding == TSInputEncodingUTF8
           && start_byte >= self->lexer.chunk_start
@@ -704,9 +704,7 @@ static Subtree ts_parser__lex(
             }
             if (bulk_keyword) {
               is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
-              TSSymbol candidate = (TSSymbol)keyword;
-              if (candidate && (ts_language_has_actions(self->language, keyword_state, candidate)
-                  || ts_language_is_reserved_word(self->language, keyword_state, candidate))) symbol = candidate;
+              candidate = (TSSymbol)keyword;
             }
           }
         }
@@ -717,15 +715,34 @@ static Subtree ts_parser__lex(
 
         is_keyword = ts_parser__call_keyword_lex_fn(self);
 
-        if (
-          is_keyword &&
-          self->lexer.token_end_position.bytes == end_byte &&
-          (
-            ts_language_has_actions(self->language, keyword_state, self->lexer.data.result_symbol) ||
-            ts_language_is_reserved_word(self->language, keyword_state, self->lexer.data.result_symbol)
-          )
-        ) {
-          symbol = self->lexer.data.result_symbol;
+        if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
+          candidate = self->lexer.data.result_symbol;
+        }
+      }
+
+      if (candidate) {
+        bool keyword_is_valid =
+          ts_language_has_actions(self->language, parse_state, candidate) ||
+          ts_language_is_reserved_word(self->language, parse_state, candidate);
+        bool recovery_accepts_keyword = false;
+        if (!keyword_is_valid && !ts_language_has_actions(self->language, parse_state, symbol)) {
+          if (parse_state != ERROR_STATE) {
+            ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
+          }
+          StackSummary *summary = ts_stack_get_summary(self->stack, version);
+          if (summary) {
+            for (unsigned i = 0; i < summary->size; i++) {
+              TSStateId state = array_get(summary, i)->state;
+              if (state != ERROR_STATE && ts_language_has_actions(self->language, state, candidate)) {
+                recovery_accepts_keyword = true;
+                break;
+              }
+            }
+          }
+        }
+        if (keyword_is_valid || recovery_accepts_keyword) {
+          is_keyword = keyword_is_valid;
+          symbol = candidate;
         }
       }
     }
