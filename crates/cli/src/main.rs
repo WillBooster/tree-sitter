@@ -51,6 +51,8 @@ enum Commands {
     Init(Init),
     /// Generate a parser
     Generate(Generate),
+    /// Record a generation profile from an ABI 16 parser
+    Profile(Profile),
     /// Compile a parser
     Build(Build),
     /// Parse files
@@ -87,6 +89,22 @@ struct Init {
     /// The path to the tree-sitter grammar directory
     #[arg(long, short = 'p')]
     pub grammar_path: Option<PathBuf>,
+}
+
+#[derive(Args)]
+#[command(group(ArgGroup::new("training").required(true).multiple(true).args(["corpus", "paths"])))]
+struct Profile {
+    /// The path to the grammar directory containing the unprofiled parser
+    #[arg(long, short = 'p')]
+    grammar_path: Option<PathBuf>,
+    /// Write the generation profile to this file
+    #[arg(long, short)]
+    output: PathBuf,
+    /// Read training examples from a corpus file or directory (repeatable)
+    #[arg(long)]
+    corpus: Vec<PathBuf>,
+    /// Additional source files to parse; paths are relative to the working directory
+    paths: Vec<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1024,6 +1042,39 @@ impl Generate {
             loader.debug_build(self.debug_build);
             loader.languages_at_path(current_dir)?;
         }
+        Ok(())
+    }
+}
+
+impl Profile {
+    fn run(self, mut loader: loader::Loader, current_dir: &Path) -> Result<()> {
+        let src = current_dir.join("src");
+        let source = fs::read_to_string(src.join("parser.c"))?;
+        loader.force_rebuild(true);
+        let language =
+            loader.load_language_at_path(loader::CompileConfig::new(&src, None, None))?;
+        let mut inputs = Vec::new();
+        for path in self.corpus {
+            tree_sitter_cli::generation_profile::collect_corpus_inputs(
+                test::parse_tests(&path)?,
+                language.name().unwrap_or_default(),
+                &mut inputs,
+            );
+        }
+        for path in self.paths {
+            inputs.push(
+                fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?,
+            );
+        }
+        anyhow::ensure!(
+            !inputs.is_empty(),
+            "profile requires at least one training input"
+        );
+        let mut parser = Parser::new();
+        parser.set_language(&language)?;
+        let profile =
+            tree_sitter_cli::generation_profile::record_profile(&mut parser, &source, &inputs)?;
+        fs::write(self.output, serde_json::to_vec(&profile)?)?;
         Ok(())
     }
 }
@@ -2112,6 +2163,7 @@ fn run() -> Result<()> {
 
     let current_dir = match &command {
         Commands::Init(Init { grammar_path, .. })
+        | Commands::Profile(Profile { grammar_path, .. })
         | Commands::Parse(Parse { grammar_path, .. })
         | Commands::Test(Test { grammar_path, .. })
         | Commands::Version(Version { grammar_path, .. })
@@ -2135,6 +2187,7 @@ fn run() -> Result<()> {
         Commands::InitConfig(_) => InitConfig::run()?,
         Commands::Init(init_options) => init_options.run(&current_dir)?,
         Commands::Generate(generate_options) => generate_options.run(loader, &current_dir)?,
+        Commands::Profile(profile_options) => profile_options.run(loader, &current_dir)?,
         Commands::Build(build_options) => build_options.run(loader, &current_dir)?,
         Commands::Parse(parse_options) => parse_options.run(loader, &current_dir)?,
         Commands::Test(test_options) => test_options.run(loader, &current_dir)?,

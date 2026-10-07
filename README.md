@@ -28,21 +28,16 @@ The CLI defaults to ABI 15. Use `tree-sitter generate --abi 16` for shared parse
 
 Completed-token keyword lookup shares a table with the keyword lexer. It requires ASCII transitions, including skipped separators. Grammars with Unicode separators retain branch-based keyword lexing and can still benefit from compact parse tables and profiles.
 
-To record parse-action and lexer-entry frequencies, generate an unprofiled ABI 16 parser first. From this repository's checkout, run the measurement example on representative grammar inputs:
+To record parse-action and lexer-entry frequencies, generate an unprofiled ABI 16 parser first. From the grammar directory:
 
 ```sh
-mise exec -- cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- \
-  --profile /path/to/grammar/profile.json native bash /path/to/grammar/src /path/to/training.sh
-```
-
-Then, from the grammar directory:
-
-```sh
+tree-sitter generate --abi 16
+tree-sitter profile --output profile.json --corpus test/corpus
 tree-sitter generate --abi 16 --profile profile.json
 tree-sitter build
 ```
 
-A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The example also supports `wasm` with a module path in place of the source directory. When recording a Wasm profile, that module's directory must contain `src/parser.c` from the exact unprofiled generation used to build the module.
+A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. `profile` accepts additional source files and repeated `--corpus` paths relative to the working directory. Use `--grammar-path` to select a grammar in a repository with several grammars. Corpus examples marked as skipped, excluded on this platform, or restricted to other languages are omitted. Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout.
 
 `build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `s`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
 

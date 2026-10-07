@@ -7,6 +7,31 @@ use anyhow::{Context, Result, ensure};
 use tree_sitter::Parser;
 use tree_sitter_generate::{GenerationProfile, parser_fingerprint};
 
+use crate::test::{TestEntry, TestExpectation};
+
+pub fn collect_corpus_inputs(entry: TestEntry, language: &str, inputs: &mut Vec<Vec<u8>>) {
+    match entry {
+        TestEntry::Group { children, .. } => {
+            for child in children {
+                collect_corpus_inputs(child, language, inputs);
+            }
+        }
+        TestEntry::Example {
+            input, attributes, ..
+        } => {
+            if attributes.platform
+                && attributes.expectation != TestExpectation::Skip
+                && attributes
+                    .languages
+                    .iter()
+                    .any(|name| name.is_empty() || name.as_ref() == language)
+            {
+                inputs.push(input);
+            }
+        }
+    }
+}
+
 pub fn record_profile(
     parser: &mut Parser,
     source: &str,
