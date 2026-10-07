@@ -520,6 +520,7 @@ static Subtree ts_parser__lex(
   TSStateId parse_state
 ) {
   TSLexerMode lex_mode = ts_language_lex_mode_for_state(self->language, parse_state);
+  const bool has_external_lex_state = lex_mode.external_lex_state != 0;
   if (lex_mode.lex_state == (uint16_t)-1) {
     LOG("no_lookahead_after_non_terminal_extra");
     return NULL_SUBTREE;
@@ -555,7 +556,7 @@ static Subtree ts_parser__lex(
 
     if (lex_mode.external_lex_state != 0 && !internal_only) {
       bool recovery_at_eof = error_mode && (
-        internal_eof || (
+        (internal_eof && !has_external_lex_state) || (
           self->lexer.data.eof(&self->lexer.data) &&
           !ts_stack_has_advanced_since_error(self->stack, version)
         )
