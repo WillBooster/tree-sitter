@@ -549,6 +549,8 @@ static Subtree ts_parser__lex(
     ColumnData column_data = self->lexer.column_data;
 
     if (lex_mode.external_lex_state != 0 && !internal_only) {
+      bool recovery_at_eof = error_mode && self->lexer.data.eof(&self->lexer.data) &&
+        !ts_stack_has_advanced_since_error(self->stack, version);
       LOG(
         "lex_external state:%d, row:%u, column:%u",
         lex_mode.external_lex_state,
@@ -580,9 +582,7 @@ static Subtree ts_parser__lex(
         //   the parse state, so they would definitely cause an infinite loop.
         if (
           self->lexer.token_end_position.bytes <= current_position.bytes &&
-          (!external_scanner_state_changed ||
-           (error_mode && self->lexer.data.eof(&self->lexer.data) &&
-            !ts_stack_has_advanced_since_error(self->stack, version)))
+          (!external_scanner_state_changed || recovery_at_eof)
         ) {
           TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
           TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
