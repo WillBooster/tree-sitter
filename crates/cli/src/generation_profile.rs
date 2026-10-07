@@ -122,7 +122,7 @@ pub fn record_profile(
             .iter()
             .map(|(&(a, b), &count)| (a, b, count))
             .collect(),
-        max_dense_states: state_count.min(256),
+        max_dense_states: state_count.min(128),
     };
     drop(counters);
     Ok(profile)
