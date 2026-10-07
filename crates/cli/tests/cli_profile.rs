@@ -225,6 +225,54 @@ fn profile_uses_configured_language_aliases_and_working_directory_paths() {
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("at least one training input"));
         assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
     }
+    fs::write(root.join("test/corpus/words.txt"), corpus("my_lang")).unwrap();
+    fs::write(root.join("input.txt"), "one two three four").unwrap();
+    for config_root in [root.to_path_buf(), root.join("grammars/words")] {
+        fs::write(
+            config_root.join("tree-sitter.json"),
+            r#"{"metadata":{"version":"1.0.0"}}"#,
+        )
+        .unwrap();
+        let regenerated = profile_command(
+            root,
+            &cache,
+            &["generate", "grammars/words/src/grammar.json", "--abi", "16"],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            regenerated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&regenerated.stderr)
+        );
+        let corpus_recorded = profile_command(root, &cache, &args).output().unwrap();
+        assert!(
+            corpus_recorded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&corpus_recorded.stderr)
+        );
+        let fallback_profile = fs::read(root.join("profile.json")).unwrap();
+        let files_recorded = profile_command(
+            root,
+            &cache,
+            &[
+                "profile",
+                "--grammar-path",
+                "grammars/words",
+                "--output",
+                "files.json",
+                "input.txt",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            files_recorded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&files_recorded.stderr)
+        );
+        assert_eq!(fallback_profile, fs::read(root.join("files.json")).unwrap());
+    }
 }
 
 #[test]

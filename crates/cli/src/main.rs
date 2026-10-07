@@ -1092,7 +1092,11 @@ impl Profile {
             source == baseline,
             "profile requires unprofiled source from this generator; run tree-sitter generate --abi 16 with matching optimization options first"
         );
-        let languages = Self::corpus_languages(current_dir, language.name().unwrap_or_default())?;
+        let languages = if self.corpus.is_empty() {
+            Vec::new()
+        } else {
+            Self::corpus_languages(current_dir, language.name().unwrap_or_default())?
+        };
         let mut inputs = Vec::new();
         for path in self.corpus {
             tree_sitter_cli::generation_profile::collect_corpus_inputs(
@@ -1123,18 +1127,20 @@ impl Profile {
         let grammar_path = grammar_path.canonicalize()?;
         for root in grammar_path.ancestors() {
             if root.join("tree-sitter.json").exists() {
-                let languages = loader::TreeSitterJSON::from_file(root)?
-                    .grammars
-                    .into_iter()
-                    .filter(|grammar| {
-                        root.join(grammar.path.as_deref().unwrap_or_else(|| Path::new(".")))
-                            .canonicalize()
-                            .is_ok_and(|path| path == grammar_path)
-                    })
-                    .map(|grammar| grammar.name)
-                    .collect::<Vec<_>>();
-                if !languages.is_empty() {
-                    return Ok(languages);
+                if let Ok(configuration) = loader::TreeSitterJSON::from_file(root) {
+                    let languages = configuration
+                        .grammars
+                        .into_iter()
+                        .filter(|grammar| {
+                            root.join(grammar.path.as_deref().unwrap_or_else(|| Path::new(".")))
+                                .canonicalize()
+                                .is_ok_and(|path| path == grammar_path)
+                        })
+                        .map(|grammar| grammar.name)
+                        .collect::<Vec<_>>();
+                    if !languages.is_empty() {
+                        return Ok(languages);
+                    }
                 }
                 break;
             }
