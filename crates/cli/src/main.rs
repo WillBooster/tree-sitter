@@ -1047,12 +1047,18 @@ impl Generate {
 }
 
 impl Profile {
-    fn run(self, mut loader: loader::Loader, current_dir: &Path) -> Result<()> {
+    fn run(self, loader: &loader::Loader, current_dir: &Path) -> Result<()> {
         let src = current_dir.join("src");
         let source = fs::read_to_string(src.join("parser.c"))?;
-        loader.force_rebuild(true);
-        let language =
-            loader.load_language_at_path(loader::CompileConfig::new(&src, None, None))?;
+        let library_directory = tempfile::tempdir()?;
+        let library_path = library_directory
+            .path()
+            .join(format!("parser.{}", env::consts::DLL_EXTENSION));
+        let language = loader.load_language_at_path(loader::CompileConfig::new(
+            &src,
+            None,
+            Some(library_path),
+        ))?;
         let mut inputs = Vec::new();
         for path in self.corpus {
             tree_sitter_cli::generation_profile::collect_corpus_inputs(
@@ -2187,7 +2193,7 @@ fn run() -> Result<()> {
         Commands::InitConfig(_) => InitConfig::run()?,
         Commands::Init(init_options) => init_options.run(&current_dir)?,
         Commands::Generate(generate_options) => generate_options.run(loader, &current_dir)?,
-        Commands::Profile(profile_options) => profile_options.run(loader, &current_dir)?,
+        Commands::Profile(profile_options) => profile_options.run(&loader, &current_dir)?,
         Commands::Build(build_options) => build_options.run(loader, &current_dir)?,
         Commands::Parse(parse_options) => parse_options.run(loader, &current_dir)?,
         Commands::Test(test_options) => test_options.run(loader, &current_dir)?,
