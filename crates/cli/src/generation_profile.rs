@@ -114,6 +114,12 @@ pub fn record_profile(
     parser.set_logger(None);
     result?;
     let counters = counters.lock().unwrap();
+    if counters.0.iter().all(|count| *count == 0) {
+        warn!(
+            "profile recorded no parse actions from {} training inputs; check that they exercise this grammar's parse states",
+            inputs.len()
+        );
+    }
     let profile = GenerationProfile {
         fingerprint: parser_fingerprint(source),
         parse_states: counters.0.clone(),

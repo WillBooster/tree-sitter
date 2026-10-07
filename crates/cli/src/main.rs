@@ -1123,10 +1123,11 @@ impl Profile {
         parser.set_language(&language)?;
         let profile =
             tree_sitter_cli::generation_profile::record_profile(&mut parser, &source, &inputs)?;
+        let parse_actions = profile.parse_states.iter().sum::<u64>();
         fs::write(&self.output, serde_json::to_vec(&profile)?)
             .with_context(|| format!("Failed to write profile {}", self.output.display()))?;
         info!(
-            "Recorded a generation profile from {corpus_inputs} corpus inputs ({corpus_examples} examples examined) and {source_files} source files"
+            "Recorded a generation profile from {corpus_inputs} corpus inputs ({corpus_examples} examples examined) and {source_files} source files; {parse_actions} parse actions recorded"
         );
         Ok(())
     }

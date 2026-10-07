@@ -141,6 +141,40 @@ fn profile_requires_matching_generation_optimization_mode() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    fs::write(root.join("empty.txt"), "").unwrap();
+    let empty = profile_command(
+        root,
+        &cache,
+        &[
+            "profile",
+            "--output",
+            "empty.json",
+            "--disable-optimizations",
+            "empty.txt",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert!(empty.status.success());
+    let report = String::from_utf8_lossy(&empty.stderr);
+    assert!(report.contains("profile recorded no parse actions"));
+    assert!(report.contains("0 parse actions recorded"));
+    let empty: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("empty.json")).unwrap()).unwrap();
+    assert!(
+        empty["parse_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|count| count.as_u64() == Some(0))
+    );
+    assert!(
+        empty["lex_states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|count| count.as_u64().unwrap() > 0)
+    );
     let mismatched = profile_command(
         root,
         &cache,
