@@ -485,6 +485,9 @@ static bool ts_parser__can_reuse_first_leaf(
   TSStateId leaf_state = ts_subtree_leaf_parse_state(tree);
   TSLexerMode current_lex_mode = ts_language_lex_mode_for_state(self->language, state);
   TSLexerMode leaf_lex_mode = ts_language_lex_mode_for_state(self->language, leaf_state);
+  bool keyword_is_reusable = leaf_state == state ||
+    (leaf_symbol != self->language->keyword_capture_token && table_entry->is_reusable) ||
+    !ts_subtree_leaf_is_keyword(tree);
 
   // At the end of a non-terminal extra node, the lexer normally returns
   // NULL, which indicates that the parser should look for a reduce action
@@ -499,9 +502,7 @@ static bool ts_parser__can_reuse_first_leaf(
     (
       leaf_symbol != self->language->keyword_capture_token ||
       (!ts_subtree_is_keyword(tree) && ts_subtree_parse_state(tree) == state)
-    ) && (
-      leaf_state == state || !ts_subtree_leaf_is_keyword(tree)
-    )
+    ) && keyword_is_reusable
   ) return true;
 
   // Empty tokens are not reusable in states with different lookaheads.
@@ -510,7 +511,7 @@ static bool ts_parser__can_reuse_first_leaf(
   // If the current state allows external tokens or other tokens that conflict with this
   // token, this token is not reusable.
   return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable &&
-    (leaf_state == state || !ts_subtree_leaf_is_keyword(tree));
+    keyword_is_reusable;
 }
 
 static Subtree ts_parser__lex(
