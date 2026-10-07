@@ -48,6 +48,10 @@ pub struct GenerationProfile {
     pub max_dense_states: usize,
 }
 
+impl GenerationProfile {
+    pub const SOURCE_MARKER: &'static str = "#define TS_GENERATION_PROFILED 1";
+}
+
 #[must_use]
 pub fn parser_fingerprint(source: &str) -> String {
     let hash = source
@@ -745,6 +749,9 @@ impl Generator {
     }
 
     fn add_stats(&mut self) {
+        if self.profile.is_some() {
+            add_line!(self, "{}", GenerationProfile::SOURCE_MARKER);
+        }
         let token_count = self
             .parse_table
             .symbols

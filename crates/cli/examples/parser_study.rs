@@ -9,6 +9,7 @@ use tree_sitter::{InputEdit, Parser, Point, Tree};
 use tree_sitter_loader::{CompileConfig, Loader};
 
 fn main() -> Result<()> {
+    tree_sitter_cli::logger::init();
     let mut args = env::args().skip(1).collect::<Vec<_>>();
     let profile_path = if args.first().is_some_and(|arg| arg == "--profile") {
         ensure!(args.len() >= 2, "--profile requires an output path");
