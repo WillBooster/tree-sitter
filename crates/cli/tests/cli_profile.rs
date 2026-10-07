@@ -29,10 +29,10 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
         );
     };
     success(&["generate", "src/grammar.json"]);
+    let rejected = run(&["profile", "--output", "profile.json", "input.txt"]);
+    assert!(!rejected.status.success());
     assert!(
-        !run(&["profile", "--output", "profile.json", "input.txt"])
-            .status
-            .success()
+        String::from_utf8_lossy(&rejected.stderr).contains("profile requires an ABI 16 parser")
     );
     assert!(!root.join("profile.json").exists());
     success(&["generate", "src/grammar.json", "--abi", "16"]);
@@ -63,6 +63,10 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
         "profile.json",
     ]);
     let generated = fs::read(root.join("src/parser.c")).unwrap();
+    let rejected = run(&["profile", "--output", "profile.json", "input.txt"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("requires unprofiled source"));
+    assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
     fs::write(
         root.join("src/grammar.json"),
         r#"{"name":"profile_test","rules":{"source":{"type":"STRING","value":"changed"}}}"#,

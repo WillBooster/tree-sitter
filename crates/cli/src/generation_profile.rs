@@ -38,6 +38,12 @@ pub fn record_profile(
     inputs: &[Vec<u8>],
 ) -> Result<GenerationProfile> {
     ensure!(
+        !source
+            .lines()
+            .any(|line| line == GenerationProfile::SOURCE_MARKER),
+        "profile requires unprofiled source; run tree-sitter generate --abi 16 first"
+    );
+    ensure!(
         parser
             .language()
             .is_some_and(|language| language.abi_version() >= 16),
