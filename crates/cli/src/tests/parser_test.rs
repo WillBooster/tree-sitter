@@ -3565,6 +3565,19 @@ fn test_parsing_get_column_at_eof() {
 }
 
 #[test]
+fn test_parsing_external_indentation_at_eof_after_padding() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("uses_current_column"))
+        .unwrap();
+
+    for source in ["do", "do ", "do  ", "do\t", "do\n"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(ERROR)", "{source:?}");
+    }
+}
+
+#[test]
 fn test_parsing_by_halting_at_offset() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();

@@ -532,6 +532,7 @@ static Subtree ts_parser__lex(
   bool error_mode = parse_state == ERROR_STATE;
   bool skipped_error = false;
   bool retry_internal = false;
+  bool internal_eof = false;
   bool internal_already_failed = false;
   Length failed_internal_position = length_zero();
   Length failed_internal_token_start = length_zero();
@@ -553,8 +554,12 @@ static Subtree ts_parser__lex(
     ColumnData column_data = self->lexer.column_data;
 
     if (lex_mode.external_lex_state != 0 && !internal_only) {
-      bool recovery_at_eof = error_mode && self->lexer.data.eof(&self->lexer.data) &&
-        !ts_stack_has_advanced_since_error(self->stack, version);
+      bool recovery_at_eof = error_mode && (
+        internal_eof || (
+          self->lexer.data.eof(&self->lexer.data) &&
+          !ts_stack_has_advanced_since_error(self->stack, version)
+        )
+      );
       LOG(
         "lex_external state:%d, row:%u, column:%u",
         lex_mode.external_lex_state,
@@ -629,6 +634,7 @@ static Subtree ts_parser__lex(
       ts_lexer_finish(&self->lexer, &lookahead_end_byte);
     }
     if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
+      internal_eof = true;
       ts_lexer_reset(&self->lexer, start_position);
       continue;
     }
@@ -638,6 +644,7 @@ static Subtree ts_parser__lex(
     )) break;
 
     if (!error_mode) {
+      internal_eof = found_token && self->lexer.data.result_symbol == ts_builtin_sym_end;
       error_mode = true;
       lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
       ts_lexer_reset(&self->lexer, start_position);
