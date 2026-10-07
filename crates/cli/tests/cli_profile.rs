@@ -225,6 +225,25 @@ fn profile_uses_configured_language_aliases_and_working_directory_paths() {
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("at least one training input"));
         assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
     }
+    #[cfg(unix)]
+    {
+        fs::create_dir(root.join("logical")).unwrap();
+        std::os::unix::fs::symlink(root.join("grammars/words"), root.join("logical/grammar"))
+            .unwrap();
+        fs::write(root.join("logical/tree-sitter.json"), r#"{"grammars":[{"name":"logical-alias","scope":"source.words","path":"grammar"}],"metadata":{"version":"1.0.0"}}"#).unwrap();
+        fs::write(root.join("test/corpus/words.txt"), corpus("logical-alias")).unwrap();
+        let mut linked_args = args;
+        linked_args[2] = "logical/grammar";
+        let linked = profile_command(root, &cache, &linked_args)
+            .output()
+            .unwrap();
+        assert!(
+            linked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&linked.stderr)
+        );
+        assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
+    }
     fs::write(root.join("test/corpus/words.txt"), corpus("my_lang")).unwrap();
     fs::write(root.join("input.txt"), "one two three four").unwrap();
     for config_root in [root.to_path_buf(), root.join("grammars/words")] {

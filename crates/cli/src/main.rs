@@ -1124,8 +1124,9 @@ impl Profile {
     }
 
     fn corpus_languages(grammar_path: &Path, fallback: &str) -> Result<Vec<String>> {
-        let grammar_path = grammar_path.canonicalize()?;
-        for root in grammar_path.ancestors() {
+        let selected_path = std::path::absolute(grammar_path)?;
+        let grammar_path = selected_path.canonicalize()?;
+        for root in selected_path.ancestors() {
             if root.join("tree-sitter.json").exists() {
                 if let Ok(configuration) = loader::TreeSitterJSON::from_file(root) {
                     let languages = configuration
