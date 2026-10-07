@@ -658,6 +658,47 @@ pub struct LanguageConfiguration<'a> {
     _phantom: PhantomData<&'a ()>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum OptimizationLevel {
+    O2,
+    O3,
+    Size,
+    MinimumSize,
+}
+
+impl OptimizationLevel {
+    #[must_use]
+    pub const fn level(self) -> &'static str {
+        match self {
+            Self::O2 => "2",
+            Self::O3 => "3",
+            Self::Size => "s",
+            Self::MinimumSize => "z",
+        }
+    }
+    const fn flag(self) -> &'static str {
+        match self {
+            Self::O2 => "-O2",
+            Self::O3 => "-O3",
+            Self::Size => "-Os",
+            Self::MinimumSize => "-Oz",
+        }
+    }
+}
+
+impl std::str::FromStr for OptimizationLevel {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "2" => Ok(Self::O2),
+            "3" => Ok(Self::O3),
+            "s" => Ok(Self::Size),
+            "z" => Ok(Self::MinimumSize),
+            _ => Err("optimization must be 2, 3, s, or z".into()),
+        }
+    }
+}
+
 pub struct Loader {
     pub parser_lib_path: PathBuf,
     languages_by_id: Vec<(PathBuf, OnceCell<Language>, Option<Vec<PathBuf>>)>,
@@ -670,6 +711,7 @@ pub struct Loader {
     #[cfg(feature = "tree-sitter-highlight")]
     use_all_highlight_names: bool,
     debug_build: bool,
+    optimization_level: Option<OptimizationLevel>,
     sanitize_build: bool,
     force_rebuild: bool,
     verbose: bool,
@@ -817,6 +859,7 @@ impl Loader {
             #[cfg(feature = "tree-sitter-highlight")]
             use_all_highlight_names: true,
             debug_build: false,
+            optimization_level: None,
             sanitize_build: false,
             force_rebuild: false,
             verbose: false,
@@ -1118,6 +1161,9 @@ impl Loader {
         mut config: CompileConfig,
     ) -> LoaderResult<Language> {
         let mut lib_name = config.name.clone();
+        if let Some(optimization) = self.optimization_level {
+            lib_name.push_str(optimization.flag());
+        }
         let language_fn_name = format!("tree_sitter_{}", config.name.replace('-', "_"));
         if self.debug_build {
             lib_name.push_str(".debug._");
@@ -1293,7 +1339,13 @@ impl Loader {
         if self.debug_build {
             cc_config.opt_level(0).extra_warnings(true);
         } else {
-            cc_config.opt_level(2).extra_warnings(false);
+            cc_config
+                .opt_level_str(
+                    self.optimization_level
+                        .unwrap_or(OptimizationLevel::O2)
+                        .level(),
+                )
+                .extra_warnings(false);
         }
 
         for flag in config.flags {
@@ -1469,7 +1521,13 @@ impl Loader {
             "-fPIC",
             "-shared",
             "--no-wasm-opt",
-            if self.debug_build { "-g" } else { "-Os" },
+            if self.debug_build {
+                "-g"
+            } else {
+                self.optimization_level
+                    .unwrap_or(OptimizationLevel::Size)
+                    .flag()
+            },
             format!("-Wl,--export=tree_sitter_{language_name}").as_str(),
             "-Wl,--allow-undefined",
             "-Wl,--no-entry",
@@ -1509,9 +1567,14 @@ impl Loader {
         }
 
         let mut opt_command = Command::new(&wasm_opt_exe);
-        opt_command
-            .current_dir(src_path)
-            .args([temp_output_str, "-Os", "-o", temp_output_str]);
+        opt_command.current_dir(src_path).args([
+            temp_output_str,
+            self.optimization_level
+                .unwrap_or(OptimizationLevel::Size)
+                .flag(),
+            "-o",
+            temp_output_str,
+        ]);
 
         if self.verbose {
             display_build_cmd(&opt_command);
@@ -2056,6 +2119,10 @@ impl Loader {
         } else {
             Err(LoaderError::NoLanguage)
         }
+    }
+
+    pub const fn optimization_level(&mut self, level: OptimizationLevel) {
+        self.optimization_level = Some(level);
     }
 
     pub const fn debug_build(&mut self, flag: bool) {

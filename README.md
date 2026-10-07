@@ -22,6 +22,42 @@ Releases from v1.0.7 on carry the CLI as `tree-sitter-cli-<platform>.tar.gz` for
 `tree-sitter fuzz` on this runtime without building it. A workflow attaches the archives after a release is published,
 so the newest release lacks them for a while.
 
+## Parser generation and tuning
+
+The CLI defaults to ABI 15. Use `tree-sitter generate --abi 16` for shared parse rows, bitmap-ranked sparse lookup, and compact metadata. These parsers require a runtime supporting ABI 16.
+
+Completed-token keyword lookup shares a table with the keyword lexer. It requires ASCII transitions, including skipped separators. Grammars with Unicode separators retain branch-based keyword lexing and can still benefit from compact parse tables and profiles.
+
+To record parse-action and lexer-entry frequencies, generate an unprofiled ABI 16 parser first. From the grammar directory:
+
+```sh
+tree-sitter generate --abi 16
+tree-sitter profile --output profile.json --corpus test/corpus
+tree-sitter generate --abi 16 --profile profile.json
+tree-sitter build
+```
+
+A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Pass `--disable-optimizations` to both generation and recording when using that generation mode. Corpus examples marked as skipped, excluded on this platform, or restricted to other languages are omitted. Language tags match the selected grammar's names in `tree-sitter.json`, including aliases sharing its path; without a matching configuration, they match the grammar name. Unknown tags produce warnings. Successful recording reports the examined corpus examples, recorded corpus/file counts, and parse-action total. Recording warns when no parse actions were captured. Empty and malformed inputs remain accepted for EOF, lexical, and recovery training, but zero-action profiles provide no frequency guidance for parse-state ordering.
+
+`profile` accepts additional source files and repeated `--corpus` paths. Corpus, source, and output paths resolve relative to the process working directory, even when `--grammar-path` selects a different directory. For example, from a repository root with a grammar in `typescript/` and shared examples in `test/corpus/`:
+
+```sh
+tree-sitter generate typescript/grammar.js --abi 16
+tree-sitter profile --grammar-path typescript --output profile.json --corpus test/corpus
+tree-sitter generate typescript/grammar.js --abi 16 --profile profile.json
+```
+
+Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The [parser_study example](crates/cli/examples/parser_study.rs) measures both and reports tree hashes and error status:
+
+```sh
+cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- native <language> <src-directory> <input>...
+cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- wasm <language> <wasm-file> <input>...
+```
+
+Add `--profile <output.json>` before `native` or `wasm` to record frequencies from these inputs. Recording requires an unprofiled ABI 16 parser. Native recording reads `<src-directory>/parser.c`; Wasm recording reads `src/parser.c` in the module's directory, which must contain the exact unprofiled source used to build that module.
+
+`build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `s`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
+
 Tree-sitter is a parser generator tool and an incremental parsing library. It can build a concrete syntax tree for a source file and efficiently update the syntax tree as the source file is edited. Tree-sitter aims to be:
 
 - **General** enough to parse any programming language

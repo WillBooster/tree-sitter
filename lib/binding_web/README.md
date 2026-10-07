@@ -185,7 +185,7 @@ If everything is fine, file `tree-sitter-javascript.wasm` should be generated in
 
 ### Wasm compatibility
 
-`@willbooster/web-tree-sitter` loads parsers of ABI versions 13 to 15.
+`@willbooster/web-tree-sitter` loads parsers of ABI versions 13 to 16. Compact ABI 16 parsers require this runtime's ABI 16 support.
 
 > [!WARNING]
 > Some prebuilt `.wasm` files use an older dynamic-linking format that newer versions of `web-tree-sitter` cannot

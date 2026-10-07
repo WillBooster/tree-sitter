@@ -456,7 +456,7 @@ static bool ts_parser__external_scanner_scan(
     bool result = ts_wasm_store_call_scanner_scan(
       self->wasm_store,
       (uintptr_t)self->external_scanner_payload,
-      external_lex_state * self->language->external_token_count
+      external_lex_state * ts_language_external_state_stride(self->language)
     );
     if (ts_wasm_store_has_error(self->wasm_store)) {
       self->has_scanner_error = true;
@@ -660,15 +660,52 @@ static Subtree ts_parser__lex(
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
       uint32_t end_byte = self->lexer.token_end_position.bytes;
-      ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-      ts_lexer_start(&self->lexer);
+      uint32_t start_byte = self->lexer.token_start_position.bytes;
+      bool bulk_keyword = false;
+      TSSymbol candidate = 0;
+      if (self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
+          && self->language->keyword_lookup_fn && self->lexer.input.encoding == TSInputEncodingUTF8
+          && start_byte >= self->lexer.chunk_start
+          && end_byte >= start_byte && end_byte - self->lexer.chunk_start <= self->lexer.chunk_size) {
+        uint32_t low = 0, high = self->lexer.included_range_count;
+        while (low < high) {
+          uint32_t mid = low + (high - low) / 2;
+          if (self->lexer.included_ranges[mid].end_byte < end_byte) low = mid + 1;
+          else high = mid;
+        }
+        if (low < self->lexer.included_range_count) {
+          TSRange range = self->lexer.included_ranges[low];
+          if (start_byte >= range.start_byte) {
+            const char *text = self->lexer.chunk + start_byte - self->lexer.chunk_start;
+            uint32_t keyword;
+            if (ts_language_is_wasm(self->language)) {
+              bulk_keyword = ts_wasm_store_call_keyword_lookup(self->wasm_store, text, end_byte - start_byte, &keyword);
+            } else {
+              keyword = self->language->keyword_lookup_fn(text, end_byte - start_byte);
+              bulk_keyword = true;
+            }
+            if (bulk_keyword) {
+              is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
+              candidate = (TSSymbol)keyword;
+            }
+          }
+        }
+      }
+      if (!bulk_keyword) {
+        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+        ts_lexer_start(&self->lexer);
 
-      is_keyword = ts_parser__call_keyword_lex_fn(self);
+        is_keyword = ts_parser__call_keyword_lex_fn(self);
 
-      if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
+        if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
+          candidate = self->lexer.data.result_symbol;
+        }
+      }
+
+      if (candidate) {
         bool keyword_is_valid =
-          ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol);
+          ts_language_has_actions(self->language, parse_state, candidate) ||
+          ts_language_is_reserved_word(self->language, parse_state, candidate);
         bool recovery_accepts_keyword = false;
         if (!keyword_is_valid && !ts_language_has_actions(self->language, parse_state, symbol)) {
           if (parse_state != ERROR_STATE) {
@@ -678,7 +715,7 @@ static Subtree ts_parser__lex(
           if (summary) {
             for (unsigned i = 0; i < summary->size; i++) {
               TSStateId state = array_get(summary, i)->state;
-              if (state != ERROR_STATE && ts_language_has_actions(self->language, state, self->lexer.data.result_symbol)) {
+              if (state != ERROR_STATE && ts_language_has_actions(self->language, state, candidate)) {
                 recovery_accepts_keyword = true;
                 break;
               }
@@ -687,7 +724,7 @@ static Subtree ts_parser__lex(
         }
         if (keyword_is_valid || recovery_accepts_keyword) {
           is_keyword = keyword_is_valid;
-          symbol = self->lexer.data.result_symbol;
+          symbol = candidate;
         }
       }
     }
@@ -1707,10 +1744,10 @@ static bool ts_parser__advance(
           TSStateId next_state;
           if (action.shift.extra) {
             next_state = state;
-            LOG("shift_extra");
+            LOG("shift_extra state:%u", state);
           } else {
             next_state = action.shift.state;
-            LOG("shift state:%u", next_state);
+            LOG("shift state:%u, from_state:%u", next_state, state);
           }
 
           if (ts_subtree_child_count(lookahead) > 0) {
@@ -1726,7 +1763,7 @@ static bool ts_parser__advance(
         case TSParseActionTypeReduce: {
           bool is_fragile = table_entry.action_count > 1;
           bool end_of_non_terminal_extra = lookahead.ptr == NULL;
-          LOG("reduce sym:%s, child_count:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count);
+          LOG("reduce sym:%s, child_count:%u, state:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count, state);
           StackVersion reduction_version = ts_parser__reduce(
             self, version, action.reduce.symbol, action.reduce.child_count,
             action.reduce.dynamic_precedence, action.reduce.production_id,
@@ -1740,7 +1777,7 @@ static bool ts_parser__advance(
         }
 
         case TSParseActionTypeAccept: {
-          LOG("accept");
+          LOG("accept state:%u", state);
           ts_parser__accept(self, version, lookahead);
           return true;
         }

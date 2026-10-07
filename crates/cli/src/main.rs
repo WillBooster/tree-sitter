@@ -40,7 +40,7 @@ use tree_sitter_tags::TagsContext;
 
 const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_SHA: Option<&'static str> = option_env!("BUILD_SHA");
-const DEFAULT_GENERATE_ABI_VERSION: usize = 15;
+const DEFAULT_GENERATE_ABI_VERSION: usize = tree_sitter_generate::ABI_VERSION_DEFAULT;
 
 #[derive(Subcommand)]
 #[command(about="Generates and tests parsers", author=crate_authors!("\n"), styles=get_styles())]
@@ -51,6 +51,8 @@ enum Commands {
     Init(Init),
     /// Generate a parser
     Generate(Generate),
+    /// Record a generation profile from an ABI 16 parser
+    Profile(Profile),
     /// Compile a parser
     Build(Build),
     /// Parse files
@@ -90,8 +92,30 @@ struct Init {
 }
 
 #[derive(Args)]
+#[command(group(ArgGroup::new("training").required(true).multiple(true).args(["corpus", "paths"])))]
+struct Profile {
+    /// The path to the grammar directory containing the unprofiled parser
+    #[arg(long, short = 'p')]
+    grammar_path: Option<PathBuf>,
+    /// Write the generation profile to this file, relative to the working directory
+    #[arg(long, short)]
+    output: PathBuf,
+    /// Read a corpus file or directory, relative to the working directory (repeatable)
+    #[arg(long)]
+    corpus: Vec<PathBuf>,
+    /// Match a parser generated with --disable-optimizations
+    #[arg(long)]
+    disable_optimizations: bool,
+    /// Additional source files to parse; paths are relative to the working directory
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Args)]
 #[command(alias = "gen", alias = "g")]
 struct Generate {
+    /// Apply state frequencies recorded from the same unprofiled ABI 16 parser
+    #[arg(long, conflicts_with_all = ["no_parser", "report_states_for_rule"])]
+    pub profile: Option<PathBuf>,
     /// The path to the grammar file
     #[arg(index = 1)]
     pub grammar_path: Option<PathBuf>,
@@ -173,6 +197,9 @@ struct Generate {
 #[derive(Args)]
 #[command(alias = "b")]
 struct Build {
+    /// Compiler optimization: 2, 3, s (size), or z (minimum size); defaults to 2 natively and s for Wasm
+    #[arg(long, conflicts_with = "debug", value_name = "LEVEL")]
+    pub optimization: Option<loader::OptimizationLevel>,
     /// Build a Wasm module instead of a dynamic library
     #[arg(short, long)]
     pub wasm: bool,
@@ -959,7 +986,17 @@ impl Generate {
         };
 
         let mut diagnostics = Vec::new();
-        let result = tree_sitter_generate::generate_parser_in_directory(
+        let profile = self
+            .profile
+            .as_ref()
+            .map(|path| -> Result<tree_sitter_generate::GenerationProfile> {
+                let bytes = fs::read(path)
+                    .with_context(|| format!("Failed to read profile {}", path.display()))?;
+                serde_json::from_slice(&bytes)
+                    .with_context(|| format!("Failed to parse profile {}", path.display()))
+            })
+            .transpose()?;
+        let result = tree_sitter_generate::generate_parser_in_directory_with_profile(
             current_dir,
             self.output.as_deref(),
             self.grammar_path.as_deref(),
@@ -973,6 +1010,7 @@ impl Generate {
                 OptLevel::default()
             },
             &mut diagnostics,
+            profile.as_ref(),
         );
         if json_summary {
             #[derive(serde::Serialize)]
@@ -1011,11 +1049,131 @@ impl Generate {
     }
 }
 
+impl Profile {
+    fn run(self, loader: &loader::Loader, current_dir: &Path) -> Result<()> {
+        let src = current_dir.join("src");
+        let parser_path = src.join("parser.c");
+        let source = fs::read_to_string(&parser_path)
+            .with_context(|| format!("Failed to read {}", parser_path.display()))?;
+        tree_sitter_cli::generation_profile::ensure_unprofiled_source(&source)?;
+        let library_directory = tempfile::tempdir()?;
+        let library_path = library_directory
+            .path()
+            .join(format!("parser.{}", env::consts::DLL_EXTENSION));
+        let language = loader.load_language_at_path(loader::CompileConfig::new(
+            &src,
+            None,
+            Some(library_path),
+        ))?;
+        anyhow::ensure!(
+            language.abi_version() == 16,
+            "profile requires an ABI 16 parser"
+        );
+        let metadata = language
+            .metadata()
+            .context("profile requires language metadata")?;
+        let grammar_path = src.join("grammar.json");
+        let (_, baseline) = tree_sitter_generate::generate_parser_for_grammar_with_abi(
+            &fs::read_to_string(&grammar_path)
+                .with_context(|| format!("Failed to read {}", grammar_path.display()))?,
+            16,
+            Some((
+                metadata.major_version,
+                metadata.minor_version,
+                metadata.patch_version,
+            )),
+            if self.disable_optimizations {
+                OptLevel::empty()
+            } else {
+                OptLevel::default()
+            },
+            &mut Vec::new(),
+        )?;
+        anyhow::ensure!(
+            source == baseline,
+            "profile requires unprofiled source from this generator; run tree-sitter generate --abi 16 with matching optimization options first"
+        );
+        let (languages, known_languages) = if self.corpus.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            Self::corpus_languages(current_dir, language.name().unwrap_or_default())?
+        };
+        let mut inputs = Vec::new();
+        let mut corpus_examples = 0;
+        for path in self.corpus {
+            corpus_examples += tree_sitter_cli::generation_profile::collect_corpus_inputs(
+                test::parse_tests(&path)?,
+                &languages,
+                &known_languages,
+                &mut inputs,
+            );
+        }
+        let corpus_inputs = inputs.len();
+        let source_files = self.paths.len();
+        for path in self.paths {
+            inputs.push(
+                fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?,
+            );
+        }
+        anyhow::ensure!(
+            !inputs.is_empty(),
+            "profile requires at least one training input"
+        );
+        let mut parser = Parser::new();
+        parser.set_language(&language)?;
+        let profile =
+            tree_sitter_cli::generation_profile::record_profile(&mut parser, &source, &inputs)?;
+        let parse_actions = profile.parse_states.iter().sum::<u64>();
+        fs::write(&self.output, serde_json::to_vec(&profile)?)
+            .with_context(|| format!("Failed to write profile {}", self.output.display()))?;
+        info!(
+            "Recorded a generation profile from {corpus_inputs} corpus inputs ({corpus_examples} examples examined) and {source_files} source files; {parse_actions} parse actions recorded"
+        );
+        Ok(())
+    }
+
+    fn corpus_languages(grammar_path: &Path, fallback: &str) -> Result<(Vec<String>, Vec<String>)> {
+        let selected_path = std::path::absolute(grammar_path)?;
+        let grammar_path = selected_path.canonicalize()?;
+        for root in selected_path.ancestors() {
+            if root.join("tree-sitter.json").exists() {
+                if let Ok(configuration) = loader::TreeSitterJSON::from_file(root) {
+                    let mut known = configuration
+                        .grammars
+                        .iter()
+                        .map(|grammar| grammar.name.clone())
+                        .collect::<Vec<_>>();
+                    let languages = configuration
+                        .grammars
+                        .into_iter()
+                        .filter(|grammar| {
+                            root.join(grammar.path.as_deref().unwrap_or_else(|| Path::new(".")))
+                                .canonicalize()
+                                .is_ok_and(|path| path == grammar_path)
+                        })
+                        .map(|grammar| grammar.name)
+                        .collect::<Vec<_>>();
+                    if !languages.is_empty() {
+                        return Ok((languages, known));
+                    }
+                    known.push(fallback.to_owned());
+                    return Ok((vec![fallback.to_owned()], known));
+                }
+                break;
+            }
+        }
+        Ok((vec![fallback.to_owned()], vec![fallback.to_owned()]))
+    }
+}
+
 impl Build {
     fn run(self, mut loader: loader::Loader, current_dir: &Path) -> Result<()> {
         let grammar_path = current_dir.join(self.path.unwrap_or_default());
 
         loader.debug_build(self.debug);
+        if let Some(level) = self.optimization {
+            loader.optimization_level(level);
+        }
         loader.verbose_build(self.verbose);
 
         if self.wasm {
@@ -2092,6 +2250,7 @@ fn run() -> Result<()> {
 
     let current_dir = match &command {
         Commands::Init(Init { grammar_path, .. })
+        | Commands::Profile(Profile { grammar_path, .. })
         | Commands::Parse(Parse { grammar_path, .. })
         | Commands::Test(Test { grammar_path, .. })
         | Commands::Version(Version { grammar_path, .. })
@@ -2115,6 +2274,7 @@ fn run() -> Result<()> {
         Commands::InitConfig(_) => InitConfig::run()?,
         Commands::Init(init_options) => init_options.run(&current_dir)?,
         Commands::Generate(generate_options) => generate_options.run(loader, &current_dir)?,
+        Commands::Profile(profile_options) => profile_options.run(&loader, &current_dir)?,
         Commands::Build(build_options) => build_options.run(loader, &current_dir)?,
         Commands::Parse(parse_options) => parse_options.run(loader, &current_dir)?,
         Commands::Test(test_options) => test_options.run(loader, &current_dir)?,

@@ -1024,7 +1024,7 @@ void ts_subtree__print_dot_graph(const Subtree *self, uint32_t start_offset,
     .subtree = self,
     .start_offset = start_offset,
     .child_start_offset = start_offset,
-    .child_info_offset = language->max_alias_sequence_length * ts_subtree_production_id(*self),
+    .child_info_offset = ts_language_alias_sequence_offset(language, ts_subtree_production_id(*self)),
     .alias_symbol = alias_symbol,
   }));
 
@@ -1084,7 +1084,7 @@ void ts_subtree__print_dot_graph(const Subtree *self, uint32_t start_offset,
         .subtree = child,
         .start_offset = child_start_offset,
         .child_start_offset = child_start_offset,
-        .child_info_offset = language->max_alias_sequence_length * ts_subtree_production_id(*child),
+        .child_info_offset = ts_language_alias_sequence_offset(language, ts_subtree_production_id(*child)),
         .alias_symbol = child_alias_symbol,
       }));
     } else {

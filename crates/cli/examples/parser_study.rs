@@ -9,10 +9,19 @@ use tree_sitter::{InputEdit, Parser, Point, Tree};
 use tree_sitter_loader::{CompileConfig, Loader};
 
 fn main() -> Result<()> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
+    tree_sitter_cli::logger::init();
+    let mut args = env::args().skip(1).collect::<Vec<_>>();
+    let profile_path = if args.first().is_some_and(|arg| arg == "--profile") {
+        ensure!(args.len() >= 2, "--profile requires an output path");
+        let path = args[1].clone();
+        args.drain(..2);
+        Some(path)
+    } else {
+        None
+    };
     ensure!(
         args.len() >= 4,
-        "usage: cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- <native|wasm> <language> <src-directory|wasm-file> <input>..."
+        "usage: cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- [--profile <output.json>] <native|wasm> <language> <src-directory|wasm-file> <input>..."
     );
     let language_name = args[1].replace('-', "_");
     let mut parser = Parser::new();
@@ -53,6 +62,28 @@ fn main() -> Result<()> {
     for path in &args[3..] {
         measure(&mut parser, path)?;
     }
+    if let Some(path) = profile_path {
+        record_profile(&mut parser, &args, &path)?;
+    }
+    Ok(())
+}
+
+fn record_profile(parser: &mut Parser, args: &[String], output: &str) -> Result<()> {
+    let parser_path = if args[0] == "native" {
+        Path::new(&args[2]).join("parser.c")
+    } else {
+        Path::new(&args[2])
+            .parent()
+            .context("Wasm file must have a parent")?
+            .join("src/parser.c")
+    };
+    let source = fs::read_to_string(parser_path)?;
+    let inputs = args[3..]
+        .iter()
+        .map(fs::read)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let profile = tree_sitter_cli::generation_profile::record_profile(parser, &source, &inputs)?;
+    fs::write(output, serde_json::to_vec(&profile)?)?;
     Ok(())
 }
 
