@@ -532,6 +532,10 @@ static Subtree ts_parser__lex(
   bool error_mode = parse_state == ERROR_STATE;
   bool skipped_error = false;
   bool retry_internal = false;
+  bool internal_already_failed = false;
+  Length failed_internal_position = length_zero();
+  Length failed_internal_token_start = length_zero();
+  ColumnData failed_internal_column_data = {0};
   bool called_get_column = false;
   int32_t first_error_character = 0;
   Length error_start_position = length_zero();
@@ -607,15 +611,23 @@ static Subtree ts_parser__lex(
       self->lexer.column_data = column_data;
     }
 
-    LOG(
-      "lex_internal state:%d, row:%u, column:%u",
-      lex_mode.lex_state,
-      current_position.extent.row,
-      current_position.extent.column
-    );
-    ts_lexer_start(&self->lexer);
-    found_token = ts_parser__call_main_lex_fn(self, lex_mode);
-    ts_lexer_finish(&self->lexer, &lookahead_end_byte);
+    if (internal_already_failed) {
+      ts_lexer_reset(&self->lexer, failed_internal_position);
+      ts_lexer_start(&self->lexer);
+      self->lexer.token_start_position = failed_internal_token_start;
+      self->lexer.column_data = failed_internal_column_data;
+      internal_already_failed = false;
+    } else {
+      LOG(
+        "lex_internal state:%d, row:%u, column:%u",
+        lex_mode.lex_state,
+        current_position.extent.row,
+        current_position.extent.column
+      );
+      ts_lexer_start(&self->lexer);
+      found_token = ts_parser__call_main_lex_fn(self, lex_mode);
+      ts_lexer_finish(&self->lexer, &lookahead_end_byte);
+    }
     if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
       ts_lexer_reset(&self->lexer, start_position);
       continue;
@@ -635,6 +647,10 @@ static Subtree ts_parser__lex(
     }
 
     if (internal_only) {
+      internal_already_failed = true;
+      failed_internal_position = self->lexer.current_position;
+      failed_internal_token_start = self->lexer.token_start_position;
+      failed_internal_column_data = self->lexer.column_data;
       ts_lexer_reset(&self->lexer, start_position);
       continue;
     }
