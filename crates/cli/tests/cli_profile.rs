@@ -39,29 +39,6 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
         String::from_utf8_lossy(&rejected.stderr).contains("profile requires an ABI 16 parser")
     );
     assert!(!root.join("profile.json").exists());
-    success(&[
-        "generate",
-        "src/grammar.json",
-        "--abi",
-        "16",
-        "--disable-optimizations",
-    ]);
-    success(&[
-        "profile",
-        "--output",
-        "disabled.json",
-        "--disable-optimizations",
-        "input.txt",
-    ]);
-    success(&[
-        "generate",
-        "src/grammar.json",
-        "--abi",
-        "16",
-        "--disable-optimizations",
-        "--profile",
-        "disabled.json",
-    ]);
     success(&["generate", "src/grammar.json", "--abi", "16"]);
     success(&[
         "profile",
@@ -130,6 +107,65 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("fingerprint"));
     assert_eq!(generated, fs::read(root.join("src/parser.c")).unwrap());
+}
+
+#[test]
+fn profile_requires_matching_generation_optimization_mode() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(
+        root.join("grammar.js"),
+        include_str!("../../../test/fixtures/test_grammars/aliased_rules/grammar.js"),
+    )
+    .unwrap();
+    fs::write(root.join("input.txt"), "foo(bar).baz;").unwrap();
+    let cache = root.join("cache");
+    for args in [
+        &["generate", "--abi", "16", "--disable-optimizations"][..],
+        &[
+            "profile",
+            "--output",
+            "disabled.json",
+            "--disable-optimizations",
+            "input.txt",
+        ][..],
+    ] {
+        let output = profile_command(root, &cache, args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let mismatched = profile_command(
+        root,
+        &cache,
+        &["profile", "--output", "mismatched.json", "input.txt"],
+    )
+    .output()
+    .unwrap();
+    assert!(!mismatched.status.success());
+    assert!(String::from_utf8_lossy(&mismatched.stderr).contains("requires unprofiled source"));
+    assert!(!root.join("mismatched.json").exists());
+    let regenerated = profile_command(
+        root,
+        &cache,
+        &[
+            "generate",
+            "--abi",
+            "16",
+            "--disable-optimizations",
+            "--profile",
+            "disabled.json",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert!(
+        regenerated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&regenerated.stderr)
+    );
 }
 
 #[test]
