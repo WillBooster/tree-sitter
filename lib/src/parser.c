@@ -497,8 +497,9 @@ static bool ts_parser__can_reuse_first_leaf(
     table_entry->action_count > 0 &&
     memcmp(&leaf_lex_mode, &current_lex_mode, sizeof(TSLexerMode)) == 0 &&
     (
-      leaf_symbol != self->language->keyword_capture_token ||
-      (!ts_subtree_is_keyword(tree) && ts_subtree_parse_state(tree) == state)
+      leaf_state == state ||
+      (!ts_subtree_leaf_is_keyword(tree) &&
+       (leaf_symbol != self->language->keyword_capture_token || ts_subtree_parse_state(tree) == state))
     )
   ) return true;
 
@@ -507,7 +508,8 @@ static bool ts_parser__can_reuse_first_leaf(
 
   // If the current state allows external tokens or other tokens that conflict with this
   // token, this token is not reusable.
-  return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable;
+  return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable &&
+    (leaf_state == state || !ts_subtree_leaf_is_keyword(tree));
 }
 
 static Subtree ts_parser__lex(
@@ -527,6 +529,7 @@ static Subtree ts_parser__lex(
   bool found_external_token = false;
   bool error_mode = parse_state == ERROR_STATE;
   bool skipped_error = false;
+  bool retry_internal = false;
   bool called_get_column = false;
   int32_t first_error_character = 0;
   Length error_start_position = length_zero();
@@ -538,10 +541,12 @@ static Subtree ts_parser__lex(
 
   for (;;) {
     bool found_token = false;
+    bool internal_only = retry_internal;
+    retry_internal = false;
     Length current_position = self->lexer.current_position;
     ColumnData column_data = self->lexer.column_data;
 
-    if (lex_mode.external_lex_state != 0) {
+    if (lex_mode.external_lex_state != 0 && !internal_only) {
       LOG(
         "lex_external state:%d, row:%u, column:%u",
         lex_mode.external_lex_state,
@@ -607,11 +612,24 @@ static Subtree ts_parser__lex(
     ts_lexer_start(&self->lexer);
     found_token = ts_parser__call_main_lex_fn(self, lex_mode);
     ts_lexer_finish(&self->lexer, &lookahead_end_byte);
-    if (found_token) break;
+    if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
+      ts_lexer_reset(&self->lexer, start_position);
+      continue;
+    }
+    if (found_token && (
+      error_mode || self->lexer.data.result_symbol != ts_builtin_sym_end ||
+      ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end)
+    )) break;
 
     if (!error_mode) {
       error_mode = true;
       lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
+      ts_lexer_reset(&self->lexer, start_position);
+      retry_internal = !self->lexer.data.eof(&self->lexer.data);
+      continue;
+    }
+
+    if (internal_only) {
       ts_lexer_reset(&self->lexer, start_position);
       continue;
     }
@@ -659,6 +677,7 @@ static Subtree ts_parser__lex(
     if (found_external_token) {
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
+      TSStateId keyword_state = error_mode ? ERROR_STATE : parse_state;
       uint32_t end_byte = self->lexer.token_end_position.bytes;
       uint32_t start_byte = self->lexer.token_start_position.bytes;
       bool bulk_keyword = false;
@@ -686,8 +705,8 @@ static Subtree ts_parser__lex(
             if (bulk_keyword) {
               is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
               TSSymbol candidate = (TSSymbol)keyword;
-              if (candidate && (ts_language_has_actions(self->language, parse_state, candidate)
-                  || ts_language_is_reserved_word(self->language, parse_state, candidate))) symbol = candidate;
+              if (candidate && (ts_language_has_actions(self->language, keyword_state, candidate)
+                  || ts_language_is_reserved_word(self->language, keyword_state, candidate))) symbol = candidate;
             }
           }
         }
@@ -702,8 +721,8 @@ static Subtree ts_parser__lex(
           is_keyword &&
           self->lexer.token_end_position.bytes == end_byte &&
           (
-            ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-            ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
+            ts_language_has_actions(self->language, keyword_state, self->lexer.data.result_symbol) ||
+            ts_language_is_reserved_word(self->language, keyword_state, self->lexer.data.result_symbol)
           )
         ) {
           symbol = self->lexer.data.result_symbol;

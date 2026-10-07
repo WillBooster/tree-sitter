@@ -129,6 +129,7 @@ typedef struct {
   bool depends_on_column: 1;
   bool is_missing : 1;
   bool is_keyword : 1;
+  bool first_leaf_is_keyword : 1;
 
   union {
     // Non-terminal subtrees (`child_count > 0`)
@@ -273,6 +274,11 @@ static inline TSStateId ts_subtree_leaf_parse_state(Subtree self) {
   if (self.data.is_inline) return self.data.parse_state;
   if (self.ptr->child_count == 0) return self.ptr->parse_state;
   return self.ptr->first_leaf.parse_state;
+}
+
+static inline bool ts_subtree_leaf_is_keyword(Subtree self) {
+  if (self.data.is_inline) return self.data.is_keyword;
+  return self.ptr->first_leaf_is_keyword;
 }
 
 static inline Length ts_subtree_padding(Subtree self) {

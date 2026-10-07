@@ -217,6 +217,7 @@ Subtree ts_subtree_new_leaf(
       .depends_on_column = depends_on_column,
       .is_missing = false,
       .is_keyword = is_keyword,
+      .first_leaf_is_keyword = is_keyword,
       {{.first_leaf = {.symbol = 0, .parse_state = 0}}}
     };
     return (Subtree) {.ptr = data};
@@ -466,6 +467,7 @@ void ts_subtree_summarize_children(
 
     self.ptr->first_leaf.symbol = ts_subtree_leaf_symbol(first_child);
     self.ptr->first_leaf.parse_state = ts_subtree_leaf_parse_state(first_child);
+    self.ptr->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
 
     if (ts_subtree_fragile_left(first_child)) self.ptr->fragile_left = true;
     if (ts_subtree_fragile_right(last_child)) self.ptr->fragile_right = true;
@@ -516,6 +518,7 @@ MutableSubtree ts_subtree_new_node(
     .fragile_left = fragile,
     .fragile_right = fragile,
     .is_keyword = false,
+    .first_leaf_is_keyword = false,
     {{
       .visible_descendant_count = 0,
       .production_id = production_id,
@@ -725,6 +728,7 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         data->depends_on_column = false;
         data->is_missing = result.data.is_missing;
         data->is_keyword = result.data.is_keyword;
+        data->first_leaf_is_keyword = result.data.is_keyword;
         result.ptr = data;
       }
     } else {
