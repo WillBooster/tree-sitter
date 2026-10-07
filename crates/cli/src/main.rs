@@ -103,6 +103,9 @@ struct Profile {
     /// Read training examples from a corpus file or directory (repeatable)
     #[arg(long)]
     corpus: Vec<PathBuf>,
+    /// Match a parser generated with --disable-optimizations
+    #[arg(long)]
+    disable_optimizations: bool,
     /// Additional source files to parse; paths are relative to the working directory
     paths: Vec<PathBuf>,
 }
@@ -1059,6 +1062,32 @@ impl Profile {
             None,
             Some(library_path),
         ))?;
+        anyhow::ensure!(
+            language.abi_version() == 16,
+            "profile requires an ABI 16 parser"
+        );
+        let metadata = language
+            .metadata()
+            .context("profile requires language metadata")?;
+        let (_, baseline) = tree_sitter_generate::generate_parser_for_grammar_with_abi(
+            &fs::read_to_string(src.join("grammar.json"))?,
+            16,
+            Some((
+                metadata.major_version,
+                metadata.minor_version,
+                metadata.patch_version,
+            )),
+            if self.disable_optimizations {
+                OptLevel::empty()
+            } else {
+                OptLevel::default()
+            },
+            &mut Vec::new(),
+        )?;
+        anyhow::ensure!(
+            source == baseline,
+            "profile requires unprofiled source from this generator; run tree-sitter generate --abi 16 with matching optimization options first"
+        );
         let mut inputs = Vec::new();
         for path in self.corpus {
             tree_sitter_cli::generation_profile::collect_corpus_inputs(

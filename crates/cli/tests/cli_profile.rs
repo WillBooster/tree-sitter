@@ -39,6 +39,29 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
         String::from_utf8_lossy(&rejected.stderr).contains("profile requires an ABI 16 parser")
     );
     assert!(!root.join("profile.json").exists());
+    success(&[
+        "generate",
+        "src/grammar.json",
+        "--abi",
+        "16",
+        "--disable-optimizations",
+    ]);
+    success(&[
+        "profile",
+        "--output",
+        "disabled.json",
+        "--disable-optimizations",
+        "input.txt",
+    ]);
+    success(&[
+        "generate",
+        "src/grammar.json",
+        "--abi",
+        "16",
+        "--disable-optimizations",
+        "--profile",
+        "disabled.json",
+    ]);
     success(&["generate", "src/grammar.json", "--abi", "16"]);
     success(&[
         "profile",
