@@ -1052,7 +1052,9 @@ impl Generate {
 impl Profile {
     fn run(self, loader: &loader::Loader, current_dir: &Path) -> Result<()> {
         let src = current_dir.join("src");
-        let source = fs::read_to_string(src.join("parser.c"))?;
+        let parser_path = src.join("parser.c");
+        let source = fs::read_to_string(&parser_path)
+            .with_context(|| format!("Failed to read {}", parser_path.display()))?;
         let library_directory = tempfile::tempdir()?;
         let library_path = library_directory
             .path()
@@ -1069,8 +1071,10 @@ impl Profile {
         let metadata = language
             .metadata()
             .context("profile requires language metadata")?;
+        let grammar_path = src.join("grammar.json");
         let (_, baseline) = tree_sitter_generate::generate_parser_for_grammar_with_abi(
-            &fs::read_to_string(src.join("grammar.json"))?,
+            &fs::read_to_string(&grammar_path)
+                .with_context(|| format!("Failed to read {}", grammar_path.display()))?,
             16,
             Some((
                 metadata.major_version,
@@ -1109,7 +1113,8 @@ impl Profile {
         parser.set_language(&language)?;
         let profile =
             tree_sitter_cli::generation_profile::record_profile(&mut parser, &source, &inputs)?;
-        fs::write(self.output, serde_json::to_vec(&profile)?)?;
+        fs::write(&self.output, serde_json::to_vec(&profile)?)
+            .with_context(|| format!("Failed to write profile {}", self.output.display()))?;
         Ok(())
     }
 }
