@@ -56,12 +56,23 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
                 ]},
                 "identifier": {"type": "PATTERN", "value": "[a-z]+"}
             }
-        }"#.replace("PRECEDENCE", &precedence.to_string()).replace("VARIANT", &precedence.to_string());
-        let (name, code) = generate_parser_with_abi(&grammar, abi).unwrap();
+        }"#.replace("PRECEDENCE", &precedence.to_string()).replace("VARIANT", &format!("{abi}_{precedence}"));
+        let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+        let keywords = (0..64)
+            .map(|i| serde_json::json!({"type": "STRING", "value": format!("keyword{}{}", char::from(b'a' + i / 26), char::from(b'a' + i % 26))}))
+            .collect::<Vec<_>>();
+        grammar["rules"]["source_file"]["content"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": keywords}, {"type": "STRING", "value": ";"}
+            ]}));
+        let (name, code) = generate_parser_with_abi(&grammar.to_string(), abi).unwrap();
         let mut parser = Parser::new();
         parser
             .set_language(&get_test_language(&name, &code, None))
             .unwrap();
+        assert_eq!(parser.language().unwrap().abi_version(), abi);
         for (source, word, expected) in [
             ("let x = y class;", "class", "class"),
             ("let x = y classmate;", "classmate", "identifier"),
