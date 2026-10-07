@@ -89,7 +89,11 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
     let generated = fs::read(root.join("src/parser.c")).unwrap();
     let rejected = run(&["profile", "--output", "profile.json", "input.txt"]);
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("requires unprofiled source"));
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains(
+            "profile requires unprofiled source; run tree-sitter generate --abi 16 first"
+        )
+    );
     assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
     fs::write(
         root.join("src/grammar.json"),
@@ -145,7 +149,10 @@ fn profile_requires_matching_generation_optimization_mode() {
     .output()
     .unwrap();
     assert!(!mismatched.status.success());
-    assert!(String::from_utf8_lossy(&mismatched.stderr).contains("requires unprofiled source"));
+    assert!(
+        String::from_utf8_lossy(&mismatched.stderr)
+            .contains("profile requires unprofiled source from this generator")
+    );
     assert!(!root.join("mismatched.json").exists());
     let regenerated = profile_command(
         root,
@@ -225,6 +232,22 @@ fn profile_uses_configured_language_aliases_and_working_directory_paths() {
         assert!(String::from_utf8_lossy(&rejected.stderr).contains("at least one training input"));
         assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
     }
+    fs::write(root.join("test/corpus/words.txt"), corpus("my-lang")).unwrap();
+    fs::write(root.join("test/corpus/unknown.txt"), corpus("typo")).unwrap();
+    fs::write(root.join("test/corpus/foreign.txt"), corpus("other")).unwrap();
+    let partial = profile_command(root, &cache, &args).output().unwrap();
+    assert!(
+        partial.status.success(),
+        "{}",
+        String::from_utf8_lossy(&partial.stderr)
+    );
+    assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
+    let report = String::from_utf8_lossy(&partial.stderr);
+    assert!(report.contains("unknown language 'typo'"));
+    assert!(!report.contains("unknown language 'other'"));
+    assert!(report.contains("1 corpus inputs (3 examples examined) and 0 source files"));
+    fs::remove_file(root.join("test/corpus/unknown.txt")).unwrap();
+    fs::remove_file(root.join("test/corpus/foreign.txt")).unwrap();
     #[cfg(unix)]
     {
         fs::create_dir(root.join("logical")).unwrap();

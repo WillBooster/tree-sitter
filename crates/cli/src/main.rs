@@ -1055,6 +1055,7 @@ impl Profile {
         let parser_path = src.join("parser.c");
         let source = fs::read_to_string(&parser_path)
             .with_context(|| format!("Failed to read {}", parser_path.display()))?;
+        tree_sitter_cli::generation_profile::ensure_unprofiled_source(&source)?;
         let library_directory = tempfile::tempdir()?;
         let library_path = library_directory
             .path()
@@ -1092,19 +1093,23 @@ impl Profile {
             source == baseline,
             "profile requires unprofiled source from this generator; run tree-sitter generate --abi 16 with matching optimization options first"
         );
-        let languages = if self.corpus.is_empty() {
-            Vec::new()
+        let (languages, known_languages) = if self.corpus.is_empty() {
+            (Vec::new(), Vec::new())
         } else {
             Self::corpus_languages(current_dir, language.name().unwrap_or_default())?
         };
         let mut inputs = Vec::new();
+        let mut corpus_examples = 0;
         for path in self.corpus {
-            tree_sitter_cli::generation_profile::collect_corpus_inputs(
+            corpus_examples += tree_sitter_cli::generation_profile::collect_corpus_inputs(
                 test::parse_tests(&path)?,
                 &languages,
+                &known_languages,
                 &mut inputs,
             );
         }
+        let corpus_inputs = inputs.len();
+        let source_files = self.paths.len();
         for path in self.paths {
             inputs.push(
                 fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?,
@@ -1120,15 +1125,23 @@ impl Profile {
             tree_sitter_cli::generation_profile::record_profile(&mut parser, &source, &inputs)?;
         fs::write(&self.output, serde_json::to_vec(&profile)?)
             .with_context(|| format!("Failed to write profile {}", self.output.display()))?;
+        eprintln!(
+            "Recorded a generation profile from {corpus_inputs} corpus inputs ({corpus_examples} examples examined) and {source_files} source files"
+        );
         Ok(())
     }
 
-    fn corpus_languages(grammar_path: &Path, fallback: &str) -> Result<Vec<String>> {
+    fn corpus_languages(grammar_path: &Path, fallback: &str) -> Result<(Vec<String>, Vec<String>)> {
         let selected_path = std::path::absolute(grammar_path)?;
         let grammar_path = selected_path.canonicalize()?;
         for root in selected_path.ancestors() {
             if root.join("tree-sitter.json").exists() {
                 if let Ok(configuration) = loader::TreeSitterJSON::from_file(root) {
+                    let mut known = configuration
+                        .grammars
+                        .iter()
+                        .map(|grammar| grammar.name.clone())
+                        .collect::<Vec<_>>();
                     let languages = configuration
                         .grammars
                         .into_iter()
@@ -1140,13 +1153,15 @@ impl Profile {
                         .map(|grammar| grammar.name)
                         .collect::<Vec<_>>();
                     if !languages.is_empty() {
-                        return Ok(languages);
+                        return Ok((languages, known));
                     }
+                    known.push(fallback.to_owned());
+                    return Ok((vec![fallback.to_owned()], known));
                 }
                 break;
             }
         }
-        Ok(vec![fallback.to_owned()])
+        Ok((vec![fallback.to_owned()], vec![fallback.to_owned()]))
     }
 }
 

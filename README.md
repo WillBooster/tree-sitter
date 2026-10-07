@@ -37,7 +37,7 @@ tree-sitter generate --abi 16 --profile profile.json
 tree-sitter build
 ```
 
-A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Pass `--disable-optimizations` to both generation and recording when using that generation mode. Corpus examples marked as skipped, excluded on this platform, or restricted to other languages are omitted. Language tags match the selected grammar's names in `tree-sitter.json`, including aliases sharing its path; without a matching configuration, they match the grammar name.
+A profile applies only to the exact unprofiled generated source it was recorded from. Regenerate and record again after changing the grammar, generation options, or generator version. Pass `--disable-optimizations` to both generation and recording when using that generation mode. Corpus examples marked as skipped, excluded on this platform, or restricted to other languages are omitted. Language tags match the selected grammar's names in `tree-sitter.json`, including aliases sharing its path; without a matching configuration, they match the grammar name. Unknown tags produce warnings. Successful recording reports the examined corpus examples and recorded corpus/file counts.
 
 `profile` accepts additional source files and repeated `--corpus` paths. Corpus, source, and output paths resolve relative to the process working directory, even when `--grammar-path` selects a different directory. For example, from a repository root with a grammar in `typescript/` and shared examples in `test/corpus/`:
 

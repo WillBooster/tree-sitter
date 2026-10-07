@@ -9,24 +9,44 @@ use tree_sitter_generate::{GenerationProfile, parser_fingerprint};
 
 use crate::test::{TestEntry, TestExpectation};
 
-pub fn collect_corpus_inputs(entry: TestEntry, languages: &[String], inputs: &mut Vec<Vec<u8>>) {
+pub fn collect_corpus_inputs(
+    entry: TestEntry,
+    languages: &[String],
+    known_languages: &[String],
+    inputs: &mut Vec<Vec<u8>>,
+) -> usize {
     match entry {
-        TestEntry::Group { children, .. } => {
-            for child in children {
-                collect_corpus_inputs(child, languages, inputs);
-            }
-        }
+        TestEntry::Group { children, .. } => children
+            .into_iter()
+            .map(|child| collect_corpus_inputs(child, languages, known_languages, inputs))
+            .sum(),
         TestEntry::Example {
-            input, attributes, ..
+            name,
+            input,
+            attributes,
+            file_name,
+            ..
         } => {
-            if attributes.platform
-                && attributes.expectation != TestExpectation::Skip
-                && attributes.languages.iter().any(|name| {
+            if attributes.platform && attributes.expectation != TestExpectation::Skip {
+                for tag in &attributes.languages {
+                    if !tag.is_empty()
+                        && !known_languages
+                            .iter()
+                            .any(|language| tag.as_ref() == language)
+                    {
+                        eprintln!(
+                            "Warning: {}: corpus example '{name}' references unknown language '{tag}'",
+                            file_name.as_deref().unwrap_or("corpus")
+                        );
+                    }
+                }
+                if attributes.languages.iter().any(|name| {
                     name.is_empty() || languages.iter().any(|language| name.as_ref() == language)
-                })
-            {
-                inputs.push(input);
+                }) {
+                    inputs.push(input);
+                }
             }
+            1
         }
     }
 }
@@ -36,12 +56,7 @@ pub fn record_profile(
     source: &str,
     inputs: &[Vec<u8>],
 ) -> Result<GenerationProfile> {
-    ensure!(
-        !source
-            .lines()
-            .any(|line| line == GenerationProfile::SOURCE_MARKER),
-        "profile requires unprofiled source; run tree-sitter generate --abi 16 first"
-    );
+    ensure_unprofiled_source(source)?;
     ensure!(
         parser
             .language()
@@ -111,4 +126,14 @@ pub fn record_profile(
     };
     drop(counters);
     Ok(profile)
+}
+
+pub fn ensure_unprofiled_source(source: &str) -> Result<()> {
+    ensure!(
+        !source
+            .lines()
+            .any(|line| line == GenerationProfile::SOURCE_MARKER),
+        "profile requires unprofiled source; run tree-sitter generate --abi 16 first"
+    );
+    Ok(())
 }
