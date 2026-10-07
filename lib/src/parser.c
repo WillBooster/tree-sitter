@@ -629,7 +629,8 @@ static Subtree ts_parser__lex(
       error_mode = true;
       lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
       ts_lexer_reset(&self->lexer, start_position);
-      retry_internal = !self->lexer.data.eof(&self->lexer.data);
+      retry_internal = lex_mode.external_lex_state != 0 &&
+        !self->lexer.data.eof(&self->lexer.data);
       continue;
     }
 
@@ -673,6 +674,7 @@ static Subtree ts_parser__lex(
     );
   } else {
     bool is_keyword = false;
+    bool is_keyword_exact = false;
     TSSymbol symbol = self->lexer.data.result_symbol;
     Length padding = length_sub(self->lexer.token_start_position, start_position);
     Length size = length_sub(self->lexer.token_end_position, self->lexer.token_start_position);
@@ -724,6 +726,7 @@ static Subtree ts_parser__lex(
         }
       }
 
+      is_keyword_exact = candidate != 0;
       if (candidate) {
         bool keyword_is_valid =
           ts_language_has_actions(self->language, parse_state, candidate) ||
@@ -761,6 +764,7 @@ static Subtree ts_parser__lex(
       found_external_token,
       called_get_column,
       is_keyword,
+      is_keyword_exact,
       self->language
     );
 
