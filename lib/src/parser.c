@@ -497,9 +497,10 @@ static bool ts_parser__can_reuse_first_leaf(
     table_entry->action_count > 0 &&
     memcmp(&leaf_lex_mode, &current_lex_mode, sizeof(TSLexerMode)) == 0 &&
     (
-      leaf_state == state ||
-      (!ts_subtree_leaf_is_keyword(tree) &&
-       (leaf_symbol != self->language->keyword_capture_token || ts_subtree_parse_state(tree) == state))
+      leaf_symbol != self->language->keyword_capture_token ||
+      (!ts_subtree_is_keyword(tree) && ts_subtree_parse_state(tree) == state)
+    ) && (
+      leaf_state == state || !ts_subtree_leaf_is_keyword(tree)
     )
   ) return true;
 
@@ -578,7 +579,9 @@ static Subtree ts_parser__lex(
         //   the parse state, so they would definitely cause an infinite loop.
         if (
           self->lexer.token_end_position.bytes <= current_position.bytes &&
-          !external_scanner_state_changed
+          (!external_scanner_state_changed ||
+           (error_mode && self->lexer.data.eof(&self->lexer.data) &&
+            !ts_stack_has_advanced_since_error(self->stack, version)))
         ) {
           TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
           TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
