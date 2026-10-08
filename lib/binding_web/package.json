@@ -104,8 +104,8 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@types/node": "26.6.3",
-    "@vitest/browser-playwright": "5.0.2",
-    "@vitest/coverage-v8": "5.0.2",
+    "@vitest/browser-playwright": "5.0.3",
+    "@vitest/coverage-v8": "5.0.3",
     "dts-buddy": "0.8.3",
     "esbuild": "0.28.2",
     "eslint": "^10.9.0",
@@ -114,7 +114,7 @@
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.70.1",
-    "vitest": "5.0.2",
+    "vitest": "5.0.3",
     "wrangler": "4.141.0"
   },
   "scripts": {
