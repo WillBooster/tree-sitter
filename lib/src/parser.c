@@ -90,6 +90,13 @@ typedef struct {
   uint32_t byte_index;
 } TokenCache;
 
+typedef enum {
+  LexPhaseNormal,
+  LexPhaseRecovery,
+  LexPhaseRecoveryInternal,
+  LexPhaseRecoveryExternal,
+} LexPhase;
+
 struct TSParser {
   Lexer lexer;
   Stack *stack;
@@ -483,11 +490,13 @@ static bool ts_parser__can_reuse_first_leaf(
 ) {
   TSSymbol leaf_symbol = ts_subtree_leaf_symbol(tree);
   TSStateId leaf_state = ts_subtree_leaf_parse_state(tree);
+  if (
+    leaf_state != state && ts_subtree_leaf_is_keyword(tree) &&
+    (leaf_symbol == self->language->keyword_capture_token || !table_entry->is_reusable)
+  ) return false;
+
   TSLexerMode current_lex_mode = ts_language_lex_mode_for_state(self->language, state);
   TSLexerMode leaf_lex_mode = ts_language_lex_mode_for_state(self->language, leaf_state);
-  bool keyword_is_reusable = leaf_state == state ||
-    (leaf_symbol != self->language->keyword_capture_token && table_entry->is_reusable) ||
-    !ts_subtree_leaf_is_keyword(tree);
 
   // At the end of a non-terminal extra node, the lexer normally returns
   // NULL, which indicates that the parser should look for a reduce action
@@ -495,23 +504,18 @@ static bool ts_parser__can_reuse_first_leaf(
   // the same thing happens when incrementally reparsing.
   if (current_lex_mode.lex_state == (uint16_t)(-1)) return false;
 
-  // If the token was created in a state with the same set of lookaheads, it is reusable.
   if (
     table_entry->action_count > 0 &&
     memcmp(&leaf_lex_mode, &current_lex_mode, sizeof(TSLexerMode)) == 0 &&
     (
       leaf_symbol != self->language->keyword_capture_token ||
       (!ts_subtree_is_keyword(tree) && ts_subtree_parse_state(tree) == state)
-    ) && keyword_is_reusable
+    )
   ) return true;
 
-  // Empty tokens are not reusable in states with different lookaheads.
   if (ts_subtree_size(tree).bytes == 0 && leaf_symbol != ts_builtin_sym_end) return false;
 
-  // If the current state allows external tokens or other tokens that conflict with this
-  // token, this token is not reusable.
-  return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable &&
-    keyword_is_reusable;
+  return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable;
 }
 
 static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
@@ -531,11 +535,9 @@ static Subtree ts_parser__lex(
   const Subtree external_token = ts_stack_last_external_token(self->stack, version);
 
   bool found_external_token = false;
-  bool error_mode = parse_state == ERROR_STATE;
+  LexPhase lex_phase = parse_state == ERROR_STATE ? LexPhaseRecovery : LexPhaseNormal;
   bool skipped_error = false;
-  bool retry_internal = false;
   bool internal_eof = false;
-  bool internal_already_failed = false;
   Length failed_internal_position = length_zero();
   Length failed_internal_token_start = length_zero();
   ColumnData failed_internal_column_data = {0};
@@ -550,12 +552,10 @@ static Subtree ts_parser__lex(
 
   for (;;) {
     bool found_token = false;
-    bool internal_only = retry_internal;
-    retry_internal = false;
     Length current_position = self->lexer.current_position;
     ColumnData column_data = self->lexer.column_data;
 
-    if (lex_mode.external_lex_state != 0 && !internal_only) {
+    if (lex_mode.external_lex_state != 0 && lex_phase != LexPhaseRecoveryInternal) {
       LOG(
         "lex_external state:%d, row:%u, column:%u",
         lex_mode.external_lex_state,
@@ -583,7 +583,7 @@ static Subtree ts_parser__lex(
           TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
           bool token_is_extra = (next_parse_state == parse_state);
           if ((!external_scanner_state_changed || unusable_eof_token) &&
-              (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra)) {
+              (lex_phase != LexPhaseNormal || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra)) {
             LOG(
               "ignore_empty_external_token symbol:%s",
               SYM_NAME(self->language->external_scanner.symbol_map[self->lexer.data.result_symbol])
@@ -603,12 +603,12 @@ static Subtree ts_parser__lex(
       self->lexer.column_data = column_data;
     }
 
-    if (internal_already_failed) {
+    if (lex_phase == LexPhaseRecoveryExternal) {
       ts_lexer_reset(&self->lexer, failed_internal_position);
       ts_lexer_start(&self->lexer);
       self->lexer.token_start_position = failed_internal_token_start;
       self->lexer.column_data = failed_internal_column_data;
-      internal_already_failed = false;
+      lex_phase = LexPhaseRecovery;
     } else {
       LOG(
         "lex_internal state:%d, row:%u, column:%u",
@@ -620,27 +620,29 @@ static Subtree ts_parser__lex(
       found_token = ts_parser__call_main_lex_fn(self, lex_mode);
       ts_lexer_finish(&self->lexer, &lookahead_end_byte);
     }
-    if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
+    if (lex_phase == LexPhaseRecoveryInternal && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
       internal_eof = true;
+      lex_phase = LexPhaseRecovery;
       ts_lexer_reset(&self->lexer, start_position);
       continue;
     }
     if (found_token && (
-      error_mode || self->lexer.data.result_symbol != ts_builtin_sym_end ||
+      lex_phase != LexPhaseNormal || self->lexer.data.result_symbol != ts_builtin_sym_end ||
       ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end)
     )) break;
 
-    if (!error_mode) {
+    if (lex_phase == LexPhaseNormal) {
       internal_eof = found_token && self->lexer.data.result_symbol == ts_builtin_sym_end;
-      error_mode = true;
+      lex_phase = LexPhaseRecovery;
       lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
       ts_lexer_reset(&self->lexer, start_position);
-      retry_internal = lex_mode.external_lex_state != 0 &&
-        !self->lexer.data.eof(&self->lexer.data);
-      if (retry_internal && self->language->keyword_capture_token != 0) {
+      if (lex_mode.external_lex_state != 0 && !self->lexer.data.eof(&self->lexer.data)) {
+        lex_phase = LexPhaseRecoveryInternal;
+      }
+      if (lex_phase == LexPhaseRecoveryInternal && self->language->keyword_capture_token != 0) {
         for (unsigned i = 0; i < self->language->external_token_count; i++) {
           if (self->language->external_scanner.symbol_map[i] == self->language->keyword_capture_token) {
-            retry_internal = false;
+            lex_phase = LexPhaseRecovery;
             break;
           }
         }
@@ -648,8 +650,8 @@ static Subtree ts_parser__lex(
       continue;
     }
 
-    if (internal_only) {
-      internal_already_failed = true;
+    if (lex_phase == LexPhaseRecoveryInternal) {
+      lex_phase = LexPhaseRecoveryExternal;
       failed_internal_position = self->lexer.current_position;
       failed_internal_token_start = self->lexer.token_start_position;
       failed_internal_column_data = self->lexer.column_data;
