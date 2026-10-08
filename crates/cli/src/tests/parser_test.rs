@@ -97,6 +97,28 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
 }
 
 #[test]
+fn test_recovery_accepts_keywords_as_command_names() {
+    let path = fixtures_dir().join("test_grammars/keyword_reuse");
+    let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
+    let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+    for abi in [15, 16] {
+        grammar["name"] = serde_json::json!(format!("keyword_recovery_word_{abi}"));
+        let (name, code) = generate_parser_with_abi(&grammar.to_string(), abi).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, Some(&path)))
+            .unwrap();
+        let source = "while x; do echo; ;; fi; done";
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(program (while_statement (command (command_name (word))) (command (command_name (word))) (ERROR) (command (command_name (word)))))",
+            "ABI {abi}"
+        );
+    }
+}
+
+#[test]
 fn test_keyword_recovery_preserves_contextual_method_names() {
     use tree_sitter::{Query, StreamingIterator};
     for language in ["javascript", "typescript/typescript", "typescript/tsx"] {

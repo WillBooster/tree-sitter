@@ -1487,9 +1487,12 @@ static void ts_parser__recover(
         (position.extent.row - entry.position.extent.row) * ERROR_COST_PER_SKIPPED_LINE;
       if (ts_parser__better_version_exists(self, version, false, new_cost)) break;
 
-      // If the current lookahead token is valid in some previous state, recover to that state.
-      // Then stop looking for further recoveries.
-      if (ts_language_has_actions(self->language, entry.state, ts_subtree_symbol(lookahead))) {
+      if (
+        ts_language_has_actions(self->language, entry.state, ts_subtree_symbol(lookahead)) ||
+        (ts_subtree_is_keyword(lookahead) &&
+         !ts_language_is_reserved_word(self->language, entry.state, ts_subtree_symbol(lookahead)) &&
+         ts_language_has_actions(self->language, entry.state, self->language->keyword_capture_token))
+      ) {
         if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
           did_recover = true;
           LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
