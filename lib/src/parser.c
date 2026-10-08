@@ -1443,59 +1443,49 @@ static void ts_parser__recover(
   unsigned node_count_since_error = ts_stack_node_count_since_error(self->stack, version);
   unsigned current_error_cost = ts_stack_error_cost(self->stack, version);
 
-  // When the parser is in the error state, there are two strategies for recovering with a
-  // given lookahead token:
-  // 1. Find a previous state on the stack in which that lookahead token would be valid. Then,
-  //    create a new stack version that is in that state again. This entails popping all of the
-  //    subtrees that have been pushed onto the stack since that previous state, and wrapping
-  //    them in an ERROR node.
-  // 2. Wrap the lookahead token in an ERROR node, push that ERROR node onto the stack, and
-  //    move on to the next lookahead token, remaining in the error state.
-  //
-  // First, try the strategy 1. Upon entering the error state, the parser recorded a summary
-  // of the previous parse states and their depths. Look at each state in the summary, to see
-  // if the current lookahead token would be valid in that state.
   if (summary && !ts_subtree_is_error(lookahead)) {
-    for (unsigned i = 0; i < summary->size; i++) {
-      StackSummaryEntry entry = *array_get(summary, i);
+    TSSymbol symbol = ts_subtree_symbol(lookahead);
+    unsigned recovery_pass_count = ts_subtree_is_keyword(lookahead) &&
+      symbol != self->language->keyword_capture_token ? 2 : 1;
+    for (unsigned recovery_pass = 0; recovery_pass < recovery_pass_count && !did_recover; recovery_pass++) {
+      TSSymbol recovery_symbol = recovery_pass == 0 ? symbol : self->language->keyword_capture_token;
+      for (unsigned i = 0; i < summary->size; i++) {
+        StackSummaryEntry entry = *array_get(summary, i);
 
-      if (entry.state == ERROR_STATE) continue;
-      if (entry.position.bytes == position.bytes) continue;
-      unsigned depth = entry.depth;
-      if (node_count_since_error > 0) depth++;
+        if (entry.state == ERROR_STATE) continue;
+        if (entry.position.bytes == position.bytes) continue;
+        unsigned depth = entry.depth;
+        if (node_count_since_error > 0) depth++;
 
-      // Do not recover in ways that create redundant stack versions.
-      bool would_merge = false;
-      for (unsigned j = 0; j < previous_version_count; j++) {
-        if (
-          ts_stack_state(self->stack, j) == entry.state &&
-          ts_stack_position(self->stack, j).bytes == position.bytes
-        ) {
-          would_merge = true;
-          break;
+        bool would_merge = false;
+        for (unsigned j = 0; j < previous_version_count; j++) {
+          if (
+            ts_stack_state(self->stack, j) == entry.state &&
+            ts_stack_position(self->stack, j).bytes == position.bytes
+          ) {
+            would_merge = true;
+            break;
+          }
         }
-      }
-      if (would_merge) continue;
+        if (would_merge) continue;
 
-      // Do not recover if the result would clearly be worse than some existing stack version.
-      unsigned new_cost =
-        current_error_cost +
-        entry.depth * ERROR_COST_PER_SKIPPED_TREE +
-        (position.bytes - entry.position.bytes) * ERROR_COST_PER_SKIPPED_CHAR +
-        (position.extent.row - entry.position.extent.row) * ERROR_COST_PER_SKIPPED_LINE;
-      if (ts_parser__better_version_exists(self, version, false, new_cost)) break;
+        unsigned new_cost =
+          current_error_cost +
+          entry.depth * ERROR_COST_PER_SKIPPED_TREE +
+          (position.bytes - entry.position.bytes) * ERROR_COST_PER_SKIPPED_CHAR +
+          (position.extent.row - entry.position.extent.row) * ERROR_COST_PER_SKIPPED_LINE;
+        if (ts_parser__better_version_exists(self, version, false, new_cost)) break;
 
-      if (
-        ts_language_has_actions(self->language, entry.state, ts_subtree_symbol(lookahead)) ||
-        (ts_subtree_is_keyword(lookahead) &&
-         !ts_language_is_reserved_word(self->language, entry.state, ts_subtree_symbol(lookahead)) &&
-         ts_language_has_actions(self->language, entry.state, self->language->keyword_capture_token))
-      ) {
-        if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
-          did_recover = true;
-          LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
-          LOG_STACK();
-          break;
+        if (
+          ts_language_has_actions(self->language, entry.state, recovery_symbol) &&
+          (recovery_pass == 0 || !ts_language_is_reserved_word(self->language, entry.state, symbol))
+        ) {
+          if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
+            did_recover = true;
+            LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
+            LOG_STACK();
+            break;
+          }
         }
       }
     }
@@ -1522,11 +1512,6 @@ static void ts_parser__recover(
     return;
   }
 
-  // If strategy 1 succeeded, a new stack version will have been created which is able to handle
-  // the current lookahead token. Now, in addition, try strategy 2 described above: skip the
-  // current lookahead token by wrapping it in an ERROR node.
-
-  // Don't pursue this additional strategy if there are already too many stack versions.
   if (did_recover && ts_stack_version_count(self->stack) > MAX_VERSION_COUNT) {
     ts_stack_halt(self->stack, version);
     ts_subtree_release(&self->tree_pool, lookahead);

@@ -93,6 +93,21 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
             );
             assert_eq!(node.byte_range(), start..start + word.len());
         }
+        let source = "let x = y = class c;";
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(root.has_error());
+        let declaration = root.named_children(&mut root.walk()).last().unwrap();
+        assert_eq!(
+            declaration.kind(),
+            "class_declaration",
+            "{}",
+            root.to_sexp()
+        );
+        assert_eq!(
+            declaration.utf8_text(source.as_bytes()).unwrap(),
+            "class c;"
+        );
     }
 }
 
