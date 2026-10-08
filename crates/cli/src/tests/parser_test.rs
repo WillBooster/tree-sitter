@@ -97,6 +97,35 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
 }
 
 #[test]
+fn test_recovery_accepts_keywords_as_command_names() {
+    let path = fixtures_dir().join("test_grammars/keyword_reuse");
+    let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
+    let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+    let scanner = std::fs::read_to_string(path.join("scanner.c")).unwrap();
+    for abi in [15, 16] {
+        grammar["name"] = serde_json::json!(format!("keyword_recovery_word_{abi}"));
+        let (name, code) = generate_parser_with_abi(&grammar.to_string(), abi).unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(
+            fixture.path().join("scanner.c"),
+            scanner.replace("tree_sitter_keyword_reuse", &format!("tree_sitter_{name}")),
+        )
+        .unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, Some(fixture.path())))
+            .unwrap();
+        let source = "while x; do echo; ;; fi; done";
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(program (while_statement (command (command_name (word))) (command (command_name (word))) (ERROR) (command (command_name (word)))))",
+            "ABI {abi}"
+        );
+    }
+}
+
+#[test]
 fn test_keyword_recovery_preserves_contextual_method_names() {
     use tree_sitter::{Query, StreamingIterator};
     for language in ["javascript", "typescript/typescript", "typescript/tsx"] {
@@ -1591,6 +1620,33 @@ fn test_parsing_after_editing_end_of_code() {
     );
 
     assert_eq!(recorder.strings_read(), vec![" * ", "abc.d)",]);
+}
+
+#[test]
+fn test_parsing_after_editing_keyword_context() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("keyword_reuse"))
+        .unwrap();
+    let mut source = b"\"``\"&while'';if;then;elif;then``;fi".to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    perform_edit(
+        &mut tree,
+        &mut source,
+        &Edit {
+            position: 13,
+            deleted_length: 0,
+            inserted_text: b"esac".to_vec(),
+        },
+    )
+    .unwrap();
+    let incremental = parser.parse(&source, Some(&tree)).unwrap();
+    let fresh = parser.parse(&source, None).unwrap();
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(incremental.root_node().end_byte(), source.len());
 }
 
 #[test]
@@ -3562,6 +3618,111 @@ fn test_parsing_get_column_at_eof() {
         .unwrap();
 
     parser.parse("a", None).unwrap();
+}
+
+#[test]
+fn test_parsing_external_indentation_at_eof_after_padding() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("uses_current_column"))
+        .unwrap();
+
+    for source in ["do", "do ", "do  ", "do\t", "do\n"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(ERROR)", "{source:?}");
+    }
+}
+
+#[test]
+fn test_parsing_truncated_external_words() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("external_word_token"))
+        .unwrap();
+    for source in [
+        "\nl",
+        "\nle",
+        "\nlet a = b;\n@ here\nl",
+        "\nlet a = b;\n@ here\nle",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let start = source.rfind('\n').unwrap() + 1;
+        let word = tree
+            .root_node()
+            .descendant_for_byte_range(start, source.len())
+            .unwrap();
+        assert_eq!(word.kind(), "identifier", "{source:?}");
+        assert_eq!(word.byte_range(), start..source.len());
+        assert!(tree.root_node().has_error());
+    }
+}
+
+#[test]
+fn test_parsing_truncated_indentation_blocks() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("uses_current_column"))
+        .unwrap();
+    for (source, expected) in [
+        ("\ndo a", "(ERROR (identifier))"),
+        ("\ndo a\n  ", "(ERROR (block (identifier)))"),
+        ("\ndo a\n   ", "(ERROR (block (identifier)))"),
+        ("\ndo a\n   e", "(ERROR (identifier) (identifier))"),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
+    }
+    let source = "\na = do b\n       c + do e\n              f\n              g\n       h\ni\n";
+    for length in 32..=37 {
+        let tree = parser.parse(&source[..length], None).unwrap();
+        let block = tree.root_node().descendant_for_byte_range(8, 25).unwrap();
+        assert_eq!(block.kind(), "block", "prefix {length}");
+        assert_eq!(block.byte_range(), 8..25, "prefix {length}");
+    }
+}
+
+#[test]
+fn test_parsing_truncated_python_match_patterns() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("python")).unwrap();
+    let source = "\nmatch command.split():\n    case [\"north\"] | [\"go\", \"north\"]:\n        current_room = current_room.neighbor(\"north\")\n    case [\"get\", obj] | [\"pick\", \"up\", obj] | [\"pick\", ";
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert_eq!(root.kind(), "module");
+    assert_eq!(root.named_child(0).unwrap().kind(), "match_statement");
+    assert!(root.has_error());
+}
+
+#[test]
+fn test_parsing_truncated_bash_with_missing_tokens_at_eof() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("bash")).unwrap();
+
+    for (source, expected) in [
+        (
+            "\n(\n  ./start-server --port=80\n) &\n\ntime ( cd tests && sh run-tests.sh ",
+            "(program (subshell (command name: (command_name (word)) argument: (word))) (command name: (command_name (word)) (subshell (list (command name: (command_name (word)) argument: (word)) (command name: (command_name (word)) argument: (word))) (MISSING \")\"))))",
+        ),
+        (
+            "\nif (( 1 < 2 ? 1 : 2 )); then\n\treturn 1\n",
+            "(program (if_statement condition: (command name: (command_name (arithmetic_expansion (ternary_expression condition: (binary_expression left: (number) right: (number)) consequence: (number) alternative: (number))))) (command name: (command_name (word)) argument: (number)) (MISSING \"fi\")))",
+        ),
+        (
+            "\nwhoami | cat\ncat foo | ",
+            "(program (pipeline (command name: (command_name (word))) (command name: (command_name (word)))) (pipeline (command name: (command_name (word)) argument: (word)) (command name: (command_name (MISSING word)))))",
+        ),
+        (
+            "\na | b && c && d; d e f || ",
+            "(program (list (list (pipeline (command name: (command_name (word))) (command name: (command_name (word)))) (command name: (command_name (word)))) (command name: (command_name (word)))) (list (command name: (command_name (word)) argument: (word) argument: (word)) (command name: (command_name (MISSING word)))))",
+        ),
+        (
+            "\n$(eval ec",
+            "(program (command name: (command_name (command_substitution (command name: (command_name (word)) argument: (word)) (MISSING \")\")))))",
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
+    }
 }
 
 #[test]

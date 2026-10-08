@@ -1,0 +1,12 @@
+==================================================
+State-changing empty tokens peeking beyond their end
+==================================================
+
+??b
+
+---
+
+(ERROR
+  (zero_width)
+  (sentinel)
+  (UNEXPECTED '?'))

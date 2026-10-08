@@ -167,7 +167,7 @@ Subtree ts_subtree_new_leaf(
   SubtreePool *pool, TSSymbol symbol, Length padding, Length size,
   uint32_t lookahead_bytes, TSStateId parse_state,
   bool has_external_tokens, bool depends_on_column,
-  bool is_keyword, const TSLanguage *language
+  bool is_keyword, bool is_keyword_exact, const TSLanguage *language
 ) {
   TSSymbolMetadata metadata = ts_language_symbol_metadata(language, symbol);
   bool extra = symbol == ts_builtin_sym_end;
@@ -193,6 +193,7 @@ Subtree ts_subtree_new_leaf(
       .has_changes = false,
       .is_missing = false,
       .is_keyword = is_keyword,
+      .first_leaf_is_keyword = is_keyword_exact,
       .is_inline = true,
     }};
   } else {
@@ -217,6 +218,7 @@ Subtree ts_subtree_new_leaf(
       .depends_on_column = depends_on_column,
       .is_missing = false,
       .is_keyword = is_keyword,
+      .first_leaf_is_keyword = is_keyword_exact,
       {{.first_leaf = {.symbol = 0, .parse_state = 0}}}
     };
     return (Subtree) {.ptr = data};
@@ -247,7 +249,7 @@ Subtree ts_subtree_new_error(
 ) {
   Subtree result = ts_subtree_new_leaf(
     pool, ts_builtin_sym_error, padding, size, bytes_scanned,
-    parse_state, false, false, false, language
+    parse_state, false, false, false, false, language
   );
   SubtreeHeapData *data = (SubtreeHeapData *)result.ptr;
   data->fragile_left = true;
@@ -466,6 +468,7 @@ void ts_subtree_summarize_children(
 
     self.ptr->first_leaf.symbol = ts_subtree_leaf_symbol(first_child);
     self.ptr->first_leaf.parse_state = ts_subtree_leaf_parse_state(first_child);
+    self.ptr->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
 
     if (ts_subtree_fragile_left(first_child)) self.ptr->fragile_left = true;
     if (ts_subtree_fragile_right(last_child)) self.ptr->fragile_right = true;
@@ -516,6 +519,7 @@ MutableSubtree ts_subtree_new_node(
     .fragile_left = fragile,
     .fragile_right = fragile,
     .is_keyword = false,
+    .first_leaf_is_keyword = false,
     {{
       .visible_descendant_count = 0,
       .production_id = production_id,
@@ -557,7 +561,7 @@ Subtree ts_subtree_new_missing_leaf(
 ) {
   Subtree result = ts_subtree_new_leaf(
     pool, symbol, padding, length_zero(), lookahead_bytes,
-    state, false, false, false, language
+    state, false, false, false, false, language
   );
   if (result.data.is_inline) {
     result.data.is_missing = true;
@@ -725,6 +729,7 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         data->depends_on_column = false;
         data->is_missing = result.data.is_missing;
         data->is_keyword = result.data.is_keyword;
+        data->first_leaf_is_keyword = result.data.first_leaf_is_keyword;
         result.ptr = data;
       }
     } else {

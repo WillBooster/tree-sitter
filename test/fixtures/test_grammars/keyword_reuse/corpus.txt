@@ -1,0 +1,13 @@
+==================================================
+Commands and a conditional statement
+==================================================
+
+echo; if a; then b; fi
+
+---
+
+(program
+  (command (command_name (word)))
+  (if_statement
+    (command (command_name (word)))
+    (command (command_name (word)))))

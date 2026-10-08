@@ -1,0 +1,35 @@
+export default grammar({
+  name: 'keyword_reuse',
+  word: $ => $.word,
+  externals: $ => [$._concat, $._backtick_open, $._backtick_close],
+  extras: $ => [/\s/],
+  rules: {
+    program: $ => optional($._statements),
+    _statements: $ => seq(
+      repeat(seq($._statement, choice(';', '&'))),
+      $._statement,
+      optional(choice(';', '&')),
+    ),
+    _terminated_statements: $ => repeat1(seq($._statement, choice(';', '&'))),
+    _statement: $ => choice($.command, $.if_statement, $.while_statement),
+    command: $ => prec.left(seq($.command_name, repeat($._word))),
+    command_name: $ => $._word,
+    if_statement: $ => seq(
+      'if', $._terminated_statements, 'then',
+      optional($._terminated_statements), repeat($.elif_clause), 'fi',
+    ),
+    elif_clause: $ => seq('elif', $._terminated_statements, 'then', optional($._terminated_statements)),
+    while_statement: $ => seq('while', $._terminated_statements, 'do', optional($._terminated_statements), 'done'),
+    _word: $ => choice($._word_part, $.concatenation),
+    _word_part: $ => choice($.word, $.string, $.raw_string, $.command_substitution),
+    concatenation: $ => prec.right(seq($._word_part, repeat1(seq($._concat, $._word_part)))),
+    word: $ => /[a-z0-9]+/,
+    raw_string: $ => /'[^']*'/,
+    string: $ => seq('"', repeat($.command_substitution), '"'),
+    command_substitution: $ => seq(
+      alias($._backtick_open, '`'),
+      optional($._statements),
+      alias($._backtick_close, '`'),
+    ),
+  },
+});
