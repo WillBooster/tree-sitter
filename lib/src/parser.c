@@ -644,6 +644,14 @@ static Subtree ts_parser__lex(
       ts_lexer_reset(&self->lexer, start_position);
       retry_internal = lex_mode.external_lex_state != 0 &&
         !self->lexer.data.eof(&self->lexer.data);
+      if (retry_internal && self->language->keyword_capture_token != 0) {
+        for (unsigned i = 0; i < self->language->external_token_count; i++) {
+          if (self->language->external_scanner.symbol_map[i] == self->language->keyword_capture_token) {
+            retry_internal = false;
+            break;
+          }
+        }
+      }
       continue;
     }
 
@@ -808,12 +816,18 @@ static bool ts_parser__eof_token_is_usable(
   StackVersion version,
   TSSymbol lookahead
 ) {
+  TSStateId current_state = ts_stack_state(self->stack, version);
+  if (ts_language_has_actions(self->language, current_state, lookahead)) return true;
   ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
   StackSummary *summary = ts_stack_get_summary(self->stack, version);
   for (unsigned i = 0; i < summary->size; i++) {
     TSStateId state = array_get(summary, i)->state;
     if (state == ERROR_STATE) continue;
-    if (ts_language_has_actions(self->language, state, lookahead)) return true;
+    TSStateId marker_state = ts_language_next_state(self->language, state, lookahead);
+    if (marker_state != 0 && marker_state != state &&
+        ts_language_has_actions(self->language, marker_state, ts_builtin_sym_end)) {
+      return true;
+    }
     LookaheadIterator iterator = ts_language_lookaheads(self->language, state);
     while (ts_lookahead_iterator__next(&iterator)) {
       if (iterator.symbol == 0 || iterator.symbol >= self->language->token_count) continue;

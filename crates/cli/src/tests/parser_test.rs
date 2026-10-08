@@ -3578,6 +3578,66 @@ fn test_parsing_external_indentation_at_eof_after_padding() {
 }
 
 #[test]
+fn test_parsing_truncated_external_words() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("external_word_token"))
+        .unwrap();
+    for source in [
+        "\nl",
+        "\nle",
+        "\nlet a = b;\n@ here\nl",
+        "\nlet a = b;\n@ here\nle",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let start = source.rfind('\n').unwrap() + 1;
+        let word = tree
+            .root_node()
+            .descendant_for_byte_range(start, source.len())
+            .unwrap();
+        assert_eq!(word.kind(), "identifier", "{source:?}");
+        assert_eq!(word.byte_range(), start..source.len());
+        assert!(tree.root_node().has_error());
+    }
+}
+
+#[test]
+fn test_parsing_truncated_indentation_blocks() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("uses_current_column"))
+        .unwrap();
+    for (source, expected) in [
+        ("\ndo a", "(ERROR (identifier))"),
+        ("\ndo a\n  ", "(ERROR (block (identifier)))"),
+        ("\ndo a\n   ", "(ERROR (block (identifier)))"),
+        ("\ndo a\n   e", "(ERROR (identifier) (identifier))"),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
+    }
+    let source = "\na = do b\n       c + do e\n              f\n              g\n       h\ni\n";
+    for length in 32..=37 {
+        let tree = parser.parse(&source[..length], None).unwrap();
+        let block = tree.root_node().descendant_for_byte_range(8, 25).unwrap();
+        assert_eq!(block.kind(), "block", "prefix {length}");
+        assert_eq!(block.byte_range(), 8..25, "prefix {length}");
+    }
+}
+
+#[test]
+fn test_parsing_truncated_python_match_patterns() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("python")).unwrap();
+    let source = "\nmatch command.split():\n    case [\"north\"] | [\"go\", \"north\"]:\n        current_room = current_room.neighbor(\"north\")\n    case [\"get\", obj] | [\"pick\", \"up\", obj] | [\"pick\", ";
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert_eq!(root.kind(), "module");
+    assert_eq!(root.named_child(0).unwrap().kind(), "match_statement");
+    assert!(root.has_error());
+}
+
+#[test]
 fn test_parsing_truncated_bash_with_missing_tokens_at_eof() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("bash")).unwrap();
