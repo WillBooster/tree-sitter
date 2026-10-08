@@ -522,7 +522,6 @@ static Subtree ts_parser__lex(
   TSStateId parse_state
 ) {
   TSLexerMode lex_mode = ts_language_lex_mode_for_state(self->language, parse_state);
-  const bool has_external_lex_state = lex_mode.external_lex_state != 0;
   if (lex_mode.lex_state == (uint16_t)-1) {
     LOG("no_lookahead_after_non_terminal_extra");
     return NULL_SUBTREE;
@@ -557,12 +556,6 @@ static Subtree ts_parser__lex(
     ColumnData column_data = self->lexer.column_data;
 
     if (lex_mode.external_lex_state != 0 && !internal_only) {
-      bool recovery_at_eof = error_mode && (
-        (internal_eof && !has_external_lex_state) || (
-          self->lexer.data.eof(&self->lexer.data) &&
-          !ts_stack_has_advanced_since_error(self->stack, version)
-        )
-      );
       LOG(
         "lex_external state:%d, row:%u, column:%u",
         lex_mode.external_lex_state,
@@ -585,11 +578,11 @@ static Subtree ts_parser__lex(
 
         if (self->lexer.token_end_position.bytes <= current_position.bytes) {
           TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
-          bool unusable_eof_token = internal_eof && !recovery_at_eof &&
+          bool unusable_eof_token = internal_eof &&
             !ts_parser__eof_token_is_usable(self, version, symbol);
           TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
           bool token_is_extra = (next_parse_state == parse_state);
-          if ((!external_scanner_state_changed || recovery_at_eof || unusable_eof_token) &&
+          if ((!external_scanner_state_changed || unusable_eof_token) &&
               (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra)) {
             LOG(
               "ignore_empty_external_token symbol:%s",

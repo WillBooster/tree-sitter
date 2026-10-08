@@ -4,7 +4,8 @@ export default grammar({
   externals: $ => [$._close, $.end],
 
   rules: {
-    document: $ => seq('a', $.call, $.end),
+    document: $ => seq('a', choice($.call, $.internal_call), $.end),
     call: $ => seq('(', 'b', alias($._close, ')')),
+    internal_call: $ => seq('[', 'b', ']'),
   },
 });

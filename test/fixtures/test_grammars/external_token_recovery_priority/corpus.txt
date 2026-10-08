@@ -1,0 +1,29 @@
+==================================================
+Recover an internal call after an incomplete start
+==================================================
+
+!(c)
+
+---
+
+(document (ERROR) (call))
+
+==================================================
+Keep normal external text scanning
+==================================================
+
+$(c);
+
+---
+
+(document (text_statement (text)))
+
+==================================================
+Keep the enabled external start marker
+==================================================
+
+!@;
+
+---
+
+(document (start (begin)))

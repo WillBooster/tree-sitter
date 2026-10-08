@@ -22,3 +22,23 @@ a(b)
 (document
   (call)
   (end))
+
+==================================================
+Recover a missing internal closer before an empty end
+==================================================
+
+a[b
+
+---
+
+(document (internal_call (MISSING "]")) (end))
+
+==================================================
+Keep an empty end after a completed internal closer
+==================================================
+
+a[b]
+
+---
+
+(document (internal_call) (end))

@@ -1594,6 +1594,33 @@ fn test_parsing_after_editing_end_of_code() {
 }
 
 #[test]
+fn test_parsing_after_editing_keyword_context() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("keyword_reuse"))
+        .unwrap();
+    let mut source = b"\"``\"&while'';if;then;elif;then``;fi".to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    perform_edit(
+        &mut tree,
+        &mut source,
+        &Edit {
+            position: 13,
+            deleted_length: 0,
+            inserted_text: b"esac".to_vec(),
+        },
+    )
+    .unwrap();
+    let incremental = parser.parse(&source, Some(&tree)).unwrap();
+    let fresh = parser.parse(&source, None).unwrap();
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(incremental.root_node().end_byte(), source.len());
+}
+
+#[test]
 fn test_parsing_after_editing_the_last_byte_of_a_multibyte_lookahead_character() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
