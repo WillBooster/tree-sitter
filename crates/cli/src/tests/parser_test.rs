@@ -101,12 +101,19 @@ fn test_recovery_accepts_keywords_as_command_names() {
     let path = fixtures_dir().join("test_grammars/keyword_reuse");
     let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
     let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+    let scanner = std::fs::read_to_string(path.join("scanner.c")).unwrap();
     for abi in [15, 16] {
         grammar["name"] = serde_json::json!(format!("keyword_recovery_word_{abi}"));
         let (name, code) = generate_parser_with_abi(&grammar.to_string(), abi).unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(
+            fixture.path().join("scanner.c"),
+            scanner.replace("tree_sitter_keyword_reuse", &format!("tree_sitter_{name}")),
+        )
+        .unwrap();
         let mut parser = Parser::new();
         parser
-            .set_language(&get_test_language(&name, &code, Some(&path)))
+            .set_language(&get_test_language(&name, &code, Some(fixture.path())))
             .unwrap();
         let source = "while x; do echo; ;; fi; done";
         let tree = parser.parse(source, None).unwrap();
