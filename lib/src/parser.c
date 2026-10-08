@@ -1478,7 +1478,10 @@ static void ts_parser__recover(
 
         if (
           ts_language_has_actions(self->language, entry.state, recovery_symbol) &&
-          (recovery_pass == 0 || !ts_language_is_reserved_word(self->language, entry.state, symbol))
+          (recovery_pass == 0 || (
+            !ts_language_has_actions(self->language, entry.state, symbol) &&
+            !ts_language_is_reserved_word(self->language, entry.state, symbol)
+          ))
         ) {
           if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
             did_recover = true;
