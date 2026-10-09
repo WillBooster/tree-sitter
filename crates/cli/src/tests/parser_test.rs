@@ -203,6 +203,12 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
                 ]},
                 {"type": "SEQ", "members": [
                     {"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}, {"type": "SYMBOL", "name": "block"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "CHOICE", "members": (0..24).map(|i| serde_json::json!({
+                        "type": "STRING", "value": format!("command_{i:02}")
+                    })).collect::<Vec<_>>()},
+                    {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
                 ]}
             ]},
             "block": {"type": "SEQ", "members": [
@@ -262,7 +268,29 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
         serde_json::from_slice(&fs::read(profile_path).unwrap()).unwrap();
     generate(Some(&profile)).unwrap();
     let optimized = fs::read_to_string(&parser_path).unwrap();
-    assert_ne!(optimized, code);
+    let table_words = |code: &str| {
+        code.split_once("static const uint16_t ts_small_parse_table[] = {")
+            .unwrap()
+            .1
+            .split_once("};")
+            .unwrap()
+            .0
+            .matches(',')
+            .count()
+    };
+    let mut empty_profile = profile.clone();
+    empty_profile.parse_states.fill(0);
+    empty_profile.lex_states.fill(0);
+    empty_profile.edges.clear();
+    generate(Some(&empty_profile)).unwrap();
+    let without_samples = fs::read_to_string(&parser_path).unwrap();
+    assert!(
+        table_words(&optimized) < table_words(&without_samples),
+        "profiled table: {} words; empty-profile table: {} words",
+        table_words(&optimized),
+        table_words(&without_samples)
+    );
+    generate(Some(&profile)).unwrap();
     parser
         .set_language(&get_test_language_with_header(
             "profiled_statements",
