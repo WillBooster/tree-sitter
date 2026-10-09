@@ -302,6 +302,7 @@ impl Generator {
                 .iter()
                 .find_map(|&(id, count)| {
                     (available.contains_key(&id)
+                        && (profile.parse_states[id] > 0 || profile.parse_states[hottest] == 0)
                         && u128::from(count) * 2 >= u128::from(profile.parse_states[hottest]))
                     .then_some(id)
                 })
@@ -691,18 +692,7 @@ impl Generator {
             let next_id = row_counts.len();
             let id = *row_ids.entry(row).or_insert_with(|| {
                 row_counts.push(0usize);
-                let grouped = 1 + 2 * groups + entries;
-                let words = if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-                    if entries >= BITMAP_STATE_MIN_ENTRIES {
-                        2 * self.parse_table.symbols.len().div_ceil(16) + entries
-                    } else if groups >= 8 || entries <= groups * 2 {
-                        1 + 2 * entries
-                    } else {
-                        grouped
-                    }
-                } else {
-                    grouped
-                };
+                let (_, words) = self.small_state_encoding(entries, groups, false);
                 row_bytes.push(words * size_of::<u16>());
                 next_id
             });
@@ -2237,6 +2227,10 @@ impl Generator {
             );
             let mut symbols_by_value = FxHashMap::<(u32, SymbolType), Vec<Symbol>>::default();
             let mut row_offsets = FxHashMap::default();
+            let has_profile_samples = self
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.parse_states.iter().any(|&count| count > 0));
             for (state_id, state) in self
                 .parse_table
                 .states
@@ -2250,9 +2244,6 @@ impl Generator {
                 terminal_entries.extend(state.terminal_entries.iter());
                 terminal_entries.sort_unstable_by_key(|e| self.symbol_order.get(e.0));
 
-                // In a given parse state, many lookahead symbols have the same actions.
-                // So in the "small state" representation, group symbols by their action
-                // in order to avoid repeating the action.
                 for (symbol, entry) in &terminal_entries {
                     let entry_id = Self::get_parse_action_list_id(
                         **entry,
@@ -2292,23 +2283,32 @@ impl Generator {
                             .map(|symbol| self.symbol_order[symbol] as u32),
                     );
                 }
+                // Observed states come first in profile order; shared rows retain their encoding.
+                if let Some(&offset) = row_offsets.get(&row) {
+                    small_state_indices.push(offset);
+                    continue;
+                }
+                let row_key = row;
                 let entry_count = values_with_symbols
                     .iter()
                     .map(|(_, symbols)| symbols.len())
                     .sum::<usize>();
-                let bitmap = self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-                    && entry_count >= BITMAP_STATE_MIN_ENTRIES;
-                let pairs = !bitmap
-                    && self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-                    && (values_with_symbols.len() >= 8
-                        || entry_count <= 2 * values_with_symbols.len());
+                let minimize = has_profile_samples
+                    && self
+                        .profile
+                        .as_ref()
+                        .is_some_and(|profile| profile.parse_states[state_id] == 0);
+                let (flag, _) =
+                    self.small_state_encoding(entry_count, values_with_symbols.len(), minimize);
+                let bitmap = flag == SMALL_STATE_BITMAP_FLAG;
+                let pairs = flag == SMALL_STATE_PAIR_FLAG;
                 let mut entries = Vec::new();
+                let mut row = Vec::<u32>::new();
                 if pairs || bitmap {
                     for ((value, kind), symbols) in &values_with_symbols {
                         entries.extend(symbols.iter().map(|symbol| (*symbol, *value, *kind)));
                     }
                     entries.sort_unstable_by_key(|(symbol, _, _)| self.symbol_order[symbol]);
-                    row.clear();
                     if bitmap {
                         let blocks = self.parse_table.symbols.len().div_ceil(16);
                         row.resize(blocks * 2, 0);
@@ -2322,24 +2322,7 @@ impl Generator {
                             rank += row[block * 2].count_ones();
                         }
                         row.extend(entries.iter().map(|(_, value, _)| *value));
-                    } else {
-                        row.push(entry_count as u32);
-                        for (symbol, value, _) in &entries {
-                            row.extend([self.symbol_order[symbol] as u32, *value]);
-                        }
                     }
-                }
-                let flag = if bitmap {
-                    SMALL_STATE_BITMAP_FLAG
-                } else if pairs {
-                    SMALL_STATE_PAIR_FLAG
-                } else {
-                    0
-                };
-                let key = (flag, row);
-                if let Some(&offset) = row_offsets.get(&key) {
-                    small_state_indices.push(offset);
-                    continue;
                 }
                 if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
                     && next_table_index >= SMALL_STATE_BITMAP_FLAG
@@ -2348,21 +2331,20 @@ impl Generator {
                 }
                 let offset = next_table_index | flag;
                 small_state_indices.push(offset);
+                row_offsets.insert(row_key, offset);
                 if bitmap {
                     add_line!(self, "[{next_table_index}] =");
                     indent!(self);
-                    for chunk in key.1.chunks(16) {
+                    for chunk in row.chunks(16) {
                         for value in chunk {
                             add!(self, "{value}, ");
                         }
                         add_line!(self, "");
                     }
                     dedent!(self);
-                    next_table_index += key.1.len();
-                    row_offsets.insert(key, offset);
+                    next_table_index += row.len();
                     continue;
                 }
-                row_offsets.insert(key, offset);
                 if pairs {
                     add_line!(self, "[{next_table_index}] = {entry_count},");
                     indent!(self);
@@ -2440,6 +2422,35 @@ impl Generator {
         self.add_parse_action_list(parse_table_entries);
 
         Ok(())
+    }
+
+    fn small_state_encoding(
+        &self,
+        entry_count: usize,
+        group_count: usize,
+        minimize: bool,
+    ) -> (usize, usize) {
+        let grouped = (0, 1 + 2 * group_count + entry_count);
+        if self.abi_version < ABI_VERSION_WITH_COMPACT_TABLES {
+            return grouped;
+        }
+        let bitmap = (
+            SMALL_STATE_BITMAP_FLAG,
+            2 * self.parse_table.symbols.len().div_ceil(16) + entry_count,
+        );
+        let pairs = (SMALL_STATE_PAIR_FLAG, 1 + 2 * entry_count);
+        if minimize {
+            [bitmap, pairs, grouped]
+                .into_iter()
+                .min_by_key(|&(_, words)| words)
+                .unwrap()
+        } else if entry_count >= BITMAP_STATE_MIN_ENTRIES {
+            bitmap
+        } else if group_count >= 8 || entry_count <= 2 * group_count {
+            pairs
+        } else {
+            grouped
+        }
     }
 
     fn small_goto_value(&self, action: GotoAction, state_id: usize) -> u32 {

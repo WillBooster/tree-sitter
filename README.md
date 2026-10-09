@@ -47,6 +47,8 @@ tree-sitter profile --grammar-path typescript --output profile.json --corpus tes
 tree-sitter generate typescript/grammar.js --abi 16 --profile profile.json
 ```
 
+Profiled generation also compresses sparse parse rows that training never visited, while retaining the lookup encoding of observed rows. Shared rows keep the encoding chosen for an observed state. A profile with no recorded parse actions does not enable this compression.
+
 Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The [parser_study example](crates/cli/examples/parser_study.rs) measures both and reports tree hashes and error status:
 
 ```sh
