@@ -25,7 +25,7 @@
     "@willbooster/prettier-config": "10.4.0",
     "@willbooster/wb": "22.17.1",
     "conventional-changelog-conventionalcommits": "10.4.0",
-    "lefthook": "2.1.14",
+    "lefthook": "2.1.16",
     "prettier": "3.9.9",
     "prettier-plugin-java": "2.10.4",
     "semantic-release": "25.0.9",
