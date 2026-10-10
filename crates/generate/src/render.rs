@@ -27,6 +27,7 @@ use super::{
 
 const SMALL_STATE_THRESHOLD: usize = 64;
 const BITMAP_STATE_MIN_ENTRIES: usize = 16;
+const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
@@ -666,24 +667,23 @@ impl Generator {
                 .count()
         };
         let dense_bytes = self.parse_table.symbols.len() * size_of::<u16>();
-        let mut terminal_groups = FxHashSet::default();
-        let mut nonterminal_groups = FxHashSet::default();
+        let mut terminal_groups = FxHashMap::default();
+        let mut nonterminal_groups = FxHashMap::default();
         let mut row_ids = FxHashMap::default();
         let mut rows = Vec::new();
         let mut row_counts = Vec::new();
         let mut row_bytes = Vec::new();
         for (i, state) in self.parse_table.states.iter().enumerate().skip(minimum) {
             terminal_groups.clear();
-            terminal_groups.extend(state.terminal_entries.values().copied());
+            for &entry in state.terminal_entries.values() {
+                *terminal_groups.entry(entry).or_insert(0usize) += 1;
+            }
             nonterminal_groups.clear();
-            nonterminal_groups.extend(
-                state
-                    .nonterminal_entries
-                    .values()
-                    .map(|action| self.small_goto_value(*action, i)),
-            );
-            let entries = state.terminal_entries.len() + state.nonterminal_entries.len();
-            let groups = terminal_groups.len() + nonterminal_groups.len();
+            for &action in state.nonterminal_entries.values() {
+                *nonterminal_groups
+                    .entry(self.small_goto_value(action, i))
+                    .or_insert(0usize) += 1;
+            }
             let mut row = state
                 .terminal_entries
                 .iter()
@@ -699,7 +699,13 @@ impl Generator {
             let next_id = row_counts.len();
             let id = *row_ids.entry(row).or_insert_with(|| {
                 row_counts.push(0usize);
-                let (_, words) = self.small_state_encoding(entries, groups, false);
+                let (_, words) = self.small_state_encoding(
+                    terminal_groups
+                        .values()
+                        .chain(nonterminal_groups.values())
+                        .copied(),
+                    false,
+                );
                 row_bytes.push(words * size_of::<u16>());
                 next_id
             });
@@ -2314,8 +2320,10 @@ impl Generator {
                         .profile
                         .as_ref()
                         .is_some_and(|profile| profile.parse_states[state_id] == 0);
-                let (flag, _) =
-                    self.small_state_encoding(entry_count, values_with_symbols.len(), minimize);
+                let (flag, _) = self.small_state_encoding(
+                    values_with_symbols.iter().map(|(_, symbols)| symbols.len()),
+                    minimize,
+                );
                 let bitmap = flag == SMALL_STATE_BITMAP_FLAG;
                 let pairs = flag == SMALL_STATE_PAIR_FLAG;
                 let mut entries = Vec::new();
@@ -2442,10 +2450,22 @@ impl Generator {
 
     fn small_state_encoding(
         &self,
-        entry_count: usize,
-        group_count: usize,
+        group_sizes: impl Iterator<Item = usize>,
         minimize: bool,
     ) -> (usize, usize) {
+        let mut entry_count = 0;
+        let mut group_count = 0;
+        let mut lookup_steps = 0;
+        for size in group_sizes {
+            entry_count += size;
+            group_count += 1;
+            // Match ts_language_lookup_small_compact's linear/binary search split.
+            lookup_steps += if size < 16 {
+                size
+            } else {
+                size.ilog2() as usize + 1
+            };
+        }
         let grouped = (0, 1 + 2 * group_count + entry_count);
         if self.abi_version < ABI_VERSION_WITH_COMPACT_TABLES {
             return grouped;
@@ -2461,7 +2481,9 @@ impl Generator {
                 .min_by_key(|&(_, words)| words)
                 .unwrap()
         } else if entry_count >= BITMAP_STATE_MIN_ENTRIES
-            && (group_count >= 8 || bitmap.1 <= grouped.1)
+            && (group_count >= 8
+                || lookup_steps > MAX_GROUPED_LOOKUP_STEPS
+                || bitmap.1 <= grouped.1)
         {
             bitmap
         } else if group_count >= 8 || entry_count <= 2 * group_count {
