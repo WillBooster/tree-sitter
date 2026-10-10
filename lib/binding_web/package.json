@@ -115,7 +115,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.71.0",
     "vitest": "5.0.3",
-    "wrangler": "4.141.0"
+    "wrangler": "4.147.0"
   },
   "scripts": {
     "build:ts": "tsc -b . && tsc -p test/browser && node script/build.js",
