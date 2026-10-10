@@ -54,7 +54,7 @@ package = "wasmtime-c-api-impl"
 version = "48.0.1"
 
 [build-dependencies]
-bindgen = { optional = true, version = "0.72.1" }
+bindgen = { optional = true, version = "0.73.0" }
 cc.workspace = true
 serde_json.workspace = true
 
