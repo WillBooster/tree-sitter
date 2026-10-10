@@ -205,8 +205,18 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
                     {"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}, {"type": "SYMBOL", "name": "block"}
                 ]},
                 {"type": "SEQ", "members": [
-                    {"type": "CHOICE", "members": (0..24).map(|i| serde_json::json!({
+                    {"type": "CHOICE", "members": (0..128).map(|i| serde_json::json!({
                         "type": "STRING", "value": format!("command_{i:02}")
+                    })).collect::<Vec<_>>()},
+                    {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "dispatch"},
+                    {"type": "CHOICE", "members": (0..16).map(|i| serde_json::json!({
+                        "type": "SEQ", "members": [
+                            {"type": "STRING", "value": format!("case_{i}")},
+                            {"type": "STRING", "value": format!("value_{i}")}
+                        ]
                     })).collect::<Vec<_>>()},
                     {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
                 ]}
@@ -285,7 +295,7 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
     generate(Some(&empty_profile)).unwrap();
     let without_samples = fs::read_to_string(&parser_path).unwrap();
     assert!(
-        table_words(&optimized) <= table_words(&without_samples),
+        table_words(&optimized) < table_words(&without_samples),
         "profiled table: {} words; empty-profile table: {} words",
         table_words(&optimized),
         table_words(&without_samples)
@@ -298,7 +308,13 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
             tree_sitter_generate::PARSER_HEADER,
         ))
         .unwrap();
-    for input in [source, "let value = ; if ready { let item = 9;"] {
+    for (input, has_error) in [
+        (source, false),
+        ("let value = ; if ready { let item = 9;", true),
+        ("dispatch case_0 value_0 item;", false),
+        ("dispatch case_15 value_15 item;", false),
+        ("dispatch case_0 value_15 item;", true),
+    ] {
         let actual = parser.parse(input, None).unwrap();
         let mut baseline = Parser::new();
         baseline
@@ -309,6 +325,7 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
             ))
             .unwrap();
         let expected = baseline.parse(input, None).unwrap();
+        assert_eq!(expected.root_node().has_error(), has_error, "{input}");
         assert_eq!(actual.root_node().to_sexp(), expected.root_node().to_sexp());
         assert_eq!(
             actual.root_node().byte_range(),
