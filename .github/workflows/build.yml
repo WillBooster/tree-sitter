@@ -75,7 +75,7 @@ jobs:
           ./target/release/tree-sitter test --help | grep -q -- --wasm
   test-compact:
     name: test (ABI 16)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7.0.1
         with:
