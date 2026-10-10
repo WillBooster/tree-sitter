@@ -1,7 +1,7 @@
 
 static inline uint16_t ts_keyword_next(uint16_t state, uint32_t character) {
   const TSKeywordState *row = &ts_keyword_states[state];
-  uint32_t low = row->index, high = low + row->count;
+  uint32_t low = row->index, high = ts_keyword_states[state + 1].index;
   while (low < high) {
     uint32_t mid = low + (high - low) / 2;
     TSKeywordTransition transition = ts_keyword_transitions[mid];

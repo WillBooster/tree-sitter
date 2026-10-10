@@ -364,10 +364,6 @@ impl Generator {
         );
         add_line!(
             self,
-            "typedef struct {{ uint32_t index; uint16_t count; TSSymbol accept; }} TSKeywordState;"
-        );
-        add_line!(
-            self,
             "typedef struct {{ uint8_t first, last; uint16_t state; }} TSKeywordTransition;"
         );
         add_line!(
@@ -394,23 +390,34 @@ impl Generator {
                 })
                 .collect::<Vec<_>>();
             ranges.sort_unstable();
-            rows.push((index, ranges.len(), state.accept_action));
+            rows.push((index, state.accept_action));
             transitions.extend(ranges);
         }
+        let transition_count = transitions.len();
         for (first, last, state) in transitions {
             add_line!(self, "{{ {first}, {last}, {state} }},");
         }
         dedent!(self);
         add_line!(self, "}};");
+        let index_width = if u16::try_from(transition_count).is_ok() {
+            16
+        } else {
+            32
+        };
+        add_line!(
+            self,
+            "typedef struct {{ uint{index_width}_t index; TSSymbol accept; }} TSKeywordState;"
+        );
         add_line!(self, "static const TSKeywordState ts_keyword_states[] = {{");
         indent!(self);
-        for (index, count, accept) in rows {
+        for (index, accept) in rows {
             let accept = accept.map_or_else(
                 || "0".to_string(),
                 |symbol| self.symbol_ids[&symbol].clone(),
             );
-            add_line!(self, "{{ {index}, {count}, {accept} }},");
+            add_line!(self, "{{ {index}, {accept} }},");
         }
+        add_line!(self, "{{ {transition_count}, 0 }},");
         dedent!(self);
         add_line!(self, "}};");
         self.buffer
@@ -1416,7 +1423,13 @@ impl Generator {
         {
             add_line!(self, "ts_lex_state_{state_id}:");
         }
-        if let Some(accept_action) = state.accept_action {
+        let defer_accept = state.eof_action.is_none()
+            && !state.advance_actions.is_empty()
+            && state
+                .advance_actions
+                .iter()
+                .all(|(_, action)| action.state == state_id && action.in_main_token);
+        if !defer_accept && let Some(accept_action) = state.accept_action {
             add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
         }
 
@@ -1652,6 +1665,9 @@ impl Generator {
             add!(self, "\n");
         }
 
+        if defer_accept && let Some(accept_action) = state.accept_action {
+            add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
+        }
         add_line!(self, "END_STATE();");
     }
 

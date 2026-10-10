@@ -623,6 +623,93 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
 }
 
 #[test]
+fn test_generated_accepting_loops_preserve_token_boundaries() {
+    let grammar = r#"{
+        "name": "accepting_loop_boundaries",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "identifier"},
+                {"type": "SYMBOL", "name": "number"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[_\\p{XID_Start}][_\\p{XID_Continue}]*"},
+            "number": {"type": "PATTERN", "value": "[0-9]+(\\.[0-9]+)?"}
+        }
+    }"#;
+    for abi in [15, 16] {
+        let (name, code) = generate_parser_with_abi(grammar, abi).unwrap();
+        let languages = [
+            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm(&name, &code),
+        ];
+        for language in languages {
+            let mut parser = Parser::new();
+            #[cfg(feature = "wasm")]
+            if language.is_wasm() {
+                parser
+                    .set_wasm_store(
+                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                    )
+                    .unwrap();
+            }
+            parser.set_language(&language).unwrap();
+            let identifier = "café日本語".repeat(64);
+            let number = format!("{}.45", "123".repeat(64));
+            let source = format!("{identifier} {number}");
+            let expected = "(source_file (identifier) (number))";
+            let tree = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert_eq!(
+                tree.root_node().named_child(0).unwrap().byte_range(),
+                0..identifier.len()
+            );
+            assert_eq!(
+                tree.root_node().named_child(1).unwrap().byte_range(),
+                identifier.len() + 1..source.len()
+            );
+            let utf16 = source.encode_utf16().collect::<Vec<_>>();
+            let tree = parser.parse_utf16_le(&utf16, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
+
+            for source in ["123.", "123.a", "123.\0"] {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(tree.root_node().has_error());
+                let number = tree.root_node().named_child(0).unwrap();
+                assert_eq!(number.kind(), "number");
+                assert_eq!(number.byte_range(), 0..3);
+            }
+
+            let source = "abc GAP 123.45";
+            parser
+                .set_included_ranges(&[
+                    Range {
+                        start_byte: 0,
+                        end_byte: 3,
+                        start_point: Point::new(0, 0),
+                        end_point: Point::new(0, 3),
+                    },
+                    Range {
+                        start_byte: 7,
+                        end_byte: source.len(),
+                        start_point: Point::new(0, 7),
+                        end_point: Point::new(0, source.len()),
+                    },
+                ])
+                .unwrap();
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..3);
+            assert_eq!(
+                tree.root_node().named_child(1).unwrap().byte_range(),
+                8..source.len()
+            );
+        }
+    }
+}
+
+#[test]
 fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
     let (name, code) = generate_parser_with_abi(
         r#"{
