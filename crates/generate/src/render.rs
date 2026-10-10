@@ -2460,7 +2460,9 @@ impl Generator {
                 .into_iter()
                 .min_by_key(|&(_, words)| words)
                 .unwrap()
-        } else if entry_count >= BITMAP_STATE_MIN_ENTRIES {
+        } else if entry_count >= BITMAP_STATE_MIN_ENTRIES
+            && (group_count >= 8 || bitmap.1 <= grouped.1)
+        {
             bitmap
         } else if group_count >= 8 || entry_count <= 2 * group_count {
             pairs
