@@ -1,0 +1,33 @@
+================================================================================
+Ambiguous statement keeps the reading chosen without the keyword
+================================================================================
+
+foo x y q ;
+@ async* ;
+
+---
+
+(source_file
+  (statement
+    (first
+      (identifier))
+    (pair)
+    (identifier))
+  (modifier))
+
+================================================================================
+Keyword after the pair
+================================================================================
+
+foo x y as ;
+@ as b ;
+
+---
+
+(source_file
+  (statement
+    (first
+      (identifier))
+    (pair))
+  (modifier
+    (identifier)))
