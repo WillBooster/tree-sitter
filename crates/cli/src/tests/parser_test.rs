@@ -347,18 +347,27 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
 fn test_languages_with_other_abi_versions_are_rejected() {
     let grammar = serde_json::json!({
         "name": "other_abi_versions",
-        "rules": {"program": {"type": "STRING", "value": "x"}}
+        "supertypes": ["statement"],
+        "rules": {
+            "program": {"type": "SYMBOL", "name": "statement"},
+            "statement": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "x"},
+                {"type": "SYMBOL", "name": "y"}
+            ]},
+            "x": {"type": "STRING", "value": "x"},
+            "y": {"type": "STRING", "value": "y"}
+        }
     });
     let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let supported =
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER);
+    assert_eq!(supported.name(), Some("other_abi_versions"));
+    assert!(supported.metadata().is_some());
+    assert_eq!(supported.supertypes().len(), 1);
     let define = format!("#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}\n");
     assert!(code.contains(&define));
     let mut parser = Parser::new();
-    for (version, rendered) in [
-        (13, "0xd"),
-        (15, "0xf"),
-        (16, "0x10"),
-        (LANGUAGE_VERSION + 1, "0x57420002"),
-    ] {
+    for version in [13, 15, 16, LANGUAGE_VERSION + 1] {
         let language = get_test_language_with_header(
             &name,
             &code.replace(&define, &format!("#define LANGUAGE_VERSION {version}\n")),
@@ -368,7 +377,7 @@ fn test_languages_with_other_abi_versions_are_rejected() {
         assert_eq!(error, LanguageError::Version(version));
         assert_eq!(
             error.to_string(),
-            format!("Incompatible language version {rendered}. Expected 0x57420001")
+            format!("Incompatible language version {version:#x}. Expected {LANGUAGE_VERSION:#x}")
         );
         assert!(parser.language().is_none());
         assert_eq!(language.name(), None);
