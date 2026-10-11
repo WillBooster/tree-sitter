@@ -76,7 +76,7 @@ pub type GenerateResult<T> = Result<T, GenerateError>;
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum GenerateError {
     #[error(
-        "Generation profile fingerprint does not match the unprofiled parser; record the profile again with this CLI (tree-sitter generate, then tree-sitter profile)"
+        "Generation profile fingerprint does not match the unprofiled parser; record the profile again with this CLI (tree-sitter generate, then tree-sitter profile --output <profile> with the training inputs)"
     )]
     ProfileMismatch,
     #[error("Error with specified path -- {0}")]

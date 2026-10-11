@@ -431,7 +431,7 @@ fn test_load_wasm_rejects_other_abi_versions() {
     fs::write(src.join("tree_sitter/parser.h"), tree_sitter::PARSER_HEADER).unwrap();
     let output = src.join("parser.wasm");
     let loader = Loader::with_parser_lib_path(src.to_path_buf());
-    for (version, rendered) in [(15, "0xf"), (16, "0x10")] {
+    for version in [15, 16] {
         fs::write(
             src.join("parser.c"),
             code.replace(&define, &format!("#define LANGUAGE_VERSION {version}\n")),
@@ -448,7 +448,8 @@ fn test_load_wasm_rejects_other_abi_versions() {
             WasmError {
                 kind: WasmErrorKind::Instantiate,
                 message: format!(
-                    "incompatible language ABI version {rendered}; expected 0x57420001"
+                    "incompatible language ABI version {version:#x}; expected {:#x}",
+                    tree_sitter::LANGUAGE_VERSION
                 ),
             }
         );
