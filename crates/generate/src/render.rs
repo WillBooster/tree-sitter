@@ -33,10 +33,9 @@ const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
 const LEXER_CHUNK_SIZE: usize = 256;
 const KEYWORD_SKIP_FLAG: usize = 1 << 15;
-pub const ABI_VERSION_MIN: usize = 14;
+pub const ABI_VERSION_MIN: usize = 15;
 pub const ABI_VERSION_MAX: usize = LANGUAGE_VERSION;
-pub const ABI_VERSION_DEFAULT: usize = 15;
-const ABI_VERSION_WITH_RESERVED_WORDS: usize = 15;
+pub const ABI_VERSION_DEFAULT: usize = 16;
 pub const ABI_VERSION_WITH_COMPACT_TABLES: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -200,7 +199,7 @@ impl Generator {
         self.add_non_terminal_alias_map();
         self.add_primary_state_id_list();
 
-        if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS && !self.supertype_map.is_empty() {
+        if !self.supertype_map.is_empty() {
             self.add_supertype_map();
         }
 
@@ -241,8 +240,7 @@ impl Generator {
 
         self.add_lex_modes();
 
-        if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS && self.reserved_word_sets.len() > 1
-        {
+        if self.reserved_word_sets.len() > 1 {
             self.add_reserved_word_sets();
         }
 
@@ -644,17 +642,15 @@ impl Generator {
             self.reserved_word_set_ids_by_parse_state.push(id);
         }
 
-        if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
-            for (supertype, subtypes) in &self.supertype_symbol_map {
-                if let Some(supertype) = self.symbol_ids.get(supertype) {
-                    self.supertype_map
-                        .entry(supertype.clone())
-                        .or_insert_with(|| subtypes.clone());
-                }
+        for (supertype, subtypes) in &self.supertype_symbol_map {
+            if let Some(supertype) = self.symbol_ids.get(supertype) {
+                self.supertype_map
+                    .entry(supertype.clone())
+                    .or_insert_with(|| subtypes.clone());
             }
-
-            self.supertype_symbol_map.clear();
         }
+
+        self.supertype_symbol_map.clear();
 
         self.large_state_count = self.count_large_states();
     }
@@ -1946,12 +1942,7 @@ impl Generator {
 
         add_line!(
             self,
-            "static const {} ts_lex_modes[STATE_COUNT] = {{",
-            if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
-                "TSLexerMode"
-            } else {
-                "TSLexMode"
-            }
+            "static const TSLexerMode ts_lex_modes[STATE_COUNT] = {{"
         );
         indent!(self);
         for (i, state) in self.parse_table.states.iter().enumerate() {
@@ -1970,11 +1961,9 @@ impl Generator {
                     );
                 }
 
-                if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
-                    let reserved_word_set_id = self.reserved_word_set_ids_by_parse_state[i];
-                    if reserved_word_set_id != 0 {
-                        add!(self, ", .reserved_word_set_id = {reserved_word_set_id}");
-                    }
+                let reserved_word_set_id = self.reserved_word_set_ids_by_parse_state[i];
+                if reserved_word_set_id != 0 {
+                    add!(self, ", .reserved_word_set_id = {reserved_word_set_id}");
                 }
             }
 
@@ -2657,9 +2646,7 @@ impl Generator {
         add_line!(self, ".state_count = STATE_COUNT,");
         add_line!(self, ".large_state_count = LARGE_STATE_COUNT,");
         add_line!(self, ".production_id_count = PRODUCTION_ID_COUNT,");
-        if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
-            add_line!(self, ".supertype_count = SUPERTYPE_COUNT,");
-        }
+        add_line!(self, ".supertype_count = SUPERTYPE_COUNT,");
         add_line!(self, ".field_count = FIELD_COUNT,");
         add_line!(
             self,
@@ -2681,7 +2668,7 @@ impl Generator {
             add_line!(self, ".field_map_slices = ts_field_map_slices,");
             add_line!(self, ".field_map_entries = ts_field_map_entries,");
         }
-        if !self.supertype_map.is_empty() && self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
+        if !self.supertype_map.is_empty() {
             add_line!(self, ".supertype_map_slices = ts_supertype_map_slices,");
             add_line!(self, ".supertype_map_entries = ts_supertype_map_entries,");
             add_line!(self, ".supertype_symbols = ts_supertype_symbols,");
@@ -2749,38 +2736,36 @@ impl Generator {
         }
         add_line!(self, ".primary_state_ids = ts_primary_state_ids,");
 
-        if self.abi_version >= ABI_VERSION_WITH_RESERVED_WORDS {
-            add_line!(self, ".name = \"{}\",", self.language_name);
+        add_line!(self, ".name = \"{}\",", self.language_name);
 
-            if self.reserved_word_sets.len() > 1 {
-                if self.uses_reserved_word_slices {
-                    add_line!(self, ".reserved_words = ts_reserved_words,");
-                    add_line!(self, ".reserved_word_slices = ts_reserved_word_slices,");
-                } else {
-                    add_line!(self, ".reserved_words = &ts_reserved_words[0][0],");
-                }
+        if self.reserved_word_sets.len() > 1 {
+            if self.uses_reserved_word_slices {
+                add_line!(self, ".reserved_words = ts_reserved_words,");
+                add_line!(self, ".reserved_word_slices = ts_reserved_word_slices,");
+            } else {
+                add_line!(self, ".reserved_words = &ts_reserved_words[0][0],");
             }
-
-            add_line!(
-                self,
-                ".max_reserved_word_set_size = {},",
-                self.reserved_word_sets
-                    .iter()
-                    .map(TokenSet::len)
-                    .max()
-                    .unwrap()
-            );
-
-            let metadata = self.metadata.unwrap_or_default();
-
-            add_line!(self, ".metadata = {{");
-            indent!(self);
-            add_line!(self, ".major_version = {},", metadata.major);
-            add_line!(self, ".minor_version = {},", metadata.minor);
-            add_line!(self, ".patch_version = {},", metadata.patch);
-            dedent!(self);
-            add_line!(self, "}},");
         }
+
+        add_line!(
+            self,
+            ".max_reserved_word_set_size = {},",
+            self.reserved_word_sets
+                .iter()
+                .map(TokenSet::len)
+                .max()
+                .unwrap()
+        );
+
+        let metadata = self.metadata.unwrap_or_default();
+
+        add_line!(self, ".metadata = {{");
+        indent!(self);
+        add_line!(self, ".major_version = {},", metadata.major);
+        add_line!(self, ".minor_version = {},", metadata.minor);
+        add_line!(self, ".patch_version = {},", metadata.patch);
+        dedent!(self);
+        add_line!(self, "}},");
 
         dedent!(self);
         add_line!(self, "}};");

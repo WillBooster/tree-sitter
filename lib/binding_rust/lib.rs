@@ -45,9 +45,8 @@ mod wasm_allocator;
 /// The latest ABI version that is supported by the current version of the
 /// library.
 ///
-/// The Tree-sitter CLI assigns an ABI version to each generated
-/// language; its default ABI may be older than this maximum. Use the CLI's
-/// `generate --abi` option to select an ABI version.
+/// The Tree-sitter CLI assigns this ABI version to each generated
+/// language, unless its `generate --abi` option selects an earlier one.
 /// The Tree-sitter library is generally backwards-compatible with languages
 /// generated using older CLI versions, but is not forwards-compatible.
 #[doc(alias = "TREE_SITTER_LANGUAGE_VERSION")]
