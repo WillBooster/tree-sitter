@@ -24,16 +24,16 @@ so the newest release lacks them for a while.
 
 ## Parser generation and tuning
 
-The CLI defaults to ABI 15. Use `tree-sitter generate --abi 16` for shared parse rows, bitmap-ranked sparse lookup, and compact metadata. These parsers require a runtime supporting ABI 16.
+The CLI generates ABI 16 parsers by default, with shared parse rows, bitmap-ranked sparse lookup, and compact metadata. These parsers require a runtime supporting ABI 16. `tree-sitter generate --abi 15` generates a parser without them, which earlier runtimes also load.
 
 Completed-token keyword lookup shares a table with the keyword lexer. It requires ASCII transitions, including skipped separators. Grammars with Unicode separators retain branch-based keyword lexing and can still benefit from compact parse tables and profiles.
 
 To record parse-action and lexer-entry frequencies, generate an unprofiled ABI 16 parser first. From the grammar directory:
 
 ```sh
-tree-sitter generate --abi 16
+tree-sitter generate
 tree-sitter profile --output profile.json --corpus test/corpus
-tree-sitter generate --abi 16 --profile profile.json
+tree-sitter generate --profile profile.json
 tree-sitter build
 ```
 
@@ -42,9 +42,9 @@ A profile applies only to the exact unprofiled generated source it was recorded 
 `profile` accepts additional source files and repeated `--corpus` paths. Corpus, source, and output paths resolve relative to the process working directory, even when `--grammar-path` selects a different directory. For example, from a repository root with a grammar in `typescript/` and shared examples in `test/corpus/`:
 
 ```sh
-tree-sitter generate typescript/grammar.js --abi 16
+tree-sitter generate typescript/grammar.js
 tree-sitter profile --grammar-path typescript --output profile.json --corpus test/corpus
-tree-sitter generate typescript/grammar.js --abi 16 --profile profile.json
+tree-sitter generate typescript/grammar.js --profile profile.json
 ```
 
 Profiled generation also compresses sparse parse rows that training never visited, while retaining the lookup encoding of observed rows. Shared rows keep the encoding chosen for an observed state. A profile with no recorded parse actions does not enable this compression.

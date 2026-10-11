@@ -497,21 +497,6 @@ where
     Ok(())
 }
 
-pub fn generate_parser_for_grammar(
-    grammar_json: &str,
-    semantic_version: Option<(u8, u8, u8)>,
-    optimizations: OptLevel,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> GenerateResult<(String, String)> {
-    generate_parser_for_grammar_with_abi(
-        grammar_json,
-        ABI_VERSION_DEFAULT,
-        semantic_version,
-        optimizations,
-        diagnostics,
-    )
-}
-
 pub fn generate_parser_for_grammar_with_abi(
     grammar_json: &str,
     abi_version: usize,

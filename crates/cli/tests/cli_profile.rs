@@ -32,7 +32,7 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
             String::from_utf8_lossy(&output.stderr)
         );
     };
-    success(&["generate", "src/grammar.json"]);
+    success(&["generate", "src/grammar.json", "--abi", "15"]);
     let rejected = run(&["profile", "--output", "profile.json", "input.txt"]);
     assert!(!rejected.status.success());
     assert!(
