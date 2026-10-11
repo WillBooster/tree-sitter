@@ -429,12 +429,7 @@ static bool wasm_memory__read(const WasmMemory *memory, int32_t address, void *r
 
 static bool wasm_memory__language(const WasmMemory *memory, int32_t address, LanguageInWasmMemory *result) {
   memset(result, 0, sizeof(*result));
-  if (!wasm_memory__read(memory, address, &result->abi_version, sizeof(result->abi_version))) return false;
-  size_t size = result->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES ? sizeof(*result) :
-    result->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? offsetof(LanguageInWasmMemory, alias_sequence_offsets) :
-    result->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES ? offsetof(LanguageInWasmMemory, name) :
-    offsetof(LanguageInWasmMemory, primary_state_ids);
-  return wasm_memory__read(memory, address, result, size);
+  return wasm_memory__read(memory, address, result, sizeof(*result));
 }
 
 static bool wasm_memory__string_length(const WasmMemory *memory, int32_t address, size_t *length) {
@@ -1405,16 +1400,12 @@ const TSLanguage *ts_wasm_store_load_language(
   if (!wasm_memory__read(&wasm_memory, language_address, &abi_version, sizeof(abi_version))) {
     goto invalid_language_memory;
   }
-  if (
-    abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION ||
-    abi_version > TREE_SITTER_LANGUAGE_VERSION
-  ) {
+  if (abi_version != TREE_SITTER_LANGUAGE_VERSION) {
     wasm_error->kind = TSWasmErrorKindInstantiate;
     format(
       &wasm_error->message,
-      "incompatible language ABI version %u; expected between %u and %u",
+      "incompatible language ABI version 0x%x; expected 0x%x",
       abi_version,
-      TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION,
       TREE_SITTER_LANGUAGE_VERSION
     );
     goto error;
@@ -1428,9 +1419,7 @@ const TSLanguage *ts_wasm_store_load_language(
     goto invalid_language_memory;
   }
 
-  bool has_supertypes =
-    wasm_language.abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS &&
-    wasm_language.supertype_count > 0;
+  bool has_supertypes = wasm_language.supertype_count > 0;
 
   int32_t addresses[] = {
     wasm_language.parse_table,
@@ -1524,7 +1513,7 @@ const TSLanguage *ts_wasm_store_load_language(
       &wasm_memory,
       wasm_language.lex_modes,
       (wasm_language.lex_mode_ids ? wasm_language.lex_mode_count : wasm_language.state_count) *
-        (wasm_language.abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? sizeof(TSLexerMode) : sizeof(TSLexMode)),
+        sizeof(TSLexerMode),
       &valid_wasm_memory
     ),
   };
@@ -1681,51 +1670,47 @@ const TSLanguage *ts_wasm_store_load_language(
     if (!valid_wasm_memory) goto invalid_language_memory;
   }
 
-  if (language->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES) {
-    language->primary_state_ids = copy(
-      &wasm_memory,
-      wasm_language.primary_state_ids,
-      wasm_language.state_count * sizeof(TSStateId),
-      &valid_wasm_memory
-    );
-    if (!valid_wasm_memory) goto invalid_language_memory;
+  language->primary_state_ids = copy(
+    &wasm_memory,
+    wasm_language.primary_state_ids,
+    wasm_language.state_count * sizeof(TSStateId),
+    &valid_wasm_memory
+  );
+  if (!valid_wasm_memory) goto invalid_language_memory;
+
+  language->name = copy_string(&wasm_memory, wasm_language.name, &valid_wasm_memory);
+  if (!valid_wasm_memory) goto invalid_language_memory;
+  language->max_reserved_word_set_size = wasm_language.max_reserved_word_set_size;
+
+  // Determine the number of reserved word sets by finding the maximum
+  // reserved_word_set_id across all lex modes.
+  uint16_t max_reserved_word_set_id = 0;
+  for (uint32_t i = 0; i < wasm_language.state_count; i++) {
+    uint16_t id = ts_language_lex_mode_for_state(language, i).reserved_word_set_id;
+    if (id > max_reserved_word_set_id) max_reserved_word_set_id = id;
   }
 
-  if (language->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS) {
-    language->name = copy_string(&wasm_memory, wasm_language.name, &valid_wasm_memory);
-    if (!valid_wasm_memory) goto invalid_language_memory;
-    language->max_reserved_word_set_size = wasm_language.max_reserved_word_set_size;
-
-    // Determine the number of reserved word sets by finding the maximum
-    // reserved_word_set_id across all lex modes.
-    uint16_t max_reserved_word_set_id = 0;
-    for (uint32_t i = 0; i < wasm_language.state_count; i++) {
-      uint16_t id = ts_language_lex_mode_for_state(language, i).reserved_word_set_id;
-      if (id > max_reserved_word_set_id) max_reserved_word_set_id = id;
-    }
-
-    if (max_reserved_word_set_id > 0 && language->max_reserved_word_set_size > 0) {
-      uint32_t reserved_word_count =
-        (max_reserved_word_set_id + 1) * language->max_reserved_word_set_size;
-      if (wasm_language.reserved_word_slices) {
-        language->reserved_word_slices = copy(&wasm_memory, wasm_language.reserved_word_slices,
-          (max_reserved_word_set_id + 1) * sizeof(TSMapSlice), &valid_wasm_memory);
-        if (!valid_wasm_memory) goto invalid_language_memory;
-        reserved_word_count = 0;
-        for (uint32_t i = 0; i <= max_reserved_word_set_id; i++) {
-          TSMapSlice slice = language->reserved_word_slices[i];
-          uint32_t end = (uint32_t)slice.index + slice.length;
-          if (end > reserved_word_count) reserved_word_count = end;
-        }
-      }
-      language->reserved_words = copy(
-          &wasm_memory,
-          wasm_language.reserved_words,
-          reserved_word_count * sizeof(TSSymbol),
-          &valid_wasm_memory
-      );
+  if (max_reserved_word_set_id > 0 && language->max_reserved_word_set_size > 0) {
+    uint32_t reserved_word_count =
+      (max_reserved_word_set_id + 1) * language->max_reserved_word_set_size;
+    if (wasm_language.reserved_word_slices) {
+      language->reserved_word_slices = copy(&wasm_memory, wasm_language.reserved_word_slices,
+        (max_reserved_word_set_id + 1) * sizeof(TSMapSlice), &valid_wasm_memory);
       if (!valid_wasm_memory) goto invalid_language_memory;
+      reserved_word_count = 0;
+      for (uint32_t i = 0; i <= max_reserved_word_set_id; i++) {
+        TSMapSlice slice = language->reserved_word_slices[i];
+        uint32_t end = (uint32_t)slice.index + slice.length;
+        if (end > reserved_word_count) reserved_word_count = end;
+      }
     }
+    language->reserved_words = copy(
+        &wasm_memory,
+        wasm_language.reserved_words,
+        reserved_word_count * sizeof(TSSymbol),
+        &valid_wasm_memory
+    );
+    if (!valid_wasm_memory) goto invalid_language_memory;
   }
 
   if (language->external_token_count > 0) {

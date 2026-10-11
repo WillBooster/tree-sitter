@@ -999,36 +999,34 @@ fn test_query_errors_on_impossible_patterns() {
             }
         );
 
-        if js_lang.abi_version() >= 15 {
-            assert_eq!(
-                Query::new(&js_lang, "(statement/identifier)").unwrap_err(),
-                QueryError {
-                    row: 0,
-                    offset: 0,
-                    column: 0,
-                    kind: QueryErrorKind::Structure,
-                    message: [
-                        "(statement/identifier)", //
-                        "^"
-                    ]
-                    .join("\n")
-                }
-            );
-            assert_eq!(
-                Query::new(&js_lang, "(statement/pattern)").unwrap_err(),
-                QueryError {
-                    row: 0,
-                    offset: 0,
-                    column: 0,
-                    kind: QueryErrorKind::Structure,
-                    message: [
-                        "(statement/pattern)", //
-                        "^"
-                    ]
-                    .join("\n")
-                }
-            );
-        }
+        assert_eq!(
+            Query::new(&js_lang, "(statement/identifier)").unwrap_err(),
+            QueryError {
+                row: 0,
+                offset: 0,
+                column: 0,
+                kind: QueryErrorKind::Structure,
+                message: [
+                    "(statement/identifier)", //
+                    "^"
+                ]
+                .join("\n")
+            }
+        );
+        assert_eq!(
+            Query::new(&js_lang, "(statement/pattern)").unwrap_err(),
+            QueryError {
+                row: 0,
+                offset: 0,
+                column: 0,
+                kind: QueryErrorKind::Structure,
+                message: [
+                    "(statement/pattern)", //
+                    "^"
+                ]
+                .join("\n")
+            }
+        );
     });
 }
 
@@ -3068,7 +3066,6 @@ fn test_transparent_supertype_alias_node_schema() {
             directory.path(),
             None::<std::path::PathBuf>,
             None::<std::path::PathBuf>,
-            tree_sitter::LANGUAGE_VERSION,
             None,
             None,
             false,

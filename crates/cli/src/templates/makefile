@@ -25,9 +25,9 @@ OBJS := $(patsubst %.c,%.o,$(PARSER) $(EXTRAS))
 ARFLAGS ?= rcs
 override CFLAGS += -I$(SRC_DIR) -std=c11 -fPIC
 
-# ABI versioning
-SONAME_MAJOR = $(shell sed -n 's/\#define LANGUAGE_VERSION //p' $(PARSER))
-SONAME_MINOR = $(word 1,$(subst ., ,$(VERSION)))
+# library versioning
+SONAME_MAJOR = $(word 1,$(subst ., ,$(VERSION)))
+SONAME_MINOR = $(word 2,$(subst ., ,$(VERSION)))
 
 # OS-specific bits
 MACHINE := $(shell $(CC) -dumpmachine)

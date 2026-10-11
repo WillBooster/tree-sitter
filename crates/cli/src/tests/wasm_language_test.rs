@@ -4,7 +4,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor, WasmError, WasmErrorKind, WasmStore};
 use tree_sitter_loader::Loader;
 
-use crate::tests::generate_parser_with_abi;
+use crate::tests::generate_parser;
 use crate::tests::helpers::{
     allocations,
     fixtures::{ENGINE, WASM_DIR, get_test_fixture_language_wasm, scratch_dir},
@@ -30,7 +30,7 @@ fn test_load_wasm_rejects_inconsistent_alias_metadata() {
             }
         }
     });
-    let (name, code) = generate_parser_with_abi(&grammar.to_string(), 16).unwrap();
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
     let directory = tempfile::tempdir_in(scratch_dir()).unwrap();
     let src = directory.path();
     fs::create_dir(src.join("tree_sitter")).unwrap();
@@ -411,6 +411,49 @@ fn test_reset_wasm_store() {
             "(source_file (function_item name: (identifier) parameters: (parameters) body: (block)))"
         );
     });
+}
+
+#[test]
+fn test_load_wasm_rejects_other_abi_versions() {
+    let grammar = serde_json::json!({
+        "name": "wasm_other_abi_versions",
+        "rules": {"program": {"type": "STRING", "value": "x"}}
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let define = format!(
+        "#define LANGUAGE_VERSION {:#x}\n",
+        tree_sitter::LANGUAGE_VERSION
+    );
+    assert!(code.contains(&define));
+    let directory = tempfile::tempdir_in(scratch_dir()).unwrap();
+    let src = directory.path();
+    fs::create_dir(src.join("tree_sitter")).unwrap();
+    fs::write(src.join("tree_sitter/parser.h"), tree_sitter::PARSER_HEADER).unwrap();
+    let output = src.join("parser.wasm");
+    let loader = Loader::with_parser_lib_path(src.to_path_buf());
+    for version in [15, 16] {
+        fs::write(
+            src.join("parser.c"),
+            code.replace(&define, &format!("#define LANGUAGE_VERSION {version}\n")),
+        )
+        .unwrap();
+        loader
+            .compile_parser_to_wasm(&name, src, None, &output)
+            .unwrap();
+        let mut store = WasmStore::new(&ENGINE).unwrap();
+        assert_eq!(
+            store
+                .load_language(&name, &fs::read(&output).unwrap())
+                .unwrap_err(),
+            WasmError {
+                kind: WasmErrorKind::Instantiate,
+                message: format!(
+                    "incompatible language ABI version {version:#x}; expected {:#x}",
+                    tree_sitter::LANGUAGE_VERSION
+                ),
+            }
+        );
+    }
 }
 
 #[test]

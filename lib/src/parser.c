@@ -703,8 +703,7 @@ static Subtree ts_parser__lex(
       uint32_t start_byte = self->lexer.token_start_position.bytes;
       bool bulk_keyword = false;
       TSSymbol candidate = 0;
-      if (self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
-          && self->language->keyword_lookup_fn
+      if (self->language->keyword_lookup_fn
           && (self->lexer.input.encoding == TSInputEncodingUTF8
 #ifdef __EMSCRIPTEN__
               || self->lexer.input.encoding == TSInputEncodingUTF16LE
@@ -2219,10 +2218,7 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   self->language = NULL;
 
   if (language) {
-    if (
-      language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
-      language->abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION
-    ) return false;
+    if (!ts_language_has_supported_abi(language)) return false;
 
     if (!ts_language_is_parseable(language)) return false;
 

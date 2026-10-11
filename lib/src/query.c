@@ -1706,7 +1706,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     if (has_children) {
       if (!is_wildcard) {
         array_push(&parent_step_indices, i);
-      } else if (step->supertype_symbol && self->language->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS) {
+      } else if (step->supertype_symbol) {
         // Look at the child steps to see if any aren't valid subtypes for this supertype.
         uint32_t subtype_length;
         const TSSymbol *subtypes = ts_language_subtypes(
@@ -2720,27 +2720,25 @@ static TSQueryError ts_query__parse_pattern(
 
         // Get all the possible subtypes for the given supertype,
         // and check if the given subtype is valid.
-        if (self->language->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS) {
-          uint32_t subtype_length;
-          const TSSymbol *subtypes = ts_language_subtypes(
-            self->language,
-            step->supertype_symbol,
-            &subtype_length
-          );
+        uint32_t subtype_length;
+        const TSSymbol *subtypes = ts_language_subtypes(
+          self->language,
+          step->supertype_symbol,
+          &subtype_length
+        );
 
-          bool subtype_is_valid = false;
-          for (uint32_t i = 0; i < subtype_length; i++) {
-            if (subtypes[i] == step->symbol) {
-              subtype_is_valid = true;
-              break;
-            }
+        bool subtype_is_valid = false;
+        for (uint32_t i = 0; i < subtype_length; i++) {
+          if (subtypes[i] == step->symbol) {
+            subtype_is_valid = true;
+            break;
           }
+        }
 
-          // This subtype is not valid for the given supertype.
-          if (!subtype_is_valid) {
-            stream_reset(stream, node_name - 1); // reset to the start of the node
-            return TSQueryErrorStructure;
-          }
+        // This subtype is not valid for the given supertype.
+        if (!subtype_is_valid) {
+          stream_reset(stream, node_name - 1); // reset to the start of the node
+          return TSQueryErrorStructure;
         }
       }
 
@@ -3103,11 +3101,7 @@ TSQuery *ts_query_new(
   uint32_t *error_offset,
   TSQueryError *error_type
 ) {
-  if (
-    !language ||
-    language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
-    language->abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION
-  ) {
+  if (!language || !ts_language_has_supported_abi(language)) {
     *error_type = TSQueryErrorLanguage;
     return NULL;
   }

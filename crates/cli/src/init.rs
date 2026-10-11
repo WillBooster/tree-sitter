@@ -10,6 +10,7 @@ use heck::{ToKebabCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use indoc::{formatdoc, indoc};
 use log::{info, warn};
 use rand::RngExt;
+use regex::Regex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -22,9 +23,6 @@ use tree_sitter_loader::{
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLI_VERSION_PLACEHOLDER: &str = "CLI_VERSION";
-
-const DEFAULT_GENERATE_ABI_VERSION: usize = tree_sitter_generate::ABI_VERSION_DEFAULT;
-const DEFAULT_GENERATE_ABI_VERSION_PLACEHOLDER: &str = "DEFAULT_GENERATE_ABI_VERSION";
 
 const PARSER_NAME_PLACEHOLDER: &str = "PARSER_NAME";
 const CAMEL_PARSER_NAME_PLACEHOLDER: &str = "CAMEL_PARSER_NAME";
@@ -1138,6 +1136,22 @@ fn update_c_makefile(path: &Path, language_name: &str, opts: &GenerateOpts) -> R
             $(PARSER): $(SRC_DIR)/grammar.json
                     $(TS) generate $^
             "};
+        let abi_versioning = indoc! {r"
+            # ABI versioning
+            SONAME_MAJOR = $(shell sed -n 's/\#define LANGUAGE_VERSION //p' $(PARSER))
+            SONAME_MINOR = $(word 1,$(subst ., ,$(VERSION)))
+            "};
+        if contents.contains(abi_versioning) {
+            info!("Removing the ABI version from the library version in Makefile");
+            contents = contents.replace(
+                abi_versioning,
+                indoc! {r"
+                    # library versioning
+                    SONAME_MAJOR = $(word 1,$(subst ., ,$(VERSION)))
+                    SONAME_MINOR = $(word 2,$(subst ., ,$(VERSION)))
+                    "},
+            );
+        }
         if contents.contains(replaced) {
             info!("Adding --no-parser target to Makefile");
             contents = contents.replace(
@@ -1218,11 +1232,30 @@ fn update_c_cmakelists(path: &Path, language_name: &str) -> Result<()> {
                                           "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_sitter/array.h"
                                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/grammar.json"
                                COMMAND "${TREE_SITTER_CLI}" generate src/grammar.json
-                                        --abi=${TREE_SITTER_ABI_VERSION}
                                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                                COMMENT "Generating parser.c")
             "#}
+        )
+        .replace(
+            "\n                            --abi=${TREE_SITTER_ABI_VERSION}",
+            "",
+        )
+        .replace(
+            r#"SOVERSION "${TREE_SITTER_ABI_VERSION}.${PROJECT_VERSION_MAJOR}""#,
+            r#"SOVERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}""#,
         );
+    // The default version in this block differs between the CLI versions that wrote it.
+    let replaced_contents = Regex::new(indoc! {r#"
+        set\(TREE_SITTER_ABI_VERSION \d+ CACHE STRING "Tree-sitter ABI version"\)
+        if\(NOT \$\{TREE_SITTER_ABI_VERSION\} MATCHES "\^\[0-9\]\+\$"\)
+            unset\(TREE_SITTER_ABI_VERSION CACHE\)
+            message\(FATAL_ERROR "TREE_SITTER_ABI_VERSION must be an integer"\)
+        endif\(\)
+
+        "#})
+    .unwrap()
+    .replace(&replaced_contents, "")
+    .into_owned();
     if !replaced_contents.eq(&contents) {
         info!("Updating CMakeLists.txt");
         write_file(path, replaced_contents)?;
@@ -1447,10 +1480,6 @@ fn generate_file(
         .replace(PARSER_NAME_PLACEHOLDER, language_name)
         .replace(CLI_VERSION_PLACEHOLDER, CLI_VERSION)
         .replace(RUST_BINDING_VERSION_PLACEHOLDER, RUST_BINDING_VERSION)
-        .replace(
-            DEFAULT_GENERATE_ABI_VERSION_PLACEHOLDER,
-            &DEFAULT_GENERATE_ABI_VERSION.to_string(),
-        )
         .replace(
             PARSER_VERSION_PLACEHOLDER,
             &generate_opts.version.to_string(),
