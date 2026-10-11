@@ -533,8 +533,11 @@ impl Language {
         (!ptr.is_null()).then(|| unsafe { CStr::from_ptr(ptr) }.to_str().unwrap())
     }
 
-    /// Get the ABI version number that indicates which version of the
-    /// Tree-sitter CLI that was used to generate this [`Language`].
+    /// Get the ABI version number of this [`Language`].
+    ///
+    /// The library loads only languages whose number is [`LANGUAGE_VERSION`],
+    /// which the CLI of this fork assigns. Any other number comes from a parser
+    /// that another CLI generated.
     #[doc(alias = "ts_language_abi_version")]
     #[must_use]
     pub fn abi_version(&self) -> usize {
