@@ -704,7 +704,13 @@ static Subtree ts_parser__lex(
       bool bulk_keyword = false;
       TSSymbol candidate = 0;
       if (self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
-          && self->language->keyword_lookup_fn && self->lexer.input.encoding == TSInputEncodingUTF8
+          && self->language->keyword_lookup_fn
+          && (self->lexer.input.encoding == TSInputEncodingUTF8
+#ifdef __EMSCRIPTEN__
+              || self->lexer.input.encoding == TSInputEncodingUTF16LE
+              || self->lexer.input.encoding == TSInputEncodingUTF16BE
+#endif
+          )
           && start_byte >= self->lexer.chunk_start
           && end_byte >= start_byte && end_byte - self->lexer.chunk_start <= self->lexer.chunk_size) {
         uint32_t low = 0, high = self->lexer.included_range_count;
@@ -717,17 +723,42 @@ static Subtree ts_parser__lex(
           TSRange range = self->lexer.included_ranges[low];
           if (start_byte >= range.start_byte) {
             const char *text = self->lexer.chunk + start_byte - self->lexer.chunk_start;
-            uint32_t keyword;
-            if (ts_language_is_wasm(self->language)) {
-              bulk_keyword = ts_wasm_store_call_keyword_lookup(self->wasm_store, text, end_byte - start_byte, &keyword);
-            } else {
-              keyword = self->language->keyword_lookup_fn(text, end_byte - start_byte);
-              bulk_keyword = true;
+            uint32_t length = end_byte - start_byte;
+#ifdef __EMSCRIPTEN__
+            char ascii[128];
+            if (self->lexer.input.encoding != TSInputEncodingUTF8) {
+              if ((length & 1) || length / 2 > sizeof(ascii) || self->lexer.logger.log) {
+                text = NULL;
+              } else {
+                const uint8_t *bytes = (const uint8_t *)text;
+                unsigned low_byte = self->lexer.input.encoding == TSInputEncodingUTF16LE ? 0 : 1;
+                length /= 2;
+                for (uint32_t i = 0; i < length; i++) {
+                  if (bytes[2 * i + low_byte] >= 128 || bytes[2 * i + (1 - low_byte)] != 0) {
+                    text = NULL;
+                    break;
+                  }
+                  ascii[i] = bytes[2 * i + low_byte];
+                }
+                if (text) text = ascii;
+              }
             }
-            if (bulk_keyword) {
-              is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
-              candidate = (TSSymbol)keyword;
+            if (text) {
+#endif
+              uint32_t keyword;
+              if (ts_language_is_wasm(self->language)) {
+                bulk_keyword = ts_wasm_store_call_keyword_lookup(self->wasm_store, text, length, &keyword);
+              } else {
+                keyword = self->language->keyword_lookup_fn(text, length);
+                bulk_keyword = true;
+              }
+              if (bulk_keyword) {
+                is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
+                candidate = (TSSymbol)keyword;
+              }
+#ifdef __EMSCRIPTEN__
             }
+#endif
           }
         }
       }
