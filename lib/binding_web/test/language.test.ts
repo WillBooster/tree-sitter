@@ -212,6 +212,22 @@ describe('Language', () => {
     });
   });
 
+  describe('with another ABI version', () => {
+    it('is rejected by parsers and queries', () => {
+      // A grammar with another ABI version would have to come from another CLI, so the reported version is replaced.
+      const abiVersion = vi.spyOn(C, '_ts_language_abi_version').mockReturnValue(16);
+      const parser = new Parser();
+      try {
+        const message = 'Incompatible language version 0x10. Expected 0x57420001.';
+        expect(() => parser.setLanguage(JavaScript)).toThrow(message);
+        expect(() => new Query(JavaScript, '(identifier)')).toThrow(message);
+      } finally {
+        abiVersion.mockRestore();
+        parser.delete();
+      }
+    });
+  });
+
   describe('.name, .version', () => {
     it('returns the name and version of the language', () => {
       expect(JavaScript.name).toBe('javascript');

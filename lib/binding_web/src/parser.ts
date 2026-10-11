@@ -77,6 +77,21 @@ export let TRANSFER_BUFFER: number;
 export let LANGUAGE_VERSION: number;
 
 /**
+ * @internal
+ *
+ * Throws unless the CLI of this fork generated the language.
+ */
+export function assertSupportedLanguage(language: Language): void {
+  const version = C._ts_language_abi_version(language[0]);
+  if (version !== LANGUAGE_VERSION) {
+    throw new Error(
+      `Incompatible language version 0x${(version >>> 0).toString(16)}. ` +
+      `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
+    );
+  }
+}
+
+/**
  * The earliest ABI version that is supported by the current version of the
  * library, which is {@link LANGUAGE_VERSION}.
  */
@@ -161,13 +176,7 @@ export class Parser {
       this.language = null;
     } else if (language.constructor === Language) {
       address = language[0];
-      const version = C._ts_language_abi_version(address);
-      if (version !== LANGUAGE_VERSION) {
-        throw new Error(
-          `Incompatible language version 0x${(version >>> 0).toString(16)}. ` +
-          `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
-        );
-      }
+      assertSupportedLanguage(language);
       this.language = language;
     } else {
       throw new Error('Argument must be a Language');
