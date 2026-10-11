@@ -29,9 +29,13 @@ static bool ts_lex_keywords(TSLexer *lexer, TSStateId state) {
 }
 
 static uint32_t ts_keyword_lookup(const char *text, uint32_t length) {
-  uint16_t state = 0;
-  uint32_t prefix = 0;
-  for (uint32_t i = 0; i < length; i++) {
+  TSSymbol root_accept = ts_keyword_states[0].accept;
+  uint32_t prefix = root_accept ? TS_KEYWORD_PREFIX : 0;
+  if (!length) return prefix | root_accept;
+  uint16_t first = ts_keyword_first_byte[(uint8_t)text[0]];
+  if (first == UINT16_MAX) return prefix;
+  uint16_t state = first & TS_KEYWORD_STATE_MASK;
+  for (uint32_t i = 1; i < length; i++) {
     if (ts_keyword_states[state].accept) prefix = TS_KEYWORD_PREFIX;
     uint16_t next = ts_keyword_next(state, (uint8_t)text[i]);
     if (next == UINT16_MAX) return prefix;

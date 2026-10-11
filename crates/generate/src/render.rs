@@ -393,8 +393,30 @@ impl Generator {
             transitions.extend(ranges);
         }
         let transition_count = transitions.len();
+        let mut first_byte = [u16::MAX; 256];
+        for &(first, last, state) in &transitions[rows[0].0..rows[1].0] {
+            first_byte[usize::from(first)..=usize::from(last)].fill(state as u16);
+        }
         for (first, last, state) in transitions {
             add_line!(self, "{{ {first}, {last}, {state} }},");
+        }
+        dedent!(self);
+        add_line!(self, "}};");
+        add_line!(
+            self,
+            "static const uint16_t ts_keyword_first_byte[256] = {{"
+        );
+        indent!(self);
+        for values in first_byte.chunks(16) {
+            add_line!(
+                self,
+                "{},",
+                values
+                    .iter()
+                    .map(u16::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         }
         dedent!(self);
         add_line!(self, "}};");
