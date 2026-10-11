@@ -371,6 +371,9 @@ fn test_languages_with_other_abi_versions_are_rejected() {
             format!("Incompatible language version {rendered}. Expected 0x57420001")
         );
         assert!(parser.language().is_none());
+        assert_eq!(language.name(), None);
+        assert!(language.metadata().is_none());
+        assert_eq!(language.supertypes(), &[] as &[u16]);
         assert_eq!(
             Query::new(&language, "(program)").unwrap_err().kind,
             QueryErrorKind::Language

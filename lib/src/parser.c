@@ -2218,7 +2218,7 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   self->language = NULL;
 
   if (language) {
-    if (language->abi_version != TREE_SITTER_LANGUAGE_VERSION) return false;
+    if (!ts_language_has_supported_abi(language)) return false;
 
     if (!ts_language_is_parseable(language)) return false;
 

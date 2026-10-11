@@ -3101,7 +3101,7 @@ TSQuery *ts_query_new(
   uint32_t *error_offset,
   TSQueryError *error_type
 ) {
-  if (!language || language->abi_version != TREE_SITTER_LANGUAGE_VERSION) {
+  if (!language || !ts_language_has_supported_abi(language)) {
     *error_type = TSQueryErrorLanguage;
     return NULL;
   }

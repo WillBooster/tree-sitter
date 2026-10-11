@@ -116,6 +116,10 @@ uint32_t ts_language_state_count(const TSLanguage *self) {
 }
 
 const TSSymbol *ts_language_supertypes(const TSLanguage *self, uint32_t *length) {
+  if (!ts_language_has_supported_abi(self)) {
+    *length = 0;
+    return NULL;
+  }
   *length = self->supertype_count;
   return self->supertype_symbols;
 }
@@ -125,7 +129,7 @@ const TSSymbol *ts_language_subtypes(
   TSSymbol supertype,
   uint32_t *length
 ) {
-  if (supertype >= ts_language_symbol_count(self)) {
+  if (!ts_language_has_supported_abi(self) || supertype >= ts_language_symbol_count(self)) {
     *length = 0;
     return NULL;
   }
@@ -146,11 +150,11 @@ uint32_t ts_language_abi_version(const TSLanguage *self) {
 }
 
 const TSLanguageMetadata *ts_language_metadata(const TSLanguage *self) {
-  return &self->metadata;
+  return ts_language_has_supported_abi(self) ? &self->metadata : NULL;
 }
 
 const char *ts_language_name(const TSLanguage *self) {
-  return self->name;
+  return ts_language_has_supported_abi(self) ? self->name : NULL;
 }
 
 uint32_t ts_language_field_count(const TSLanguage *self) {

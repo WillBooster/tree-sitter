@@ -524,7 +524,8 @@ impl Language {
         unsafe { ffi::ts_language_is_parseable(self.0) }
     }
 
-    /// Get the name of this language.
+    /// Get the name of this language. This returns `None` for a language with
+    /// another ABI version.
     #[doc(alias = "ts_language_name")]
     #[must_use]
     pub fn name(&self) -> Option<&str> {
