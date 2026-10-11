@@ -83,11 +83,6 @@ typedef union {
 typedef struct {
   uint16_t lex_state;
   uint16_t external_lex_state;
-} TSLexMode;
-
-typedef struct {
-  uint16_t lex_state;
-  uint16_t external_lex_state;
   uint16_t reserved_word_set_id;
 } TSLexerMode;
 

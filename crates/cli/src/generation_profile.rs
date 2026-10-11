@@ -58,17 +58,12 @@ pub fn record_profile(
     inputs: &[Vec<u8>],
 ) -> Result<GenerationProfile> {
     ensure_unprofiled_source(source)?;
-    ensure!(
-        parser
-            .language()
-            .is_some_and(|language| language.abi_version() >= 16),
-        "profile requires an ABI 16 parser"
-    );
+    ensure!(parser.language().is_some(), "profile requires a parser");
     let count = |name: &str| -> Result<usize> {
         source
             .lines()
             .find_map(|line| line.strip_prefix(&format!("#define {name} ")))
-            .context("profile requires an ABI 16 parser")?
+            .context("profile requires a generated parser")?
             .parse()
             .context("invalid state count")
     };
@@ -140,7 +135,7 @@ pub fn ensure_unprofiled_source(source: &str) -> Result<()> {
         !source
             .lines()
             .any(|line| line == GenerationProfile::SOURCE_MARKER),
-        "profile requires unprofiled source; run tree-sitter generate --abi 16 first"
+        "profile requires unprofiled source; run tree-sitter generate first"
     );
     Ok(())
 }

@@ -17,9 +17,7 @@ mod tree_test;
 #[cfg(feature = "wasm")]
 mod wasm_language_test;
 
-use std::{env, sync::LazyLock};
-
-use tree_sitter_generate::{ABI_VERSION_DEFAULT, GenerateResult, OptLevel};
+use tree_sitter_generate::{GenerateResult, OptLevel};
 
 pub use crate::fuzz::{
     ITERATION_COUNT, allocations,
@@ -30,23 +28,8 @@ pub use crate::fuzz::{
 pub use helpers::fixtures::get_language;
 
 fn generate_parser(grammar_json: &str) -> GenerateResult<(String, String)> {
-    // The ABI 15 job in build.yml sets this, so that these parsers match the fixtures it generates.
-    static ABI_VERSION: LazyLock<usize> = LazyLock::new(|| {
-        env::var("TREE_SITTER_ABI_VERSION").map_or(ABI_VERSION_DEFAULT, |abi| {
-            if abi == "latest" {
-                tree_sitter::LANGUAGE_VERSION
-            } else {
-                abi.parse().unwrap()
-            }
-        })
-    });
-    generate_parser_with_abi(grammar_json, *ABI_VERSION)
-}
-
-fn generate_parser_with_abi(grammar_json: &str, abi: usize) -> GenerateResult<(String, String)> {
-    tree_sitter_generate::generate_parser_for_grammar_with_abi(
+    tree_sitter_generate::generate_parser_for_grammar(
         grammar_json,
-        abi,
         Some((0, 0, 0)),
         OptLevel::default(),
         &mut Vec::new(),

@@ -2808,7 +2808,6 @@ dependencies = [
  "schemars",
  "serde_json",
  "tree-sitter-cli",
- "tree-sitter-generate",
  "tree-sitter-loader",
 ]
 

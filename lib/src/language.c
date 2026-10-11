@@ -90,11 +90,7 @@ const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
 #ifdef __wasm__
   if (self && ts_language_is_parseable(self)) {
     TSUnparseableLanguage *result = ts_calloc(1, sizeof(TSUnparseableLanguage));
-    size_t language_size = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES ? sizeof(TSLanguage) :
-      self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? offsetof(TSLanguage, alias_sequence_offsets) :
-      self->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES ? offsetof(TSLanguage, name) :
-      offsetof(TSLanguage, primary_state_ids);
-    memcpy(&result->language, self, language_size);
+    memcpy(&result->language, self, sizeof(TSLanguage));
     result->language.lex_fn = NULL;
     result->language.keyword_lex_fn = NULL;
     result->language.keyword_lookup_fn = NULL;
@@ -120,13 +116,8 @@ uint32_t ts_language_state_count(const TSLanguage *self) {
 }
 
 const TSSymbol *ts_language_supertypes(const TSLanguage *self, uint32_t *length) {
-  if (self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS) {
-    *length = self->supertype_count;
-    return self->supertype_symbols;
-  } else {
-    *length = 0;
-    return NULL;
-  }
+  *length = self->supertype_count;
+  return self->supertype_symbols;
 }
 
 const TSSymbol *ts_language_subtypes(
@@ -134,10 +125,7 @@ const TSSymbol *ts_language_subtypes(
   TSSymbol supertype,
   uint32_t *length
 ) {
-  if (
-    self->abi_version < LANGUAGE_VERSION_WITH_RESERVED_WORDS ||
-    supertype >= ts_language_symbol_count(self)
-  ) {
+  if (supertype >= ts_language_symbol_count(self)) {
     *length = 0;
     return NULL;
   }
@@ -158,11 +146,11 @@ uint32_t ts_language_abi_version(const TSLanguage *self) {
 }
 
 const TSLanguageMetadata *ts_language_metadata(const TSLanguage *self) {
-    return self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? &self->metadata : NULL;
+  return &self->metadata;
 }
 
 const char *ts_language_name(const TSLanguage *self) {
-  return self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? self->name : NULL;
+  return self->name;
 }
 
 uint32_t ts_language_field_count(const TSLanguage *self) {
@@ -252,19 +240,8 @@ TSLexerMode ts_language_lex_mode_for_state(
    const TSLanguage *self,
    TSStateId state
 ) {
-  if (self->abi_version < 15) {
-    TSLexMode mode = ((const TSLexMode *)self->lex_modes)[state];
-    return (TSLexerMode) {
-      .lex_state = mode.lex_state,
-      .external_lex_state = mode.external_lex_state,
-      .reserved_word_set_id = 0,
-    };
-  } else {
-    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->lex_mode_ids) {
-      state = self->lex_mode_ids[state];
-    }
-    return self->lex_modes[state];
-  }
+  if (self->lex_mode_ids) state = self->lex_mode_ids[state];
+  return self->lex_modes[state];
 }
 
 bool ts_language_is_reserved_word(
@@ -276,7 +253,7 @@ bool ts_language_is_reserved_word(
   if (lex_mode.reserved_word_set_id > 0) {
     unsigned start = lex_mode.reserved_word_set_id * self->max_reserved_word_set_size;
     unsigned end = start + self->max_reserved_word_set_size;
-    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->reserved_word_slices) {
+    if (self->reserved_word_slices) {
       TSMapSlice slice = self->reserved_word_slices[lex_mode.reserved_word_set_id];
       start = slice.index;
       end = start + slice.length;

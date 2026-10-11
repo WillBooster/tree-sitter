@@ -23,9 +23,6 @@ use tree_sitter_loader::{
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLI_VERSION_PLACEHOLDER: &str = "CLI_VERSION";
 
-const DEFAULT_GENERATE_ABI_VERSION: usize = tree_sitter_generate::ABI_VERSION_DEFAULT;
-const DEFAULT_GENERATE_ABI_VERSION_PLACEHOLDER: &str = "DEFAULT_GENERATE_ABI_VERSION";
-
 const PARSER_NAME_PLACEHOLDER: &str = "PARSER_NAME";
 const CAMEL_PARSER_NAME_PLACEHOLDER: &str = "CAMEL_PARSER_NAME";
 const TITLE_PARSER_NAME_PLACEHOLDER: &str = "TITLE_PARSER_NAME";
@@ -1218,10 +1215,13 @@ fn update_c_cmakelists(path: &Path, language_name: &str) -> Result<()> {
                                           "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_sitter/array.h"
                                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/grammar.json"
                                COMMAND "${TREE_SITTER_CLI}" generate src/grammar.json
-                                        --abi=${TREE_SITTER_ABI_VERSION}
                                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                                COMMENT "Generating parser.c")
             "#}
+        )
+        .replace(
+            "\n                            --abi=${TREE_SITTER_ABI_VERSION}",
+            "",
         );
     if !replaced_contents.eq(&contents) {
         info!("Updating CMakeLists.txt");
@@ -1447,10 +1447,6 @@ fn generate_file(
         .replace(PARSER_NAME_PLACEHOLDER, language_name)
         .replace(CLI_VERSION_PLACEHOLDER, CLI_VERSION)
         .replace(RUST_BINDING_VERSION_PLACEHOLDER, RUST_BINDING_VERSION)
-        .replace(
-            DEFAULT_GENERATE_ABI_VERSION_PLACEHOLDER,
-            &DEFAULT_GENERATE_ABI_VERSION.to_string(),
-        )
         .replace(
             PARSER_VERSION_PLACEHOLDER,
             &generate_opts.version.to_string(),

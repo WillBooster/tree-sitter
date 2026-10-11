@@ -25,7 +25,6 @@ use super::{
     tables::{AdvanceAction, GotoAction, LexState, LexTable, ParseAction, ParseTable},
 };
 
-const SMALL_STATE_THRESHOLD: usize = 64;
 const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
@@ -33,10 +32,6 @@ const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
 const LEXER_CHUNK_SIZE: usize = 256;
 const KEYWORD_SKIP_FLAG: usize = 1 << 15;
-pub const ABI_VERSION_MIN: usize = 15;
-pub const ABI_VERSION_MAX: usize = LANGUAGE_VERSION;
-pub const ABI_VERSION_DEFAULT: usize = 16;
-pub const ABI_VERSION_WITH_COMPACT_TABLES: usize = 16;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,16 +61,12 @@ pub type RenderResult<T> = Result<T, RenderError>;
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum RenderError {
-    #[error("Sparse parse table offset {0} exceeds the ABI 16 address limit")]
+    #[error("Sparse parse table offset {0} exceeds the address limit")]
     SparseTable(usize),
     #[error("Invalid generation profile: {0}")]
     Profile(String),
     #[error("Parse table action count {0} exceeds maximum value of {max}", max=u16::MAX)]
     ParseTable(usize),
-    #[error(
-        "This version of Tree-sitter can only generate parsers with ABI version {ABI_VERSION_MIN} - {ABI_VERSION_MAX}, not {0}"
-    )]
-    ABI(usize),
 }
 
 #[clippy::format_args]
@@ -149,7 +140,6 @@ struct Generator {
     field_names: Vec<StrId>,
     supertype_symbol_map: BTreeMap<Symbol, Vec<ChildType>>,
     supertype_map: BTreeMap<String, Vec<ChildType>>,
-    abi_version: usize,
     metadata: Option<Metadata>,
     str_pool: StrPool,
 }
@@ -212,8 +202,7 @@ impl Generator {
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-                && keyword_lex_table.states.len() >= 64
+            if keyword_lex_table.states.len() >= 64
                 && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
                 && keyword_lex_table.states.iter().all(|state| {
                     state.eof_action.is_none()
@@ -262,8 +251,7 @@ impl Generator {
             return Ok(());
         };
         let n = self.parse_table.states.len();
-        if self.abi_version < ABI_VERSION_WITH_COMPACT_TABLES
-            || profile.parse_states.len() != n
+        if profile.parse_states.len() != n
             || profile.lex_states.len() != self.main_lex_table.states.len()
             || profile
                 .edges
@@ -271,7 +259,7 @@ impl Generator {
                 .any(|&(a, b, _)| a as usize >= n || b as usize >= n)
             || !(2..=n).contains(&profile.max_dense_states)
         {
-            return Err(RenderError::Profile("requires ABI 16, matching state counts, valid edges, and a dense-state limit between 2 and STATE_COUNT".into()));
+            return Err(RenderError::Profile("requires matching state counts, valid edges, and a dense-state limit between 2 and STATE_COUNT".into()));
         }
         let mut order = (2..n).collect::<Vec<_>>();
         order.sort_unstable_by_key(|&i| (std::cmp::Reverse(profile.parse_states[i]), i));
@@ -671,19 +659,7 @@ impl Generator {
             }
             return count;
         }
-        let threshold = cmp::min(SMALL_STATE_THRESHOLD, self.parse_table.symbols.len() / 2);
-        let minimum = if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-            self.parse_table.states.len().min(2)
-        } else {
-            self.parse_table
-                .states
-                .iter()
-                .enumerate()
-                .take_while(|(i, s)| {
-                    *i <= 1 || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
-                })
-                .count()
-        };
+        let minimum = self.parse_table.states.len().min(2);
         let dense_bytes = self.parse_table.symbols.len() * size_of::<u16>();
         let mut terminal_groups = FxHashMap::default();
         let mut nonterminal_groups = FxHashMap::default();
@@ -790,20 +766,18 @@ impl Generator {
             })
             .count();
 
-        add_line!(self, "#define LANGUAGE_VERSION {}", self.abi_version);
+        add_line!(self, "#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}");
         add_line!(
             self,
             "#define STATE_COUNT {}",
             self.parse_table.states.len()
         );
         add_line!(self, "#define LARGE_STATE_COUNT {}", self.large_state_count);
-        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-            add_line!(
-                self,
-                "#define LEX_STATE_COUNT {}",
-                self.main_lex_table.states.len()
-            );
-        }
+        add_line!(
+            self,
+            "#define LEX_STATE_COUNT {}",
+            self.main_lex_table.states.len()
+        );
 
         add_line!(
             self,
@@ -1004,42 +978,6 @@ impl Generator {
     }
 
     fn add_alias_sequences(&mut self) {
-        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-            self.add_shared_alias_sequences();
-            return;
-        }
-
-        add_line!(
-            self,
-            "static const TSSymbol ts_alias_sequences[PRODUCTION_ID_COUNT][MAX_ALIAS_SEQUENCE_LENGTH] = {{",
-        );
-        indent!(self);
-        for (i, production_info) in self.parse_table.production_infos.iter().enumerate() {
-            if production_info.alias_sequence.is_empty() {
-                // Work around MSVC's intolerance of empty array initializers by
-                // explicitly zero-initializing the first element.
-                if i == 0 {
-                    add_line!(self, "[0] = {{0}},");
-                }
-                continue;
-            }
-
-            add_line!(self, "[{i}] = {{");
-            indent!(self);
-            for (j, alias) in production_info.alias_sequence.iter().enumerate() {
-                if let Some(alias) = alias {
-                    add_line!(self, "[{j}] = {},", self.alias_ids[alias]);
-                }
-            }
-            dedent!(self);
-            add_line!(self, "}},");
-        }
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
-    }
-
-    fn add_shared_alias_sequences(&mut self) {
         let mut rows = IndexMap::<Vec<Option<Alias>>, usize, FxBuildHasher>::default();
         let mut symbols = vec![None];
         let mut offsets = Vec::new();
@@ -1956,7 +1894,7 @@ impl Generator {
     }
 
     fn add_lex_modes(&mut self) {
-        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES && self.add_shared_lex_modes() {
+        if self.add_shared_lex_modes() {
             return;
         }
 
@@ -2053,8 +1991,7 @@ impl Generator {
             .map(TokenSet::len)
             .max()
             .unwrap_or(0);
-        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-            && u16::try_from(total).is_ok()
+        if u16::try_from(total).is_ok()
             && total * 2 + self.reserved_word_sets.len() * 4
                 < maximum * self.reserved_word_sets.len() * 2
         {
@@ -2142,8 +2079,7 @@ impl Generator {
     fn add_external_scanner_states_list(&mut self) {
         let tokens = self.syntax_grammar.external_tokens.len();
         let stride = tokens.div_ceil(8);
-        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-            && self.profile.is_none()
+        if self.profile.is_none()
             && self.parse_table.external_lex_states.len() * (tokens - stride) > 128
         {
             self.external_state_stride = stride;
@@ -2324,11 +2260,7 @@ impl Generator {
 
                 let mut row = vec![values_with_symbols.len() as u32];
                 for ((value, _), symbols) in &mut values_with_symbols {
-                    if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-                        symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
-                    } else {
-                        symbols.sort_unstable();
-                    }
+                    symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
                     row.extend([*value, symbols.len() as u32]);
                     row.extend(
                         symbols
@@ -2379,9 +2311,7 @@ impl Generator {
                         row.extend(entries.iter().map(|(_, value, _)| *value));
                     }
                 }
-                if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-                    && next_table_index >= SMALL_STATE_BITMAP_FLAG
-                {
+                if next_table_index >= SMALL_STATE_BITMAP_FLAG {
                     return Err(RenderError::SparseTable(next_table_index));
                 }
                 let offset = next_table_index | flag;
@@ -2498,9 +2428,6 @@ impl Generator {
             };
         }
         let grouped = (0, 1 + 2 * group_count + entry_count);
-        if self.abi_version < ABI_VERSION_WITH_COMPACT_TABLES {
-            return grouped;
-        }
         let bitmap = (
             SMALL_STATE_BITMAP_FLAG,
             2 * self.parse_table.symbols.len().div_ceil(16) + entry_count,
@@ -2529,10 +2456,7 @@ impl Generator {
             GotoAction::Goto(id) => id,
             GotoAction::ShiftExtra => state_id as u32,
         };
-        if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES
-            && u16::try_from(self.parse_table.states.len()).is_ok()
-            && destination == state_id as u32
-        {
+        if u16::try_from(self.parse_table.states.len()).is_ok() && destination == state_id as u32 {
             u32::from(u16::MAX)
         } else {
             destination
@@ -2697,17 +2621,13 @@ impl Generator {
         add_line!(self, ".public_symbol_map = ts_symbol_map,");
         add_line!(self, ".alias_map = ts_non_terminal_alias_map,");
         if !self.parse_table.production_infos.is_empty() {
-            if self.abi_version >= ABI_VERSION_WITH_COMPACT_TABLES {
-                add_line!(self, ".alias_sequences = ts_alias_sequences,");
-                add_line!(self, ".alias_sequence_offsets = ts_alias_sequence_offsets,");
-                add_line!(
-                    self,
-                    ".alias_sequence_count = {},",
-                    self.alias_sequence_count
-                );
-            } else {
-                add_line!(self, ".alias_sequences = &ts_alias_sequences[0][0],");
-            }
+            add_line!(self, ".alias_sequences = ts_alias_sequences,");
+            add_line!(self, ".alias_sequence_offsets = ts_alias_sequence_offsets,");
+            add_line!(
+                self,
+                ".alias_sequence_count = {},",
+                self.alias_sequence_count
+            );
         }
 
         // Lexing
@@ -3044,9 +2964,6 @@ impl Generator {
 ///   applied to those symbols.
 /// * `str_pool` - A backing pool for `StrId`-identified strings within `syntax_grammar`,
 ///   `lexical_grammar`, and `default_aliases`.
-/// * `abi_version` - The language ABI version that should be generated. Usually you want
-///   Tree-sitter's current version, but right after making an ABI change, it may be useful to
-///   generate code with the previous ABI.
 #[expect(
     clippy::too_many_arguments,
     reason = "all parameters are required for code generation"
@@ -3058,15 +2975,10 @@ pub fn render_c_code(
     lexical_grammar: LexicalGrammar,
     default_aliases: AliasMap,
     str_pool: StrPool,
-    abi_version: usize,
     semantic_version: Option<(u8, u8, u8)>,
     supertype_symbol_map: BTreeMap<Symbol, Vec<ChildType>>,
     profile: Option<&GenerationProfile>,
 ) -> RenderResult<String> {
-    if !(ABI_VERSION_MIN..=ABI_VERSION_MAX).contains(&abi_version) {
-        Err(RenderError::ABI(abi_version))?;
-    }
-
     Generator {
         language_name: str_pool.resolve(name).to_string(),
         profile: profile.cloned(),
@@ -3078,7 +2990,6 @@ pub fn render_c_code(
         syntax_grammar,
         lexical_grammar,
         default_aliases,
-        abi_version,
         metadata: semantic_version.map(|(major, minor, patch)| Metadata {
             major,
             minor,

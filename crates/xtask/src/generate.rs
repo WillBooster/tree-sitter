@@ -33,6 +33,17 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
             if args.wasm { " to Wasm" } else { "" }
         );
 
+        let output = Command::new(&tree_sitter_binary)
+            .arg("generate")
+            .arg("src/grammar.json")
+            .current_dir(grammar_dir)
+            .spawn()?
+            .wait_with_output()?;
+        bail_on_err(
+            &output,
+            &format!("Failed to regenerate {grammar_name} parser"),
+        )?;
+
         if args.wasm {
             let mut cmd = Command::new(&tree_sitter_binary);
             let cmd = cmd.args([
@@ -44,57 +55,12 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
             ]);
             bail_on_err(
                 &cmd.spawn()?.wait_with_output()?,
-                &format!("Failed to regenerate {grammar_name} parser to wasm"),
-            )?;
-            if matches!(grammar_name, "javascript" | "c") {
-                generate_compact_fixture(&tree_sitter_binary, grammar_dir)?;
-            }
-        } else {
-            let output = Command::new(&tree_sitter_binary)
-                .arg("generate")
-                .arg("src/grammar.json")
-                .arg(format!("--abi={}", args.abi))
-                .current_dir(grammar_dir)
-                .spawn()?
-                .wait_with_output()?;
-            bail_on_err(
-                &output,
-                &format!("Failed to regenerate {grammar_name} parser"),
+                &format!("Failed to build {grammar_name} parser to wasm"),
             )?;
         }
     }
 
     Ok(())
-}
-
-fn generate_compact_fixture(tree_sitter_binary: &Path, grammar_dir: &Path) -> Result<()> {
-    let root = std::env::current_dir()?;
-    let grammar_name = grammar_dir.file_name().unwrap().to_str().unwrap();
-    let output = root.join(format!("target/release/abi16-{grammar_name}"));
-    let source = output.join("src");
-    let result = Command::new(tree_sitter_binary)
-        .arg("generate")
-        .arg(grammar_dir.join("src/grammar.json"))
-        .args(["--abi=16", "--output"])
-        .arg(&source)
-        .current_dir(grammar_dir)
-        .output()?;
-    bail_on_err(&result, "Failed to generate the ABI 16 fixture")?;
-    fs::copy(
-        grammar_dir.join("src/grammar.json"),
-        source.join("grammar.json"),
-    )?;
-    if grammar_dir.join("src/scanner.c").exists() {
-        fs::copy(grammar_dir.join("src/scanner.c"), source.join("scanner.c"))?;
-    }
-    let result = Command::new(tree_sitter_binary)
-        .args(["build", "--wasm", "-o"])
-        .arg(root.join(format!(
-            "target/release/tree-sitter-{grammar_name}-abi16.wasm"
-        )))
-        .arg(output)
-        .output()?;
-    bail_on_err(&result, "Failed to build the ABI 16 fixture")
 }
 
 pub fn run_bindings() -> Result<()> {

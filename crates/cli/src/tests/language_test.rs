@@ -142,10 +142,6 @@ fn test_supertypes() {
     let language = get_language("rust");
     let supertypes = language.supertypes();
 
-    if language.abi_version() < 15 {
-        return;
-    }
-
     assert_eq!(supertypes.len(), 5);
     assert_eq!(
         supertypes

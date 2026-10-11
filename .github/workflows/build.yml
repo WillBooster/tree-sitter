@@ -73,26 +73,6 @@ jobs:
         run: |
           cargo build --release --locked -p tree-sitter-cli --features wasm
           ./target/release/tree-sitter test --help | grep -q -- --wasm
-  # The runtime still loads parsers generated before ABI 16, such as the upstream grammars code-gauge depends on.
-  test-legacy:
-    name: test (ABI 15)
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - run: touch lib/binding_web/web-tree-sitter.js lib/binding_web/web-tree-sitter.wasm
-      - run: rustup toolchain install
-      - uses: ./.github/actions/cache
-        id: cache
-        with:
-          variant: native-abi15
-      - run: cargo xtask fetch-fixtures
-      - if: steps.cache.outputs.cache-hit != 'true'
-        run: cargo xtask generate-fixtures --abi 15
-      - run: cargo test --workspace --locked
-        env:
-          TREE_SITTER_ABI_VERSION: '15'
   # code-gauge compiles the library for wasm32-wasip1 (Cloudflare Workers), and ultra-uni for Wasm as well.
   wasm:
     name: wasm (${{ matrix.target }})
@@ -169,7 +149,6 @@ jobs:
     needs:
       - lint
       - test
-      - test-legacy
       - wasm
       - web
     runs-on: ubuntu-latest

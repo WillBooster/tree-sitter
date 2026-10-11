@@ -10,11 +10,8 @@ extern "C" {
 
 #define ts_builtin_sym_error_repeat (ts_builtin_sym_error - 1)
 
-#define LANGUAGE_VERSION_WITH_RESERVED_WORDS 15
-#define LANGUAGE_VERSION_WITH_COMPACT_TABLES 16
 #define SMALL_STATE_BITMAP_FLAG 0x40000000u
 #define SMALL_STATE_PAIR_FLAG 0x80000000u
-#define LANGUAGE_VERSION_WITH_PRIMARY_STATES 14
 
 typedef struct {
   const TSParseAction *actions;
@@ -93,30 +90,9 @@ static inline uint16_t ts_language_lookup(
 ) {
   if (state >= self->large_state_count) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
-    if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES) {
-      uint16_t value = ts_language_lookup_small_compact(self, index, symbol);
-      if (symbol >= self->token_count && value == UINT16_MAX && self->state_count <= UINT16_MAX) return state;
-      return value;
-    }
-    const uint16_t *data = &self->small_parse_table[index];
-    uint16_t group_count = *(data++);
-    for (unsigned i = 0; i < group_count; i++) {
-      uint16_t section_value = *(data++);
-      uint16_t symbol_count = *(data++);
-      while (symbol_count >= 4) {
-        bool matches = data[0] == symbol;
-        matches |= data[1] == symbol;
-        matches |= data[2] == symbol;
-        matches |= data[3] == symbol;
-        if (matches) return section_value;
-        data += 4;
-        symbol_count -= 4;
-      }
-      for (unsigned j = 0; j < symbol_count; j++) {
-        if (*(data++) == symbol) return section_value;
-      }
-    }
-    return 0;
+    uint16_t value = ts_language_lookup_small_compact(self, index, symbol);
+    if (symbol >= self->token_count && value == UINT16_MAX && self->state_count <= UINT16_MAX) return state;
+    return value;
   } else {
     return self->parse_table[state * self->symbol_count + symbol];
   }
@@ -148,11 +124,9 @@ static inline LookaheadIterator ts_language_lookaheads(
   bool is_bitmap_state = false;
   if (is_small_state) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
-    is_pair_state = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_PAIR_FLAG);
-    is_bitmap_state = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && (index & SMALL_STATE_BITMAP_FLAG);
-    uint32_t offset = self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES
-      ? index & ~(SMALL_STATE_PAIR_FLAG | SMALL_STATE_BITMAP_FLAG)
-      : index;
+    is_pair_state = index & SMALL_STATE_PAIR_FLAG;
+    is_bitmap_state = index & SMALL_STATE_BITMAP_FLAG;
+    uint32_t offset = index & ~(SMALL_STATE_PAIR_FLAG | SMALL_STATE_BITMAP_FLAG);
     data = &self->small_parse_table[offset];
     group_end = data + 1;
     group_count = *data;
@@ -246,7 +220,7 @@ static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
   } else {
     self->action_count = 0;
     self->next_state = self->table_value;
-    if (self->is_small_state && self->language->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES &&
+    if (self->is_small_state &&
         self->table_value == UINT16_MAX && self->language->state_count <= UINT16_MAX) {
       self->next_state = self->state;
     }
@@ -261,16 +235,11 @@ static inline bool ts_language_state_is_primary(
   const TSLanguage *self,
   TSStateId state
 ) {
-  if (self->abi_version >= LANGUAGE_VERSION_WITH_PRIMARY_STATES) {
-    return state == self->primary_state_ids[state];
-  } else {
-    return true;
-  }
+  return state == self->primary_state_ids[state];
 }
 
 static inline uint32_t ts_language_external_state_stride(const TSLanguage *self) {
-  return self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->external_state_stride
-    ? self->external_state_stride : self->external_token_count;
+  return self->external_state_stride ? self->external_state_stride : self->external_token_count;
 }
 
 static inline const bool *ts_language_enabled_external_tokens(
@@ -285,7 +254,7 @@ static inline const bool *ts_language_enabled_external_tokens(
 }
 
 static inline uint32_t ts_language_alias_sequence_offset(const TSLanguage *self, uint32_t production_id) {
-  if (self->abi_version >= LANGUAGE_VERSION_WITH_COMPACT_TABLES && self->alias_sequence_offsets) {
+  if (self->alias_sequence_offsets) {
     return self->alias_sequence_offsets[production_id];
   }
   return production_id * self->max_alias_sequence_length;

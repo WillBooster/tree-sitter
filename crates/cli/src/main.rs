@@ -40,7 +40,6 @@ use tree_sitter_tags::TagsContext;
 
 const BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILD_SHA: Option<&'static str> = option_env!("BUILD_SHA");
-const DEFAULT_GENERATE_ABI_VERSION: usize = tree_sitter_generate::ABI_VERSION_DEFAULT;
 
 #[derive(Subcommand)]
 #[command(about="Generates and tests parsers", author=crate_authors!("\n"), styles=get_styles())]
@@ -51,7 +50,7 @@ enum Commands {
     Init(Init),
     /// Generate a parser
     Generate(Generate),
-    /// Record a generation profile from an ABI 16 parser
+    /// Record a generation profile from an unprofiled parser
     Profile(Profile),
     /// Compile a parser
     Build(Build),
@@ -113,7 +112,7 @@ struct Profile {
 #[derive(Args)]
 #[command(alias = "gen", alias = "g")]
 struct Generate {
-    /// Apply state frequencies recorded from the same unprofiled ABI 16 parser
+    /// Apply state frequencies recorded from the same unprofiled parser
     #[arg(long, conflicts_with_all = ["no_parser", "report_states_for_rule"])]
     pub profile: Option<PathBuf>,
     /// The path to the grammar file
@@ -122,19 +121,6 @@ struct Generate {
     /// Show debug log during generation
     #[arg(long, short)]
     pub log: bool,
-    #[arg(
-        long = "abi",
-        value_name = "VERSION",
-        env = "TREE_SITTER_ABI_VERSION",
-        help = format!(concat!(
-                    "Select the language ABI version to generate (default {}).\n",
-                    "Use --abi=latest to generate the newest supported version ({}).",
-                    ),
-                DEFAULT_GENERATE_ABI_VERSION,
-                tree_sitter::LANGUAGE_VERSION,
-                )
-    )]
-    pub abi_version: Option<String>,
     /// Only generate `grammar.json` and `node-types.json`
     #[arg(long)]
     pub no_parser: bool,
@@ -967,17 +953,6 @@ impl Generate {
         if self.log {
             logger::enable_debug();
         }
-        let abi_version =
-            self.abi_version
-                .as_ref()
-                .map_or(DEFAULT_GENERATE_ABI_VERSION, |version| {
-                    if version == "latest" {
-                        tree_sitter::LANGUAGE_VERSION
-                    } else {
-                        version.parse().expect("invalid abi version flag")
-                    }
-                });
-
         let json_summary = if self.json {
             warn!("--json is deprecated, use --json-summary instead");
             true
@@ -1000,7 +975,6 @@ impl Generate {
             current_dir,
             self.output.as_deref(),
             self.grammar_path.as_deref(),
-            abi_version,
             self.report_states_for_rule.as_deref(),
             self.js_runtime.as_deref(),
             !self.no_parser,
@@ -1065,18 +1039,13 @@ impl Profile {
             None,
             Some(library_path),
         ))?;
-        anyhow::ensure!(
-            language.abi_version() == 16,
-            "profile requires an ABI 16 parser"
-        );
         let metadata = language
             .metadata()
             .context("profile requires language metadata")?;
         let grammar_path = src.join("grammar.json");
-        let (_, baseline) = tree_sitter_generate::generate_parser_for_grammar_with_abi(
+        let (_, baseline) = tree_sitter_generate::generate_parser_for_grammar(
             &fs::read_to_string(&grammar_path)
                 .with_context(|| format!("Failed to read {}", grammar_path.display()))?,
-            16,
             Some((
                 metadata.major_version,
                 metadata.minor_version,
@@ -1091,7 +1060,7 @@ impl Profile {
         )?;
         anyhow::ensure!(
             source == baseline,
-            "profile requires unprofiled source from this generator; run tree-sitter generate --abi 16 with matching optimization options first"
+            "profile requires unprofiled source from this generator; run tree-sitter generate with matching optimization options first"
         );
         let (languages, known_languages) = if self.corpus.is_empty() {
             (Vec::new(), Vec::new())

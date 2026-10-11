@@ -2,6 +2,10 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(clippy::missing_const_for_fn)]
+#![allow(
+    clippy::unreadable_literal,
+    reason = "bindgen writes the ABI version without digit separators"
+)]
 
 #[cfg(feature = "bindgen")]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

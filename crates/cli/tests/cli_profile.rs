@@ -32,14 +32,7 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
             String::from_utf8_lossy(&output.stderr)
         );
     };
-    success(&["generate", "src/grammar.json", "--abi", "15"]);
-    let rejected = run(&["profile", "--output", "profile.json", "input.txt"]);
-    assert!(!rejected.status.success());
-    assert!(
-        String::from_utf8_lossy(&rejected.stderr).contains("profile requires an ABI 16 parser")
-    );
-    assert!(!root.join("profile.json").exists());
-    success(&["generate", "src/grammar.json", "--abi", "16"]);
+    success(&["generate", "src/grammar.json"]);
     success(&[
         "profile",
         "--output",
@@ -78,21 +71,13 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
         "input.txt",
     ]);
     assert_eq!(profile, fs::read(root.join("repeat.json")).unwrap());
-    success(&[
-        "generate",
-        "src/grammar.json",
-        "--abi",
-        "16",
-        "--profile",
-        "profile.json",
-    ]);
+    success(&["generate", "src/grammar.json", "--profile", "profile.json"]);
     let generated = fs::read(root.join("src/parser.c")).unwrap();
     let rejected = run(&["profile", "--output", "profile.json", "input.txt"]);
     assert!(!rejected.status.success());
     assert!(
-        String::from_utf8_lossy(&rejected.stderr).contains(
-            "profile requires unprofiled source; run tree-sitter generate --abi 16 first"
-        )
+        String::from_utf8_lossy(&rejected.stderr)
+            .contains("profile requires unprofiled source; run tree-sitter generate first")
     );
     assert_eq!(profile, fs::read(root.join("profile.json")).unwrap());
     fs::write(
@@ -100,14 +85,7 @@ fn profile_records_corpus_and_files_for_regeneration_and_rejects_stale_source() 
         r#"{"name":"profile_test","rules":{"source":{"type":"STRING","value":"changed"}}}"#,
     )
     .unwrap();
-    let output = run(&[
-        "generate",
-        "src/grammar.json",
-        "--abi",
-        "16",
-        "--profile",
-        "profile.json",
-    ]);
+    let output = run(&["generate", "src/grammar.json", "--profile", "profile.json"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("fingerprint"));
     assert_eq!(generated, fs::read(root.join("src/parser.c")).unwrap());
@@ -125,7 +103,7 @@ fn profile_requires_matching_generation_optimization_mode() {
     fs::write(root.join("input.txt"), "foo(bar).baz;").unwrap();
     let cache = root.join("cache");
     for args in [
-        &["generate", "--abi", "16", "--disable-optimizations"][..],
+        &["generate", "--disable-optimizations"][..],
         &[
             "profile",
             "--output",
@@ -193,8 +171,6 @@ fn profile_requires_matching_generation_optimization_mode() {
         &cache,
         &[
             "generate",
-            "--abi",
-            "16",
             "--disable-optimizations",
             "--profile",
             "disabled.json",
@@ -225,7 +201,7 @@ fn profile_uses_configured_language_aliases_and_working_directory_paths() {
     let generated = profile_command(
         root,
         &cache,
-        &["generate", "grammars/words/src/grammar.json", "--abi", "16"],
+        &["generate", "grammars/words/src/grammar.json"],
     )
     .output()
     .unwrap();
@@ -312,7 +288,7 @@ fn profile_uses_configured_language_aliases_and_working_directory_paths() {
         let regenerated = profile_command(
             root,
             &cache,
-            &["generate", "grammars/words/src/grammar.json", "--abi", "16"],
+            &["generate", "grammars/words/src/grammar.json"],
         )
         .output()
         .unwrap();
@@ -367,7 +343,7 @@ fn concurrent_same_name_checkouts_record_their_own_parser() {
         fs::write(root.join("src/grammar.json"), serde_json::to_vec(&serde_json::json!({"name":"same_name","rules":{"source":{"type":"REPEAT","content":{"type":"PATTERN","value":pattern}}}})).unwrap()).unwrap();
         fs::write(root.join("input.txt"), input).unwrap();
         for args in [
-            &["generate", "src/grammar.json", "--abi", "16"][..],
+            &["generate", "src/grammar.json"][..],
             &["profile", "--output", "control.json", "input.txt"][..],
         ] {
             let output = profile_command(root, &cache, args).output().unwrap();

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
 import { LookaheadIterator, Language, Query, Edit } from '../src';
-import { Parser } from '../src';
+import { Parser, LANGUAGE_VERSION } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
 import { pathToFileURL } from 'url';
@@ -21,7 +21,7 @@ describe('Language', () => {
 
       const lang = Language.loadSync(wasmModule);
       expect(lang.name).toBe('javascript');
-      expect(lang.abiVersion).toBe(15);
+      expect(lang.abiVersion).toBe(LANGUAGE_VERSION);
 
       const parser = new Parser();
       parser.setLanguage(lang);
@@ -53,9 +53,8 @@ describe('Language', () => {
   });
 
   describe('.load', () => {
-    it('parses, edits, and queries compact ABI 16 tables', async () => {
-      const lang = await Language.load(languageURL('javascript').replace('.wasm', '-abi16.wasm'));
-      expect(lang.abiVersion).toBe(16);
+    it('parses, edits, and queries compact tables', async () => {
+      const lang = await Language.load(languageURL('javascript'));
       const parser = new Parser();
       parser.setLanguage(lang);
       const input = 'const x = {field: 1};';
@@ -95,7 +94,7 @@ describe('Language', () => {
     });
 
     it('preserves keyword tokens across UTF-16 input boundaries', async () => {
-      const lang = await Language.load(languageURL('c').replace('.wasm', '-abi16.wasm'));
+      const lang = await Language.load(languageURL('c'));
       const parser = new Parser();
       parser.setLanguage(lang);
       try {
@@ -149,7 +148,7 @@ describe('Language', () => {
     });
 
     it('recognizes keywords spanning excluded UTF-16 ranges', async () => {
-      const lang = await Language.load(languageURL('c').replace('.wasm', '-abi16.wasm'));
+      const lang = await Language.load(languageURL('c'));
       const parser = new Parser();
       parser.setLanguage(lang);
       const input = 'int main() { re@@@@turn 0; }';
@@ -216,7 +215,7 @@ describe('Language', () => {
   describe('.name, .version', () => {
     it('returns the name and version of the language', () => {
       expect(JavaScript.name).toBe('javascript');
-      expect(JavaScript.abiVersion).toBe(15);
+      expect(JavaScript.abiVersion).toBe(LANGUAGE_VERSION);
     });
   });
 
