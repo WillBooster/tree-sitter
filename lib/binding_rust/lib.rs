@@ -572,7 +572,8 @@ impl Language {
         unsafe { ffi::ts_language_state_count(self.0) as usize }
     }
 
-    /// Get a list of all supertype symbols for the language.
+    /// Get a list of all supertype symbols for the language. The list is empty
+    /// for a language with another ABI version.
     #[doc(alias = "ts_language_supertypes")]
     #[must_use]
     pub fn supertypes(&self) -> &[u16] {
@@ -587,7 +588,8 @@ impl Language {
         }
     }
 
-    /// Get a list of all subtype symbols for a given supertype symbol.
+    /// Get a list of all subtype symbols for a given supertype symbol. The list
+    /// is empty for a language with another ABI version.
     #[doc(alias = "ts_language_supertype_map")]
     #[must_use]
     pub fn subtypes_for_supertype(&self, supertype: u16) -> &[u16] {
