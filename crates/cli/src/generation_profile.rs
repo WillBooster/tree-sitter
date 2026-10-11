@@ -58,7 +58,6 @@ pub fn record_profile(
     inputs: &[Vec<u8>],
 ) -> Result<GenerationProfile> {
     ensure_unprofiled_source(source)?;
-    ensure!(parser.language().is_some(), "profile requires a parser");
     let count = |name: &str| -> Result<usize> {
         source
             .lines()
