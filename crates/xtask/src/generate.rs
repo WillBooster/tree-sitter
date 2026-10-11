@@ -46,7 +46,7 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
                 &cmd.spawn()?.wait_with_output()?,
                 &format!("Failed to regenerate {grammar_name} parser to wasm"),
             )?;
-            if grammar_name == "javascript" {
+            if matches!(grammar_name, "javascript" | "c") {
                 generate_compact_fixture(&tree_sitter_binary, grammar_dir)?;
             }
         } else {
@@ -69,7 +69,8 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
 
 fn generate_compact_fixture(tree_sitter_binary: &Path, grammar_dir: &Path) -> Result<()> {
     let root = std::env::current_dir()?;
-    let output = root.join("target/release/abi16-javascript");
+    let grammar_name = grammar_dir.file_name().unwrap().to_str().unwrap();
+    let output = root.join(format!("target/release/abi16-{grammar_name}"));
     let source = output.join("src");
     let result = Command::new(tree_sitter_binary)
         .arg("generate")
@@ -78,18 +79,22 @@ fn generate_compact_fixture(tree_sitter_binary: &Path, grammar_dir: &Path) -> Re
         .arg(&source)
         .current_dir(grammar_dir)
         .output()?;
-    bail_on_err(&result, "Failed to generate the ABI 16 JavaScript fixture")?;
+    bail_on_err(&result, "Failed to generate the ABI 16 fixture")?;
     fs::copy(
         grammar_dir.join("src/grammar.json"),
         source.join("grammar.json"),
     )?;
-    fs::copy(grammar_dir.join("src/scanner.c"), source.join("scanner.c"))?;
+    if grammar_dir.join("src/scanner.c").exists() {
+        fs::copy(grammar_dir.join("src/scanner.c"), source.join("scanner.c"))?;
+    }
     let result = Command::new(tree_sitter_binary)
         .args(["build", "--wasm", "-o"])
-        .arg(root.join("target/release/tree-sitter-javascript-abi16.wasm"))
+        .arg(root.join(format!(
+            "target/release/tree-sitter-{grammar_name}-abi16.wasm"
+        )))
         .arg(output)
         .output()?;
-    bail_on_err(&result, "Failed to build the ABI 16 JavaScript fixture")
+    bail_on_err(&result, "Failed to build the ABI 16 fixture")
 }
 
 pub fn run_bindings() -> Result<()> {
