@@ -3645,6 +3645,33 @@ fn test_grammars_that_can_hang_on_eof() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
     parser.parse("\"", None).unwrap();
+
+    // Two lex states that advance to each other on NUL, each with enough single-character
+    // transitions for an advance map.
+    let (parser_name, parser_code) = generate_parser(
+        r#"
+        {
+            "name": "test_null_char_cycle_regex",
+            "rules": {
+                "source_file": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "STRING", "value": "\"" },
+                        { "type": "PATTERN", "value": "(\\x00(\\x00|[bdfhjlnp])|[bdfhjlnp]x)*" },
+                        { "type": "STRING", "value": "\"" }
+                    ]
+                }
+            },
+            "extras": [ { "type": "PATTERN", "value": "\\s" } ]
+        }
+        "#,
+    )
+    .unwrap();
+
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    parser.parse("\"", None).unwrap();
 }
 
 #[test]
@@ -3715,6 +3742,119 @@ fn test_parsing_null_characters_in_character_classes_containing_them() {
         );
         assert!(!sexp.contains("escape"), "source: {source:?}, tree: {sexp}");
     }
+}
+
+#[test]
+fn test_parsing_end_of_input_as_null_terminator() {
+    // As in the Go grammar: the newline token keeps the lex state after an identifier from
+    // merging with the start state, which accepts the end of the input, and the operators give it
+    // enough single-character transitions for an advance map.
+    let grammar = r#"
+        {
+            "name": "NAME",
+            "rules": {
+                "source_file": {
+                    "type": "REPEAT",
+                    "content": { "type": "SYMBOL", "name": "statement" }
+                },
+                "statement": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "SYMBOL", "name": "identifier" },
+                        {
+                            "type": "REPEAT",
+                            "content": {
+                                "type": "SEQ",
+                                "members": [
+                                    {
+                                        "type": "CHOICE",
+                                        "members": [
+                                            { "type": "STRING", "value": "+" },
+                                            { "type": "STRING", "value": "-" },
+                                            { "type": "STRING", "value": "*" },
+                                            { "type": "STRING", "value": "/" },
+                                            { "type": "STRING", "value": "%" },
+                                            { "type": "STRING", "value": "&" },
+                                            { "type": "STRING", "value": "|" },
+                                            { "type": "STRING", "value": "^" }
+                                        ]
+                                    },
+                                    { "type": "SYMBOL", "name": "identifier" }
+                                ]
+                            }
+                        },
+                        {
+                            "type": "CHOICE",
+                            "members": [
+                                { "type": "STRING", "value": "\n" },
+                                { "type": "STRING", "value": ";" },
+                                NULL_TERMINATOR
+                            ]
+                        }
+                    ]
+                },
+                "identifier": { "type": "PATTERN", "value": "[a-z]+" }
+            },
+            "extras": [ { "type": "PATTERN", "value": "\\s" } ]
+        }
+        "#;
+    let language = |name: &str, null_terminator: &str| {
+        let grammar = grammar
+            .replace("NAME", name)
+            .replace("NULL_TERMINATOR", null_terminator);
+        let (parser_name, parser_code) = generate_parser(&grammar).unwrap();
+        get_test_language(&parser_name, &parser_code, None)
+    };
+    let mut parser = Parser::new();
+
+    parser
+        .set_language(&language(
+            "test_null_terminator",
+            r#"{ "type": "STRING", "value": "\u0000" }"#,
+        ))
+        .unwrap();
+    for (source, expected) in [
+        ("", "(source_file)"),
+        (
+            "a+b\n",
+            "(source_file (statement (identifier) (identifier)))",
+        ),
+        ("a+b", "(source_file (statement (identifier) (identifier)))"),
+        (
+            "a;b*c",
+            "(source_file (statement (identifier)) (statement (identifier) (identifier)))",
+        ),
+        (
+            "a\0b",
+            "(source_file (statement (identifier)) (statement (identifier)))",
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.to_sexp(), expected, "source: {source:?}");
+        assert!(!root.has_error(), "source: {source:?}");
+        assert_eq!(root.end_byte(), source.len(), "source: {source:?}");
+    }
+
+    // The `+` operator splits NUL out of this class into a transition of its own, which still
+    // must not match the end of the input.
+    parser
+        .set_language(&language(
+            "test_null_class_terminator",
+            r#"{ "type": "PATTERN", "value": "[\\x00+]" }"#,
+        ))
+        .unwrap();
+    let tree = parser.parse("a\0b\n", None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(source_file (statement (identifier)) (statement (identifier)))"
+    );
+    let tree = parser.parse("a+b", None).unwrap();
+    assert!(
+        tree.root_node().has_error(),
+        "{}",
+        tree.root_node().to_sexp()
+    );
 }
 
 #[test]

@@ -554,6 +554,12 @@ impl<'a> LexTableBuilder<'a> {
                     && !self.word_guards[guard_id].contains(token)
             });
         let (transitions, has_sep) = self.cursor.transitions_and_any_sep();
+        // Read here because the `add_state` calls below reset the cursor.
+        let explicit_nul = self
+            .cursor
+            .transition_chars()
+            .filter(|(chars, _)| chars.contains('\0'))
+            .all(|(chars, _)| chars.chars().eq(['\0']));
 
         // If EOF is a valid lookahead token, add a transition predicated on the null
         // character that leads to the empty set of NFA states.
@@ -562,6 +568,7 @@ impl<'a> LexTableBuilder<'a> {
             self.table.states[state_id as usize].eof_action = Some(AdvanceAction {
                 state: next_state_id,
                 in_main_token: true,
+                explicit_nul: false,
             });
         }
 
@@ -608,11 +615,13 @@ impl<'a> LexTableBuilder<'a> {
                 eof_valid && transition.is_separator,
                 guard_id,
             );
+            let explicit_nul = explicit_nul && transition.characters.contains('\0');
             self.table.states[state_id as usize].advance_actions.push((
                 transition.characters,
                 AdvanceAction {
                     state: next_state_id,
                     in_main_token: !transition.is_separator,
+                    explicit_nul,
                 },
             ));
         }
@@ -698,12 +707,12 @@ fn merge_token_set(
 
 fn coalesce_lex_transitions(table: &mut LexTable) -> bool {
     let mut changed = false;
-    let mut action_indices = FxHashMap::<(LexStateId, bool), usize>::default();
+    let mut action_indices = FxHashMap::<(LexStateId, bool, bool), usize>::default();
     for state in &mut table.states {
         action_indices.clear();
         let mut actions: Vec<(CharacterSet, AdvanceAction)> = Vec::new();
         for (chars, action) in mem::take(&mut state.advance_actions) {
-            let key = (action.state, action.in_main_token);
+            let key = (action.state, action.in_main_token, action.explicit_nul);
             if let Some(&index) = action_indices.get(&key) {
                 let (existing_chars, _) = &mut actions[index];
                 *existing_chars = mem::take(existing_chars).add(&chars);
@@ -731,7 +740,13 @@ fn minimize_lex_table(table: &mut LexTable) -> Vec<LexStateId> {
             state
                 .advance_actions
                 .iter()
-                .map(|(characters, action)| (characters.clone(), action.in_main_token))
+                .map(|(characters, action)| {
+                    (
+                        characters.clone(),
+                        action.in_main_token,
+                        action.explicit_nul,
+                    )
+                })
                 .collect::<Vec<_>>(),
         );
         state_ids_by_signature
