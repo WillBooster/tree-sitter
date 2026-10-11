@@ -43,8 +43,8 @@ typedef struct {
   uint16_t action_count;
 } LookaheadIterator;
 
-// Languages with another ABI version lay out the fields after `primary_state_ids` differently or lack them, and
-// the accessors that work on a language before it is assigned to a parser must not read them.
+// Languages with another ABI version lack `primary_state_ids` and the fields after it or lay them out differently,
+// so the accessors that work on a language before a parser or a query has accepted it must not read them.
 static inline bool ts_language_has_supported_abi(const TSLanguage *self) {
   return self->abi_version == TREE_SITTER_LANGUAGE_VERSION;
 }
