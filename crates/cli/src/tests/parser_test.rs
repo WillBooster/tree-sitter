@@ -3718,6 +3718,93 @@ fn test_parsing_null_characters_in_character_classes_containing_them() {
 }
 
 #[test]
+fn test_parsing_end_of_input_as_null_terminator() {
+    // As in the Go grammar: the newline token keeps the lex state after an identifier from
+    // merging with the start state, which accepts the end of the input, and the operators give it
+    // enough single-character transitions for an advance map.
+    let (parser_name, parser_code) = generate_parser(
+        r#"
+        {
+            "name": "test_null_terminator",
+            "rules": {
+                "source_file": {
+                    "type": "REPEAT",
+                    "content": { "type": "SYMBOL", "name": "statement" }
+                },
+                "statement": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "SYMBOL", "name": "identifier" },
+                        {
+                            "type": "REPEAT",
+                            "content": {
+                                "type": "SEQ",
+                                "members": [
+                                    {
+                                        "type": "CHOICE",
+                                        "members": [
+                                            { "type": "STRING", "value": "+" },
+                                            { "type": "STRING", "value": "-" },
+                                            { "type": "STRING", "value": "*" },
+                                            { "type": "STRING", "value": "/" },
+                                            { "type": "STRING", "value": "%" },
+                                            { "type": "STRING", "value": "&" },
+                                            { "type": "STRING", "value": "|" },
+                                            { "type": "STRING", "value": "^" }
+                                        ]
+                                    },
+                                    { "type": "SYMBOL", "name": "identifier" }
+                                ]
+                            }
+                        },
+                        {
+                            "type": "CHOICE",
+                            "members": [
+                                { "type": "STRING", "value": "\n" },
+                                { "type": "STRING", "value": ";" },
+                                { "type": "STRING", "value": "\u0000" }
+                            ]
+                        }
+                    ]
+                },
+                "identifier": { "type": "PATTERN", "value": "[a-z]+" }
+            },
+            "extras": [ { "type": "PATTERN", "value": "\\s" } ]
+        }
+        "#,
+    )
+    .unwrap();
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+
+    for (source, expected) in [
+        ("", "(source_file)"),
+        (
+            "a+b\n",
+            "(source_file (statement (identifier) (identifier)))",
+        ),
+        ("a+b", "(source_file (statement (identifier) (identifier)))"),
+        (
+            "a;b*c",
+            "(source_file (statement (identifier)) (statement (identifier) (identifier)))",
+        ),
+        (
+            "a\0b",
+            "(source_file (statement (identifier)) (statement (identifier)))",
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.to_sexp(), expected, "source: {source:?}");
+        assert!(!root.has_error(), "source: {source:?}");
+        assert_eq!(root.end_byte(), source.len(), "source: {source:?}");
+    }
+}
+
+#[test]
 fn test_parse_stack_recursive_merge_error_cost_calculation_bug() {
     let source_code = r"
 fn main() {
