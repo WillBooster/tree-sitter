@@ -138,13 +138,22 @@ pub fn build_tables(
         &coincident_token_index,
         str_pool,
     );
+    // The parse table does not treat as a keyword a token whose replacement by the word token is
+    // left to each lexer state because of a lexical conflict. The minimizer exempts a keyword and
+    // the word token from its lexical conflict check, so counting such a token would merge states
+    // that differ only in it. That changes the order of the stack versions of an ambiguous
+    // grammar, and with it the tree chosen among equivalent readings of valid input.
+    let mut conflict_free_keywords = keywords.clone();
+    for (keyword, _) in &unsafe_keyword_pairs {
+        conflict_free_keywords.remove(*keyword);
+    }
     populate_error_state(
         &mut parse_table,
         syntax_grammar,
         lexical_grammar,
         &coincident_token_index,
         &token_conflict_map,
-        &keywords,
+        &conflict_free_keywords,
         str_pool,
     );
     populate_used_symbols(&mut parse_table, syntax_grammar, lexical_grammar);
@@ -154,7 +163,7 @@ pub fn build_tables(
         lexical_grammar,
         simple_aliases,
         &token_conflict_map,
-        &keywords,
+        &conflict_free_keywords,
         str_pool,
         optimizations,
     );
