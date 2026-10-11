@@ -3645,6 +3645,33 @@ fn test_grammars_that_can_hang_on_eof() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
     parser.parse("\"", None).unwrap();
+
+    // Two lex states that advance to each other on NUL, each with enough single-character
+    // transitions for an advance map.
+    let (parser_name, parser_code) = generate_parser(
+        r#"
+        {
+            "name": "test_null_char_cycle_regex",
+            "rules": {
+                "source_file": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "STRING", "value": "\"" },
+                        { "type": "PATTERN", "value": "(\\x00(\\x00|[bdfhjlnp])|[bdfhjlnp]x)*" },
+                        { "type": "STRING", "value": "\"" }
+                    ]
+                }
+            },
+            "extras": [ { "type": "PATTERN", "value": "\\s" } ]
+        }
+        "#,
+    )
+    .unwrap();
+
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    parser.parse("\"", None).unwrap();
 }
 
 #[test]

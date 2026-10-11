@@ -1332,10 +1332,11 @@ impl Generator {
         add_line!(self, "switch (state) {{");
 
         indent!(self);
+        let advances_on_nul = Self::states_advancing_on_nul(&lex_table);
         for (i, state) in lex_table.states.into_iter().enumerate() {
             add_line!(self, "case {i}:");
             indent!(self);
-            self.add_lex_state(i as u32, state);
+            self.add_lex_state(i as u32, state, &advances_on_nul);
             dedent!(self);
         }
 
@@ -1387,6 +1388,7 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}}\n");
 
+        let advances_on_nul = Self::states_advancing_on_nul(lex_table);
         for (chunk, states) in lex_table.states.chunks(LEXER_CHUNK_SIZE).enumerate() {
             let has_advances = states.iter().enumerate().any(|(offset, state)| {
                 let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
@@ -1423,7 +1425,7 @@ impl Generator {
                 let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
                 add_line!(self, "case {id}:");
                 indent!(self);
-                self.add_lex_state(id, state.clone());
+                self.add_lex_state(id, state.clone(), &advances_on_nul);
                 dedent!(self);
             }
             add_line!(self, "default:");
@@ -1439,7 +1441,20 @@ impl Generator {
         }
     }
 
-    fn add_lex_state(&mut self, state_id: u32, state: LexState) {
+    fn states_advancing_on_nul(lex_table: &LexTable) -> Vec<bool> {
+        lex_table
+            .states
+            .iter()
+            .map(|state| {
+                state
+                    .advance_actions
+                    .iter()
+                    .any(|(chars, _)| chars.contains('\0'))
+            })
+            .collect()
+    }
+
+    fn add_lex_state(&mut self, state_id: u32, state: LexState, advances_on_nul: &[bool]) {
         if state
             .advance_actions
             .iter()
@@ -1471,10 +1486,12 @@ impl Generator {
             // The map compares the lookahead alone, which is also 0 at the end of the input, so a
             // class containing NUL stays out of it. An explicit NUL stays in, as in upstream's
             // `ADVANCE_MAP`: grammars such as Go's end a statement with '\0' to accept the end of
-            // the input.
+            // the input. Its target must not advance on NUL again, because advancing consumes
+            // nothing at the end of the input and a cycle of such states would never return.
             if action.in_main_token
                 && action.state != state_id
-                && (!chars.contains('\0') || action.explicit_nul)
+                && (!chars.contains('\0')
+                    || action.explicit_nul && !advances_on_nul[action.state as usize])
                 && chars.ranges().all(|r| {
                     let start = *r.start() as u32;
                     let end = *r.end() as u32;
