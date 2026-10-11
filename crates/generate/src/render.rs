@@ -1469,12 +1469,12 @@ impl Generator {
         let mut simple_transition_range_count = 0;
         for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
             // The map compares the lookahead alone, which is also 0 at the end of the input, so a
-            // class containing NUL stays out of it. A transition on NUL alone stays in, as in
-            // upstream's `ADVANCE_MAP`: grammars such as Go's end a statement with '\0' to accept
-            // the end of the input.
+            // class containing NUL stays out of it. An explicit NUL stays in, as in upstream's
+            // `ADVANCE_MAP`: grammars such as Go's end a statement with '\0' to accept the end of
+            // the input.
             if action.in_main_token
                 && action.state != state_id
-                && (!chars.contains('\0') || chars.chars().eq(['\0']))
+                && (!chars.contains('\0') || action.explicit_nul)
                 && chars.ranges().all(|r| {
                     let start = *r.start() as u32;
                     let end = *r.end() as u32;

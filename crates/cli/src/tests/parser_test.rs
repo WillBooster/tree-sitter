@@ -3722,10 +3722,9 @@ fn test_parsing_end_of_input_as_null_terminator() {
     // As in the Go grammar: the newline token keeps the lex state after an identifier from
     // merging with the start state, which accepts the end of the input, and the operators give it
     // enough single-character transitions for an advance map.
-    let (parser_name, parser_code) = generate_parser(
-        r#"
+    let grammar = r#"
         {
-            "name": "test_null_terminator",
+            "name": "NAME",
             "rules": {
                 "source_file": {
                     "type": "REPEAT",
@@ -3762,7 +3761,7 @@ fn test_parsing_end_of_input_as_null_terminator() {
                             "members": [
                                 { "type": "STRING", "value": "\n" },
                                 { "type": "STRING", "value": ";" },
-                                { "type": "STRING", "value": "\u0000" }
+                                NULL_TERMINATOR
                             ]
                         }
                     ]
@@ -3771,15 +3770,22 @@ fn test_parsing_end_of_input_as_null_terminator() {
             },
             "extras": [ { "type": "PATTERN", "value": "\\s" } ]
         }
-        "#,
-    )
-    .unwrap();
-
+        "#;
+    let language = |name: &str, null_terminator: &str| {
+        let grammar = grammar
+            .replace("NAME", name)
+            .replace("NULL_TERMINATOR", null_terminator);
+        let (parser_name, parser_code) = generate_parser(&grammar).unwrap();
+        get_test_language(&parser_name, &parser_code, None)
+    };
     let mut parser = Parser::new();
-    parser
-        .set_language(&get_test_language(&parser_name, &parser_code, None))
-        .unwrap();
 
+    parser
+        .set_language(&language(
+            "test_null_terminator",
+            r#"{ "type": "STRING", "value": "\u0000" }"#,
+        ))
+        .unwrap();
     for (source, expected) in [
         ("", "(source_file)"),
         (
@@ -3802,6 +3808,26 @@ fn test_parsing_end_of_input_as_null_terminator() {
         assert!(!root.has_error(), "source: {source:?}");
         assert_eq!(root.end_byte(), source.len(), "source: {source:?}");
     }
+
+    // The `+` operator splits NUL out of this class into a transition of its own, which still
+    // must not match the end of the input.
+    parser
+        .set_language(&language(
+            "test_null_class_terminator",
+            r#"{ "type": "PATTERN", "value": "[\\x00+]" }"#,
+        ))
+        .unwrap();
+    let tree = parser.parse("a\0b\n", None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(source_file (statement (identifier)) (statement (identifier)))"
+    );
+    let tree = parser.parse("a+b", None).unwrap();
+    assert!(
+        tree.root_node().has_error(),
+        "{}",
+        tree.root_node().to_sexp()
+    );
 }
 
 #[test]

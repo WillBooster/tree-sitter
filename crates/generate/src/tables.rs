@@ -378,6 +378,9 @@ pub struct ParseTable {
 pub struct AdvanceAction {
     pub state: LexStateId,
     pub in_main_token: bool,
+    /// Whether the transition's characters include NUL only because the grammar matches NUL
+    /// alone there (a literal `'\0'`), not as a member of a wider character class.
+    pub explicit_nul: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
