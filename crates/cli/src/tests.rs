@@ -32,7 +32,13 @@ pub use helpers::fixtures::get_language;
 fn generate_parser(grammar_json: &str) -> GenerateResult<(String, String)> {
     // The ABI 15 job in build.yml sets this, so that these parsers match the fixtures it generates.
     static ABI_VERSION: LazyLock<usize> = LazyLock::new(|| {
-        env::var("TREE_SITTER_ABI_VERSION").map_or(ABI_VERSION_DEFAULT, |abi| abi.parse().unwrap())
+        env::var("TREE_SITTER_ABI_VERSION").map_or(ABI_VERSION_DEFAULT, |abi| {
+            if abi == "latest" {
+                tree_sitter::LANGUAGE_VERSION
+            } else {
+                abi.parse().unwrap()
+            }
+        })
     });
     generate_parser_with_abi(grammar_json, *ABI_VERSION)
 }
