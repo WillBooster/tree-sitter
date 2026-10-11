@@ -104,13 +104,8 @@ Run this in the root of the repository:
 cargo xtask fetch-fixtures
 ```
 
-Optionally, to update the generated parser.c files:
-
-```sh
-cargo xtask generate-fixtures
-```
-
-Then you can build the Wasm modules:
+Then regenerate their parsers with this repository's CLI, because the runtime rejects the parsers that the upstream
+grammars ship, and build the Wasm modules. This command does both:
 
 ```sh
 cargo xtask generate-fixtures --wasm
