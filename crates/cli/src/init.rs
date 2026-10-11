@@ -10,6 +10,7 @@ use heck::{ToKebabCase, ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
 use indoc::{formatdoc, indoc};
 use log::{info, warn};
 use rand::RngExt;
+use regex::Regex;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1135,6 +1136,22 @@ fn update_c_makefile(path: &Path, language_name: &str, opts: &GenerateOpts) -> R
             $(PARSER): $(SRC_DIR)/grammar.json
                     $(TS) generate $^
             "};
+        let abi_versioning = indoc! {r"
+            # ABI versioning
+            SONAME_MAJOR = $(shell sed -n 's/\#define LANGUAGE_VERSION //p' $(PARSER))
+            SONAME_MINOR = $(word 1,$(subst ., ,$(VERSION)))
+            "};
+        if contents.contains(abi_versioning) {
+            info!("Removing the ABI version from the library version in Makefile");
+            contents = contents.replace(
+                abi_versioning,
+                indoc! {r"
+                    # library versioning
+                    SONAME_MAJOR = $(word 1,$(subst ., ,$(VERSION)))
+                    SONAME_MINOR = $(word 2,$(subst ., ,$(VERSION)))
+                    "},
+            );
+        }
         if contents.contains(replaced) {
             info!("Adding --no-parser target to Makefile");
             contents = contents.replace(
@@ -1222,7 +1239,23 @@ fn update_c_cmakelists(path: &Path, language_name: &str) -> Result<()> {
         .replace(
             "\n                            --abi=${TREE_SITTER_ABI_VERSION}",
             "",
+        )
+        .replace(
+            r#"SOVERSION "${TREE_SITTER_ABI_VERSION}.${PROJECT_VERSION_MAJOR}""#,
+            r#"SOVERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}""#,
         );
+    // The default version in this block differs between the CLI versions that wrote it.
+    let replaced_contents = Regex::new(indoc! {r#"
+        set\(TREE_SITTER_ABI_VERSION \d+ CACHE STRING "Tree-sitter ABI version"\)
+        if\(NOT \$\{TREE_SITTER_ABI_VERSION\} MATCHES "\^\[0-9\]\+\$"\)
+            unset\(TREE_SITTER_ABI_VERSION CACHE\)
+            message\(FATAL_ERROR "TREE_SITTER_ABI_VERSION must be an integer"\)
+        endif\(\)
+
+        "#})
+    .unwrap()
+    .replace(&replaced_contents, "")
+    .into_owned();
     if !replaced_contents.eq(&contents) {
         info!("Updating CMakeLists.txt");
         write_file(path, replaced_contents)?;

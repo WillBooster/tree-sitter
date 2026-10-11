@@ -46,7 +46,7 @@ set_target_properties(tree-sitter-KEBAB_PARSER_NAME
                       PROPERTIES
                       C_STANDARD 11
                       POSITION_INDEPENDENT_CODE ON
-                      SOVERSION "${PROJECT_VERSION_MAJOR}"
+                      SOVERSION "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
                       DEFINE_SYMBOL "")
 
 configure_file(bindings/c/tree-sitter-KEBAB_PARSER_NAME.pc.in
