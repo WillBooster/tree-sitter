@@ -1,4 +1,4 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -312,18 +312,25 @@ pub(super) fn extract_tokens(
 
     let inline = interned.inline.iter().map(|&s| replace_symbol(s)).collect();
 
+    let external_symbols: FxHashSet<_> = g
+        .external_roots
+        .iter()
+        .filter_map(|&root| g.pool.node(root).symbol())
+        .collect();
     let mut separator_roots = Vec::new();
     let mut extra_symbols = Vec::with_capacity(g.extra_roots.len());
     for &root in &g.extra_roots {
         if let Some(s) = g.pool.node(root).symbol() {
             extra_symbols.push(replace_symbol(s));
         } else if let Some(i) = extractor.find(&g.pool, root) {
+            let symbol = Symbol::terminal(i as usize);
             if matches!(g.pool.node(root), Rule::Pattern(..))
                 && extractor.lexical[i as usize].kind == VariableType::Auxiliary
+                && !external_symbols.contains(&symbol)
             {
                 separator_roots.push(root);
             } else {
-                extra_symbols.push(Symbol::terminal(i as usize));
+                extra_symbols.push(symbol);
             }
         } else {
             separator_roots.push(root);

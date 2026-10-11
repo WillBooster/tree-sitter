@@ -1027,6 +1027,48 @@ fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
 }
 
 #[test]
+fn test_anonymous_external_pattern_used_as_extra() {
+    let grammar = serde_json::json!({
+        "name": "anonymous_external_extra",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "STRING", "value": "a"}}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        r#"
+#include "tree_sitter/parser.h"
+void *tree_sitter_anonymous_external_extra_external_scanner_create(void) { return NULL; }
+void tree_sitter_anonymous_external_extra_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_anonymous_external_extra_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_anonymous_external_extra_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+bool tree_sitter_anonymous_external_extra_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) { return false; }
+"#,
+    )
+    .unwrap();
+    let language = get_test_language(&name, &parser_code, Some(fixture.path()));
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["", "a", "\na\na\n", "\n\n"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error(), "{source:?}");
+        assert_eq!(root.end_byte(), source.len(), "{source:?}");
+        assert_eq!(
+            root.children(&mut root.walk())
+                .filter(|node| node.kind() == "a")
+                .count(),
+            source.matches('a').count(),
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
 fn test_immediate_token_with_reused_anonymous_extra_pattern() {
     let grammar = serde_json::json!({
         "name": "reused_anonymous_extra",
