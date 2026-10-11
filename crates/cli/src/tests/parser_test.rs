@@ -363,7 +363,10 @@ fn test_languages_with_other_abi_versions_are_rejected() {
         get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER);
     assert_eq!(supported.name(), Some("other_abi_versions"));
     assert!(supported.metadata().is_some());
-    assert_eq!(supported.supertypes().len(), 1);
+    let &[statement] = supported.supertypes() else {
+        panic!("expected one supertype");
+    };
+    assert_eq!(supported.subtypes_for_supertype(statement).len(), 2);
     let define = format!("#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}\n");
     assert!(code.contains(&define));
     let mut parser = Parser::new();
@@ -383,6 +386,7 @@ fn test_languages_with_other_abi_versions_are_rejected() {
         assert_eq!(language.name(), None);
         assert!(language.metadata().is_none());
         assert_eq!(language.supertypes(), &[] as &[u16]);
+        assert_eq!(language.subtypes_for_supertype(statement), &[] as &[u16]);
         assert_eq!(
             Query::new(&language, "(program)").unwrap_err().kind,
             QueryErrorKind::Language
