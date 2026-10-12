@@ -228,6 +228,9 @@ pub(super) fn extract_tokens(
         extractor.extract_in_root(&mut g.pool, v.root, Some(v.name), i == 0, &mut stack)?;
     }
     let syntax_token_count = extractor.lexical.len();
+    let syntax_has_non_immediate_tokens = extractor.lexical.iter().any(|token| {
+        !matches!(g.pool.node(token.root), Rule::Metadata { params, .. } if g.pool.params(params).is_main_token)
+    });
     for (&root, &(name, _)) in g.external_roots.iter().zip(&interned.external_tokens) {
         extractor.extract_in_root(&mut g.pool, root, name, false, &mut stack)?;
     }
@@ -322,7 +325,8 @@ pub(super) fn extract_tokens(
             let symbol = Symbol::terminal(i as usize);
             if matches!(g.pool.node(root), Rule::Pattern(..))
                 && extractor.lexical[i as usize].kind == VariableType::Auxiliary
-                && (i as usize) < syntax_token_count
+                && ((i as usize) < syntax_token_count
+                    || (syntax_token_count > 0 && !syntax_has_non_immediate_tokens))
             {
                 separator_roots.push(root);
             } else {

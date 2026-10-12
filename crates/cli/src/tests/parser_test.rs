@@ -1048,7 +1048,11 @@ fn test_anonymous_external_pattern_used_as_extra() {
         for source in ["", "a", "\na\na\n", "\n\n"] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
-            assert!(!root.has_error(), "{source:?}");
+            assert_eq!(
+                root.has_error(),
+                with_immediate && source.contains('\n'),
+                "{source:?}"
+            );
             assert_eq!(root.end_byte(), source.len(), "{source:?}");
             assert_eq!(
                 root.children(&mut root.walk())
