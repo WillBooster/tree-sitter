@@ -1072,6 +1072,62 @@ fn test_anonymous_external_pattern_used_as_extra() {
 }
 
 #[test]
+fn test_external_extra_updates_scanner_state() {
+    let grammar = serde_json::json!({
+        "name": "external_extra_updates_state",
+        "externals": [
+            {"type": "PATTERN", "value": "\\n"},
+            {"type": "SYMBOL", "name": "_after_extra"}
+        ],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {"source_file": {"type": "SEQ", "members": [
+            {"type": "STRING", "value": "a"},
+            {"type": "SYMBOL", "name": "_after_extra"}
+        ]}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_scanner(
+        &name,
+        &parser_code,
+        r#"
+#include "tree_sitter/parser.h"
+#include <stdlib.h>
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return calloc(1, sizeof(bool)); }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) { free(payload); }
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) {
+  buffer[0] = *(bool *)payload;
+  return 1;
+}
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  *(bool *)payload = length > 0 && buffer[0];
+}
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+  if (valid_symbols[0] && lexer->lookahead == '\n') {
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    *(bool *)payload = true;
+    lexer->result_symbol = 0;
+    return true;
+  }
+  if (valid_symbols[1] && *(bool *)payload) {
+    *(bool *)payload = false;
+    lexer->result_symbol = 1;
+    return true;
+  }
+  return false;
+}
+"#,
+    );
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["\na", "\n\na", "a"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().has_error(), source == "a", "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
 fn test_overlapping_anonymous_external_pattern_used_as_extra() {
     let grammar = serde_json::json!({
         "name": "overlapping_anonymous_external_extra",
@@ -1140,9 +1196,9 @@ fn get_test_language_with_declining_scanner(
     name: &str,
     parser_code: &str,
 ) -> tree_sitter::Language {
-    let fixture = tempfile::tempdir().unwrap();
-    std::fs::write(
-        fixture.path().join("scanner.c"),
+    get_test_language_with_scanner(
+        name,
+        parser_code,
         r#"
 #include "tree_sitter/parser.h"
 void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
@@ -1150,7 +1206,19 @@ void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
 unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
 void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
 bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) { return false; }
-"#.replace("GRAMMAR", name),
+"#,
+    )
+}
+
+fn get_test_language_with_scanner(
+    name: &str,
+    parser_code: &str,
+    scanner: &str,
+) -> tree_sitter::Language {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        scanner.replace("GRAMMAR", name),
     )
     .unwrap();
     get_test_language(name, parser_code, Some(fixture.path()))
