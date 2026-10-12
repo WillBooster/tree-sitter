@@ -71,6 +71,7 @@ pub(super) struct ExtractedGrammarMeta {
     pub lexical_variables: Vec<LexicalToken>,
     pub separator_roots: Vec<RuleId>,
     pub extra_symbols: Vec<Symbol>,
+    pub external_only_extra_symbols: Vec<Symbol>,
     pub external_tokens: Vec<ExternalToken>,
     pub reserved_sets: Vec<(StrId, Vec<Symbol>)>,
     pub supertypes: Vec<Symbol>,
@@ -318,6 +319,7 @@ pub(super) fn extract_tokens(
 
     let mut separator_roots = Vec::new();
     let mut extra_symbols = Vec::with_capacity(g.extra_roots.len());
+    let mut external_only_extra_symbols = Vec::new();
     for &root in &g.extra_roots {
         if let Some(s) = g.pool.node(root).symbol() {
             extra_symbols.push(replace_symbol(s));
@@ -330,6 +332,12 @@ pub(super) fn extract_tokens(
             {
                 separator_roots.push(root);
             } else {
+                if matches!(g.pool.node(root), Rule::Pattern(..))
+                    && extractor.lexical[i as usize].kind == VariableType::Auxiliary
+                {
+                    external_only_extra_symbols.push(symbol);
+                    separator_roots.push(root);
+                }
                 extra_symbols.push(symbol);
             }
         } else {
@@ -413,6 +421,7 @@ pub(super) fn extract_tokens(
         lexical_variables: extractor.lexical,
         separator_roots,
         extra_symbols,
+        external_only_extra_symbols,
         external_tokens,
         reserved_sets,
         supertypes,

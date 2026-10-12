@@ -1072,6 +1072,57 @@ fn test_anonymous_external_pattern_used_as_extra() {
 }
 
 #[test]
+fn test_shared_extra_with_mixed_immediate_syntax() {
+    let grammar = serde_json::json!({
+        "name": "shared_extra_with_mixed_immediate_syntax",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {
+            "source_file": {"type": "SEQ", "members": [
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                {"type": "CHOICE", "members": [{"type": "SYMBOL", "name": "other"}, {"type": "BLANK"}]}
+            ]},
+            "other": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["x", "xy", "\nx", "\nxy"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(
+            tree.root_node().has_error(),
+            source.starts_with('\n'),
+            "{source:?}"
+        );
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_shared_extra_with_immediate_alternative() {
+    let grammar = serde_json::json!({
+        "name": "shared_extra_with_immediate_alternative",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {"source_file": {"type": "CHOICE", "members": [
+            {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+            {"type": "STRING", "value": "y"}
+        ]}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, has_error) in [("x", false), ("y", false), ("\nx", true), ("\ny", false)] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().has_error(), has_error, "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
 fn test_external_extra_updates_scanner_state() {
     let grammar = serde_json::json!({
         "name": "external_extra_updates_state",

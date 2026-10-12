@@ -403,6 +403,7 @@ pub(super) fn assemble_syntax_grammar(
         SyntaxGrammar {
             variables,
             extra_symbols: meta.extra_symbols,
+            external_only_extra_symbols: meta.external_only_extra_symbols,
             expected_conflicts: meta.conflicts,
             external_tokens: meta.external_tokens,
             supertype_symbols: meta.supertypes,

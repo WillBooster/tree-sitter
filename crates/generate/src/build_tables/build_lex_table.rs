@@ -193,6 +193,7 @@ pub fn build_lex_table(
             .keys()
             .copied()
             .chain(state.reserved_words.iter())
+            .filter(|token| !syntax_grammar.external_only_extra_symbols.contains(token))
             .filter_map(|token| {
                 if token.is_terminal() {
                     let immediate_syntax = lexical_grammar.variables[token.index as usize]
