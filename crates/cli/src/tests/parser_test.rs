@@ -1066,6 +1066,34 @@ fn test_anonymous_external_pattern_used_as_extra() {
 }
 
 #[test]
+fn test_overlapping_anonymous_external_pattern_used_as_extra() {
+    let grammar = serde_json::json!({
+        "name": "overlapping_anonymous_external_extra",
+        "externals": [{"type": "PATTERN", "value": "a"}],
+        "extras": [{"type": "PATTERN", "value": "a"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {
+                "type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "ab"}
+            }}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["", "ab", "abab", "aab", "a"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            root.has_error(),
+            matches!(source, "aab" | "a"),
+            "{source:?}"
+        );
+        assert_eq!(root.end_byte(), source.len(), "{source:?}");
+    }
+}
+
+#[test]
 fn test_immediate_token_with_reused_anonymous_extra_pattern() {
     for with_external in [false, true] {
         let grammar = serde_json::json!({
