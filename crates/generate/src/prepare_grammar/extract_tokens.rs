@@ -1,4 +1,4 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -227,6 +227,7 @@ pub(super) fn extract_tokens(
     for (i, v) in g.variables.iter().enumerate() {
         extractor.extract_in_root(&mut g.pool, v.root, Some(v.name), i == 0, &mut stack)?;
     }
+    let syntax_token_count = extractor.lexical.len();
     for (&root, &(name, _)) in g.external_roots.iter().zip(&interned.external_tokens) {
         extractor.extract_in_root(&mut g.pool, root, name, false, &mut stack)?;
     }
@@ -312,11 +313,6 @@ pub(super) fn extract_tokens(
 
     let inline = interned.inline.iter().map(|&s| replace_symbol(s)).collect();
 
-    let external_symbols: FxHashSet<_> = g
-        .external_roots
-        .iter()
-        .filter_map(|&root| g.pool.node(root).symbol())
-        .collect();
     let mut separator_roots = Vec::new();
     let mut extra_symbols = Vec::with_capacity(g.extra_roots.len());
     for &root in &g.extra_roots {
@@ -326,7 +322,7 @@ pub(super) fn extract_tokens(
             let symbol = Symbol::terminal(i as usize);
             if matches!(g.pool.node(root), Rule::Pattern(..))
                 && extractor.lexical[i as usize].kind == VariableType::Auxiliary
-                && !external_symbols.contains(&symbol)
+                && (i as usize) < syntax_token_count
             {
                 separator_roots.push(root);
             } else {
