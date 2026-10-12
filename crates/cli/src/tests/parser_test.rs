@@ -1179,7 +1179,30 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
 }
 
 #[test]
-fn test_overlapping_anonymous_external_pattern_used_as_extra() {
+fn test_literal_token_with_overlapping_external_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "literal_token_with_overlapping_external_extra_pattern",
+        "externals": [{"type": "PATTERN", "value": "a"}],
+        "extras": [{"type": "PATTERN", "value": "a"}],
+        "rules": {"source_file": {"type": "REPEAT", "content": {"type": "STRING", "value": "a"}}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["a", "aa", "aaa"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error(), "{source:?}");
+        let children = root.children(&mut root.walk()).collect::<Vec<_>>();
+        assert_eq!(children.len(), 1, "{source:?}");
+        assert_eq!(children[0].kind(), "a");
+        assert_eq!(root.end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_immediate_token_with_overlapping_external_extra_pattern() {
     let grammar = serde_json::json!({
         "name": "overlapping_anonymous_external_extra",
         "externals": [{"type": "PATTERN", "value": "a"}],
