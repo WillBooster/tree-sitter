@@ -1028,30 +1028,36 @@ fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
 
 #[test]
 fn test_anonymous_external_pattern_used_as_extra() {
-    let grammar = serde_json::json!({
-        "name": "anonymous_external_extra",
-        "externals": [{"type": "PATTERN", "value": "\\n"}],
-        "extras": [{"type": "PATTERN", "value": "\\n"}],
-        "rules": {
-            "source_file": {"type": "REPEAT", "content": {"type": "STRING", "value": "a"}}
+    for with_immediate in [false, true] {
+        let grammar = serde_json::json!({
+            "name": format!("anonymous_external_extra_{with_immediate}"),
+            "externals": [{"type": "PATTERN", "value": "\\n"}],
+            "extras": [{"type": "PATTERN", "value": "\\n"}],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": if with_immediate {
+                    serde_json::json!({"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "a"}})
+                } else {
+                    serde_json::json!({"type": "STRING", "value": "a"})
+                }}
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language_with_declining_scanner(&name, &parser_code);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for source in ["", "a", "\na\na\n", "\n\n"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source:?}");
+            assert_eq!(root.end_byte(), source.len(), "{source:?}");
+            assert_eq!(
+                root.children(&mut root.walk())
+                    .filter(|node| node.kind() == "a")
+                    .count(),
+                source.matches('a').count(),
+                "{source:?}"
+            );
         }
-    });
-    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-    let language = get_test_language_with_declining_scanner(&name, &parser_code);
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    for source in ["", "a", "\na\na\n", "\n\n"] {
-        let tree = parser.parse(source, None).unwrap();
-        let root = tree.root_node();
-        assert!(!root.has_error(), "{source:?}");
-        assert_eq!(root.end_byte(), source.len(), "{source:?}");
-        assert_eq!(
-            root.children(&mut root.walk())
-                .filter(|node| node.kind() == "a")
-                .count(),
-            source.matches('a').count(),
-            "{source:?}"
-        );
     }
 }
 
