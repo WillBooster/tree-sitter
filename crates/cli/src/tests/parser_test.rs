@@ -1027,37 +1027,275 @@ fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
 }
 
 #[test]
-fn test_immediate_token_with_reused_anonymous_extra_pattern() {
-    let grammar = serde_json::json!({
-        "name": "reused_anonymous_extra",
-        "extras": [{"type": "PATTERN", "value": "\\s"}],
-        "rules": {
-            "program": {
-                "type": "SEQ",
-                "members": [
-                    {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
-                    {"type": "CHOICE", "members": [
-                        {"type": "PATTERN", "value": "\\s"},
-                        {"type": "BLANK"}
-                    ]}
-                ]
+fn test_anonymous_external_pattern_used_as_extra() {
+    for external_count in [1, 2] {
+        for with_immediate in [false, true] {
+            let externals = ["\\n", "\\s"][..external_count]
+                .iter()
+                .map(|value| serde_json::json!({"type": "PATTERN", "value": value}))
+                .collect::<Vec<_>>();
+            let grammar = serde_json::json!({
+                "name": format!("anonymous_external_extra_{with_immediate}_{external_count}"),
+                "externals": externals,
+                "extras": [{"type": "PATTERN", "value": "\\n"}],
+                "rules": {
+                    "source_file": {"type": "REPEAT", "content": if with_immediate {
+                        serde_json::json!({"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "a"}})
+                    } else {
+                        serde_json::json!({"type": "STRING", "value": "a"})
+                    }}
+                }
+            });
+            let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language_with_declining_scanner(&name, &parser_code);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            for source in ["", "a", "\na\na\n", "\n\n"] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert_eq!(
+                    root.has_error(),
+                    with_immediate && source.contains('\n'),
+                    "{source:?}"
+                );
+                assert_eq!(root.end_byte(), source.len(), "{source:?}");
+                assert_eq!(
+                    root.children(&mut root.walk())
+                        .filter(|node| node.kind() == "a")
+                        .count(),
+                    source.matches('a').count(),
+                    "{source:?}"
+                );
             }
+        }
+    }
+}
+
+#[test]
+fn test_shared_extra_with_mixed_immediate_syntax() {
+    let grammar = serde_json::json!({
+        "name": "shared_extra_with_mixed_immediate_syntax",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {
+            "source_file": {"type": "SEQ", "members": [
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                {"type": "CHOICE", "members": [{"type": "SYMBOL", "name": "other"}, {"type": "BLANK"}]}
+            ]},
+            "other": {"type": "PATTERN", "value": "[a-z]+"}
         }
     });
     let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-    let language = get_test_language(&name, &parser_code, None);
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-
-    for source in ["x", "x ", "x\n"] {
+    for source in ["x", "xy", "\nx", "\nxy"] {
         let tree = parser.parse(source, None).unwrap();
-        assert!(!tree.root_node().has_error(), "{source:?}");
+        assert_eq!(
+            tree.root_node().has_error(),
+            source.starts_with('\n'),
+            "{source:?}"
+        );
         assert_eq!(tree.root_node().end_byte(), source.len());
     }
-    for source in [" x", "\tx", "\nx", " x "] {
+}
+
+#[test]
+fn test_shared_extra_with_immediate_alternative() {
+    let grammar = serde_json::json!({
+        "name": "shared_extra_with_immediate_alternative",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {"source_file": {"type": "CHOICE", "members": [
+            {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+            {"type": "STRING", "value": "y"}
+        ]}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, has_error) in [("x", false), ("y", false), ("\nx", true), ("\ny", false)] {
         let tree = parser.parse(source, None).unwrap();
-        assert!(tree.root_node().has_error(), "{source:?}");
+        assert_eq!(tree.root_node().has_error(), has_error, "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
     }
+}
+
+#[test]
+fn test_external_extra_updates_scanner_state() {
+    let grammar = serde_json::json!({
+        "name": "external_extra_updates_state",
+        "externals": [
+            {"type": "PATTERN", "value": "\\n"},
+            {"type": "SYMBOL", "name": "_after_extra"}
+        ],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {"source_file": {"type": "SEQ", "members": [
+            {"type": "STRING", "value": "a"},
+            {"type": "SYMBOL", "name": "_after_extra"}
+        ]}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_scanner(
+        &name,
+        &parser_code,
+        r#"
+#include "tree_sitter/parser.h"
+#include <stdlib.h>
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return calloc(1, sizeof(bool)); }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) { free(payload); }
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) {
+  buffer[0] = *(bool *)payload;
+  return 1;
+}
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  *(bool *)payload = length > 0 && buffer[0];
+}
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+  if (valid_symbols[0] && lexer->lookahead == '\n') {
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    *(bool *)payload = true;
+    lexer->result_symbol = 0;
+    return true;
+  }
+  if (valid_symbols[1] && *(bool *)payload) {
+    *(bool *)payload = false;
+    lexer->result_symbol = 1;
+    return true;
+  }
+  return false;
+}
+"#,
+    );
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["\na", "\n\na", "a"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().has_error(), source == "a", "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_literal_token_with_overlapping_external_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "literal_token_with_overlapping_external_extra_pattern",
+        "externals": [{"type": "PATTERN", "value": "a"}],
+        "extras": [{"type": "PATTERN", "value": "a"}],
+        "rules": {"source_file": {"type": "REPEAT", "content": {"type": "STRING", "value": "a"}}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["a", "aa", "aaa"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error(), "{source:?}");
+        let children = root.children(&mut root.walk()).collect::<Vec<_>>();
+        assert_eq!(children.len(), 1, "{source:?}");
+        assert_eq!(children[0].kind(), "a");
+        assert_eq!(root.end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_immediate_token_with_overlapping_external_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "overlapping_anonymous_external_extra",
+        "externals": [{"type": "PATTERN", "value": "a"}],
+        "extras": [{"type": "PATTERN", "value": "a"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {
+                "type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "ab"}
+            }}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["", "ab", "abab", "aab", "a"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            root.has_error(),
+            matches!(source, "aab" | "a"),
+            "{source:?}"
+        );
+        assert_eq!(root.end_byte(), source.len(), "{source:?}");
+    }
+}
+
+#[test]
+fn test_immediate_token_with_reused_anonymous_extra_pattern() {
+    for with_external in [false, true] {
+        let grammar = serde_json::json!({
+            "name": format!("reused_anonymous_extra_{with_external}"),
+            "externals": if with_external { vec![serde_json::json!({"type": "PATTERN", "value": "\\s"})] } else { vec![] },
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {
+                    "type": "SEQ",
+                    "members": [
+                        {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                        {"type": "CHOICE", "members": [
+                            {"type": "PATTERN", "value": "\\s"},
+                            {"type": "BLANK"}
+                        ]}
+                    ]
+                }
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language_with_declining_scanner(&name, &parser_code);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for source in ["x", "x ", "x\n"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{source:?}");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+        for source in [" x", "\tx", "\nx", " x "] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error(), "{source:?}");
+        }
+    }
+}
+
+fn get_test_language_with_declining_scanner(
+    name: &str,
+    parser_code: &str,
+) -> tree_sitter::Language {
+    get_test_language_with_scanner(
+        name,
+        parser_code,
+        r#"
+#include "tree_sitter/parser.h"
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) { return false; }
+"#,
+    )
+}
+
+fn get_test_language_with_scanner(
+    name: &str,
+    parser_code: &str,
+    scanner: &str,
+) -> tree_sitter::Language {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        scanner.replace("GRAMMAR", name),
+    )
+    .unwrap();
+    get_test_language(name, parser_code, Some(fixture.path()))
 }
 
 #[test]

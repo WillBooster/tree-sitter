@@ -131,6 +131,7 @@ struct Generator {
     default_aliases: AliasMap,
     symbol_order: FxHashMap<Symbol, usize>,
     symbol_ids: FxHashMap<Symbol, String>,
+    external_token_ids: Vec<String>,
     alias_ids: FxHashMap<Alias, String>,
     unique_aliases: Vec<Alias>,
     symbol_map: FxHashMap<Symbol, Symbol>,
@@ -515,57 +516,24 @@ impl Generator {
                 &mut symbol_identifier_suffixes,
             );
         }
+        self.external_token_ids = self
+            .syntax_grammar
+            .external_tokens
+            .iter()
+            .map(|token| {
+                Self::unique_identifier(
+                    format!("ts_external_token_{}", self.sanitize_identifier(token.name)),
+                    &mut symbol_identifiers,
+                    &mut symbol_identifier_suffixes,
+                )
+            })
+            .collect();
         self.symbol_ids.insert(
             Symbol::end_of_nonterminal_extra(),
             self.symbol_ids[&Symbol::end()].clone(),
         );
 
-        let mut first_symbol_by_metadata = FxHashMap::default();
-        let mut first_unaliased_symbol_by_metadata = FxHashMap::default();
-        let mut minimum_symbol_by_alias = FxHashMap::default();
-        for &symbol in &self.parse_table.symbols {
-            let metadata = self.metadata_for_symbol(symbol);
-            first_symbol_by_metadata.entry(metadata).or_insert(symbol);
-            let identity = if let Some(&alias) = self.default_aliases.get(&symbol) {
-                let minimum = minimum_symbol_by_alias.entry(alias).or_insert(symbol);
-                *minimum = (*minimum).min(symbol);
-                (alias.value, alias.kind())
-            } else {
-                first_unaliased_symbol_by_metadata
-                    .entry(metadata)
-                    .or_insert(symbol);
-                metadata
-            };
-            self.symbols_by_node_identity
-                .entry(identity)
-                .or_default()
-                .push(symbol);
-        }
-
-        for symbol in &self.parse_table.symbols {
-            let mapping = if let Some(target) = self
-                .syntax_grammar
-                .supertype_alias(*symbol, &self.default_aliases)
-            {
-                target
-            } else if let Some(alias) = self.default_aliases.get(symbol) {
-                first_unaliased_symbol_by_metadata
-                    .get(&(alias.value, alias.kind()))
-                    .copied()
-                    .unwrap_or_else(|| minimum_symbol_by_alias[alias])
-            } else if symbol.is_terminal() {
-                let first = first_symbol_by_metadata[&self.metadata_for_symbol(*symbol)];
-                // Avoid making a cycle when the first symbol already maps to this one.
-                if self.symbol_map.get(&first) == Some(symbol) {
-                    *symbol
-                } else {
-                    first
-                }
-            } else {
-                *symbol
-            };
-            self.symbol_map.insert(*symbol, mapping);
-        }
+        self.init_symbol_map();
 
         let mut field_names = FxHashSet::default();
         for production_info in &self.parse_table.production_infos {
@@ -641,6 +609,55 @@ impl Generator {
         self.supertype_symbol_map.clear();
 
         self.large_state_count = self.count_large_states();
+    }
+
+    fn init_symbol_map(&mut self) {
+        let mut first_symbol_by_metadata = FxHashMap::default();
+        let mut first_unaliased_symbol_by_metadata = FxHashMap::default();
+        let mut minimum_symbol_by_alias = FxHashMap::default();
+        for &symbol in &self.parse_table.symbols {
+            let metadata = self.metadata_for_symbol(symbol);
+            first_symbol_by_metadata.entry(metadata).or_insert(symbol);
+            let identity = if let Some(&alias) = self.default_aliases.get(&symbol) {
+                let minimum = minimum_symbol_by_alias.entry(alias).or_insert(symbol);
+                *minimum = (*minimum).min(symbol);
+                (alias.value, alias.kind())
+            } else {
+                first_unaliased_symbol_by_metadata
+                    .entry(metadata)
+                    .or_insert(symbol);
+                metadata
+            };
+            self.symbols_by_node_identity
+                .entry(identity)
+                .or_default()
+                .push(symbol);
+        }
+
+        for symbol in &self.parse_table.symbols {
+            let mapping = if let Some(target) = self
+                .syntax_grammar
+                .supertype_alias(*symbol, &self.default_aliases)
+            {
+                target
+            } else if let Some(alias) = self.default_aliases.get(symbol) {
+                first_unaliased_symbol_by_metadata
+                    .get(&(alias.value, alias.kind()))
+                    .copied()
+                    .unwrap_or_else(|| minimum_symbol_by_alias[alias])
+            } else if symbol.is_terminal() {
+                let first = first_symbol_by_metadata[&self.metadata_for_symbol(*symbol)];
+                // Avoid making a cycle when the first symbol already maps to this one.
+                if self.symbol_map.get(&first) == Some(symbol) {
+                    *symbol
+                } else {
+                    first
+                }
+            } else {
+                *symbol
+            };
+            self.symbol_map.insert(*symbol, mapping);
+        }
     }
 
     fn count_large_states(&self) -> usize {
@@ -2734,8 +2751,7 @@ impl Generator {
     }
 
     fn external_token_id(&self, token_idx: usize) -> String {
-        let token = &self.syntax_grammar.external_tokens[token_idx];
-        format!("ts_external_token_{}", self.sanitize_identifier(token.name))
+        self.external_token_ids[token_idx].clone()
     }
 
     fn assign_symbol_id(
@@ -2744,35 +2760,41 @@ impl Generator {
         used_identifiers: &mut FxHashSet<String>,
         suffixes: &mut FxHashMap<String, usize>,
     ) {
-        let mut id;
-        if symbol == Symbol::end() {
-            id = "ts_builtin_sym_end".to_string();
+        let id = if symbol == Symbol::end() {
+            "ts_builtin_sym_end".to_string()
         } else {
             let (name, kind) = self.metadata_for_symbol(symbol);
-            id = match kind {
+            match kind {
                 VariableType::Auxiliary => format!("aux_sym_{}", self.sanitize_identifier(name)),
                 VariableType::Anonymous => format!("anon_sym_{}", self.sanitize_identifier(name)),
                 VariableType::Hidden | VariableType::Named => {
                     format!("sym_{}", self.sanitize_identifier(name))
                 }
-            };
+            }
+        };
+        let id = Self::unique_identifier(id, used_identifiers, suffixes);
+        self.symbol_ids.insert(symbol, id);
+    }
 
-            if used_identifiers.contains(&id) {
-                let base_len = id.len();
-                let suffix = suffixes.entry(id.clone()).or_insert(1);
-                loop {
-                    *suffix += 1;
-                    id.truncate(base_len);
-                    write!(&mut id, "{suffix}").unwrap();
-                    if !used_identifiers.contains(&id) {
-                        break;
-                    }
+    fn unique_identifier(
+        mut id: String,
+        used_identifiers: &mut FxHashSet<String>,
+        suffixes: &mut FxHashMap<String, usize>,
+    ) -> String {
+        if used_identifiers.contains(&id) {
+            let base_len = id.len();
+            let suffix = suffixes.entry(id.clone()).or_insert(1);
+            loop {
+                *suffix += 1;
+                id.truncate(base_len);
+                write!(&mut id, "{suffix}").unwrap();
+                if !used_identifiers.contains(&id) {
+                    break;
                 }
             }
         }
-
         used_identifiers.insert(id.clone());
-        self.symbol_ids.insert(symbol, id);
+        id
     }
 
     fn field_id(field_name: &str) -> String {

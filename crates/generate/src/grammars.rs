@@ -294,6 +294,7 @@ pub struct ExternalToken {
 pub struct SyntaxGrammar {
     pub variables: Vec<SyntaxVariable>,
     pub extra_symbols: Vec<Symbol>,
+    pub external_only_extra_symbols: Vec<Symbol>,
     pub expected_conflicts: Vec<Vec<Symbol>>,
     pub external_tokens: Vec<ExternalToken>,
     pub supertype_symbols: Vec<Symbol>,

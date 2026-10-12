@@ -40,12 +40,6 @@ pub struct Tables {
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
 }
 
-/// Gives each of a grammar's symbols a position. Positions follow `Symbol` order:
-/// - external tokens
-/// - [`Symbol::end()`]
-/// - [`Symbol::end_of_nonterminal_extra()`]
-/// - terminals
-/// - non-terminals
 #[derive(Clone, Copy, Default)]
 #[expect(clippy::struct_field_names)]
 struct SymbolIndexer {
@@ -256,8 +250,6 @@ fn populate_error_state(
 ) {
     let n = lexical_grammar.variables.len();
 
-    // First identify the *conflict-free tokens*: tokens that do not overlap with
-    // any other token in any way, besides matching exactly the same string.
     let conflict_free_tokens = (0..n)
         .filter_map(|i| {
             let conflicts_with_other_tokens = (0..n).any(|j| {
@@ -285,8 +277,6 @@ fn populate_error_state(
     let existing_symbols = state.terminal_entries.keys().copied().collect::<TokenSet>();
     let mut recovery_entries = Vec::new();
 
-    // Exclude from the error-recovery state any token that conflicts with one of
-    // the *conflict-free tokens* identified above.
     for i in 0..n {
         let symbol = Symbol::terminal(i);
         if !conflict_free_tokens.contains(symbol)
@@ -346,6 +336,11 @@ fn populate_used_symbols(
             non_terminal_usages[symbol.index as usize] = true;
         }
     }
+    for token in &syntax_grammar.external_tokens {
+        if let Some(symbol) = token.corresponding_internal_token {
+            terminal_usages[symbol.index as usize] = true;
+        }
+    }
     parse_table.symbols.push(Symbol::end());
     for (i, value) in terminal_usages.into_iter().enumerate() {
         if value {
@@ -354,7 +349,7 @@ fn populate_used_symbols(
             // very large numbers of tokens. This is an optimization, but it's also important to
             // ensure that a subtree's symbol can be successfully reassigned to the word token
             // without having to move the subtree to the heap.
-            // See https://github.com/tree-sitter/tree-sitter/issues/258
+            // See `tree-sitter/tree-sitter#258`.
             if syntax_grammar.word_token == Some(Symbol::terminal(i)) {
                 parse_table.symbols.insert(1, Symbol::terminal(i));
             } else {
@@ -434,65 +429,47 @@ fn identify_keywords(
     let mut guard_demoted = TokenSet::new();
     let mut immediate_keywords = TokenSet::new();
 
-    // First find all of the candidate keyword tokens: tokens that start with
-    // letters or underscore and can match the same string as a word token.
     let keyword_candidates = lexical_grammar
         .variables
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
             cursor.reset([variable.start_state]);
-            if all_chars_are_alphabetical(&cursor)
+            let is_candidate = all_chars_are_alphabetical(&cursor)
                 && token_conflict_map.does_match_same_string(i, word_token.index as usize)
-                && !token_conflict_map.does_match_different_string(i, word_token.index as usize)
-            {
+                && !token_conflict_map.does_match_different_string(i, word_token.index as usize);
+            if !is_candidate {
+                return None;
+            }
+            debug!(
+                "Keywords - add candidate {}",
+                str_pool.resolve(lexical_grammar.variables[i].name)
+            );
+            if variable.is_immediate {
+                immediate_keywords.insert(Symbol::terminal(i));
+            }
+            let explicitly_reserved = syntax_grammar
+                .reserved_word_sets
+                .iter()
+                .any(|tokens| tokens.contains(Symbol::terminal(i)));
+            if variable.is_immediate && !explicitly_reserved {
                 debug!(
-                    "Keywords - add candidate {}",
+                    "Keywords - exclude {} because it is an immediate token",
                     str_pool.resolve(lexical_grammar.variables[i].name)
                 );
-                if variable.is_immediate {
-                    immediate_keywords.insert(Symbol::terminal(i));
-                }
-                let explicitly_reserved = syntax_grammar
-                    .reserved_word_sets
-                    .iter()
-                    .any(|tokens| tokens.contains(Symbol::terminal(i)));
-                if variable.is_immediate && !explicitly_reserved {
-                    debug!(
-                        "Keywords - exclude {} because it is an immediate token",
-                        str_pool.resolve(lexical_grammar.variables[i].name)
-                    );
-                    guard_demoted.insert(Symbol::terminal(i));
-                    return None;
-                }
-                Some(Symbol::terminal(i))
-            } else {
-                None
+                guard_demoted.insert(Symbol::terminal(i));
+                return None;
             }
+            Some(Symbol::terminal(i))
         })
         .collect::<TokenSet>();
 
-    // Exclude keyword candidates that shadow another keyword candidate.
-    let keywords = keyword_candidates
-        .iter()
-        .filter(|token| {
-            for other_token in keyword_candidates.iter() {
-                if other_token != *token
-                    && token_conflict_map
-                        .does_match_same_string(other_token.index as usize, token.index as usize)
-                {
-                    debug!(
-                        "Keywords - exclude {} because it matches the same string as {}",
-                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
-                        str_pool
-                            .resolve(lexical_grammar.variables[other_token.index as usize].name)
-                    );
-                    return false;
-                }
-            }
-            true
-        })
-        .collect::<TokenSet>();
+    let keywords = remove_shadowed_keywords(
+        &keyword_candidates,
+        lexical_grammar,
+        token_conflict_map,
+        str_pool,
+    );
 
     for token in keywords.iter().chain(guard_demoted.iter()) {
         for other_index in 0..lexical_grammar.variables.len() {
@@ -542,6 +519,34 @@ fn identify_keywords(
         );
     }
     (keywords, unsafe_pairs, immediate_keywords)
+}
+
+fn remove_shadowed_keywords(
+    candidates: &TokenSet,
+    lexical_grammar: &LexicalGrammar,
+    token_conflict_map: &TokenConflictMap,
+    str_pool: &StrPool,
+) -> TokenSet {
+    candidates
+        .iter()
+        .filter(|token| {
+            for other_token in candidates.iter() {
+                if other_token != *token
+                    && token_conflict_map
+                        .does_match_same_string(other_token.index as usize, token.index as usize)
+                {
+                    debug!(
+                        "Keywords - exclude {} because it matches the same string as {}",
+                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
+                        str_pool
+                            .resolve(lexical_grammar.variables[other_token.index as usize].name)
+                    );
+                    return false;
+                }
+            }
+            true
+        })
+        .collect::<TokenSet>()
 }
 
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {
