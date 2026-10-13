@@ -1141,6 +1141,8 @@ fn test_format_sexp_with_quoted_missing_and_unexpected_tokens() {
         (r#"(root (MISSING ")"))"#, "(root\n  (MISSING \")\"))"),
         (r#"(root (MISSING "a b"))"#, "(root\n  (MISSING \"a b\"))"),
         (r#"(root (MISSING "a" "))"#, "(root\n  (MISSING \"a\" \"))"),
+        (r#"(root (MISSING "" "))"#, "(root\n  (MISSING \"\" \"))"),
+        (r#"(root (MISSING "")"))"#, "(root\n  (MISSING \"\")\"))"),
         (
             r#"(root (MISSING "a")b"))"#,
             "(root\n  (MISSING \"a\")b\"))",
