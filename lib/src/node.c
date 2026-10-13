@@ -362,7 +362,11 @@ static inline bool ts_node__starts_at(TSNode self, Length position, bool use_poi
 
 // Hidden children ending at this node's end may contain empty visible children.
 // Track the public child index so exhausted hidden branches retain later siblings.
-static TSNode ts_node__first_empty_child_at_end(TSNode self, bool use_points) {
+static TSNode ts_node__first_empty_child_at_end(
+  TSNode self,
+  bool include_anonymous,
+  bool use_points
+) {
   TSNode node = self;
   uint32_t child_index = 0;
   Length end = {ts_node_end_byte(self), ts_node_end_point(self)};
@@ -373,8 +377,8 @@ static TSNode ts_node__first_empty_child_at_end(TSNode self, bool use_points) {
     TSNode child;
     NodeChildIterator iterator = ts_node_iterate_children(&node);
     while (ts_node_child_iterator_next(&iterator, &child)) {
-      bool relevant = ts_node__is_relevant(child, true);
-      uint32_t count = relevant ? 1 : ts_node__relevant_child_count(child, true);
+      bool relevant = ts_node__is_relevant(child, include_anonymous);
+      uint32_t count = relevant ? 1 : ts_node__relevant_child_count(child, include_anonymous);
       if (ts_node__length_matches(iterator.position, end, use_points)) {
         if (relevant && ts_node__starts_at(child, end, use_points)) return child;
         if (!relevant && count > 0) {
@@ -387,7 +391,7 @@ static TSNode ts_node__first_empty_child_at_end(TSNode self, bool use_points) {
     }
   }
 
-  TSNode child = ts_node__child(self, child_index, true);
+  TSNode child = ts_node__child(self, child_index, include_anonymous);
   if (ts_node_is_null(child) || !ts_node__starts_at(child, end, use_points)) {
     return ts_node__null();
   }
@@ -427,7 +431,7 @@ static inline TSNode ts_node__descendant_for_byte_range(
           range_start != range_end || node_end != range_start ||
           ts_node__is_relevant(child, true)
         ) continue;
-        child = ts_node__first_empty_child_at_end(child, false);
+        child = ts_node__first_empty_child_at_end(child, include_anonymous, false);
         if (ts_node_is_null(child)) continue;
       }
 
@@ -480,7 +484,7 @@ static inline TSNode ts_node__descendant_for_point_range(
           !point_eq(range_start, range_end) || !point_eq(node_end, range_start) ||
           ts_node__is_relevant(child, true)
         ) continue;
-        child = ts_node__first_empty_child_at_end(child, true);
+        child = ts_node__first_empty_child_at_end(child, include_anonymous, true);
         if (ts_node_is_null(child)) continue;
       }
 
