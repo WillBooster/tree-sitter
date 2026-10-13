@@ -129,6 +129,7 @@ static inline bool ts_tree_cursor_child_iterator_previous(
     .position = self->position,
     .child_index = self->child_index,
     .structural_child_index = self->structural_child_index,
+    .descendant_index = self->descendant_index,
   };
   *visible = ts_subtree_visible(*child);
   bool extra = ts_subtree_extra(*child);
@@ -138,15 +139,24 @@ static inline bool ts_tree_cursor_child_iterator_previous(
 
   if (!extra && self->alias_sequence) {
     *visible |= self->alias_sequence[self->structural_child_index];
-    if (self->structural_child_index > 0) {
-      self->structural_child_index--;
-    }
   }
 
   if (self->child_index < self->parent.ptr->child_count) {
     Subtree previous_child = ts_subtree_children(self->parent)[self->child_index];
+    // `structural_child_index` counts the structural children before the current child, so
+    // stepping back over the preceding child decrements it only when that child is not an extra,
+    // whatever the current child is.
+    bool previous_is_structural = !ts_subtree_extra(previous_child);
+    if (previous_is_structural) self->structural_child_index--;
     Length size = ts_subtree_size(previous_child);
     self->position = length_backtrack(self->position, size);
+
+    bool previous_visible = ts_subtree_visible(previous_child);
+    if (previous_is_structural && self->alias_sequence) {
+      previous_visible |= self->alias_sequence[self->structural_child_index];
+    }
+    self->descendant_index -= ts_subtree_visible_descendant_count(previous_child);
+    if (previous_visible) self->descendant_index--;
   }
 
   return true;
