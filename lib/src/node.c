@@ -351,6 +351,49 @@ static inline TSNode ts_node__first_child_for_byte(
   return ts_node__null();
 }
 
+static inline bool ts_node__length_matches(Length a, Length b, bool use_points) {
+  return use_points ? point_eq(a.extent, b.extent) : a.bytes == b.bytes;
+}
+
+static inline bool ts_node__starts_at(TSNode self, Length position, bool use_points) {
+  Length start = {ts_node_start_byte(self), ts_node_start_point(self)};
+  return ts_node__length_matches(start, position, use_points);
+}
+
+// Hidden children ending at this node's end may contain empty visible children.
+// Track the public child index so exhausted hidden branches retain later siblings.
+static TSNode ts_node__first_empty_child_at_end(TSNode self, bool use_points) {
+  TSNode node = self;
+  uint32_t child_index = 0;
+  Length end = {ts_node_end_byte(self), ts_node_end_point(self)};
+  bool did_descend = true;
+
+  while (did_descend) {
+    did_descend = false;
+    TSNode child;
+    NodeChildIterator iterator = ts_node_iterate_children(&node);
+    while (ts_node_child_iterator_next(&iterator, &child)) {
+      bool relevant = ts_node__is_relevant(child, true);
+      uint32_t count = relevant ? 1 : ts_node__relevant_child_count(child, true);
+      if (ts_node__length_matches(iterator.position, end, use_points)) {
+        if (relevant && ts_node__starts_at(child, end, use_points)) return child;
+        if (!relevant && count > 0) {
+          node = child;
+          did_descend = true;
+          break;
+        }
+      }
+      child_index += count;
+    }
+  }
+
+  TSNode child = ts_node__child(self, child_index, true);
+  if (ts_node_is_null(child) || !ts_node__starts_at(child, end, use_points)) {
+    return ts_node__null();
+  }
+  return child;
+}
+
 static inline TSNode ts_node__descendant_for_byte_range(
   TSNode self,
   uint32_t range_start,
@@ -379,7 +422,14 @@ static inline TSNode ts_node__descendant_for_byte_range(
       // ...and exceed the start of the range, unless the node itself is
       // empty, in which case it must at least be equal to the start of the range.
       bool is_empty = ts_node_start_byte(child) == node_end;
-      if (is_empty ? node_end < range_start : node_end <= range_start) continue;
+      if (is_empty ? node_end < range_start : node_end <= range_start) {
+        if (
+          range_start != range_end || node_end != range_start ||
+          ts_node__is_relevant(child, true)
+        ) continue;
+        child = ts_node__first_empty_child_at_end(child, false);
+        if (ts_node_is_null(child)) continue;
+      }
 
       // The start of this node must extend far enough backward to
       // touch the start of the range.
@@ -426,7 +476,12 @@ static inline TSNode ts_node__descendant_for_point_range(
       // empty, in which case it must at least be equal to the start of the range.
       bool is_empty =  point_eq(ts_node_start_point(child), node_end);
       if (is_empty ? point_lt(node_end, range_start) : point_lte(node_end, range_start)) {
-        continue;
+        if (
+          !point_eq(range_start, range_end) || !point_eq(node_end, range_start) ||
+          ts_node__is_relevant(child, true)
+        ) continue;
+        child = ts_node__first_empty_child_at_end(child, true);
+        if (ts_node_is_null(child)) continue;
       }
 
       // The start of this node must extend far enough backward to
