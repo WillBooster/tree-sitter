@@ -589,6 +589,27 @@ fn test_query_errors_on_invalid_symbols() {
 }
 
 #[test]
+fn test_query_rejects_prefixes_of_error_node_name() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        assert!(Query::new(&language, "(ERROR) @error").is_ok());
+
+        for name in ["E", "ER", "ERR", "ERRO", "ERRORS"] {
+            assert_eq!(
+                Query::new(&language, &format!("({name}) @error")).unwrap_err(),
+                QueryError {
+                    row: 0,
+                    offset: 1,
+                    column: 1,
+                    kind: QueryErrorKind::NodeType,
+                    message: format!("\"{name}\""),
+                }
+            );
+        }
+    });
+}
+
+#[test]
 fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
     allocations::record(|| {
         let language = get_language("javascript");
