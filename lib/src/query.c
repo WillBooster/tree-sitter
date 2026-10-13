@@ -4138,24 +4138,17 @@ static inline bool ts_query_cursor__advance(
       }
     }
 
+    if (did_match || self->halted) return did_match;
+
     if (++self->operation_count == OP_COUNT_PER_QUERY_CALLBACK_CHECK) {
       self->operation_count = 0;
-    }
-
-    if (self->query_options && self->query_options->progress_callback) {
-      self->query_state.current_byte_offset = ts_node_start_byte(ts_tree_cursor_current_node(&self->cursor));
-    }
-    if (
-      did_match ||
-      self->halted ||
-      (
-        self->operation_count == 0 &&
-        (
-          (self->query_options && self->query_options->progress_callback && self->query_options->progress_callback(&self->query_state))
-        )
-      )
-    ) {
-      return did_match;
+      if (self->query_options && self->query_options->progress_callback) {
+        self->query_state.current_byte_offset = ts_node_start_byte(ts_tree_cursor_current_node(&self->cursor));
+        if (self->query_options->progress_callback(&self->query_state)) {
+          self->halted = true;
+          continue;
+        }
+      }
     }
 
     // Exit the current node.
