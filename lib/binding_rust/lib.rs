@@ -3968,12 +3968,16 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         next.clear();
         while let Some(c) = c_iter.next() {
             if quote != '\0' {
-                // Token names and unexpected characters are quoted without escaping.
-                // A matching quote at a token boundary closes the quoted token.
+                // `MISSING` token names and `UNEXPECTED` characters are quoted without
+                // escaping and always end their node, so only a matching quote that is
+                // followed by a `)` ending a token closes the quoted token.
+                let mut rest = c_iter.clone();
                 if c == quote
-                    && c_iter
-                        .peek()
-                        .is_none_or(|next| *next == ' ' || *next == ')')
+                    && match rest.next() {
+                        None => true,
+                        Some(')') => matches!(rest.next(), None | Some(' ' | ')')),
+                        Some(_) => false,
+                    }
                 {
                     quote = '\0';
                 }
