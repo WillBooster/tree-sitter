@@ -474,6 +474,64 @@ fn test_tree_cursor_previous_sibling_with_aliases() {
 }
 
 #[test]
+fn test_tree_cursor_previous_sibling_with_alias_after_extra() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("aliases_in_root"))
+        .unwrap();
+    let tree = parser.parse("foo # comment\nfoo", None).unwrap();
+    assert!(!tree.root_node().has_error());
+
+    let mut cursor = tree.walk();
+    assert!(cursor.goto_first_child());
+    assert_eq!(cursor.node().kind(), "bar");
+    let first_child = cursor.node();
+
+    assert!(cursor.goto_next_sibling());
+    assert_eq!(cursor.node().kind(), "comment");
+
+    // Switching direction at an extra must preserve the preceding child's alias.
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().byte_range(), first_child.byte_range());
+    assert_eq!(cursor.node().kind(), first_child.kind());
+}
+
+#[test]
+fn test_tree_cursor_previous_sibling_preserves_aliases_when_switching_direction() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("aliases_in_root"))
+        .unwrap();
+    for source in [
+        "foo foo",
+        "foo # middle\nfoo",
+        "# first\nfoo # middle\n# again\nfoo # last",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        let mut cursor = tree.walk();
+        let children: Vec<_> = root.children(&mut cursor).collect();
+        for index in 0..children.len() {
+            cursor.reset(root);
+            assert!(cursor.goto_first_child());
+            for _ in 0..index {
+                assert!(cursor.goto_next_sibling());
+            }
+            for previous in (0..=index).rev() {
+                assert_eq!(cursor.node(), children[previous]);
+                assert_eq!(cursor.node().kind(), children[previous].kind());
+                assert_eq!(
+                    cursor.node().start_position(),
+                    children[previous].start_position()
+                );
+                assert_eq!(cursor.goto_previous_sibling(), previous > 0);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_tree_cursor_previous_sibling() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
@@ -536,6 +594,106 @@ fn test_tree_cursor_previous_sibling_with_many_comments() {
 }
 
 #[test]
+fn test_tree_cursor_previous_sibling_descendant_index() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("json")).unwrap();
+    let tree = parser.parse("[1,2]", None).unwrap();
+    let mut cursor = tree.walk();
+
+    cursor.goto_descendant(5);
+    assert_eq!(cursor.node().kind(), "number");
+    assert_eq!(cursor.node().byte_range(), 3..4);
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), ",");
+    assert_eq!(cursor.node().byte_range(), 2..3);
+    assert_eq!(cursor.descendant_index(), 4);
+
+    let mut copy = cursor.clone();
+    assert!(copy.goto_next_sibling());
+    assert_eq!(copy.node().kind(), "number");
+    assert_eq!(copy.descendant_index(), 5);
+
+    cursor.goto_descendant(0);
+    assert_eq!(cursor.node(), tree.root_node());
+    assert_eq!(cursor.descendant_index(), 0);
+}
+
+#[test]
+fn test_tree_cursor_previous_sibling_descendant_indices_in_subtrees() {
+    fn collect_nodes<'a>(node: Node<'a>, nodes: &mut Vec<Node<'a>>) {
+        nodes.push(node);
+        for i in 0..node.child_count() {
+            collect_nodes(node.child(i).unwrap(), nodes);
+        }
+    }
+
+    let cases = [
+        (get_language("json"), "[1,2]"),
+        (get_language("json"), "[1, [2, 3], {\"x\": [4, 5]}]"),
+        (get_language("json"), "[1,\n/* comment */ [2, 3],\n4]"),
+        (get_language("json"), "[1, {\"x\": }, [2,]]"),
+        (
+            get_test_fixture_language("aliases_in_root"),
+            "# before\nfoo # between\nfoo # after\n",
+        ),
+        (
+            get_test_fixture_language("aliased_unit_reductions"),
+            "a b c d;",
+        ),
+    ];
+    let mut parser = Parser::new();
+    for (language, source) in cases {
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut roots = Vec::new();
+        collect_nodes(tree.root_node(), &mut roots);
+        for root in roots {
+            // Use node children to obtain preorder indices independently of the cursor.
+            let mut nodes = Vec::new();
+            collect_nodes(root, &mut nodes);
+            for (index, node) in nodes.iter().enumerate() {
+                let mut cursor = root.walk();
+                cursor.goto_descendant(index);
+                assert_eq!(cursor.node(), *node);
+                while let Some(previous) = cursor.node().prev_sibling() {
+                    // A cursor cannot leave its original root.
+                    if cursor.node() == root {
+                        break;
+                    }
+                    let next = cursor.node();
+                    assert!(cursor.goto_previous_sibling());
+                    assert_eq!(cursor.node(), previous, "source: {source}");
+                    let expected_index = nodes.iter().position(|n| *n == previous).unwrap();
+                    assert_eq!(
+                        cursor.descendant_index(),
+                        expected_index,
+                        "source: {source}"
+                    );
+
+                    let mut copy = cursor.clone();
+                    assert!(copy.goto_next_sibling());
+                    assert_eq!(copy.node(), next);
+                    assert_eq!(
+                        copy.descendant_index(),
+                        nodes.iter().position(|n| *n == next).unwrap()
+                    );
+
+                    let mut copy = cursor.clone();
+                    copy.goto_descendant(0);
+                    assert_eq!(copy.node(), root);
+                    assert_eq!(copy.descendant_index(), 0);
+                }
+                let node = cursor.node();
+                let index = cursor.descendant_index();
+                assert!(!cursor.goto_previous_sibling());
+                assert_eq!(cursor.node(), node);
+                assert_eq!(cursor.descendant_index(), index);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_tree_cursor_fields() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
@@ -570,6 +728,23 @@ fn test_tree_cursor_fields() {
     cursor.goto_next_sibling();
     assert_eq!(cursor.node().kind(), "formal_parameters");
     assert_eq!(cursor.field_name(), Some("parameters"));
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "comment");
+    assert_eq!(cursor.field_name(), None);
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "identifier");
+    assert_eq!(cursor.field_name(), Some("name"));
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "comment");
+    assert_eq!(cursor.field_name(), None);
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "function");
+    assert_eq!(cursor.field_name(), None);
+    assert!(!cursor.goto_previous_sibling());
 }
 
 #[test]
