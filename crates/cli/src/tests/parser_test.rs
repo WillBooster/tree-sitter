@@ -2124,6 +2124,32 @@ fn test_parsing_after_editing_end_of_code() {
 }
 
 #[test]
+fn test_parsing_after_undoing_edit_before_contextual_keyword() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("java")).unwrap();
+    let mut source = b"switch(c){case Point(int _) -> {}}".to_vec();
+    let fresh = parser.parse(&source, None).unwrap();
+    assert!(!fresh.root_node().has_error());
+    let edit = Edit {
+        position: 6,
+        deleted_length: 0,
+        inserted_text: b"x".to_vec(),
+    };
+    let undo = invert_edit(&source, &edit);
+    let mut edited = fresh.clone();
+    perform_edit(&mut edited, &mut source, &edit).unwrap();
+    edited = parser.parse(&source, Some(&edited)).unwrap();
+    perform_edit(&mut edited, &mut source, &undo).unwrap();
+    let incremental = parser.parse(&source, Some(&edited)).unwrap();
+    assert!(!incremental.root_node().has_error());
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(incremental.root_node().end_byte(), source.len());
+}
+
+#[test]
 fn test_parsing_after_editing_keyword_context() {
     let mut parser = Parser::new();
     parser
