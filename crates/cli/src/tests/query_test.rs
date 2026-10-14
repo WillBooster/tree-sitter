@@ -7445,6 +7445,38 @@ export default grammar({
 }
 
 #[test]
+fn test_query_field_on_hidden_rule_reaches_later_siblings() {
+    let language = get_test_fixture_language("field_on_hidden_rule");
+
+    let source = "let a = b;\nsum a + b + c;\n";
+
+    let query = Query::new(
+        &language,
+        r#"
+        (binding outer: (name) @outer_name)
+        (binding outer: _ @outer_node)
+        (sum left: "+" @left_operator)
+        (sum left: (name) @left_name)
+        "#,
+    )
+    .unwrap();
+
+    assert_query_matches(
+        &language,
+        &query,
+        source,
+        &[
+            (1, vec![("outer_node", "=")]),
+            (0, vec![("outer_name", "b")]),
+            (1, vec![("outer_node", "b")]),
+            (3, vec![("left_name", "a")]),
+            (2, vec![("left_operator", "+")]),
+            (3, vec![("left_name", "b")]),
+        ],
+    );
+}
+
+#[test]
 fn test_last_child_anchor_looks_past_hidden_repeat() {
     let language = get_test_fixture_language("last_child_anchor_past_hidden_repeat");
 
