@@ -1679,11 +1679,9 @@ fn test_parsing_utf8_with_short_input_chunks() {
                 .parse_with_options(
                     &mut |offset, point| {
                         let prefix = &source[..offset];
-                        let row = prefix.iter().filter(|&&b| b == b'\n').count();
-                        let column = prefix
-                            .iter()
-                            .rposition(|&b| b == b'\n')
-                            .map_or(offset, |i| offset - i - 1);
+                        let mut lines = prefix.rsplit(|&byte| byte == b'\n');
+                        let column = lines.next().unwrap().len();
+                        let row = lines.count();
                         assert_eq!(point, Point::new(row, column));
                         // Owned chunks exercise buffer replacement on each read.
                         source[offset..source.len().min(offset + size)].to_vec()
