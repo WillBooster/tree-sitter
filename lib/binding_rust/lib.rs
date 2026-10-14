@@ -3964,6 +3964,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     let mut saw_paren = false;
     let mut did_last = false;
     let mut first_token = true;
+    let mut exhausted_quote_search = [false; 2];
 
     let mut fetch_next_str = |next: &mut String, payload_quote: char| {
         let root_token = first_token;
@@ -3977,11 +3978,15 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 if c == quote && quote_ends_token(c_iter.clone()) {
                     quote = '\0';
                 }
-            } else if (next.is_empty()
-                && c == payload_quote
-                && has_closing_quote(c_iter.clone(), c))
-                || (root_token && next == "(" && c == '"' && sexp.ends_with("\")"))
-            {
+            } else if next.is_empty() && c == payload_quote {
+                let exhausted = &mut exhausted_quote_search[usize::from(c == '"')];
+                if !*exhausted {
+                    *exhausted = !has_closing_quote(c_iter.clone(), c);
+                    if !*exhausted {
+                        quote = c;
+                    }
+                }
+            } else if root_token && next == "(" && c == '"' && sexp.ends_with("\")") {
                 quote = c;
             } else if c == ' ' {
                 break;
