@@ -1246,8 +1246,10 @@ fn test_node_display_with_quotes_in_named_aliases() {
 }
 
 #[test]
-fn test_node_display_with_missing_quoted_aliases() {
+fn test_node_display_with_quoted_aliases() {
     for (index, (named, alias)) in [
+        (true, "\""),
+        (true, "'"),
         (true, "\"ab"),
         (true, "'ab"),
         (true, "\"ab\"cd"),
@@ -1255,6 +1257,8 @@ fn test_node_display_with_missing_quoted_aliases() {
         (true, "a\"b"),
         (true, "a'b"),
         (true, "\\ab"),
+        (false, "\""),
+        (false, "'"),
         (false, "*/"),
         (false, "a\"b"),
         (false, "\"ab"),
@@ -1288,6 +1292,9 @@ fn test_node_display_with_missing_quoted_aliases() {
         parser
             .set_language(&get_test_language(&name, &code, None))
             .unwrap();
+        let complete = parser.parse("/**/;", None).unwrap();
+        let alias_node = complete.root_node().child(0).unwrap().child(1).unwrap();
+        assert_eq!(format!("{alias_node:#}"), alias_node.to_sexp());
         let tree = parser.parse("/*;", None).unwrap();
         let node = tree.root_node();
         let payload = if named {

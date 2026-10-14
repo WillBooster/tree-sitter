@@ -3986,7 +3986,8 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                         quote = c;
                     }
                 }
-            } else if root_token && next == "(" && c == '"' && sexp.ends_with("\")") {
+            } else if root_token && next == "(" && c == '"' && has_closing_quote(c_iter.clone(), c)
+            {
                 quote = c;
             } else if c == ' ' {
                 break;
