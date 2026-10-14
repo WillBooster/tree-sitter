@@ -3963,8 +3963,11 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     let mut quote = '\0';
     let mut saw_paren = false;
     let mut did_last = false;
+    let mut first_token = true;
 
-    let mut fetch_next_str = |next: &mut String| {
+    let mut fetch_next_str = |next: &mut String, payload_quote: char| {
+        let root_token = first_token;
+        first_token = false;
         next.clear();
         while let Some(c) = c_iter.next() {
             if quote != '\0' {
@@ -3975,13 +3978,15 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 if c == quote
                     && match rest.next() {
                         None => true,
-                        Some(')') => matches!(rest.next(), None | Some(' ' | ')')),
+                        Some(')') => matches!(rest.peek(), None | Some(' ' | ')')),
                         Some(_) => false,
                     }
                 {
                     quote = '\0';
                 }
-            } else if (c == '\'' || c == '"') && (next.is_empty() || next == "(") {
+            } else if (next.is_empty() && c == payload_quote)
+                || (root_token && next == "(" && c == '"' && sexp.ends_with("\")"))
+            {
                 quote = c;
             } else if c == ' ' {
                 break;
@@ -4009,7 +4014,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         Some(())
     };
 
-    while fetch_next_str(&mut scratch).is_some() {
+    while fetch_next_str(&mut scratch, '\0').is_some() {
         if scratch.is_empty() && indent_level > 0 {
             // ")"
             indent_level -= 1;
@@ -4032,7 +4037,8 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
 
             // "(MISSING node_name" or "(UNEXPECTED 'x'"
             if scratch.starts_with("(MISSING") || scratch.starts_with("(UNEXPECTED") {
-                fetch_next_str(&mut scratch).unwrap();
+                let payload_quote = if scratch == "(UNEXPECTED" { '\'' } else { '"' };
+                fetch_next_str(&mut scratch, payload_quote).unwrap();
                 if scratch.is_empty() {
                     while indent_level > 0 {
                         indent_level -= 1;

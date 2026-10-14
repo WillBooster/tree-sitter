@@ -1196,6 +1196,7 @@ fn test_node_display_with_quoted_missing_token() {
         .unwrap();
     let tree = parser.parse("/*;", None).unwrap();
     let node = tree.root_node().named_child(0).unwrap();
+    assert_eq!(format!("{:#}", node.child(0).unwrap()), r#"("/*")"#);
     let sexp = r#"(block_comment (MISSING "*/"))"#;
 
     assert_eq!(node.to_sexp(), sexp);
@@ -1213,8 +1214,8 @@ fn test_node_display_with_quotes_in_named_aliases() {
         "name": "quoted_aliases",
         "rules": {
             "program": {"type": "SEQ", "members": [
-                {"type": "ALIAS", "named": true, "value": "a'b", "content": {"type": "SYMBOL", "name": "pair"}},
-                {"type": "ALIAS", "named": true, "value": "a\"b", "content": {"type": "SYMBOL", "name": "pair"}},
+                {"type": "ALIAS", "named": true, "value": "'a'b", "content": {"type": "SYMBOL", "name": "pair"}},
+                {"type": "ALIAS", "named": true, "value": "\"a\"b", "content": {"type": "SYMBOL", "name": "pair"}},
                 {"type": "SYMBOL", "name": "end"}
             ]},
             "pair": {"type": "SEQ", "members": [
@@ -1236,11 +1237,11 @@ fn test_node_display_with_quotes_in_named_aliases() {
     assert!(!node.has_error());
     assert_eq!(
         node.to_sexp(),
-        "(program (a'b (c) (d)) (a\"b (c) (d)) (end))"
+        "(program ('a'b (c) (d)) (\"a\"b (c) (d)) (end))"
     );
     assert_eq!(
         format!("{node:#}"),
-        "(program\n  (a'b\n    (c)\n    (d))\n  (a\"b\n    (c)\n    (d))\n  (end))"
+        "(program\n  ('a'b\n    (c)\n    (d))\n  (\"a\"b\n    (c)\n    (d))\n  (end))"
     );
 }
 
