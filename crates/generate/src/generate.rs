@@ -265,7 +265,6 @@ pub enum Diagnostic {
     UnnecessaryConflicts(Vec<Vec<String>>),
     UnaryChoice { name: Option<String> },
     UnarySeq { name: Option<String> },
-    EmptyStringMatch(String),
     UnsupportedRegexFlag { flag: char, pattern: String },
     SupertypeInlined { name: String },
 }
@@ -300,13 +299,6 @@ impl std::fmt::Display for Diagnostic {
                     f,
                     "rule {} contains a `seq` rule with a single element. this is unnecessary.",
                     name.as_deref().unwrap_or("<ANONYMOUS>")
-                )?;
-            }
-            Self::EmptyStringMatch(rule) => {
-                write!(
-                    f,
-                    "named extra rule `{rule}` matches the empty string. \
-                     inline this to avoid infinite loops while parsing.",
                 )?;
             }
             Self::UnsupportedRegexFlag { flag, pattern } => {
