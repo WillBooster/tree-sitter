@@ -1246,8 +1246,28 @@ fn test_node_display_with_quotes_in_named_aliases() {
 }
 
 #[test]
-fn test_node_display_with_missing_quoted_named_alias() {
-    for (index, alias) in ["\"ab", "'ab", "\"ab\"cd"].into_iter().enumerate() {
+fn test_node_display_with_missing_quoted_aliases() {
+    for (index, (named, alias)) in [
+        (true, "\"ab"),
+        (true, "'ab"),
+        (true, "\"ab\"cd"),
+        (true, "\"ab\""),
+        (true, "a\"b"),
+        (true, "a'b"),
+        (true, "\\ab"),
+        (false, "*/"),
+        (false, "a\"b"),
+        (false, "\"ab"),
+        (false, "'ab"),
+        (false, "a\\b"),
+        (false, "a)b"),
+        (false, "a b"),
+        (false, "a\")b"),
+        (false, "a\")"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let grammar = serde_json::json!({
             "name": format!("missing_quoted_alias_{index}"),
             "rules": {
@@ -1257,7 +1277,7 @@ fn test_node_display_with_missing_quoted_named_alias() {
                 ]},
                 "block_comment": {"type": "SEQ", "members": [
                     {"type": "STRING", "value": "/*"},
-                    {"type": "ALIAS", "named": true, "value": alias,
+                    {"type": "ALIAS", "named": named, "value": alias,
                      "content": {"type": "STRING", "value": "*/"}}
                 ]},
                 "after": {"type": "STRING", "value": ";"}
@@ -1270,13 +1290,18 @@ fn test_node_display_with_missing_quoted_named_alias() {
             .unwrap();
         let tree = parser.parse("/*;", None).unwrap();
         let node = tree.root_node();
+        let payload = if named {
+            alias.to_owned()
+        } else {
+            format!("\"{alias}\"")
+        };
         assert_eq!(
             node.to_sexp(),
-            format!("(root (block_comment (MISSING {alias})) (after))")
+            format!("(root (block_comment (MISSING {payload})) (after))")
         );
         assert_eq!(
             format!("{node:#}"),
-            format!("(root\n  (block_comment\n    (MISSING {alias}))\n  (after))")
+            format!("(root\n  (block_comment\n    (MISSING {payload}))\n  (after))")
         );
     }
 }
