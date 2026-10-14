@@ -935,7 +935,7 @@ fn test_node_descendant_for_empty_range_at_hidden_subtree_end() {
                 let mut cursor = array.walk();
                 let missing = array
                     .children(&mut cursor)
-                    .filter(|node| node.is_missing())
+                    .filter(Node::is_missing)
                     .collect::<Vec<_>>();
                 let expected = if suffix.is_empty() {
                     assert_eq!(missing.len(), 2, "{source:?}");
@@ -946,7 +946,7 @@ fn test_node_descendant_for_empty_range_at_hidden_subtree_end() {
                     assert_eq!(missing[0].kind(), "]");
                     missing[0]
                 } else {
-                    assert!(missing.is_empty());
+                    assert_eq!(missing.len(), 0, "{source:?}");
                     array
                 };
                 let expected_named = if expected.is_named() { expected } else { array };
