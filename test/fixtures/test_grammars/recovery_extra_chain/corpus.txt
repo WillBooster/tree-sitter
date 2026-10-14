@@ -1,0 +1,12 @@
+==================
+Recover a directive before a statement
+==================
+#pragma warning disable x #:x
+x;
+
+---
+
+(source_file
+  (directive (identifier) (ERROR (UNEXPECTED ':')))
+  (statement (identifier))
+  (ERROR))

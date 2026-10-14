@@ -4,6 +4,13 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
+const dslSource = path.resolve(scriptDir, '../../../crates/generate/src/dsl.d.ts');
+const dslOutput = path.resolve(scriptDir, '../dsl.d.ts');
+if (!fs.existsSync(dslOutput) || !fs.readFileSync(dslSource).equals(fs.readFileSync(dslOutput))) {
+  console.error("Grammar DSL declarations are missing or stale. Re-run 'npm run build:dts'.");
+  process.exit(1);
+}
+
 const inputFiles = [
   '../lib/tree-sitter.c',
   '../src/constants.ts',

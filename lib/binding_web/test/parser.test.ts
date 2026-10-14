@@ -52,8 +52,8 @@ describe('Parser', () => {
       expect(debugMessages).toEqual(expect.arrayContaining([
         'skip character:\' \'',
         'consume character:\'b\'',
-        'reduce sym:program, child_count:1',
-        'accept'
+        expect.stringMatching(/^reduce sym:program, child_count:1, state:\d+$/),
+        expect.stringMatching(/^accept state:\d+$/)
       ]));
     });
 

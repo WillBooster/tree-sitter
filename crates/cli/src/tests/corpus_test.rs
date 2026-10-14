@@ -2,7 +2,6 @@ use std::{collections::HashMap, env, fs};
 
 use anyhow::Context;
 use tree_sitter::Parser;
-use tree_sitter_generate::OptLevel;
 use tree_sitter_proc_macro::test_with_seed;
 
 use crate::{
@@ -19,7 +18,7 @@ use crate::{
     parse::perform_edit,
     test::{DiffKey, TestDiff, parse_tests, render_test_output},
     tests::{
-        allocations,
+        allocations, generate_parser,
         helpers::fixtures::{SCRATCH_BASE_DIR, fixtures_dir, get_language, get_test_language},
     },
 };
@@ -353,12 +352,7 @@ fn test_feature_corpus_files() {
                 )
             })
             .unwrap();
-        let generate_result = tree_sitter_generate::generate_parser_for_grammar(
-            &grammar_json,
-            Some((0, 0, 0)),
-            OptLevel::default(),
-            &mut Vec::new(),
-        );
+        let generate_result = generate_parser(&grammar_json);
 
         if error_message_path.exists() {
             if EXAMPLE_INCLUDE.is_some() || EXAMPLE_EXCLUDE.is_some() {

@@ -109,7 +109,7 @@ jobs:
       - run: ./target/release/tree-sitter test --help | grep -q -- --wasm
       # A tarball keeps the executable bit, which a bare gzip stream drops.
       - run: tar -czf tree-sitter-cli-${{ matrix.platform }}.tar.gz -C target/release tree-sitter
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: tree-sitter-cli-${{ matrix.platform }}
           path: tree-sitter-cli-${{ matrix.platform }}.tar.gz
@@ -125,7 +125,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
           pattern: tree-sitter-cli-*
           merge-multiple: true

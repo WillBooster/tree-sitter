@@ -89,10 +89,11 @@ bool ts_language_is_parseable(const TSLanguage *self) {
 const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
 #ifdef __wasm__
   if (self && ts_language_is_parseable(self)) {
-    TSUnparseableLanguage *result = ts_malloc(sizeof(TSUnparseableLanguage));
-    result->language = *self;
+    TSUnparseableLanguage *result = ts_calloc(1, sizeof(TSUnparseableLanguage));
+    memcpy(&result->language, self, sizeof(TSLanguage));
     result->language.lex_fn = NULL;
     result->language.keyword_lex_fn = NULL;
+    result->language.keyword_lookup_fn = NULL;
     result->language.external_scanner.states = (const bool *)&result->language;
     result->language.external_scanner.create = NULL;
     result->language.external_scanner.destroy = NULL;
@@ -115,13 +116,12 @@ uint32_t ts_language_state_count(const TSLanguage *self) {
 }
 
 const TSSymbol *ts_language_supertypes(const TSLanguage *self, uint32_t *length) {
-  if (self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS) {
-    *length = self->supertype_count;
-    return self->supertype_symbols;
-  } else {
+  if (!ts_language_has_supported_abi(self)) {
     *length = 0;
     return NULL;
   }
+  *length = self->supertype_count;
+  return self->supertype_symbols;
 }
 
 const TSSymbol *ts_language_subtypes(
@@ -129,11 +129,13 @@ const TSSymbol *ts_language_subtypes(
   TSSymbol supertype,
   uint32_t *length
 ) {
-  if (
-    self->abi_version < LANGUAGE_VERSION_WITH_RESERVED_WORDS ||
-    supertype >= ts_language_symbol_count(self) ||
-    !ts_language_symbol_metadata(self, supertype).supertype
-  ) {
+  if (!ts_language_has_supported_abi(self) || supertype >= ts_language_symbol_count(self)) {
+    *length = 0;
+    return NULL;
+  }
+
+  supertype = ts_language_public_symbol(self, supertype);
+  if (!ts_language_symbol_metadata(self, supertype).supertype) {
     *length = 0;
     return NULL;
   }
@@ -148,11 +150,11 @@ uint32_t ts_language_abi_version(const TSLanguage *self) {
 }
 
 const TSLanguageMetadata *ts_language_metadata(const TSLanguage *self) {
-    return self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? &self->metadata : NULL;
+  return ts_language_has_supported_abi(self) ? &self->metadata : NULL;
 }
 
 const char *ts_language_name(const TSLanguage *self) {
-  return self->abi_version >= LANGUAGE_VERSION_WITH_RESERVED_WORDS ? self->name : NULL;
+  return ts_language_has_supported_abi(self) ? self->name : NULL;
 }
 
 uint32_t ts_language_field_count(const TSLanguage *self) {
@@ -179,20 +181,71 @@ void ts_language_table_entry(
   }
 }
 
+uint16_t ts_language_lookup_small_compact(
+  const TSLanguage *self,
+  uint32_t index,
+  TSSymbol symbol
+) {
+  if (index & SMALL_STATE_BITMAP_FLAG) {
+    if (symbol >= self->symbol_count) return 0;
+    const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG];
+    uint32_t block = symbol / 16;
+    uint32_t bit = 1u << (symbol % 16);
+    uint32_t bits = data[block * 2];
+    if (!(bits & bit)) return 0;
+    uint32_t rank = data[block * 2 + 1] + ts_language__count_ones(bits & (bit - 1));
+    return data[2 * ((self->symbol_count + 15) / 16) + rank];
+  }
+  if (index & SMALL_STATE_PAIR_FLAG) {
+    const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
+    uint32_t low = 0, high = *(pairs++);
+    while (low < high) {
+      uint32_t mid = low + (high - low) / 2;
+      TSSymbol candidate = pairs[mid * 2];
+      if (candidate < symbol) low = mid + 1;
+      else if (candidate > symbol) high = mid;
+      else return pairs[mid * 2 + 1];
+    }
+    return 0;
+  }
+  const uint16_t *data = &self->small_parse_table[index];
+  uint16_t group_count = *(data++);
+  for (unsigned i = 0; i < group_count; i++) {
+    uint16_t section_value = *(data++);
+    uint16_t symbol_count = *(data++);
+    if (symbol_count >= 16) {
+      uint32_t low = 0, high = symbol_count;
+      while (low < high) {
+        uint32_t mid = low + (high - low) / 2;
+        if (data[mid] < symbol) low = mid + 1;
+        else if (data[mid] > symbol) high = mid;
+        else return section_value;
+      }
+      data += symbol_count;
+      continue;
+    }
+    while (symbol_count >= 4) {
+      bool matches = data[0] == symbol;
+      matches |= data[1] == symbol;
+      matches |= data[2] == symbol;
+      matches |= data[3] == symbol;
+      if (matches) return section_value;
+      data += 4;
+      symbol_count -= 4;
+    }
+    for (unsigned j = 0; j < symbol_count; j++) {
+      if (*(data++) == symbol) return section_value;
+    }
+  }
+  return 0;
+}
+
 TSLexerMode ts_language_lex_mode_for_state(
    const TSLanguage *self,
    TSStateId state
 ) {
-  if (self->abi_version < 15) {
-    TSLexMode mode = ((const TSLexMode *)self->lex_modes)[state];
-    return (TSLexerMode) {
-      .lex_state = mode.lex_state,
-      .external_lex_state = mode.external_lex_state,
-      .reserved_word_set_id = 0,
-    };
-  } else {
-    return self->lex_modes[state];
-  }
+  if (self->lex_mode_ids) state = self->lex_mode_ids[state];
+  return self->lex_modes[state];
 }
 
 bool ts_language_is_reserved_word(
@@ -204,6 +257,11 @@ bool ts_language_is_reserved_word(
   if (lex_mode.reserved_word_set_id > 0) {
     unsigned start = lex_mode.reserved_word_set_id * self->max_reserved_word_set_size;
     unsigned end = start + self->max_reserved_word_set_size;
+    if (self->reserved_word_slices) {
+      TSMapSlice slice = self->reserved_word_slices[lex_mode.reserved_word_set_id];
+      start = slice.index;
+      end = start + slice.length;
+    }
     for (unsigned i = start; i < end; i++) {
       if (self->reserved_words[i] == symbol) return true;
       if (self->reserved_words[i] == 0) break;
@@ -281,7 +339,7 @@ TSSymbol ts_language_symbol_for_name(
   uint32_t length,
   bool is_named
 ) {
-  if (is_named && !strncmp(string, "ERROR", length)) return ts_builtin_sym_error;
+  if (is_named && length == 5 && !strncmp(string, "ERROR", length)) return ts_builtin_sym_error;
   uint16_t count = (uint16_t)ts_language_symbol_count(self);
   for (TSSymbol i = 0; i < count; i++) {
     TSSymbolMetadata metadata = ts_language_symbol_metadata(self, i);

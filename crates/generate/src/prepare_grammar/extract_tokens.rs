@@ -71,6 +71,7 @@ pub(super) struct ExtractedGrammarMeta {
     pub lexical_variables: Vec<LexicalToken>,
     pub separator_roots: Vec<RuleId>,
     pub extra_symbols: Vec<Symbol>,
+    pub external_only_extra_symbols: Vec<Symbol>,
     pub external_tokens: Vec<ExternalToken>,
     pub reserved_sets: Vec<(StrId, Vec<Symbol>)>,
     pub supertypes: Vec<Symbol>,
@@ -227,6 +228,10 @@ pub(super) fn extract_tokens(
     for (i, v) in g.variables.iter().enumerate() {
         extractor.extract_in_root(&mut g.pool, v.root, Some(v.name), i == 0, &mut stack)?;
     }
+    let syntax_token_count = extractor.lexical.len();
+    let syntax_has_non_immediate_tokens = extractor.lexical.iter().any(|token| {
+        !matches!(g.pool.node(token.root), Rule::Metadata { params, .. } if g.pool.params(params).is_main_token)
+    });
     for (&root, &(name, _)) in g.external_roots.iter().zip(&interned.external_tokens) {
         extractor.extract_in_root(&mut g.pool, root, name, false, &mut stack)?;
     }
@@ -314,16 +319,26 @@ pub(super) fn extract_tokens(
 
     let mut separator_roots = Vec::new();
     let mut extra_symbols = Vec::with_capacity(g.extra_roots.len());
+    let mut external_only_extra_symbols = Vec::new();
     for &root in &g.extra_roots {
         if let Some(s) = g.pool.node(root).symbol() {
             extra_symbols.push(replace_symbol(s));
         } else if let Some(i) = extractor.find(&g.pool, root) {
+            let symbol = Symbol::terminal(i as usize);
             if matches!(g.pool.node(root), Rule::Pattern(..))
                 && extractor.lexical[i as usize].kind == VariableType::Auxiliary
+                && ((i as usize) < syntax_token_count
+                    || (syntax_token_count > 0 && !syntax_has_non_immediate_tokens))
             {
                 separator_roots.push(root);
             } else {
-                extra_symbols.push(Symbol::terminal(i as usize));
+                if matches!(g.pool.node(root), Rule::Pattern(..))
+                    && extractor.lexical[i as usize].kind == VariableType::Auxiliary
+                {
+                    external_only_extra_symbols.push(symbol);
+                    separator_roots.push(root);
+                }
+                extra_symbols.push(symbol);
             }
         } else {
             separator_roots.push(root);
@@ -406,6 +421,7 @@ pub(super) fn extract_tokens(
         lexical_variables: extractor.lexical,
         separator_roots,
         extra_symbols,
+        external_only_extra_symbols,
         external_tokens,
         reserved_sets,
         supertypes,

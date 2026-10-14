@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Context;
 use log::info;
-use tree_sitter::{Language, Parser, Query};
+use tree_sitter::{InputEdit, Language, Parser, Point, Query};
 #[cfg(feature = "wasm")]
 use tree_sitter::{WasmStore, wasmtime};
 use tree_sitter_loader::{CompileConfig, Loader};
@@ -135,6 +135,16 @@ fn main() {
             }));
         }
 
+        info!("  Reparsing After Whitespace Edits:");
+        for example_path in example_paths {
+            if let Some(filter) = EXAMPLE_FILTER.as_ref()
+                && !example_path.to_str().unwrap().contains(filter.as_str())
+            {
+                continue;
+            }
+            parse_incrementally(example_path, max_path_length, &mut parser);
+        }
+
         info!("  Parsing Invalid Code (mismatched languages):");
         let mut error_speeds = Vec::new();
         for (other_language_path, (example_paths, _)) in
@@ -197,6 +207,56 @@ fn aggregate(speeds: &[usize]) -> Option<(usize, usize)> {
     Some((total / speeds.len(), max))
 }
 
+fn parse_incrementally(path: &Path, max_path_length: usize, parser: &mut Parser) {
+    let mut source = fs::read(path)
+        .with_context(|| format!("Failed to read {}", path.display()))
+        .unwrap();
+    let Some(position) = source
+        .iter()
+        .enumerate()
+        .filter(|(_, byte)| **byte == b' ')
+        .min_by_key(|(position, _)| position.abs_diff(source.len() / 2))
+        .map(|(position, _)| position)
+    else {
+        return;
+    };
+    let mut point = Point::default();
+    for byte in &source[..position] {
+        if *byte == b'\n' {
+            point.row += 1;
+            point.column = 0;
+        } else {
+            point.column += 1;
+        }
+    }
+    let end_point = Point::new(point.row, point.column + 1);
+    let edit = InputEdit {
+        start_byte: position,
+        old_end_byte: position + 1,
+        new_end_byte: position + 1,
+        start_position: point,
+        old_end_position: end_point,
+        new_end_position: end_point,
+    };
+    let mut tree = parser.parse(&source, None).expect("Failed to parse");
+    let start = Instant::now();
+    for iteration in 0..*REPETITION_COUNT {
+        source[position] = if iteration % 2 == 0 { b'\t' } else { b' ' };
+        tree.edit(&edit);
+        tree = parser
+            .parse(&source, Some(&tree))
+            .expect("Failed to reparse");
+    }
+    let duration = start.elapsed().as_secs_f64() / *REPETITION_COUNT as f64;
+    let fresh = parser.parse(&source, None).expect("Failed to parse");
+    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+    info!(
+        "    {:max_path_length$}\ttime {:>7.2} us",
+        path.file_name().unwrap().to_str().unwrap(),
+        duration * 1e6,
+    );
+}
+
 fn parse(path: &Path, max_path_length: usize, mut action: impl FnMut(&[u8])) -> usize {
     let source_code = fs::read(path)
         .with_context(|| format!("Failed to read {}", path.display()))
@@ -218,10 +278,26 @@ fn parse(path: &Path, max_path_length: usize, mut action: impl FnMut(&[u8])) -> 
 
 fn get_language(path: &Path) -> Language {
     let src_path = GRAMMARS_DIR.join(path).join("src");
-    TEST_LOADER
-        .load_language_at_path(CompileConfig::new(&src_path, None, None))
+    let library_path = SCRATCH_DIR.join(format!(
+        "benchmark-{}.{}",
+        path.file_name().unwrap().to_str().unwrap(),
+        env::consts::DLL_EXTENSION,
+    ));
+    let language = TEST_LOADER
+        .load_language_at_path(CompileConfig::new(
+            &src_path,
+            None,
+            Some(library_path.clone()),
+        ))
         .with_context(|| format!("Failed to load language at path {}", src_path.display()))
-        .unwrap()
+        .unwrap();
+    info!(
+        "  Parser size: {} bytes of C, {} bytes compiled, {} states",
+        fs::metadata(src_path.join("parser.c")).unwrap().len(),
+        fs::metadata(library_path).unwrap().len(),
+        language.parse_state_count(),
+    );
+    language
 }
 
 #[cfg(feature = "wasm")]
@@ -244,6 +320,11 @@ fn get_wasm_language(language_name: &str, parser: &mut Parser) -> Language {
         .load_language(&wasm_language_name, &wasm)
         .with_context(|| format!("Failed to load Wasm language at {}", wasm_path.display()))
         .unwrap();
+    info!(
+        "  Parser size: {} bytes of Wasm, {} states",
+        wasm.len(),
+        language.parse_state_count(),
+    );
     parser.set_wasm_store(store).unwrap();
     language
 }

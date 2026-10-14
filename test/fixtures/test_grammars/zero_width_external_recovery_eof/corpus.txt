@@ -1,0 +1,44 @@
+==================================================
+State-changing empty token recovering a missing end
+==================================================
+
+a(b
+
+---
+
+(document
+  (call
+    (MISSING ")"))
+  (end))
+
+==================================================
+Completed call followed by an empty end token
+==================================================
+
+a(b)
+
+---
+
+(document
+  (call)
+  (end))
+
+==================================================
+Recover a missing internal closer before an empty end
+==================================================
+
+a[b
+
+---
+
+(document (internal_call (MISSING "]")) (end))
+
+==================================================
+Keep an empty end after a completed internal closer
+==================================================
+
+a[b]
+
+---
+
+(document (internal_call) (end))

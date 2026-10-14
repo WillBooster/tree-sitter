@@ -587,7 +587,7 @@ describe('Query', () => {
 
   describe('Executes with a timeout', { timeout: 10000 }, () => {
     it('Returns less than the expected matches', () => {
-      tree = parser.parse('function foo() while (true) { } }\n'.repeat(1000))!;
+      tree = parser.parse('function foo() { while (true) { } }\n'.repeat(1000))!;
       query = new Query(JavaScript, '(function_declaration) @function');
 
       const startTime = performance.now();
