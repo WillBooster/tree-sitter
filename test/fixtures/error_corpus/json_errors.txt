@@ -88,3 +88,57 @@ nul
 (document
   (ERROR
     (UNEXPECTED '\0')))
+
+==================================
+Malformed object nested in a pair
+==================================
+
+{"a":{"b" "c"}}
+
+---
+
+(document
+  (object
+    (pair
+      (string (string_content))
+      (object
+        (pair (string (string_content)) (MISSING ":") (string (string_content)))))))
+
+==================================
+Malformed nested object before another pair
+==================================
+
+{"one":{"bar" "baz"},"two":"bar"}
+
+---
+
+(document
+  (object
+    (pair
+      (string (string_content))
+      (object
+        (pair (string (string_content)) (MISSING ":") (string (string_content)))))
+    (pair
+      (string (string_content))
+      (string (string_content)))))
+
+==================================
+Malformed nested string before another pair
+==================================
+
+{"one":{"bar" "b"az"},"two":"bar"}
+
+---
+
+(document
+  (object
+    (pair
+      (string (string_content))
+      (object
+        (ERROR
+          (string (string_content))
+          (UNEXPECTED 'b')
+          (string (string_content)))))
+    (pair
+      (string (string_content))
+      (string (string_content)))))
