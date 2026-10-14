@@ -1664,6 +1664,39 @@ fn test_parsing_with_custom_utf8_input() {
 }
 
 #[test]
+fn test_parsing_utf8_with_short_input_chunks() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+
+    for source in [
+        "π;\n変;𐐀;\n\"€😀\";".as_bytes(),
+        b"\"\xf0\x9f\x98", // Truncated character at EOF.
+        b"\xc0\xaf;\n\xe2\x82;\n\xed\xa0\x80;\n\xf4\x90\x80\x80;", // Invalid UTF-8.
+    ] {
+        let expected = parser.parse(source, None).unwrap();
+        for size in 1..=4 {
+            let actual = parser
+                .parse_with_options(
+                    &mut |offset, point| {
+                        let prefix = &source[..offset];
+                        let mut lines = prefix.rsplit(|&byte| byte == b'\n');
+                        let column = lines.next().unwrap().len();
+                        let row = lines.count();
+                        assert_eq!(point, Point::new(row, column));
+                        // Owned chunks exercise buffer replacement on each read.
+                        source[offset..source.len().min(offset + size)].to_vec()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(actual.root_node().to_sexp(), expected.root_node().to_sexp());
+            assert_eq!(actual.root_node().range(), expected.root_node().range());
+        }
+    }
+}
+
+#[test]
 fn test_parsing_with_custom_utf16le_input() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
@@ -2277,6 +2310,37 @@ fn test_column_dependent_token_after_balancing_repeat() {
     assert_eq!(
         incremental.root_node().child(3).unwrap().start_position(),
         Point::new(2, 0)
+    );
+}
+
+#[test]
+fn test_parsing_after_failed_external_scan_that_depends_on_column() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("depends_on_column_failed_scan"))
+        .unwrap();
+
+    let mut code = b"ax".to_vec();
+    let mut tree = parser.parse(&code, None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), "(document (letter) (tail))");
+
+    perform_edit(
+        &mut tree,
+        &mut code,
+        &Edit {
+            position: 0,
+            deleted_length: 1,
+            inserted_text: b"\n".to_vec(),
+        },
+    )
+    .unwrap();
+
+    let incremental = parser.parse(&code, Some(&tree)).unwrap();
+    let fresh = parser.parse(&code, None).unwrap();
+    assert_eq!(fresh.root_node().to_sexp(), "(document (newline) (head))");
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
     );
 }
 
