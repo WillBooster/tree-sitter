@@ -39,7 +39,7 @@ rquickjs = { features = [
   "loader",
   "macro",
   "phf",
-], optional = true, version = "0.12.2" }
+], optional = true, version = "0.14.0" }
 rustc-hash.workspace = true
 semver = { optional = true, workspace = true }
 serde.workspace = true
