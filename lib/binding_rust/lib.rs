@@ -3974,17 +3974,12 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 // `MISSING` token names and `UNEXPECTED` characters are quoted without
                 // escaping and always end their node, so only a matching quote that is
                 // followed by a `)` ending a token closes the quoted token.
-                let mut rest = c_iter.clone();
-                if c == quote
-                    && match rest.next() {
-                        None => true,
-                        Some(')') => matches!(rest.peek(), None | Some(' ' | ')')),
-                        Some(_) => false,
-                    }
-                {
+                if c == quote && quote_ends_token(c_iter.clone()) {
                     quote = '\0';
                 }
-            } else if (next.is_empty() && c == payload_quote)
+            } else if (next.is_empty()
+                && c == payload_quote
+                && has_closing_quote(c_iter.clone(), c))
                 || (root_token && next == "(" && c == '"' && sexp.ends_with("\")"))
             {
                 quote = c;
@@ -4061,6 +4056,23 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     }
 
     formatted
+}
+
+fn has_closing_quote(mut chars: impl Iterator<Item = char> + Clone, quote: char) -> bool {
+    while let Some(c) = chars.next() {
+        if c == quote && quote_ends_token(chars.clone()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn quote_ends_token(mut chars: impl Iterator<Item = char>) -> bool {
+    match chars.next() {
+        None => true,
+        Some(')') => matches!(chars.next(), None | Some(' ' | ')')),
+        Some(_) => false,
+    }
 }
 
 pub fn wasm_stdlib_symbols() -> impl Iterator<Item = &'static str> {

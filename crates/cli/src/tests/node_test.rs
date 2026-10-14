@@ -1246,6 +1246,42 @@ fn test_node_display_with_quotes_in_named_aliases() {
 }
 
 #[test]
+fn test_node_display_with_missing_quoted_named_alias() {
+    for (index, alias) in ["\"ab", "'ab", "\"ab\"cd"].into_iter().enumerate() {
+        let grammar = serde_json::json!({
+            "name": format!("missing_quoted_alias_{index}"),
+            "rules": {
+                "root": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "block_comment"},
+                    {"type": "SYMBOL", "name": "after"}
+                ]},
+                "block_comment": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "/*"},
+                    {"type": "ALIAS", "named": true, "value": alias,
+                     "content": {"type": "STRING", "value": "*/"}}
+                ]},
+                "after": {"type": "STRING", "value": ";"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, None))
+            .unwrap();
+        let tree = parser.parse("/*;", None).unwrap();
+        let node = tree.root_node();
+        assert_eq!(
+            node.to_sexp(),
+            format!("(root (block_comment (MISSING {alias})) (after))")
+        );
+        assert_eq!(
+            format!("{node:#}"),
+            format!("(root\n  (block_comment\n    (MISSING {alias}))\n  (after))")
+        );
+    }
+}
+
+#[test]
 fn test_node_field_names() {
     // - "x":
     //      This isn't used in the test, but prevents `_hidden_rule1` from being eliminated as a
