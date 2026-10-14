@@ -31,6 +31,49 @@ use crate::{
 };
 
 #[test]
+fn test_nested_json_error_recovery_preserves_following_token_ranges() {
+    let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("json")).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert_eq!(root.kind(), "document");
+    assert!(root.has_error());
+    let object = root.named_child(0).unwrap();
+    assert_eq!(object.kind(), "object");
+    assert_eq!(object.named_child_count(), 2);
+    let malformed = object
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("value")
+        .unwrap();
+    assert_eq!(malformed.kind(), "object");
+    let pair = malformed.named_child(0).unwrap();
+    assert_eq!(pair.kind(), "pair");
+    assert_eq!(pair.byte_range(), 8..19);
+    let missing_colon = pair.child(1).unwrap();
+    assert_eq!(missing_colon.kind(), ":");
+    assert!(missing_colon.is_missing());
+    assert!(missing_colon.byte_range().is_empty());
+    for (index, range, text) in [(0, 8..13, "\"bar\""), (1, 14..19, "\"baz\"")] {
+        let string = pair.named_child(index).unwrap();
+        assert_eq!(string.kind(), "string");
+        assert_eq!(string.byte_range(), range);
+        assert_eq!(string.utf8_text(source.as_bytes()).unwrap(), text);
+    }
+    let following = object.named_child(1).unwrap();
+    assert_eq!(following.kind(), "pair");
+    assert!(!following.has_error());
+    let key = following.child_by_field_name("key").unwrap();
+    assert_eq!(key.byte_range(), 21..26);
+    assert_eq!(key.utf8_text(source.as_bytes()).unwrap(), "\"two\"");
+    let value = following.child_by_field_name("value").unwrap();
+    assert_eq!(value.kind(), "string");
+    assert_eq!(value.byte_range(), 27..32);
+    assert_eq!(value.utf8_text(source.as_bytes()).unwrap(), "\"bar\"");
+}
+
+#[test]
 fn test_recovery_lexer_preserves_keyword_tokens() {
     for precedence in [0, 1] {
         let grammar =
