@@ -172,3 +172,23 @@ int a() {
         (init_declarator
           (MISSING identifier)
           (number_literal))))))
+
+=========================================
+Missing prototype semicolon before definitions
+=========================================
+
+int foo()
+
+int bar() { return 0; }
+int x;
+
+---
+
+(translation_unit
+  (ERROR
+    (primitive_type)
+    (function_declarator (identifier) (parameter_list))
+    (primitive_type)
+    (function_declarator (identifier) (parameter_list)))
+  (compound_statement (return_statement (number_literal)))
+  (declaration (primitive_type) (identifier)))
