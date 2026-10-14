@@ -6922,6 +6922,7 @@ fn test_query_captures_progress_callback_stops_behind_an_open_match() {
         )
         .count();
 
+    assert!(captures > 0);
     assert!(captures < 1000);
     assert_eq!(calls, 1);
 }
