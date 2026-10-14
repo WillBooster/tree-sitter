@@ -263,13 +263,56 @@ fn test_update_rewrites_only_the_expected_outputs_of_the_tests_that_ran() {
     assert_eq!(read(&corpus_dir.join("crlf.txt")), CRLF);
 }
 
+#[test]
+fn test_update_distinguishes_error_node_names_from_parse_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grammar_dir = temp_dir.path();
+    let cache_dir = grammar_dir.join("cache");
+    let corpus_dir = grammar_dir.join("test/corpus");
+    fs::create_dir_all(grammar_dir.join("src")).unwrap();
+    fs::create_dir_all(&corpus_dir).unwrap();
+    fs::write(
+        grammar_dir.join("src/grammar.json"),
+        r#"{
+          "name": "error_names",
+          "rules": {
+            "source_file": {"type": "SEQ", "members": [
+              {"type": "SYMBOL", "name": "MISSING_word"},
+              {"type": "SYMBOL", "name": "ERROR_word"},
+              {"type": "SYMBOL", "name": "UNEXPECTED_word"},
+              {"type": "STRING", "value": ";"}
+            ]},
+            "MISSING_word": {"type": "PATTERN", "value": "[a-z]+"},
+            "ERROR_word": {"type": "PATTERN", "value": "[0-9]+"},
+            "UNEXPECTED_word": {"type": "PATTERN", "value": "[A-Z]+"}
+          },
+          "extras": [{"type": "PATTERN", "value": "\\s"}]
+        }"#,
+    )
+    .unwrap();
+    run(grammar_dir, &cache_dir, &["generate", "src/grammar.json"]);
+    let corpus_path = corpus_dir.join("names.txt");
+    let corpus = "==========\nValid names\n==========\n\nname 1 VALUE;\n\n---\n\n(source_file)\n";
+    fs::write(&corpus_path, corpus).unwrap();
+    run(grammar_dir, &cache_dir, &["test", "--update"]);
+    let updated = corpus.replace(
+        "(source_file)",
+        "(source_file\n  (MISSING_word)\n  (ERROR_word)\n  (UNEXPECTED_word))",
+    );
+    assert_eq!(read(&corpus_path), updated);
+    run(grammar_dir, &cache_dir, &["test"]);
+
+    for invalid_source in ["name 1 VALUE", "?"] {
+        let invalid = corpus.replace("name 1 VALUE;", invalid_source);
+        fs::write(&corpus_path, &invalid).unwrap();
+        let output = execute(grammar_dir, &cache_dir, &["test", "--update"]);
+        assert!(!output.status.success(), "{invalid_source}");
+        assert_eq!(read(&corpus_path), invalid);
+    }
+}
+
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
-    let output = Command::new(env!("CARGO_BIN_EXE_tree-sitter"))
-        .args(args)
-        .current_dir(dir)
-        .env("TREE_SITTER_LIBDIR", cache_dir)
-        .output()
-        .unwrap();
+    let output = execute(dir, cache_dir, args);
     assert!(
         output.status.success(),
         "tree-sitter {args:?} failed:\n{}\n{}",
@@ -277,6 +320,15 @@ fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
         String::from_utf8_lossy(&output.stderr),
     );
     output
+}
+
+fn execute(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tree-sitter"))
+        .args(args)
+        .current_dir(dir)
+        .env("TREE_SITTER_LIBDIR", cache_dir)
+        .output()
+        .unwrap()
 }
 
 fn read(path: &Path) -> String {

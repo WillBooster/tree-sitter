@@ -4059,7 +4059,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
             write!(formatted, "{scratch}").unwrap();
 
             // "(MISSING node_name" or "(UNEXPECTED 'x'"
-            if scratch.starts_with("(MISSING") || scratch.starts_with("(UNEXPECTED") {
+            if scratch == "(MISSING" || scratch == "(UNEXPECTED" {
                 let payload_quote = if scratch == "(UNEXPECTED" { '\'' } else { '"' };
                 fetch_next_str(
                     &mut scratch,
