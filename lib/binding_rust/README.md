@@ -106,7 +106,7 @@ assert_eq!(
 
 ## Using Wasm Grammar Files
 
-> Requires the feature **wasm** to be enabled.
+> Requires the **wasm** feature and Rust 1.96 or newer. This optional feature has a higher compiler requirement than the crate default because it uses Wasmtime.
 
 First, create a parser with a Wasm store:
 
@@ -153,7 +153,7 @@ assert_eq!(
 ## Features
 
 - **std** - This feature is enabled by default and allows `tree-sitter` to use the standard library.
-  - Error types implement the `std::error:Error` trait.
+  - Error types implement the `std::error::Error` trait.
   - `regex` performance optimizations are enabled.
   - The DOT graph methods are enabled.
-- **wasm** - This feature allows `tree-sitter` to be built for Wasm targets using the `wasmtime-c-api` crate.
+- **wasm** - Loads Wasm grammar files through Wasmtime. See [Using Wasm Grammar Files](#using-wasm-grammar-files) for its compiler requirement.
