@@ -4115,7 +4115,7 @@ fn quote_closing_depth(mut chars: impl Iterator<Item = char>) -> Option<usize> {
             for c in chars {
                 match c {
                     ')' => depth += 1,
-                    ' ' => return Some(depth),
+                    c if c.is_whitespace() => return Some(depth),
                     _ => return None,
                 }
             }

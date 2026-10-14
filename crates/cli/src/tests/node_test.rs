@@ -1162,7 +1162,10 @@ fn test_format_sexp_with_quoted_missing_and_unexpected_tokens() {
             "(root\n  missing: (MISSING \"*/\")\n  (after))",
         ),
     ] {
-        assert_eq!(tree_sitter::format_sexp(sexp, 0), expected, "{sexp}");
+        for suffix in ["", "\n", "\t", "\r\n", "\u{2003}"] {
+            let input = format!("{sexp}{suffix}");
+            assert_eq!(tree_sitter::format_sexp(&input, 0), expected, "{input:?}");
+        }
     }
 }
 
