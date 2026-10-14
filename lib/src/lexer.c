@@ -6,6 +6,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 
 #define LOG(message, character)              \
   if (self->logger.log) {                    \
@@ -100,6 +101,44 @@ static void ts_lexer__get_chunk(Lexer *self) {
   }
 }
 
+// Decode a UTF-8 character whose bytes are split across input chunks, which
+// may each be shorter than the character, by copying them into a buffer that
+// becomes the current chunk.
+static void ts_lexer__join_split_utf8_character(
+  Lexer *self,
+  const uint8_t *chunk,
+  uint32_t size
+) {
+  uint32_t character_size = 1 + U8_COUNT_TRAIL_BYTES(chunk[0]);
+  memmove(self->lookahead_buffer, chunk, size);
+  // A decode error that consumed every byte read so far may only mean that the
+  // character continues in the next chunk.
+  while (
+    self->data.lookahead == TS_DECODE_ERROR &&
+    self->lookahead_size == size &&
+    size < character_size
+  ) {
+    TSPoint point = self->current_position.extent;
+    point.column += size;
+    uint32_t bytes_read = 0;
+    const char *next = self->input.read(
+      self->input.payload, self->current_position.bytes + size, point, &bytes_read
+    );
+    if (!bytes_read) break;
+    if (bytes_read > character_size - size) bytes_read = character_size - size;
+    memcpy(self->lookahead_buffer + size, next, bytes_read);
+    size += bytes_read;
+    self->lookahead_size = ts_decode_utf8(
+      (const uint8_t *)self->lookahead_buffer, size, &self->data.lookahead
+    );
+  }
+  // Each read may invalidate the buffer of the previous one, so the copied
+  // bytes replace the chunk.
+  self->chunk = self->lookahead_buffer;
+  self->chunk_start = self->current_position.bytes;
+  self->chunk_size = size;
+}
+
 // Decode the next unicode character in the current chunk of source code.
 // This assumes that the lexer has already retrieved a chunk of source
 // code that spans the current position.
@@ -128,13 +167,16 @@ static void ts_lexer__get_lookahead(Lexer *self) {
 
   self->lookahead_size = decode(chunk, size, &self->data.lookahead);
 
-  // If this chunk ended in the middle of a multi-byte character,
-  // try again with a fresh chunk.
+  // The chunk may end in the middle of a multi-byte character.
   if (self->data.lookahead == TS_DECODE_ERROR && size < 4) {
-    ts_lexer__get_chunk(self);
-    chunk = (const uint8_t *)self->chunk;
-    size = self->chunk_size;
-    self->lookahead_size = decode(chunk, size, &self->data.lookahead);
+    if (self->input.encoding == TSInputEncodingUTF8 && U8_IS_LEAD(chunk[0])) {
+      ts_lexer__join_split_utf8_character(self, chunk, size);
+    } else {
+      ts_lexer__get_chunk(self);
+      self->lookahead_size = decode(
+        (const uint8_t *)self->chunk, self->chunk_size, &self->data.lookahead
+      );
+    }
   }
 
   if (self->data.lookahead == TS_DECODE_ERROR) {
