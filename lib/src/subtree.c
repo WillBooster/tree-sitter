@@ -175,6 +175,8 @@ Subtree ts_subtree_new_leaf(
   bool is_inline = (
     symbol <= UINT8_MAX &&
     !has_external_tokens &&
+    // The inline representation has no bit left to record a column dependency.
+    !depends_on_column &&
     ts_subtree_can_inline(padding, size, lookahead_bytes)
   );
 
