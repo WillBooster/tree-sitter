@@ -3008,15 +3008,62 @@ fn test_contiguous_included_ranges_preserve_javascript_expressions() {
                     end_point: Point::new(0, source.len()),
                 },
             ];
-            parser.set_included_ranges(&ranges).unwrap();
-            let tree = parser.parse(source, None).unwrap();
-            assert_eq!(
-                tree.root_node().to_sexp(),
-                expected,
-                "{source:?} at {split}"
-            );
-            assert_eq!(tree.included_ranges(), ranges);
+            let with_empty = [
+                Range {
+                    end_byte: 0,
+                    end_point: Point::new(0, 0),
+                    ..ranges[0]
+                },
+                ranges[0],
+                Range {
+                    end_byte: split,
+                    end_point: Point::new(0, split),
+                    ..ranges[1]
+                },
+                ranges[1],
+            ];
+            for ranges in [&ranges[..], &with_empty[..]] {
+                parser.set_included_ranges(ranges).unwrap();
+                let tree = parser.parse(source, None).unwrap();
+                assert_eq!(
+                    tree.root_node().to_sexp(),
+                    expected,
+                    "{source:?} at {split}"
+                );
+                assert_eq!(tree.included_ranges(), ranges);
+            }
         }
+    }
+}
+
+#[test]
+fn test_empty_included_ranges_preserve_disjoint_statement_boundaries() {
+    let range = |start, end| Range {
+        start_byte: start,
+        end_byte: end,
+        start_point: Point::new(0, start),
+        end_point: Point::new(0, end),
+    };
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let ranges = [range(0, 3), range(4, 7)];
+    parser.set_included_ranges(&ranges).unwrap();
+    let expected = parser.parse("foo bar", None).unwrap();
+    assert!(!expected.root_node().has_error());
+    for ranges in [
+        vec![range(0, 3), range(4, 4), range(4, 7)],
+        vec![
+            range(0, 0),
+            range(0, 3),
+            range(3, 3),
+            range(4, 4),
+            range(4, 7),
+        ],
+    ] {
+        parser.set_included_ranges(&ranges).unwrap();
+        let tree = parser.parse("foo bar", None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected.root_node().to_sexp());
+        assert_eq!(tree.included_ranges(), ranges);
     }
 }
 
