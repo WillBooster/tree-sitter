@@ -157,6 +157,7 @@ pub fn prepare_grammar(
     validate_extras(
         &g,
         &ext_meta.extra_symbols,
+        &ext_meta.external_only_extra_symbols,
         &lexical_grammar,
         &nullable_tokens,
         &nullable_variables,
@@ -262,12 +263,15 @@ fn validate_non_advancing_recursion(
 fn validate_extras(
     grammar: &InputGrammar,
     extras: &[Symbol],
+    external_only_extras: &[Symbol],
     lexical_grammar: &LexicalGrammar,
     nullable_tokens: &[bool],
     nullable_variables: &[bool],
 ) -> Result<(), EmptyStringExtraError> {
     for &symbol in extras {
-        if is_nullable_symbol(symbol, nullable_tokens, nullable_variables) {
+        if !external_only_extras.contains(&symbol)
+            && is_nullable_symbol(symbol, nullable_tokens, nullable_variables)
+        {
             let name = match symbol.kind {
                 SymbolType::Terminal => lexical_grammar.variables[symbol.index as usize].name,
                 SymbolType::NonTerminal => grammar.variables[symbol.index as usize].name,

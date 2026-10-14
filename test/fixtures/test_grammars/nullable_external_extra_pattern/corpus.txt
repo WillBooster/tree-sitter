@@ -1,0 +1,9 @@
+==================
+Scanner consumes an anonymous nullable extra pattern
+==================
+
+x y
+
+---
+
+(source_file)
