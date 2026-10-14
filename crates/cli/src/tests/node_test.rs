@@ -1254,6 +1254,266 @@ fn test_node_sexp() {
 }
 
 #[test]
+fn test_format_sexp_with_quoted_missing_and_unexpected_tokens() {
+    for (sexp, expected) in [
+        (
+            r#"(block_comment (MISSING "*/"))"#,
+            "(block_comment\n  (MISSING \"*/\"))",
+        ),
+        (r#"(root (MISSING ")"))"#, "(root\n  (MISSING \")\"))"),
+        (r#"(root (MISSING "a b"))"#, "(root\n  (MISSING \"a b\"))"),
+        (r#"(root (MISSING "a" "))"#, "(root\n  (MISSING \"a\" \"))"),
+        (r#"(root (MISSING "" "))"#, "(root\n  (MISSING \"\" \"))"),
+        (r#"(root (MISSING "")"))"#, "(root\n  (MISSING \"\")\"))"),
+        (
+            r#"(root (MISSING "a")b"))"#,
+            "(root\n  (MISSING \"a\")b\"))",
+        ),
+        (r#"(root (MISSING "a")"))"#, "(root\n  (MISSING \"a\")\"))"),
+        (r#"(root (MISSING "'"))"#, "(root\n  (MISSING \"'\"))"),
+        (r#"(root (MISSING """))"#, "(root\n  (MISSING \"\"\"))"),
+        (r#"(root (MISSING "\"))"#, "(root\n  (MISSING \"\\\"))"),
+        ("(root (UNEXPECTED 'x'))", "(root\n  (UNEXPECTED 'x'))"),
+        ("(root (UNEXPECTED ' '))", "(root\n  (UNEXPECTED ' '))"),
+        ("(root (UNEXPECTED ')'))", "(root\n  (UNEXPECTED ')'))"),
+        ("(root (UNEXPECTED '\"'))", "(root\n  (UNEXPECTED '\"'))"),
+        ("(root (UNEXPECTED '''))", "(root\n  (UNEXPECTED '''))"),
+        (r"(root (UNEXPECTED '\'))", "(root\n  (UNEXPECTED '\\'))"),
+        (
+            r#"(root missing: (MISSING "*/") (after))"#,
+            "(root\n  missing: (MISSING \"*/\")\n  (after))",
+        ),
+    ] {
+        for suffix in ["", "\n", "\t", "\r\n", "\u{2003}"] {
+            let input = format!("{sexp}{suffix}");
+            assert_eq!(tree_sitter::format_sexp(&input, 0), expected, "{input:?}");
+        }
+    }
+}
+
+#[test]
+fn test_node_display_with_quoted_missing_token() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+          "name": "missing_comment_terminator",
+          "rules": {
+            "document": {
+              "type": "SEQ",
+              "members": [
+                {"type": "SYMBOL", "name": "block_comment"},
+                {"type": "STRING", "value": ";"}
+              ]
+            },
+            "block_comment": {
+              "type": "SEQ",
+              "members": [
+                {"type": "STRING", "value": "/*"},
+                {"type": "STRING", "value": "*/"}
+              ]
+            }
+          }
+        }"#,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    let tree = parser.parse("/*;", None).unwrap();
+    let node = tree.root_node().named_child(0).unwrap();
+    assert_eq!(format!("{:#}", node.child(0).unwrap()), r#"("/*")"#);
+    let sexp = r#"(block_comment (MISSING "*/"))"#;
+
+    assert_eq!(node.to_sexp(), sexp);
+    assert_eq!(format!("{node}"), sexp);
+    assert_eq!(format!("{node:#}"), "(block_comment\n  (MISSING \"*/\"))");
+    assert_eq!(
+        format!("{node:#2}"),
+        "\n    (block_comment\n      (MISSING \"*/\"))",
+    );
+}
+
+#[test]
+fn test_node_display_with_quotes_in_named_aliases() {
+    let grammar = serde_json::json!({
+        "name": "quoted_aliases",
+        "rules": {
+            "program": {"type": "SEQ", "members": [
+                {"type": "ALIAS", "named": true, "value": "'a'b", "content": {"type": "SYMBOL", "name": "pair"}},
+                {"type": "ALIAS", "named": true, "value": "\"a\"b", "content": {"type": "SYMBOL", "name": "pair"}},
+                {"type": "SYMBOL", "name": "end"}
+            ]},
+            "pair": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "c"},
+                {"type": "SYMBOL", "name": "d"}
+            ]},
+            "c": {"type": "STRING", "value": "c"},
+            "d": {"type": "STRING", "value": "d"},
+            "end": {"type": "STRING", "value": ";"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("cdcd;", None).unwrap();
+    let node = tree.root_node();
+    assert!(!node.has_error());
+    assert_eq!(
+        node.to_sexp(),
+        "(program ('a'b (c) (d)) (\"a\"b (c) (d)) (end))"
+    );
+    assert_eq!(
+        format!("{node:#}"),
+        "(program\n  ('a'b\n    (c)\n    (d))\n  (\"a\"b\n    (c)\n    (d))\n  (end))"
+    );
+}
+
+#[test]
+fn test_node_display_with_quoted_aliases() {
+    for (index, (named, alias)) in [
+        (true, "\""),
+        (true, "'"),
+        (true, "\"ab"),
+        (true, "'ab"),
+        (true, "\"ab\"cd"),
+        (true, "\"ab\""),
+        (true, "a\"b"),
+        (true, "a'b"),
+        (true, "\\ab"),
+        (false, "\""),
+        (false, "'"),
+        (false, " "),
+        (false, "*/"),
+        (false, "a\"b"),
+        (false, "\"ab"),
+        (false, "'ab"),
+        (false, "a\\b"),
+        (false, "a)b"),
+        (false, "a b"),
+        (false, "a\")b"),
+        (false, "a\")"),
+        (false, "ab)) (c2 (MISSING \"*/"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let parent = ["\"", "'", "\"parent", "'parent"][index % 4];
+        let grammar = serde_json::json!({
+            "name": format!("missing_quoted_alias_{index}"),
+            "rules": {
+                "root": {"type": "SEQ", "members": [
+                    {"type": "ALIAS", "named": true, "value": parent,
+                     "content": {"type": "SYMBOL", "name": "block_comment"}},
+                    {"type": "SYMBOL", "name": "after"}
+                ]},
+                "block_comment": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "/*"},
+                    {"type": "ALIAS", "named": named, "value": alias,
+                     "content": {"type": "STRING", "value": "*/"}}
+                ]},
+                "after": {"type": "STRING", "value": ";"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, None))
+            .unwrap();
+        let complete = parser.parse("/**/;", None).unwrap();
+        let alias_node = complete.root_node().child(0).unwrap().child(1).unwrap();
+        assert_eq!(format!("{alias_node:#}"), alias_node.to_sexp());
+        assert_eq!(
+            format!("{alias_node:#2}"),
+            format!("\n    {}", alias_node.to_sexp())
+        );
+        for padding in ["", " ", "\n", "\t", "\r\n", "\u{2003}"] {
+            let input = format!("{padding}{}{padding}", alias_node.to_sexp());
+            assert_eq!(tree_sitter::format_sexp(&input, 0), alias_node.to_sexp());
+            assert_eq!(
+                tree_sitter::format_sexp(&input, 2),
+                format!("\n    {}", alias_node.to_sexp())
+            );
+        }
+        let tree = parser.parse("/*;", None).unwrap();
+        let node = tree.root_node();
+        let missing = node.child(0).unwrap().child(1).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(
+            format!("{missing:#2}"),
+            format!("\n    {}", missing.to_sexp())
+        );
+        let payload = if named {
+            alias.to_owned()
+        } else {
+            format!("\"{alias}\"")
+        };
+        assert_eq!(
+            node.to_sexp(),
+            format!("(root ({parent} (MISSING {payload})) (after))")
+        );
+        assert_eq!(
+            format!("{:#}", node.child(0).unwrap()),
+            format!("({parent}\n  (MISSING {payload}))")
+        );
+        assert_eq!(
+            format!("{:#2}", node.child(0).unwrap()),
+            format!("\n    ({parent}\n      (MISSING {payload}))")
+        );
+        assert_eq!(
+            format!("{node:#}"),
+            format!("(root\n  ({parent}\n    (MISSING {payload}))\n  (after))")
+        );
+    }
+}
+
+#[test]
+fn test_node_display_rejects_impossible_quoted_payload_depth() {
+    let grammar = serde_json::json!({
+        "name": "quoted_payload_depth",
+        "rules": {
+            "root": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "_inner"},
+                {"type": "SYMBOL", "name": "x"},
+                {"type": "STRING", "value": "!"}
+            ]},
+            "_inner": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "a"},
+                {"type": "ALIAS", "named": true, "value": "\"", "content": {"type": "STRING", "value": "b"}}
+            ]},
+            "x": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "SYMBOL", "name": "inner2"}
+            ]},
+            "inner2": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "@"},
+                {"type": "ALIAS", "named": false, "value": "y", "content": {"type": "STRING", "value": "%"}}
+            ]}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("a#@!", None).unwrap();
+    let node = tree.root_node();
+    assert_eq!(
+        node.to_sexp(),
+        "(root (MISSING \") (x (inner2 (MISSING \"y\"))))"
+    );
+    assert_eq!(
+        format!("{node:#}"),
+        "(root\n  (MISSING \")\n  (x\n    (inner2\n      (MISSING \"y\"))))"
+    );
+    assert_eq!(
+        format!("{node:#2}"),
+        "\n    (root\n      (MISSING \")\n      (x\n        (inner2\n          (MISSING \"y\"))))"
+    );
+}
+
+#[test]
 fn test_node_field_names() {
     // - "x":
     //      This isn't used in the test, but prevents `_hidden_rule1` from being eliminated as a

@@ -3954,6 +3954,7 @@ impl fmt::Display for QueryError {
 #[doc(hidden)]
 #[must_use]
 pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
+    let sexp = sexp.trim();
     let mut indent_level = initial_indent_level;
     let mut formatted = String::with_capacity(sexp.len());
     let mut has_field = false;
@@ -3963,25 +3964,50 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     let mut quote = '\0';
     let mut saw_paren = false;
     let mut did_last = false;
+    let mut first_token = true;
+    let mut quote_suffixes = quote_suffix_minimum_depths(sexp);
+    let mut byte_offset = 0;
 
-    let mut fetch_next_str = |next: &mut String| {
+    let mut fetch_next_str = |next: &mut String, payload_quote: char, open_nodes: usize| {
+        let root_token = first_token;
+        first_token = false;
+        let open_nodes = if root_token { 1 } else { open_nodes };
         next.clear();
         while let Some(c) = c_iter.next() {
-            if c == '\'' || c == '"' {
-                quote = c;
-            } else if c == ' ' || (c == ')' && quote != '\0') {
-                if let Some(next_c) = c_iter.peek()
-                    && *next_c == quote
+            byte_offset += c.len_utf8();
+            if quote != '\0' {
+                // `to_sexp` does not escape quotes in anonymous MISSING names or
+                // quoted UNEXPECTED characters, so their node boundary disambiguates
+                // the delimiter. Named MISSING payloads are emitted without delimiters.
+                if c == quote
+                    && quote_closing_depth(c_iter.clone()).is_some_and(|depth| depth <= open_nodes)
                 {
-                    next.push(c);
-                    next.push(*next_c);
-                    c_iter.next();
                     quote = '\0';
-                    continue;
                 }
+            } else if next.is_empty() && c == payload_quote {
+                let suffixes = &mut quote_suffixes[usize::from(c == '"')];
+                while suffixes
+                    .last()
+                    .is_some_and(|&(offset, _)| offset < byte_offset)
+                {
+                    suffixes.pop();
+                }
+                if suffixes
+                    .last()
+                    .is_some_and(|&(_, depth)| depth <= open_nodes)
+                {
+                    quote = c;
+                }
+            } else if root_token
+                && next == "("
+                && c == '"'
+                && sexp.len() > 3
+                && sexp.ends_with("\")")
+            {
+                quote = c;
+            } else if c == ' ' {
                 break;
-            }
-            if c == ')' {
+            } else if c == ')' {
                 saw_paren = true;
                 break;
             }
@@ -4005,8 +4031,14 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         Some(())
     };
 
-    while fetch_next_str(&mut scratch).is_some() {
-        if scratch.is_empty() && indent_level > 0 {
+    while fetch_next_str(
+        &mut scratch,
+        '\0',
+        indent_level.saturating_sub(initial_indent_level),
+    )
+    .is_some()
+    {
+        if scratch.is_empty() && indent_level > initial_indent_level {
             // ")"
             indent_level -= 1;
             write!(formatted, ")").unwrap();
@@ -4028,9 +4060,15 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
 
             // "(MISSING node_name" or "(UNEXPECTED 'x'"
             if scratch.starts_with("(MISSING") || scratch.starts_with("(UNEXPECTED") {
-                fetch_next_str(&mut scratch).unwrap();
+                let payload_quote = if scratch == "(UNEXPECTED" { '\'' } else { '"' };
+                fetch_next_str(
+                    &mut scratch,
+                    payload_quote,
+                    indent_level.saturating_sub(initial_indent_level),
+                )
+                .unwrap();
                 if scratch.is_empty() {
-                    while indent_level > 0 {
+                    while indent_level > initial_indent_level {
                         indent_level -= 1;
                         write!(formatted, ")").unwrap();
                     }
@@ -4051,6 +4089,41 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     }
 
     formatted
+}
+
+fn quote_suffix_minimum_depths(sexp: &str) -> [Vec<(usize, usize)>; 2] {
+    let mut suffixes: [Vec<(usize, usize)>; 2] = [Vec::new(), Vec::new()];
+    for (offset, c) in sexp.char_indices().rev() {
+        if c != '\'' && c != '"' {
+            continue;
+        }
+        if let Some(depth) = quote_closing_depth(sexp[offset + 1..].chars()) {
+            let quotes = &mut suffixes[usize::from(c == '"')];
+            // A later, shallower candidate answers the same existence query for longer.
+            if quotes.last().is_none_or(|&(_, minimum)| depth < minimum) {
+                quotes.push((offset, depth));
+            }
+        }
+    }
+    suffixes
+}
+
+fn quote_closing_depth(mut chars: impl Iterator<Item = char>) -> Option<usize> {
+    match chars.next() {
+        None => Some(0),
+        Some(')') => {
+            let mut depth = 1;
+            for c in chars {
+                match c {
+                    ')' => depth += 1,
+                    c if c.is_whitespace() => return Some(depth),
+                    _ => return None,
+                }
+            }
+            Some(depth)
+        }
+        _ => None,
+    }
 }
 
 pub fn wasm_stdlib_symbols() -> impl Iterator<Item = &'static str> {
