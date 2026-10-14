@@ -3,7 +3,6 @@ use std::{
     cmp::{Ordering, max},
     fmt,
     iter::ExactSizeIterator,
-    mem::{self, swap},
     ops::{Range, RangeInclusive},
 };
 
@@ -38,6 +37,8 @@ pub struct Nfa {
 pub struct NfaCursor<'a> {
     pub(crate) state_ids: Vec<u32>,
     nfa: &'a Nfa,
+    visited_states: Vec<bool>,
+    pending_states: Vec<u32>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,6 +50,55 @@ pub struct NfaTransition {
 }
 
 const END: u32 = char::MAX as u32 + 1;
+
+/// Rewrites a set's ranges as they're read in order: once finished, the ranges that were read
+/// are replaced by the ones that were kept.
+struct RangeRewriter<'a> {
+    ranges: &'a mut Vec<Range<u32>>,
+    kept: usize,
+    read: usize,
+}
+
+impl<'a> RangeRewriter<'a> {
+    const fn new(ranges: &'a mut Vec<Range<u32>>, start: usize) -> Self {
+        Self {
+            ranges,
+            kept: start,
+            read: start,
+        }
+    }
+
+    #[inline]
+    fn next(&mut self) -> Option<Range<u32>> {
+        let range = self.ranges.get(self.read)?.clone();
+        self.read += 1;
+        Some(range)
+    }
+
+    #[inline]
+    fn keep(&mut self, range: Range<u32>) {
+        if self.kept < self.read {
+            self.ranges[self.kept] = range;
+        } else {
+            debug_assert_eq!(self.kept, self.read);
+            // Splitting a range can keep more ranges than were read.
+            self.ranges.insert(self.kept, range);
+            self.read += 1;
+        }
+        self.kept += 1;
+    }
+
+    #[inline]
+    fn finish(mut self, current: Option<Range<u32>>) {
+        if let Some(range) = current {
+            self.keep(range);
+        }
+        debug_assert!(self.kept <= self.read);
+        if self.kept < self.read {
+            self.ranges.drain(self.kept..self.read);
+        }
+    }
+}
 
 impl CharacterSet {
     /// Create a character set with a single character.
@@ -65,7 +115,7 @@ impl CharacterSet {
     #[cfg(test)]
     fn from_range(mut first: char, mut last: char) -> Self {
         if first > last {
-            swap(&mut first, &mut last);
+            std::mem::swap(&mut first, &mut last);
         }
         Self {
             ranges: vec![(first as u32)..(last as u32 + 1)],
@@ -136,7 +186,13 @@ impl CharacterSet {
     }
 
     fn add_int_range(&mut self, mut i: usize, start: u32, end: u32) -> usize {
-        while i < self.ranges.len() {
+        // Regex character classes provide sorted, disjoint ranges.
+        if self.ranges.last().is_none_or(|range| range.end < start) {
+            let index = self.ranges.len();
+            self.ranges.push(start..end);
+            return index;
+        }
+        loop {
             let range = &mut self.ranges[i];
             if range.start > end {
                 self.ranges.insert(i, start..end);
@@ -156,26 +212,51 @@ impl CharacterSet {
             }
             i += 1;
         }
-        self.ranges.push(start..end);
-        i
     }
 
     #[must_use]
     pub fn does_intersect(&self, other: &Self) -> bool {
-        let mut left_ranges = self.ranges.iter();
-        let mut right_ranges = other.ranges.iter();
-        let mut left_range = left_ranges.next();
-        let mut right_range = right_ranges.next();
-        while let (Some(left), Some(right)) = (&left_range, &right_range) {
-            if left.end <= right.start {
-                left_range = left_ranges.next();
-            } else if left.start >= right.end {
-                right_range = right_ranges.next();
-            } else {
+        self.first_overlap(other).is_some()
+    }
+
+    pub fn does_intersect_chars(&self, other: &Self) -> bool {
+        let mut other_ranges = other.ranges().peekable();
+        for range in self.ranges() {
+            while other_ranges
+                .peek()
+                .is_some_and(|other| other.end() < range.start())
+            {
+                other_ranges.next();
+            }
+            let Some(other) = other_ranges.peek() else {
+                return false;
+            };
+            if other.start() <= range.end() {
                 return true;
             }
         }
         false
+    }
+
+    fn first_overlap(&self, other: &Self) -> Option<(usize, usize)> {
+        let mut left_index = 0;
+        let mut right_index = 0;
+        while let (Some(left), Some(right)) =
+            (self.ranges.get(left_index), other.ranges.get(right_index))
+        {
+            if left.end <= right.start {
+                // [ L ]
+                //     [ R ]
+                left_index += 1;
+            } else if left.start >= right.end {
+                //     [ L ]
+                // [ R ]
+                right_index += 1;
+            } else {
+                return Some((left_index, right_index));
+            }
+        }
+        None
     }
 
     /// Get the set of characters that are present in both this set
@@ -183,112 +264,64 @@ impl CharacterSet {
     /// of the operands.
     #[allow(clippy::return_self_not_must_use)]
     pub fn remove_intersection(&mut self, other: &mut Self) -> Self {
+        // The ranges before the first overlap stay where they are.
+        let Some((left_start, right_start)) = self.first_overlap(other) else {
+            return Self::empty();
+        };
         let mut intersection = Vec::new();
-        let mut left_i = 0;
-        let mut right_i = 0;
-        while left_i < self.ranges.len() && right_i < other.ranges.len() {
-            let left = &mut self.ranges[left_i];
-            let right = &mut other.ranges[right_i];
-
-            match left.start.cmp(&right.start) {
-                Ordering::Less => {
-                    // [ L ]
-                    //     [ R ]
-                    if left.end <= right.start {
-                        left_i += 1;
-                        continue;
-                    }
-
-                    match left.end.cmp(&right.end) {
-                        // [ L ]
-                        //   [ R ]
-                        Ordering::Less => {
-                            intersection.push(right.start..left.end);
-                            swap(&mut left.end, &mut right.start);
-                            left_i += 1;
-                        }
-
-                        // [  L  ]
-                        //   [ R ]
-                        Ordering::Equal => {
-                            intersection.push(right.clone());
-                            left.end = right.start;
-                            other.ranges.remove(right_i);
-                        }
-
-                        // [   L   ]
-                        //   [ R ]
-                        Ordering::Greater => {
-                            intersection.push(right.clone());
-                            let new_range = left.start..right.start;
-                            left.start = right.end;
-                            self.ranges.insert(left_i, new_range);
-                            other.ranges.remove(right_i);
-                            left_i += 1;
-                        }
-                    }
-                }
+        let mut left = RangeRewriter::new(&mut self.ranges, left_start);
+        let mut right = RangeRewriter::new(&mut other.ranges, right_start);
+        let mut left_range = left.next();
+        let mut right_range = right.next();
+        while let (Some(l), Some(r)) = (&mut left_range, &mut right_range) {
+            if l.end <= r.start {
                 // [ L ]
-                // [  R  ]
-                Ordering::Equal if left.end < right.end => {
-                    intersection.push(left.start..left.end);
-                    right.start = left.end;
-                    self.ranges.remove(left_i);
-                }
-                // [ L ]
+                //     [ R ]
+                left.keep(l.clone());
+                left_range = left.next();
+            } else if r.end <= l.start {
+                //     [ L ]
                 // [ R ]
-                Ordering::Equal if left.end == right.end => {
-                    intersection.push(left.clone());
-                    self.ranges.remove(left_i);
-                    other.ranges.remove(right_i);
+                right.keep(r.clone());
+                right_range = right.next();
+            } else {
+                // The ranges overlap. Either one can start first, or both together, and either
+                // one can end first, or both together. The starts are handled first, then the
+                // ends.
+                //
+                // Up to the later start, the characters are only in the range that starts
+                // first, so that part stays in its set.
+                //
+                // [ L ...            [ L ...
+                //   [ R ...    or  [ R ...
+                if l.start < r.start {
+                    left.keep(l.start..r.start);
+                    l.start = r.start;
+                } else if r.start < l.start {
+                    right.keep(r.start..l.start);
+                    r.start = l.start;
                 }
-                // [  L  ]
-                // [ R ]
-                Ordering::Equal if left.end > right.end => {
-                    intersection.push(right.clone());
-                    left.start = right.end;
-                    other.ranges.remove(right_i);
+
+                // Both ranges now start together, and up to the earlier end, the characters
+                // are in both sets. A range that ends there is used up, so the next range from
+                // its set takes its place, and the rest of the other range is compared with it.
+                //
+                // [ L ]            [ L ]          [  L  ]
+                // [  R  ]    or    [ R ]    or    [ R ]
+                let end = l.end.min(r.end);
+                intersection.push(l.start..end);
+                l.start = end;
+                r.start = end;
+                if l.start == l.end {
+                    left_range = left.next();
                 }
-                Ordering::Equal => {}
-                Ordering::Greater => {
-                    //     [ L ]
-                    // [ R ]
-                    if left.start >= right.end {
-                        right_i += 1;
-                        continue;
-                    }
-
-                    match left.end.cmp(&right.end) {
-                        //   [ L ]
-                        // [   R   ]
-                        Ordering::Less => {
-                            intersection.push(left.clone());
-                            let new_range = right.start..left.start;
-                            right.start = left.end;
-                            other.ranges.insert(right_i, new_range);
-                            self.ranges.remove(left_i);
-                            right_i += 1;
-                        }
-
-                        //   [ L ]
-                        // [  R  ]
-                        Ordering::Equal => {
-                            intersection.push(left.clone());
-                            right.end = left.start;
-                            self.ranges.remove(left_i);
-                        }
-
-                        //   [   L   ]
-                        // [   R   ]
-                        Ordering::Greater => {
-                            intersection.push(left.start..right.end);
-                            swap(&mut left.start, &mut right.end);
-                            right_i += 1;
-                        }
-                    }
+                if r.start == r.end {
+                    right_range = right.next();
                 }
             }
         }
+        left.finish(left_range);
+        right.finish(right_range);
         Self {
             ranges: intersection,
         }
@@ -497,18 +530,38 @@ impl fmt::Debug for Nfa {
 
 impl<'a> NfaCursor<'a> {
     #[must_use]
-    pub fn new(nfa: &'a Nfa, mut states: Vec<u32>) -> Self {
+    pub fn new(nfa: &'a Nfa, states: Vec<u32>) -> Self {
         let mut result = Self {
             nfa,
             state_ids: Vec::new(),
+            visited_states: vec![false; nfa.states.len()],
+            pending_states: Vec::new(),
         };
-        result.add_states(&mut states);
+        result.reset(states);
         result
     }
 
-    pub fn reset(&mut self, mut states: Vec<u32>) {
+    pub fn reset(&mut self, states: impl IntoIterator<Item = u32>) {
         self.state_ids.clear();
-        self.add_states(&mut states);
+        self.pending_states.clear();
+        self.pending_states.extend(states);
+        let mut i = 0;
+        while i < self.pending_states.len() {
+            let state_id = self.pending_states[i];
+            i += 1;
+            if std::mem::replace(&mut self.visited_states[state_id as usize], true) {
+                continue;
+            }
+            if let NfaState::Split(left, right) = self.nfa.states[state_id as usize] {
+                self.pending_states.extend([left, right]);
+            } else {
+                self.state_ids.push(state_id);
+            }
+        }
+        for &state_id in &self.pending_states {
+            self.visited_states[state_id as usize] = false;
+        }
+        self.state_ids.sort_unstable();
     }
 
     pub fn force_reset(&mut self, states: Vec<u32>) {
@@ -566,11 +619,21 @@ impl<'a> NfaCursor<'a> {
             chars.assign(input_chars);
             let mut i = 0;
             while i < result.len() && !chars.is_empty() {
+                if result[i].characters == chars {
+                    let transition = &mut result[i];
+                    transition.is_separator &= is_sep;
+                    transition.precedence = max(transition.precedence, prec);
+                    if let Err(j) = transition.states.binary_search(&state) {
+                        transition.states.insert(j, state);
+                    }
+                    chars.ranges.clear();
+                    break;
+                }
                 let intersection = result[i].characters.remove_intersection(&mut chars);
                 if !intersection.is_empty() {
                     let chars_is_empty = result[i].characters.is_empty();
                     let mut intersection_states = if chars_is_empty {
-                        mem::take(&mut result[i].states)
+                        std::mem::take(&mut result[i].states)
                     } else {
                         result[i].states.clone()
                     };
@@ -599,7 +662,7 @@ impl<'a> NfaCursor<'a> {
             }
             if !chars.is_empty() {
                 result.push(NfaTransition {
-                    characters: mem::take(&mut chars),
+                    characters: std::mem::take(&mut chars),
                     precedence: prec,
                     states: vec![state],
                     is_separator: is_sep,
@@ -614,7 +677,7 @@ impl<'a> NfaCursor<'a> {
                     && result[j].is_separator == result[i].is_separator
                     && result[j].precedence == result[i].precedence
                 {
-                    let characters = mem::take(&mut result[j].characters);
+                    let characters = std::mem::take(&mut result[j].characters);
                     result[j].characters = characters.add(&result[i].characters);
                     result.swap_remove(i);
                     i -= 1;
@@ -640,35 +703,6 @@ impl<'a> NfaCursor<'a> {
                 None
             }
         })
-    }
-
-    pub fn add_states(&mut self, new_state_ids: &mut Vec<u32>) {
-        let mut i = 0;
-        while i < new_state_ids.len() {
-            let state_id = new_state_ids[i];
-            let state = &self.nfa.states[state_id as usize];
-            if let NfaState::Split(left, right) = state {
-                let mut has_left = false;
-                let mut has_right = false;
-                for new_state_id in new_state_ids.iter() {
-                    if *new_state_id == *left {
-                        has_left = true;
-                    }
-                    if *new_state_id == *right {
-                        has_right = true;
-                    }
-                }
-                if !has_left {
-                    new_state_ids.push(*left);
-                }
-                if !has_right {
-                    new_state_ids.push(*right);
-                }
-            } else if let Err(i) = self.state_ids.binary_search(&state_id) {
-                self.state_ids.insert(i, state_id);
-            }
-            i += 1;
-        }
     }
 }
 

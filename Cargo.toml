@@ -93,7 +93,7 @@ clap = { features = [
 clap_complete = "4.6.3"
 clap_complete_nushell = "4.5.10"
 crc32fast = "1.5.0"
-ctor = "0.6.3"
+ctor = "1.0.0"
 ctrlc = { features = [ "termination" ], version = "3.5.2" }
 dialoguer = { features = [ "fuzzy-select" ], version = "0.12.0" }
 etcetera = "0.11.0"
@@ -116,7 +116,7 @@ schemars = "1.2.1"
 semver = { features = [ "serde" ], version = "1.0.27" }
 serde = { features = [ "derive" ], version = "1.0.228" }
 serde_json = { features = [ "preserve_order" ], version = "1.0.150" }
-similar = "2.7.0"
+similar = "3.0.0"
 streaming-iterator = "0.1.9"
 tempfile = "3.25.0"
 thiserror = "2.0.18"

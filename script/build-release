@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Writes the release version given as the argument and builds every artifact the release publishes.
+# Keep this build complete for the artifacts listed in lib/binding_web/package.json.
 
 set -euo pipefail
 

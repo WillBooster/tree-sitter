@@ -40,7 +40,7 @@ use parse_grammar::parse_grammar;
 pub use prepare_grammar::PrepareGrammarError;
 use prepare_grammar::prepare_grammar;
 use render::render_c_code;
-pub use render::{ABI_VERSION_MAX, ABI_VERSION_MIN, RenderError};
+pub use render::{GenerationProfile, RenderError, parser_fingerprint};
 
 use crate::{
     grammars::InputGrammar, prepare_grammar::PreparedGrammar, rules::Alias, strpool::StrPool,
@@ -65,7 +65,7 @@ struct GeneratedParser {
 
 // NOTE: This constant must be kept in sync with the definition of
 // `TREE_SITTER_LANGUAGE_VERSION` in `lib/include/tree_sitter/api.h`.
-const LANGUAGE_VERSION: usize = 15;
+const LANGUAGE_VERSION: usize = 0x5742_0001;
 
 pub const ALLOC_HEADER: &str = include_str!("templates/alloc.h");
 pub const ARRAY_HEADER: &str = include_str!("templates/array.h");
@@ -75,6 +75,10 @@ pub type GenerateResult<T> = Result<T, GenerateError>;
 
 #[derive(Debug, Error, Serialize, Deserialize)]
 pub enum GenerateError {
+    #[error(
+        "Generation profile fingerprint does not match the unprofiled parser; record the profile again with this CLI (tree-sitter generate, then tree-sitter profile --output <profile> with the training inputs)"
+    )]
+    ProfileMismatch,
     #[error("Error with specified path -- {0}")]
     GrammarPath(IoError),
     #[error(transparent)]
@@ -328,7 +332,6 @@ pub fn generate_parser_in_directory<T, U, V>(
     repo_path: T,
     out_path: Option<U>,
     grammar_path: Option<V>,
-    abi_version: usize,
     report_symbol_name: Option<&str>,
     js_runtime: Option<&str>,
     generate_parser: bool,
@@ -340,6 +343,46 @@ where
     U: Into<PathBuf>,
     V: Into<PathBuf>,
 {
+    generate_parser_in_directory_with_profile(
+        repo_path,
+        out_path,
+        grammar_path,
+        report_symbol_name,
+        js_runtime,
+        generate_parser,
+        optimizations,
+        diagnostics,
+        None,
+    )
+}
+
+#[cfg(feature = "load")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserves the existing directory generation API"
+)]
+pub fn generate_parser_in_directory_with_profile<T, U, V>(
+    repo_path: T,
+    out_path: Option<U>,
+    grammar_path: Option<V>,
+    report_symbol_name: Option<&str>,
+    js_runtime: Option<&str>,
+    generate_parser: bool,
+    optimizations: OptLevel,
+    diagnostics: &mut Vec<Diagnostic>,
+    profile: Option<&GenerationProfile>,
+) -> GenerateResult<()>
+where
+    T: Into<PathBuf>,
+    U: Into<PathBuf>,
+    V: Into<PathBuf>,
+{
+    if profile.is_some() && !generate_parser {
+        return Err(RenderError::Profile("requires parser generation".into()).into());
+    }
+    if profile.is_some() && report_symbol_name.is_some() {
+        return Err(RenderError::Profile("cannot be combined with a state report".into()).into());
+    }
     let mut repo_path: PathBuf = repo_path.into();
 
     // Populate a new empty grammar directory.
@@ -404,17 +447,35 @@ where
 
     let semantic_version = read_grammar_version(&repo_path)?;
 
+    if let Some(profile) = profile {
+        let mut baseline_diagnostics = Vec::new();
+        let baseline_grammar = parse_grammar(&grammar_json, &mut baseline_diagnostics)?;
+        let baseline = generate_parser_for_grammar_with_opts(
+            baseline_grammar,
+            semantic_version
+                .as_ref()
+                .map(|v| (v.major as u8, v.minor as u8, v.patch as u8)),
+            None,
+            optimizations,
+            &mut baseline_diagnostics,
+            None,
+        )?;
+        if parser_fingerprint(&baseline.c_code) != profile.fingerprint {
+            return Err(GenerateError::ProfileMismatch);
+        }
+    }
+
     // Generate the parser and related files.
     let GeneratedParser {
         c_code,
         node_types_json,
     } = generate_parser_for_grammar_with_opts(
         input_grammar,
-        abi_version,
         semantic_version.map(|v| (v.major as u8, v.minor as u8, v.patch as u8)),
         report_symbol_name,
         optimizations,
         diagnostics,
+        profile,
     )?;
 
     write_file(&src_path.join("parser.c"), c_code)?;
@@ -438,11 +499,11 @@ pub fn generate_parser_for_grammar(
     let name = input_grammar.pool.resolve(input_grammar.name).to_string();
     let parser = generate_parser_for_grammar_with_opts(
         input_grammar,
-        LANGUAGE_VERSION,
         semantic_version,
         None,
         optimizations,
         diagnostics,
+        None,
     )?;
     Ok((name, parser.c_code))
 }
@@ -487,11 +548,11 @@ fn generate_node_types_from_grammar(
 
 fn generate_parser_for_grammar_with_opts(
     input_grammar: InputGrammar,
-    abi_version: usize,
     semantic_version: Option<(u8, u8, u8)>,
     report_symbol_name: Option<&str>,
     optimizations: OptLevel,
     diagnostics: &mut Vec<Diagnostic>,
+    profile: Option<&GenerationProfile>,
 ) -> GenerateResult<GeneratedParser> {
     let grammar_name = input_grammar.name;
     let JSONOutput {
@@ -524,9 +585,9 @@ fn generate_parser_for_grammar_with_opts(
         lexical_grammar,
         simple_aliases,
         str_pool,
-        abi_version,
         semantic_version,
         supertype_symbol_map,
+        profile,
     )?;
     Ok(GeneratedParser {
         c_code,
@@ -732,8 +793,8 @@ mod tests {
             .lines()
             .find_map(|line| {
                 line.trim()
-                    .strip_prefix("#define TREE_SITTER_LANGUAGE_VERSION ")
-                    .and_then(|v| v.parse::<usize>().ok())
+                    .strip_prefix("#define TREE_SITTER_LANGUAGE_VERSION 0x")
+                    .and_then(|v| usize::from_str_radix(v, 16).ok())
             })
             .expect("Failed to find TREE_SITTER_LANGUAGE_VERSION definition in api.h");
         assert_eq!(LANGUAGE_VERSION, api_language_version);

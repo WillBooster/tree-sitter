@@ -1,4 +1,4 @@
-use std::{env, fmt::Write, ops::ControlFlow, sync::LazyLock};
+use std::{cell::Cell, env, fmt::Write, ops::ControlFlow, sync::LazyLock};
 
 use indoc::indoc;
 use rand::{SeedableRng, prelude::StdRng};
@@ -30,6 +30,108 @@ use crate::{
 
 static EXAMPLE_FILTER: LazyLock<Option<String>> =
     LazyLock::new(|| env::var("TREE_SITTER_TEST_EXAMPLE_FILTER").ok());
+
+#[test]
+fn test_query_alternation_structure_is_order_independent() {
+    let language = get_language("javascript");
+    let source = "f(x)";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+
+    for pattern in [
+        r#"(arguments ["{" (identifier)]) @args"#,
+        r#"(arguments [(identifier) "{"]) @args"#,
+        r#"(arguments [["{" (identifier)] "~"]) @args"#,
+        r#"(arguments ["~" ["{" (identifier)]]) @args"#,
+        r#"(arguments [["~" (identifier)] (number)]) @args"#,
+        r#"(arguments [(number) ["~" (identifier)]]) @args"#,
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+        let mut captured_ranges = Vec::new();
+        while let Some((matched, index)) = captures.next() {
+            captured_ranges.push(matched.captures()[*index].node.byte_range());
+        }
+        assert_eq!(captured_ranges, vec![1..4], "{pattern}");
+    }
+
+    for pattern in [
+        r#"(arguments ([")"+ (identifier) @i] (number) @n)) @root"#,
+        r#"(arguments ([(identifier) @i ")"+] (number) @n)) @root"#,
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        for (source, expected) in [
+            ("f(x)", vec![]),
+            ("f(x,1)", vec![("root", "(x,1)"), ("i", "x"), ("n", "1")]),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let mut cursor = QueryCursor::new();
+            let captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+            assert_eq!(
+                collect_captures(captures, &query, source),
+                expected,
+                "{pattern}: {source}"
+            );
+            if expected.is_empty() {
+                assert_query_matches(&language, &query, source, &[]);
+            } else {
+                assert_query_matches(&language, &query, source, &[(0, expected)]);
+            }
+        }
+    }
+
+    for pattern in [
+        "(arguments [(number)? (identifier) @id])",
+        "(arguments [(number)* (identifier) @id])",
+        "(arguments [[(number)? (identifier) @id] (string)])",
+        "(arguments [[(number)* (identifier) @id] (string)])",
+        "(arguments [(string) [(number)? (identifier) @id]])",
+        "(arguments [[(string) (number)?] (identifier) @id])",
+        r#"(arguments "(" ("{"? "}")? (identifier) @id)"#,
+        r#"(arguments "(" ("{"? "}")* (identifier) @id)"#,
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+        let mut captured_ranges = Vec::new();
+        while let Some((matched, index)) = captures.next() {
+            captured_ranges.push(matched.captures()[*index].node.byte_range());
+        }
+        assert_eq!(captured_ranges, vec![2..3], "{pattern}");
+    }
+
+    for pattern in [
+        r#"(arguments (((identifier)? "["))*)"#,
+        r#"(arguments (((identifier)? "["))?)"#,
+        r#"(arguments (((identifier)? "["))*) @args"#,
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let expected = if pattern.ends_with("@args") {
+            vec![(0, vec![("args", "(x)")])]
+        } else {
+            vec![(0, vec![])]
+        };
+        assert_query_matches(&language, &query, source, &expected);
+    }
+
+    for pattern in [
+        r#"(arguments ["{" "}"]) @args"#,
+        r#"(arguments ["}" "{"]) @args"#,
+        r#"(arguments [["{" "}"] "~"]) @args"#,
+        r#"(arguments ["~" ["{" "}"]]) @args"#,
+        r#"(arguments (((identifier)? "["))* "{")"#,
+        r#"(arguments (((identifier)? "["))+)"#,
+    ] {
+        assert_eq!(
+            Query::new(&language, pattern).unwrap_err().kind,
+            QueryErrorKind::Structure,
+            "{pattern}"
+        );
+    }
+}
 
 #[test]
 fn test_query_file_assertions_respect_multiline_capture_bounds() {
@@ -487,6 +589,239 @@ fn test_query_errors_on_invalid_symbols() {
 }
 
 #[test]
+fn test_query_rejects_prefixes_of_error_node_name() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        assert!(Query::new(&language, "(ERROR) @error").is_ok());
+
+        for name in ["E", "ER", "ERR", "ERRO", "ERRORS"] {
+            assert_eq!(
+                Query::new(&language, &format!("({name}) @error")).unwrap_err(),
+                QueryError {
+                    row: 0,
+                    offset: 1,
+                    column: 1,
+                    kind: QueryErrorKind::NodeType,
+                    message: format!("\"{name}\""),
+                }
+            );
+        }
+    });
+}
+
+#[test]
+fn test_query_nullable_alternation_keeps_branch_sequences_separate() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let query = Query::new(
+            &language,
+            "(arguments ([((number)? @n . (identifier) @i) (string) @s]))",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &query,
+            "f(1, \"s\")",
+            &[(0, vec![("s", "\"s\"")])],
+        );
+        let anchored = Query::new(
+            &language,
+            "(arguments . [((number)? . (identifier) @i) (string) @s])",
+        )
+        .unwrap();
+        assert_query_matches(&language, &anchored, "f(1, \"s\")", &[]);
+        for quantifier in ['?', '*'] {
+            let leading = Query::new(
+                &language,
+                &format!("(arguments . ((number)? @n (identifier) @i){quantifier})"),
+            )
+            .unwrap();
+            assert_query_matches(
+                &language,
+                &leading,
+                "f(1,x)",
+                &[(0, vec![("n", "1"), ("i", "x")])],
+            );
+            assert_query_matches(&language, &leading, "f(x)", &[(0, vec![("i", "x")])]);
+            for source in ["f()", "f(true,1,x)"] {
+                assert_query_matches(&language, &leading, source, &[(0, vec![])]);
+            }
+        }
+        for quantifier in ['*', '+'] {
+            let anchored_repeat = Query::new(
+                &language,
+                &format!("(arguments . ((number)? @n (identifier) @i){quantifier} .) @r"),
+            )
+            .unwrap();
+            assert_query_matches(
+                &language,
+                &anchored_repeat,
+                "f(1,x)",
+                &[(0, vec![("r", "(1,x)"), ("n", "1"), ("i", "x")])],
+            );
+            assert_query_matches(
+                &language,
+                &anchored_repeat,
+                "f(x)",
+                &[(0, vec![("r", "(x)"), ("i", "x")])],
+            );
+        }
+        let leading_empty = Query::new(
+            &language,
+            "(arguments . ((number)? @n (identifier) @i)? (regex) @r)",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &leading_empty,
+            "f(/r/)",
+            &[(0, vec![("r", "/r/")])],
+        );
+        assert_query_matches(&language, &leading_empty, "f(true,/r/)", &[]);
+        for (pattern, expected) in [
+            (
+                "(arguments ((number)? . (string)) @g)",
+                vec![("g", "\"s\"")],
+            ),
+            (
+                "(arguments ((number)? . (string) @s)? @g)",
+                vec![("s", "\"s\""), ("g", "\"s\"")],
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, "f(\"s\")", &[(0, expected)]);
+        }
+        for pattern in [
+            "(arguments (identifier) [((number)? \"{\") ((string)? \"}\") (regex) @r])",
+            "(arguments (identifier) [(regex) @r ((number)? \"{\") ((string)? \"}\")])",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, "f(x, /r/)", &[(0, vec![("r", "/r/")])]);
+        }
+        for quantifier in ['?', '*'] {
+            let query = Query::new(
+                &language,
+                &format!("(arguments ([(number)? @n (string) @s] (identifier) @i){quantifier})"),
+            )
+            .unwrap();
+            for source in ["f(1)", "f(\"s\")"] {
+                assert_query_matches(&language, &query, source, &[(0, vec![])]);
+            }
+            assert_query_matches(
+                &language,
+                &query,
+                "f(1,x)",
+                &[(0, vec![("n", "1"), ("i", "x")])],
+            );
+            assert_query_matches(
+                &language,
+                &query,
+                "f(\"s\",x)",
+                &[(0, vec![("s", "\"s\""), ("i", "x")])],
+            );
+        }
+        for pattern in [
+            r#"(arguments [","? (identifier)]*) @r"#,
+            "(arguments [(identifier)? (number)]+) @r",
+            r#"(arguments [(identifier)? ","?]*) @r"#,
+            r#"(arguments [(number) ","? (identifier)]*) @r"#,
+        ] {
+            let repeated = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &repeated, "f(x)", &[(0, vec![("r", "(x)")])]);
+        }
+        for (pattern, source, expected) in [
+            (
+                "(arguments ((number)? (identifier))? (regex) @r)",
+                "f(/r/)",
+                vec![("r", "/r/")],
+            ),
+            (
+                "(arguments ((string)? (identifier))* (regex) @r)",
+                "f(1, 2, /r/)",
+                vec![("r", "/r/")],
+            ),
+            (
+                "(arguments [(string) (number) (identifier)?]+ (number)) @r",
+                "f(x,1)",
+                vec![("r", "(x,1)")],
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, source, &[(0, expected)]);
+        }
+        let anchored = Query::new(
+            &language,
+            "(arguments . ((number)? (identifier) @i)* (number) @n)",
+        )
+        .unwrap();
+        for (source, expected) in [
+            ("f(x, 1)", vec![("i", "x"), ("n", "1")]),
+            ("f(x, y, 1)", vec![("i", "x"), ("n", "1")]),
+        ] {
+            assert_query_matches(&language, &anchored, source, &[(0, expected)]);
+        }
+        assert_query_matches(&language, &anchored, "f(true, x, 1)", &[]);
+        for quantifier in ['?', '*'] {
+            let trailing = Query::new(
+                &language,
+                &format!(r#"(arguments (identifier) @i ("{{"? "}}"){quantifier} .)"#),
+            )
+            .unwrap();
+            for source in ["f(x)", "f(x,)"] {
+                assert_query_matches(&language, &trailing, source, &[(0, vec![("i", "x")])]);
+            }
+            assert_query_matches(&language, &trailing, "f(x,1)", &[]);
+        }
+        let invalid = Query::new(&language, "(identifier ((number)? (string))?)").unwrap_err();
+        assert_eq!(invalid.kind, QueryErrorKind::Structure);
+        assert_eq!(invalid.offset, 12);
+        for pattern in [
+            "[(number)? @n (identifier) @id]",
+            "[((number)? (string))? @g (identifier) @id]",
+        ] {
+            let root = Query::new(&language, pattern).unwrap();
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let source = "f(x)";
+            let tree = parser.parse(source, None).unwrap();
+            let mut cursor = QueryCursor::new();
+            let mut captures = cursor.captures(&root, tree.root_node(), source.as_bytes());
+            let mut ranges = Vec::new();
+            while let Some((matched, index)) = captures.next() {
+                ranges.push(matched.captures()[*index].node.byte_range());
+            }
+            assert_eq!(ranges, vec![0..1, 2..3]);
+        }
+    });
+}
+
+#[test]
+fn test_query_nullable_root_captures_respect_range_end() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let query = Query::new(&language, "[(number)* @n (identifier) @id]").unwrap();
+        let source = "f(x,1)";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        for point_range in [false, true] {
+            let mut cursor = QueryCursor::new();
+            if point_range {
+                cursor.set_point_range(Point::new(0, 2)..Point::new(0, 3));
+            } else {
+                cursor.set_byte_range(2..3);
+            }
+            let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+            let mut ranges = Vec::new();
+            while let Some((matched, index)) = captures.next() {
+                ranges.push(matched.captures()[*index].node.byte_range());
+            }
+            assert_eq!(ranges, vec![2..3]);
+        }
+    });
+}
+
+#[test]
 fn test_query_errors_on_invalid_predicates() {
     allocations::record(|| {
         let language = get_language("javascript");
@@ -685,36 +1020,34 @@ fn test_query_errors_on_impossible_patterns() {
             }
         );
 
-        if js_lang.abi_version() >= 15 {
-            assert_eq!(
-                Query::new(&js_lang, "(statement/identifier)").unwrap_err(),
-                QueryError {
-                    row: 0,
-                    offset: 0,
-                    column: 0,
-                    kind: QueryErrorKind::Structure,
-                    message: [
-                        "(statement/identifier)", //
-                        "^"
-                    ]
-                    .join("\n")
-                }
-            );
-            assert_eq!(
-                Query::new(&js_lang, "(statement/pattern)").unwrap_err(),
-                QueryError {
-                    row: 0,
-                    offset: 0,
-                    column: 0,
-                    kind: QueryErrorKind::Structure,
-                    message: [
-                        "(statement/pattern)", //
-                        "^"
-                    ]
-                    .join("\n")
-                }
-            );
-        }
+        assert_eq!(
+            Query::new(&js_lang, "(statement/identifier)").unwrap_err(),
+            QueryError {
+                row: 0,
+                offset: 0,
+                column: 0,
+                kind: QueryErrorKind::Structure,
+                message: [
+                    "(statement/identifier)", //
+                    "^"
+                ]
+                .join("\n")
+            }
+        );
+        assert_eq!(
+            Query::new(&js_lang, "(statement/pattern)").unwrap_err(),
+            QueryError {
+                row: 0,
+                offset: 0,
+                column: 0,
+                kind: QueryErrorKind::Structure,
+                message: [
+                    "(statement/pattern)", //
+                    "^"
+                ]
+                .join("\n")
+            }
+        );
     });
 }
 
@@ -1885,6 +2218,136 @@ fn test_query_matches_with_trailing_repetitions_of_last_child() {
 }
 
 #[test]
+fn test_query_matches_with_trailing_anchor_after_repetition() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        for quantifier in ["+", "*"] {
+            let query = Query::new(
+                &language,
+                &format!("(program . (lexical_declaration) @decl . (empty_statement){quantifier} @semi .)"),
+            )
+            .unwrap();
+            assert_query_matches(
+                &language,
+                &query,
+                "const x = 1;;;",
+                &[(
+                    0,
+                    vec![("decl", "const x = 1;"), ("semi", ";"), ("semi", ";")],
+                )],
+            );
+            assert_query_matches(&language, &query, "const x = 1;;; f();", &[]);
+            let expected = if quantifier == "*" {
+                vec![(0, vec![("decl", "const x = 1;")])]
+            } else {
+                vec![]
+            };
+            assert_query_matches(&language, &query, "const x = 1;", &expected);
+        }
+    });
+}
+
+#[test]
+fn test_query_matches_with_trailing_anchor_after_uncaptured_repetition() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        for (pattern, source, expected, rejected) in [
+            (
+                "(program (empty_statement)+ .)",
+                "a();;b();;",
+                vec![],
+                "a();;b();",
+            ),
+            (
+                "(program (empty_statement)+ .) @p",
+                "a();;b();;",
+                vec![("p", "a();;b();;")],
+                "a();;b();",
+            ),
+            (
+                "(statement_block (empty_statement)+ .) @b",
+                "{ a(); ; b(); ; }",
+                vec![("b", "{ a(); ; b(); ; }")],
+                "{ a(); ; b(); }",
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, source, &[(0, expected)]);
+            assert_query_matches(&language, &query, rejected, &[]);
+        }
+    });
+}
+
+#[test]
+fn test_query_matches_with_trailing_anchor_after_nested_repetition() {
+    allocations::record(|| {
+        let language = get_language("javascript");
+        let query = Query::new(
+            &language,
+            "(statement_block . (expression_statement (call_expression function: (identifier) @fn))+ .)",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &query,
+            "{ a(); b(); } c();",
+            &[(0, vec![("fn", "a"), ("fn", "b")])],
+        );
+        assert_query_matches(&language, &query, "{ a(); const x = 1; }", &[]);
+
+        for pattern in [
+            "(program . [(expression_statement)+ (lexical_declaration)] @x .)",
+            "(program . ((expression_statement)+ @x (empty_statement)?) .)",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert_query_matches(&language, &query, "a(); const x = 1;", &[]);
+            assert_query_matches(&language, &query, "a(); b(); const x = 1;", &[]);
+        }
+
+        let star = Query::new(
+            &language,
+            "(program (expression_statement (call_expression function: (identifier) @fn arguments: (arguments)))* .)",
+        )
+        .unwrap();
+        assert_query_matches(&language, &star, "a(); b(); d;", &[(0, vec![])]);
+        assert_query_matches(&language, &star, "a(); d; b();", &[(0, vec![("fn", "b")])]);
+        assert_query_matches(
+            &language,
+            &star,
+            "a(); b();",
+            &[(0, vec![("fn", "a"), ("fn", "b")])],
+        );
+
+        let nullable = Query::new(
+            &language,
+            "(program ((empty_statement) [(comment) (lexical_declaration)] ((lexical_declaration)? [(expression_statement)]?)+)* .)",
+        ).unwrap();
+        assert_query_matches(&language, &nullable, "; const x = 1;", &[(0, vec![])]);
+
+        let grouped = Query::new(
+            &language,
+            "(program . ((expression_statement) @call (empty_statement) @semi)+ .)",
+        )
+        .unwrap();
+        assert_query_matches(
+            &language,
+            &grouped,
+            "a();;b();;",
+            &[(
+                0,
+                vec![
+                    ("call", "a();"),
+                    ("semi", ";"),
+                    ("call", "b();"),
+                    ("semi", ";"),
+                ],
+            )],
+        );
+        assert_query_matches(&language, &grouped, "a();;b();", &[]);
+    });
+}
+
+#[test]
 fn test_query_matches_with_leading_zero_or_more_repeated_leaf_nodes() {
     allocations::record(|| {
         let language = get_language("javascript");
@@ -2609,6 +3072,170 @@ fn test_query_matches_with_anonymous_tokens() {
             ],
         );
     });
+}
+
+#[test]
+fn test_transparent_supertype_alias_node_schema() {
+    for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let directory = tempfile::tempdir_in(scratch).unwrap();
+        let grammar = super::helpers::fixtures::fixtures_dir()
+            .join(format!("test_grammars/{fixture}/grammar.js"));
+        std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
+        tree_sitter_generate::generate_parser_in_directory(
+            directory.path(),
+            None::<std::path::PathBuf>,
+            None::<std::path::PathBuf>,
+            None,
+            None,
+            false,
+            tree_sitter_generate::OptLevel::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let schema: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+        )
+        .unwrap();
+        let entries = schema.as_array().unwrap();
+        let expressions: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry["type"] == "expression")
+            .collect();
+        assert_eq!(expressions.len(), 1);
+        assert_eq!(
+            expressions[0]["subtypes"],
+            serde_json::json!([
+                {"type": "identifier", "named": true}, {"type": "number", "named": true}
+            ])
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry["type"] == "_restricted_expression")
+        );
+        let root = entries
+            .iter()
+            .find(|entry| entry["type"] == "source_file")
+            .unwrap();
+        assert_eq!(
+            root["fields"]["value"]["types"],
+            serde_json::json!([{"type": "expression", "named": true}])
+        );
+    }
+}
+
+#[test]
+fn test_supertype_alias_rejects_mixed_visible_uses() {
+    let grammar_path = super::helpers::fixtures::fixtures_dir()
+        .join("test_grammars/transparent_supertype_alias/grammar.js");
+    let grammar: serde_json::Value =
+        serde_json::from_str(&load_grammar_file(&grammar_path, None).unwrap()).unwrap();
+    for value in [
+        serde_json::json!({"type": "SYMBOL", "name": "_restricted_expression"}),
+        serde_json::json!({"type": "ALIAS", "named": true, "value": "other_expression",
+            "content": {"type": "SYMBOL", "name": "_restricted_expression"}}),
+    ] {
+        let mut grammar = grammar.clone();
+        grammar["rules"]["source_file"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "SEQ", "members": [{"type": "STRING", "value": "other"}, value]
+            }));
+        let error = generate_parser(&grammar.to_string()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Named alias `expression` conflicts with a supertype"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn test_query_matches_with_transparent_supertype_aliases() {
+    for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
+        let language = get_test_fixture_language(fixture);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let query = Query::new(&language, "(expression/identifier) @value").unwrap();
+        let supertype = language.id_for_node_kind("expression", true);
+        assert!(language.supertypes().contains(&supertype));
+        for id in 0..u16::try_from(language.node_kind_count()).unwrap() {
+            if language.node_kind_is_supertype(id) {
+                assert_eq!(
+                    language.subtypes_for_supertype(id),
+                    language.subtypes_for_supertype(supertype)
+                );
+            }
+        }
+        let mut subtypes: Vec<_> = language
+            .subtypes_for_supertype(supertype)
+            .iter()
+            .map(|id| language.node_kind_for_id(*id).unwrap())
+            .collect();
+        subtypes.sort_unstable();
+        assert_eq!(subtypes, ["identifier", "number"]);
+        for source in ["general x", "restricted x"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().named_child_count(), 1);
+            let value = tree.root_node().child_by_field_name("value").unwrap();
+            assert_eq!(value.kind(), "identifier");
+            assert_eq!(value.utf8_text(source.as_bytes()).unwrap(), "x");
+            assert_query_matches(&language, &query, source, &[(0, vec![("value", "x")])]);
+        }
+        for (source, keyword) in [("general x", "general"), ("restricted x", "restricted")] {
+            for child in ["identifier", "expression/identifier"] {
+                let pattern = format!("(source_file \"{keyword}\" value: ({child}) @value)");
+                let query = Query::new(&language, &pattern).unwrap();
+                assert_query_matches(&language, &query, source, &[(0, vec![("value", "x")])]);
+            }
+        }
+        let mut tree = parser.parse("general x", None).unwrap();
+        tree.edit(&InputEdit {
+            start_byte: 0,
+            old_end_byte: 7,
+            new_end_byte: 10,
+            start_position: Point::new(0, 0),
+            old_end_position: Point::new(0, 7),
+            new_end_position: Point::new(0, 10),
+        });
+        let source = "restricted x";
+        let incremental = parser.parse(source, Some(&tree)).unwrap();
+        let fresh = parser.parse(source, None).unwrap();
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+        let mut cursor = QueryCursor::new();
+        let captures = collect_captures(
+            cursor.captures(&query, incremental.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        let mut fresh_cursor = QueryCursor::new();
+        let expected = collect_captures(
+            fresh_cursor.captures(&query, fresh.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        assert_eq!(captures, expected);
+        if fixture == "indirect_supertype_alias" {
+            for pattern in [
+                "(primary_expression) @value",
+                "(source_file \"general\" value: (primary_expression) @value)",
+                "(source_file \"general\" value: (primary_expression/identifier) @value)",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                assert_query_matches(&language, &query, "general x", &[(0, vec![("value", "x")])]);
+                assert_query_matches(&language, &query, "general 12", &[]);
+                assert_query_matches(&language, &query, "restricted x", &[]);
+            }
+        }
+    }
 }
 
 #[test]
@@ -6262,6 +6889,120 @@ fn test_query_progress_callback_lives_as_long_as_matches() {
 
     assert_eq!(matches.count(), 1000);
     assert!(callback_was_called);
+}
+
+#[test]
+fn test_query_captures_progress_callback_stops_behind_an_open_match() {
+    let language = get_language("javascript");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    let numbers = (0..1000).map(|i| i.to_string()).collect::<Vec<_>>();
+    let source_code = format!("[{}];", numbers.join(","));
+    let tree = parser.parse(&source_code, None).unwrap();
+
+    let query = Query::new(
+        &language,
+        "(array (number) @first (string)) (number) @number",
+    )
+    .unwrap();
+
+    let mut calls = 0;
+    let mut progress_callback = |_: &QueryCursorState| {
+        calls += 1;
+        ControlFlow::Break(())
+    };
+    let mut cursor = QueryCursor::new();
+    let captures = cursor
+        .captures_with_options(
+            &query,
+            tree.root_node(),
+            source_code.as_bytes(),
+            QueryCursorOptions::new().progress_callback(&mut progress_callback),
+        )
+        .count();
+
+    assert!(captures < 1000);
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn test_query_captures_progress_callback_discards_in_progress_matches() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    let element = format!("[[{{\"a\":1}},1,2],{}]", ["true"; 12].join(","));
+    let source_code = format!("[{}]", vec![element; 50].join(","));
+    let tree = parser.parse(&source_code, None).unwrap();
+    let query = Query::new(
+        &language,
+        r#"
+        (array (object) @object (string))
+        (array (array (number) @number) "]" @close)
+        (number) @n
+        "#,
+    )
+    .unwrap();
+
+    for cancel_at in 1..=20 {
+        let calls = Cell::new(0);
+        let mut progress_callback = |_: &QueryCursorState| {
+            calls.set(calls.get() + 1);
+            if calls.get() >= cancel_at {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let mut cursor = QueryCursor::new();
+        let mut captures = cursor.captures_with_options(
+            &query,
+            tree.root_node(),
+            source_code.as_bytes(),
+            QueryCursorOptions::new().progress_callback(&mut progress_callback),
+        );
+        while let Some((m, _)) = captures.next() {
+            if calls.get() >= cancel_at && m.pattern_index == 1 {
+                assert_eq!(m.captures().len(), 2, "cancelled at callback {cancel_at}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_query_progress_callback_halts_for_good() {
+    let language = get_language("javascript");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    let source_code = "function foo() {}\n".repeat(1000);
+    let tree = parser.parse(&source_code, None).unwrap();
+    let query = Query::new(&language, "(function_declaration) @function").unwrap();
+
+    let stop = Cell::new(true);
+    let mut progress_callback = |_: &QueryCursorState| {
+        if stop.get() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches_with_options(
+        &query,
+        tree.root_node(),
+        source_code.as_bytes(),
+        QueryCursorOptions::new().progress_callback(&mut progress_callback),
+    );
+    let mut count = 0;
+    while matches.next().is_some() {
+        count += 1;
+    }
+    assert!(count < 1000);
+
+    stop.set(false);
+    assert!(matches.next().is_none());
 }
 
 #[test]

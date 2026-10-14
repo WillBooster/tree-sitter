@@ -1,6 +1,7 @@
 #![cfg_attr(not(any(test, doctest)), doc = include_str!("../README.md"))]
 
 pub mod fuzz;
+pub mod generation_profile;
 pub mod highlight;
 pub mod init;
 pub mod input;

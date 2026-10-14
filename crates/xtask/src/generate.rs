@@ -33,6 +33,17 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
             if args.wasm { " to Wasm" } else { "" }
         );
 
+        let output = Command::new(&tree_sitter_binary)
+            .arg("generate")
+            .arg("src/grammar.json")
+            .current_dir(grammar_dir)
+            .spawn()?
+            .wait_with_output()?;
+        bail_on_err(
+            &output,
+            &format!("Failed to regenerate {grammar_name} parser"),
+        )?;
+
         if args.wasm {
             let mut cmd = Command::new(&tree_sitter_binary);
             let cmd = cmd.args([
@@ -44,19 +55,7 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
             ]);
             bail_on_err(
                 &cmd.spawn()?.wait_with_output()?,
-                &format!("Failed to regenerate {grammar_name} parser to wasm"),
-            )?;
-        } else {
-            let output = Command::new(&tree_sitter_binary)
-                .arg("generate")
-                .arg("src/grammar.json")
-                .arg("--abi=latest")
-                .current_dir(grammar_dir)
-                .spawn()?
-                .wait_with_output()?;
-            bail_on_err(
-                &output,
-                &format!("Failed to regenerate {grammar_name} parser"),
+                &format!("Failed to build {grammar_name} parser to wasm"),
             )?;
         }
     }

@@ -3,11 +3,13 @@
   // resolves through `exports` to web-tree-sitter.d.ts for esm.ts and to web-tree-sitter.d.cts for cjs.cts.
   "compilerOptions": {
     "target": "es2022",
+    "allowJs": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "skipLibCheck": false,
     "noEmit": true
   },
-  "files": ["esm.ts", "cjs.cts"]
+  "files": ["esm.ts", "cjs.cts", "grammar/grammar.js"]
 }

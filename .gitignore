@@ -547,6 +547,8 @@ test/fuzz/out
 profile*
 log*.html
 
+/lib/binding_web/dsl.d.ts
+
 # Build outputs of the C library and the Wasm grammars
 /target
 *.a

@@ -1,3 +1,5 @@
+use rustc_hash::FxHashSet;
+
 use crate::{grammars::LexicalGrammar, rules::Symbol, strpool::StrPool, tables::ParseTable};
 
 pub struct CoincidentTokenIndex {
@@ -18,8 +20,8 @@ pub struct CoincidentTokenIndex {
 
 impl<'a> CoincidentTokenIndex {
     #[must_use]
-    pub fn new<T>(
-        table: &ParseTable<T>,
+    pub fn new(
+        table: &ParseTable,
         lexical_grammar: &'a LexicalGrammar,
         word_token: Option<Symbol>,
     ) -> Self {
@@ -34,6 +36,10 @@ impl<'a> CoincidentTokenIndex {
         // Pre-collect terminal indices up front rather than continuously recomputing within the
         // loop below.
         let mut terminal_indices = Vec::new();
+        // The index only records which terminals share some state, so a state adds nothing if a
+        // state with the same terminals was already recorded, with/without the word token.
+        let mut recorded_with_word = FxHashSet::default();
+        let mut recorded_without_word = FxHashSet::default();
         for state in &table.states {
             terminal_indices.clear();
             terminal_indices.extend(
@@ -43,7 +49,17 @@ impl<'a> CoincidentTokenIndex {
                     .filter(|s| s.is_terminal())
                     .map(|s| s.index),
             );
-            let has_word = word_token.is_some_and(|w| state.terminal_entries.contains_key(&w));
+            terminal_indices.sort_unstable();
+            let has_word = word_token.is_some_and(|w| state.terminal_entries.contains_key(w));
+            let recorded = if has_word {
+                &mut recorded_with_word
+            } else {
+                &mut recorded_without_word
+            };
+            if recorded.contains(terminal_indices.as_slice()) {
+                continue;
+            }
+            recorded.insert(terminal_indices.clone());
             for (i, &a) in terminal_indices.iter().enumerate() {
                 for &b in &terminal_indices[i..] {
                     let (a, b) = (a as usize, b as usize);

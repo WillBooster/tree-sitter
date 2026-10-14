@@ -9,7 +9,8 @@ use std::{
 };
 
 use tree_sitter::{
-    Decode, IncludedRangesError, InputEdit, LogType, ParseOptions, ParseState, Parser, Point, Range,
+    Decode, IncludedRangesError, InputEdit, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
+    ParseState, Parser, Point, Query, QueryErrorKind, Range,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -17,7 +18,7 @@ use tree_sitter_proc_macro::retry;
 use super::helpers::{
     allocations,
     edits::ReadRecorder,
-    fixtures::{get_language, get_test_language},
+    fixtures::{get_language, get_test_language, get_test_language_with_header},
 };
 use crate::{
     fuzz::edits::Edit,
@@ -28,6 +29,1499 @@ use crate::{
         invert_edit,
     },
 };
+
+#[test]
+fn test_recovery_lexer_preserves_keyword_tokens() {
+    for precedence in [0, 1] {
+        let grammar =
+        r#"{
+            "name": "recovery_keywords_VARIANT",
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "declaration"},
+                    {"type": "SYMBOL", "name": "class_declaration"}
+                ]}},
+                "declaration": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "let"},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "="},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": ";"}
+                ]},
+                "class_declaration": {"type": "SEQ", "members": [
+                    {"type": "TOKEN", "content": {"type": "PREC", "value": PRECEDENCE, "content": {"type": "STRING", "value": "class"}}},
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": ";"}
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+            }
+        }"#.replace("PRECEDENCE", &precedence.to_string()).replace("VARIANT", &precedence.to_string());
+        let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+        let keywords = (0..64)
+            .map(|i| serde_json::json!({"type": "STRING", "value": format!("keyword{}{}", char::from(b'a' + i / 26), char::from(b'a' + i % 26))}))
+            .collect::<Vec<_>>();
+        grammar["rules"]["source_file"]["content"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": keywords}, {"type": "STRING", "value": ";"}
+            ]}));
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language(&name, &code, None))
+            .unwrap();
+        for (source, word, expected) in [
+            ("let x = y class;", "class", "class"),
+            ("let x = y classmate;", "classmate", "identifier"),
+            ("let x = class;", "class", "identifier"),
+            ("class c;", "class", "class"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let start = source.find(word).unwrap();
+            let node = tree
+                .root_node()
+                .descendant_for_byte_range(start, start + word.len())
+                .unwrap();
+            assert_eq!(
+                node.kind(),
+                expected,
+                "{source}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(node.byte_range(), start..start + word.len());
+        }
+        let source = "let x = y = class c;";
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(root.has_error());
+        let declaration = root.named_children(&mut root.walk()).last().unwrap();
+        assert_eq!(
+            declaration.kind(),
+            "class_declaration",
+            "{}",
+            root.to_sexp()
+        );
+        assert_eq!(
+            declaration.utf8_text(source.as_bytes()).unwrap(),
+            "class c;"
+        );
+    }
+}
+
+#[test]
+fn test_recovery_accepts_keywords_as_command_names() {
+    let path = fixtures_dir().join("test_grammars/keyword_reuse");
+    let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
+    let mut grammar: serde_json::Value = serde_json::from_str(&grammar).unwrap();
+    let scanner = std::fs::read_to_string(path.join("scanner.c")).unwrap();
+    grammar["name"] = serde_json::json!("keyword_recovery_word");
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        scanner.replace("tree_sitter_keyword_reuse", &format!("tree_sitter_{name}")),
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, Some(fixture.path())))
+        .unwrap();
+    let source = "while x; do echo; ;; fi; done";
+    let tree = parser.parse(source, None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(program (while_statement (command (command_name (word))) (command (command_name (word))) (ERROR) (command (command_name (word)))))"
+    );
+}
+
+#[test]
+fn test_keyword_recovery_preserves_contextual_method_names() {
+    use tree_sitter::{Query, StreamingIterator};
+    for language in ["javascript", "typescript/typescript", "typescript/tsx"] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        for (source, error_text) in [
+            ("{with finally(){}};", "with"),
+            ("class A { x finally() {} }", "x"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let query = Query::new(
+                &parser.language().unwrap(),
+                "(method_definition name: (property_identifier) @name) (ERROR) @error",
+            )
+            .unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+            let mut captures = Vec::new();
+            while let Some(m) = matches.next() {
+                for capture in m.captures() {
+                    captures.push((
+                        query.capture_names()[capture.index as usize],
+                        capture.node.utf8_text(source.as_bytes()).unwrap(),
+                    ));
+                }
+            }
+            assert_eq!(
+                captures,
+                vec![("error", error_text), ("name", "finally")],
+                "{language}: {source}: {}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
+    use std::{fs, path::Path};
+    use tree_sitter_generate::{
+        GenerationProfile, OptLevel, generate_parser_in_directory_with_profile,
+    };
+
+    let directory = tempfile::Builder::new()
+        .prefix("profile-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let grammar_path = root.join("src/grammar.json");
+    let grammar = serde_json::json!({
+        "name": "profiled_statements",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "statement"}},
+            "statement": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "let"}, {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "STRING", "value": "="}, {"type": "SYMBOL", "name": "number"}, {"type": "STRING", "value": ";"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}, {"type": "SYMBOL", "name": "block"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "CHOICE", "members": (0..128).map(|i| serde_json::json!({
+                        "type": "STRING", "value": format!("command_{i:02}")
+                    })).collect::<Vec<_>>()},
+                    {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "dispatch"},
+                    {"type": "CHOICE", "members": (0..16).map(|i| serde_json::json!({
+                        "type": "SEQ", "members": [
+                            {"type": "STRING", "value": format!("case_{i}")},
+                            {"type": "STRING", "value": format!("value_{i}")}
+                        ]
+                    })).collect::<Vec<_>>()},
+                    {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
+                ]}
+            ]},
+            "block": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "{"}, {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "statement"}}, {"type": "STRING", "value": "}"}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"},
+            "number": {"type": "PATTERN", "value": "[0-9]+"}
+        }
+    });
+    fs::write(&grammar_path, grammar.to_string()).unwrap();
+    fs::write(
+        root.join("tree-sitter.json"),
+        r#"{"metadata":{"version":"0.0.0"}}"#,
+    )
+    .unwrap();
+    let generate = |profile: Option<&GenerationProfile>| {
+        generate_parser_in_directory_with_profile(
+            root,
+            None::<&Path>,
+            Some(&grammar_path),
+            None,
+            None,
+            true,
+            OptLevel::default(),
+            &mut Vec::new(),
+            profile,
+        )
+    };
+    generate(None).unwrap();
+    let parser_path = root.join("src/parser.c");
+    let code = fs::read_to_string(&parser_path).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language_with_header(
+            "profiled_statements",
+            &code,
+            tree_sitter_generate::PARSER_HEADER,
+        ))
+        .unwrap();
+    let source = "let value = 123; if ready { let item = 9; }";
+    let expected = parser.parse(source, None).unwrap();
+    assert!(!expected.root_node().has_error());
+    let mut profile = crate::generation_profile::record_profile(
+        &mut parser,
+        &code,
+        &[source.as_bytes().to_vec()],
+    )
+    .unwrap();
+    assert!(profile.parse_states.iter().any(|&count| count > 0));
+    assert!(profile.lex_states.iter().any(|&count| count > 0));
+    assert!(profile.edges.iter().any(|&(_, _, count)| count > 0));
+    profile.max_dense_states = 2;
+    let profile_path = root.join("profile.json");
+    fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+    let profile: GenerationProfile =
+        serde_json::from_slice(&fs::read(profile_path).unwrap()).unwrap();
+    generate(Some(&profile)).unwrap();
+    let optimized = fs::read_to_string(&parser_path).unwrap();
+    let table_words = |code: &str| {
+        code.split_once("static const uint16_t ts_small_parse_table[] = {")
+            .unwrap()
+            .1
+            .split_once("};")
+            .unwrap()
+            .0
+            .matches(',')
+            .count()
+    };
+    let mut empty_profile = profile.clone();
+    empty_profile.parse_states.fill(0);
+    empty_profile.lex_states.fill(0);
+    empty_profile.edges.clear();
+    generate(Some(&empty_profile)).unwrap();
+    let without_samples = fs::read_to_string(&parser_path).unwrap();
+    assert!(
+        table_words(&optimized) < table_words(&without_samples),
+        "profiled table: {} words; empty-profile table: {} words",
+        table_words(&optimized),
+        table_words(&without_samples)
+    );
+    generate(Some(&profile)).unwrap();
+    parser
+        .set_language(&get_test_language_with_header(
+            "profiled_statements",
+            &optimized,
+            tree_sitter_generate::PARSER_HEADER,
+        ))
+        .unwrap();
+    for (input, has_error) in [
+        (source, false),
+        ("let value = ; if ready { let item = 9;", true),
+        ("dispatch case_0 value_0 item;", false),
+        ("dispatch case_15 value_15 item;", false),
+        ("dispatch case_0 value_15 item;", true),
+    ] {
+        let actual = parser.parse(input, None).unwrap();
+        let mut baseline = Parser::new();
+        baseline
+            .set_language(&get_test_language_with_header(
+                "profiled_statements",
+                &code,
+                tree_sitter_generate::PARSER_HEADER,
+            ))
+            .unwrap();
+        let expected = baseline.parse(input, None).unwrap();
+        assert_eq!(expected.root_node().has_error(), has_error, "{input}");
+        assert_eq!(actual.root_node().to_sexp(), expected.root_node().to_sexp());
+        assert_eq!(
+            actual.root_node().byte_range(),
+            expected.root_node().byte_range()
+        );
+        assert_eq!(
+            actual.root_node().has_error(),
+            expected.root_node().has_error()
+        );
+    }
+    let changed = grammar.to_string().replace("[0-9]+", "[0-9a-f]+");
+    fs::write(&grammar_path, changed).unwrap();
+    assert!(
+        generate(Some(&profile))
+            .unwrap_err()
+            .to_string()
+            .contains("fingerprint")
+    );
+    assert_eq!(fs::read_to_string(parser_path).unwrap(), optimized);
+}
+
+#[test]
+fn test_languages_with_other_abi_versions_are_rejected() {
+    let grammar = serde_json::json!({
+        "name": "other_abi_versions",
+        "supertypes": ["statement"],
+        "rules": {
+            "program": {"type": "SYMBOL", "name": "statement"},
+            "statement": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "x"},
+                {"type": "SYMBOL", "name": "y"}
+            ]},
+            "x": {"type": "STRING", "value": "x"},
+            "y": {"type": "STRING", "value": "y"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let supported =
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER);
+    assert_eq!(supported.name(), Some("other_abi_versions"));
+    assert!(supported.metadata().is_some());
+    let &[statement] = supported.supertypes() else {
+        panic!("expected one supertype");
+    };
+    assert_eq!(supported.subtypes_for_supertype(statement).len(), 2);
+    let define = format!("#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}\n");
+    assert!(code.contains(&define));
+    let mut parser = Parser::new();
+    for version in [13, 15, 16, LANGUAGE_VERSION + 1] {
+        let language = get_test_language_with_header(
+            &name,
+            &code.replace(&define, &format!("#define LANGUAGE_VERSION {version}\n")),
+            tree_sitter_generate::PARSER_HEADER,
+        );
+        let error = parser.set_language(&language).unwrap_err();
+        assert_eq!(error, LanguageError::Version(version));
+        assert_eq!(
+            error.to_string(),
+            format!("Incompatible language version {version:#x}. Expected {LANGUAGE_VERSION:#x}")
+        );
+        assert!(parser.language().is_none());
+        assert_eq!(language.name(), None);
+        assert!(language.metadata().is_none());
+        assert_eq!(language.supertypes(), &[] as &[u16]);
+        assert_eq!(language.subtypes_for_supertype(statement), &[] as &[u16]);
+        assert_eq!(
+            Query::new(&language, "(program)").unwrap_err().kind,
+            QueryErrorKind::Language
+        );
+    }
+}
+
+#[test]
+fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
+    use std::fmt::Write;
+
+    let keywords = (0..24)
+        .map(|i| format!("command_{i:02}"))
+        .collect::<Vec<_>>();
+    let grammar = serde_json::json!({
+        "name": "commands_with_comments",
+        "word": "identifier",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "command"}},
+            "command": {"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": keywords.iter().map(|keyword| serde_json::json!({"type": "STRING", "value": keyword})).collect::<Vec<_>>()},
+                {"type": "SYMBOL", "name": "identifier"},
+                {"type": "STRING", "value": ";"}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z_][a-z_0-9]*"},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "/*"},
+                {"type": "PATTERN", "value": "[a-z ]+"},
+                {"type": "STRING", "value": "*/"}
+            ]}
+        }
+    });
+    let mut source = String::new();
+    for keyword in &keywords {
+        writeln!(source, "{keyword} value /* gap */;").unwrap();
+    }
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    // The trees, ranges, and lookahead names below are what the table layout of upstream's ABI 15
+    // produced for these inputs before this generator stopped emitting it.
+    let mut expected_lookaheads = keywords.clone();
+    expected_lookaheads.extend(["/*", "comment", "end"].map(String::from));
+    expected_lookaheads.sort_unstable();
+    for language in &languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(language).unwrap();
+
+        let tree = parser.parse(&source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            root.to_sexp(),
+            format!(
+                "(source_file{})",
+                " (command (identifier) (comment))".repeat(keywords.len())
+            )
+        );
+        assert_eq!(root.byte_range(), 0..source.len());
+        assert!(!root.has_error());
+        assert_eq!(root.child_count() as usize, keywords.len());
+        for i in 0..root.child_count() {
+            let mut names = language
+                .lookahead_iterator(root.child(i).unwrap().next_parse_state())
+                .unwrap()
+                .iter_names()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            names.sort_unstable();
+            assert_eq!(names, expected_lookaheads);
+        }
+
+        let source = source.replace("value", "");
+        let tree = parser.parse(&source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            root.to_sexp(),
+            format!(
+                "(source_file (ERROR{}))",
+                " (comment)".repeat(keywords.len())
+            )
+        );
+        assert_eq!(root.byte_range(), 0..source.len());
+        assert!(root.has_error());
+    }
+}
+
+#[test]
+fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
+    let keyword = format!("keyword_{}", "x".repeat(80));
+    let grammar = serde_json::json!({
+        "name": "keyword_input_boundaries",
+        "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "STRING", "value": keyword},
+                {"type": "SYMBOL", "name": "identifier"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[a-z_]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let languages = [
+        get_test_language(&name, &code, None),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        let source = format!("{keyword} {keyword}_suffix");
+        let expected = parser.parse(&source, None).unwrap();
+        let streamed = parser
+            .parse_with_options(
+                &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            streamed.root_node().to_sexp(),
+            expected.root_node().to_sexp()
+        );
+        assert_eq!(streamed.root_node().child(0).unwrap().kind(), keyword);
+        assert_eq!(streamed.root_node().child(1).unwrap().kind(), "identifier");
+        let utf16 = parser
+            .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+            .unwrap();
+        assert_eq!(utf16.root_node().to_sexp(), expected.root_node().to_sexp());
+        assert_eq!(utf16.root_node().child(0).unwrap().kind(), keyword);
+        let split = keyword.len() / 2;
+        let excluded = format!("{}@@@@@{}", &keyword[..split], &keyword[split..]);
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: split,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, split),
+                },
+                Range {
+                    start_byte: split + 5,
+                    end_byte: excluded.len(),
+                    start_point: Point::new(0, split + 5),
+                    end_point: Point::new(0, excluded.len()),
+                },
+            ])
+            .unwrap();
+        let tree = parser.parse(&excluded, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let node = tree.root_node().child(0).unwrap();
+        assert_eq!(node.kind(), keyword);
+        assert_eq!(node.byte_range(), 0..excluded.len());
+
+        let mut embedded = String::new();
+        let mut ranges = Vec::new();
+        let mut expected_tokens = Vec::new();
+        for i in 0..64 {
+            embedded.push_str("@@@@@");
+            let start = embedded.len();
+            let token = if i % 2 == 0 {
+                keyword.clone()
+            } else {
+                format!("{keyword}_suffix")
+            };
+            embedded.push_str(&token);
+            if i != 63 {
+                embedded.push(' ');
+            }
+            let end = embedded.len();
+            ranges.push(Range {
+                start_byte: start,
+                end_byte: end,
+                start_point: Point::new(0, start),
+                end_point: Point::new(0, end),
+            });
+            expected_tokens.push((start, token));
+        }
+        parser.set_included_ranges(&ranges).unwrap();
+        let tree = parser.parse(&embedded, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        assert_eq!(
+            tree.root_node().child_count() as usize,
+            expected_tokens.len()
+        );
+        for (i, (start, token)) in expected_tokens.iter().enumerate() {
+            let node = tree.root_node().child(i as u32).unwrap();
+            assert_eq!(
+                node.kind(),
+                if i % 2 == 0 { &keyword } else { "identifier" }
+            );
+            assert_eq!(node.byte_range(), *start..start + token.len());
+        }
+    }
+}
+
+#[test]
+fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
+    let keywords = (0..64)
+        .map(|i| format!("keyword_{i:04}_{}", "x".repeat(80)))
+        .collect::<Vec<_>>();
+    for separate_keywords in [false, true] {
+        let mut members = keywords
+            .iter()
+            .map(|word| serde_json::json!({"type": "STRING", "value": word}))
+            .collect::<Vec<_>>();
+        members.push(serde_json::json!({"type": "SYMBOL", "name": "identifier"}));
+        let mut grammar = serde_json::json!({
+            "name": format!("large_lexer_{separate_keywords}"),
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": members}},
+                "identifier": {"type": "PATTERN", "value": "[a-z_][a-z_0-9]*"}
+            }
+        });
+        if separate_keywords {
+            grammar
+                .as_object_mut()
+                .unwrap()
+                .insert("word".into(), serde_json::json!("identifier"));
+        }
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let languages = [
+            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm(&name, &code),
+        ];
+        for language in languages {
+            let mut parser = Parser::new();
+            #[cfg(feature = "wasm")]
+            if language.is_wasm() {
+                parser
+                    .set_wasm_store(
+                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                    )
+                    .unwrap();
+            }
+            parser.set_language(&language).unwrap();
+            let mut source = format!(
+                "{} {}_suffix {}9",
+                keywords.join(" "),
+                keywords[0],
+                keywords.last().unwrap()
+            )
+            .into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error());
+            assert_eq!(root.child_count() as usize, keywords.len() + 2);
+            assert_eq!(root.to_sexp(), "(source_file (identifier) (identifier))");
+            let mut offset = 0;
+            for (i, keyword) in keywords.iter().enumerate() {
+                let node = root.child(i as u32).unwrap();
+                assert_eq!(node.kind(), keyword);
+                assert_eq!(node.byte_range(), offset..offset + keyword.len());
+                offset += keyword.len() + 1;
+            }
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length: keywords[0].len(),
+                    inserted_text: format!("{}_suffix", keywords[0]).into_bytes(),
+                },
+            )
+            .unwrap();
+            let incremental = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                "(source_file (identifier) (identifier) (identifier))"
+            );
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            assert!(!incremental.root_node().has_error());
+        }
+    }
+}
+
+#[test]
+fn test_generated_accepting_loops_preserve_token_boundaries() {
+    let grammar = r#"{
+        "name": "accepting_loop_boundaries",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "identifier"},
+                {"type": "SYMBOL", "name": "number"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[_\\p{XID_Start}][_\\p{XID_Continue}]*"},
+            "number": {"type": "PATTERN", "value": "[0-9]+(\\.[0-9]+)?"}
+        }
+    }"#;
+    let (name, code) = generate_parser(grammar).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        let identifier = "café日本語".repeat(64);
+        let number = format!("{}.45", "123".repeat(64));
+        let source = format!("{identifier} {number}");
+        let expected = "(source_file (identifier) (number))";
+        let tree = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        assert_eq!(
+            tree.root_node().named_child(0).unwrap().byte_range(),
+            0..identifier.len()
+        );
+        assert_eq!(
+            tree.root_node().named_child(1).unwrap().byte_range(),
+            identifier.len() + 1..source.len()
+        );
+        let utf16 = source.encode_utf16().collect::<Vec<_>>();
+        let tree = parser.parse_utf16_le(&utf16, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
+
+        for source in ["123.", "123.a", "123.\0"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error());
+            let number = tree.root_node().named_child(0).unwrap();
+            assert_eq!(number.kind(), "number");
+            assert_eq!(number.byte_range(), 0..3);
+        }
+
+        let source = "abc GAP 123.45";
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: 3,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, 3),
+                },
+                Range {
+                    start_byte: 7,
+                    end_byte: source.len(),
+                    start_point: Point::new(0, 7),
+                    end_point: Point::new(0, source.len()),
+                },
+            ])
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..3);
+        assert_eq!(
+            tree.root_node().named_child(1).unwrap().byte_range(),
+            8..source.len()
+        );
+    }
+}
+
+#[test]
+fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
+    let (name, code) = generate_parser(
+        r#"{
+        "name": "unicode_identifiers",
+        "extras": [],
+        "rules": {
+            "identifier": {"type": "PATTERN", "value": "[_\\p{XID_Start}][_\\p{XID_Continue}]*"}
+        }
+    }"#,
+    )
+    .unwrap();
+    let language = get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["_name", "café", "日本語", "𝔘nicode", "e\u{301}"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(identifier)");
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().end_byte(), source.len());
+        let source = source.encode_utf16().collect::<Vec<_>>();
+        let tree = parser.parse_utf16_le(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(identifier)");
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().end_byte(), source.len() * 2);
+    }
+    for source in [b"\0".as_slice(), b"\xff", "😀".as_bytes(), b"~"] {
+        assert!(parser.parse(source, None).unwrap().root_node().has_error());
+    }
+}
+
+#[test]
+fn test_generated_lexer_character_boundaries() {
+    let ascii_literals = [
+        "z9", "a0", "t8", "b1", "r7", "d2", "p6", "f3", "n5", "h4", "c5", "e6", "g7", "i8", "j9",
+        "k0",
+    ];
+    let mut mixed_literals = ascii_literals.to_vec();
+    mixed_literals.extend(["\u{a0}0", "\u{ffff}1", "\u{1f600}2", "\\\0"]);
+    for (suffix, literals) in [
+        ("mixed", mixed_literals.as_slice()),
+        ("ascii", ascii_literals.as_slice()),
+    ] {
+        let mut alternatives = literals
+            .iter()
+            .map(|literal| serde_json::json!({"type": "STRING", "value": literal}))
+            .collect::<Vec<_>>();
+        alternatives.push(serde_json::json!({"type": "SYMBOL", "name": "word"}));
+        let grammar = serde_json::json!({
+            "name": format!("lexer_character_boundaries_{suffix}"),
+            "extras": [],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "item"}},
+                "item": {"type": "CHOICE", "members": alternatives},
+                "word": {"type": "PATTERN", "value": "[acegikmoqsuwy\\u0080\\u0100\\u0370\\u2000\\u3042\\U0001f600]+"}
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language =
+            get_test_language_with_header(&name, &parser_code, tree_sitter_generate::PARSER_HEADER);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for &literal in literals {
+            let tree = parser.parse(literal, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (item))",
+                "{literal:?}"
+            );
+            assert!(!tree.root_node().has_error(), "{literal:?}");
+            assert_eq!(tree.root_node().end_byte(), literal.len());
+        }
+        for word in [
+            "acegikmoqsuwy",
+            "\u{80}\u{100}\u{370}\u{2000}\u{3042}\u{1f600}",
+        ] {
+            let expected = "(source_file (item (word)))";
+            let tree = parser.parse(word, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), word.len());
+            let utf16 = word.encode_utf16().collect::<Vec<_>>();
+            let tree = parser.parse_utf16_le(&utf16, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected);
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
+        }
+        for invalid in [
+            "b",
+            "z",
+            "\0",
+            "\\",
+            "\u{7f}",
+            "\u{81}",
+            "\u{101}",
+            "\u{1f601}",
+        ] {
+            let tree = parser.parse(invalid, None).unwrap();
+            assert!(tree.root_node().has_error(), "{invalid:?}");
+        }
+
+        let mut source = b"a0b1d2f3h4".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut deleted_length = 2;
+        for literal in literals {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length,
+                    inserted_text: literal.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            deleted_length = literal.len();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (item) (item) (item) (item) (item))"
+            );
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
+fn test_header_override_does_not_reuse_another_headers_library() {
+    let grammar = serde_json::json!({
+        "name": "header_override_cache",
+        "rules": {"program": {"type": "STRING", "value": "x"}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let header = tree_sitter_generate::PARSER_HEADER;
+    let mut parser = Parser::new();
+    for language in [
+        get_test_language(&name, &parser_code, None),
+        get_test_language_with_header(&name, &parser_code, header),
+    ] {
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("x", None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(program)");
+        assert!(!tree.root_node().has_error());
+    }
+    let broken_header = format!("{header}\n#error requested_header_must_be_used\n");
+    for _ in 0..2 {
+        assert!(
+            std::panic::catch_unwind(|| {
+                get_test_language_with_header(&name, &parser_code, &broken_header)
+            })
+            .is_err()
+        );
+        let language = get_test_language_with_header(&name, &parser_code, header);
+        parser.set_language(&language).unwrap();
+        assert_eq!(
+            parser.parse("x", None).unwrap().root_node().to_sexp(),
+            "(program)"
+        );
+    }
+}
+
+#[test]
+fn test_character_set_constants_do_not_shadow_grammar_symbols() {
+    let names = [
+        "word_character_set_1",
+        "word_character_set_1_ascii",
+        "ts_lex_sym_word_character_set_1_ascii",
+    ];
+    let mut rules = serde_json::Map::new();
+    rules.insert(
+        "source_file".into(),
+        serde_json::json!({"type": "REPEAT", "content": {"type": "SYMBOL", "name": "item"}}),
+    );
+    rules.insert(
+        "item".into(),
+        serde_json::json!({"type": "CHOICE", "members": std::iter::once("word").chain(names).map(|name| {
+            serde_json::json!({"type": "SYMBOL", "name": name})
+        }).collect::<Vec<_>>()}),
+    );
+    rules.insert(
+        "word".into(),
+        serde_json::json!({"type": "PATTERN", "value": "[acegikmoqsuwy\\u0080\\u0100\\u0370\\u2000\\u3042\\U0001f600]+"}),
+    );
+    for (name, value) in names.into_iter().zip(["!", "?", "#"]) {
+        rules.insert(
+            name.into(),
+            serde_json::json!({"type": "STRING", "value": value}),
+        );
+    }
+    let grammar =
+        serde_json::json!({"name": "character_set_symbol_collision", "extras": [], "rules": rules});
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language =
+        get_test_language_with_header(&name, &parser_code, tree_sitter_generate::PARSER_HEADER);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "ace!?#あ😀";
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.end_byte(), source.len());
+    assert_eq!(
+        root.to_sexp(),
+        "(source_file (item (word)) (item (word_character_set_1)) (item (word_character_set_1_ascii)) (item (ts_lex_sym_word_character_set_1_ascii)) (item (word)))"
+    );
+}
+
+#[test]
+fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
+    let names = [
+        "α", "u03b12", "u03b1", " α", "u03b122", "u03b12 ", "α ", "  α",
+    ];
+    let mut rules = serde_json::Map::new();
+    rules.insert(
+        "program".into(),
+        serde_json::json!({
+            "type": "SEQ", "members": names.iter().map(|name| serde_json::json!({
+                "type": "SYMBOL", "name": name
+            })).collect::<Vec<_>>()
+        }),
+    );
+    for (name, value) in names.iter().zip("abcdefgh".chars()) {
+        rules.insert(
+            (*name).into(),
+            serde_json::json!({"type": "STRING", "value": value.to_string()}),
+        );
+    }
+    let grammar = serde_json::json!({"name": "colliding_symbol_identifiers", "rules": rules});
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language(&name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse("abcdefgh", None).unwrap();
+    let root = tree.root_node();
+    assert!(!root.has_error());
+    assert_eq!(root.end_byte(), 8);
+    let mut cursor = root.walk();
+    assert_eq!(
+        root.named_children(&mut cursor)
+            .map(|node| node.kind())
+            .collect::<Vec<_>>(),
+        names
+    );
+}
+
+#[test]
+fn test_anonymous_external_pattern_used_as_extra() {
+    for external_count in [1, 2] {
+        for with_immediate in [false, true] {
+            let externals = ["\\n", "\\s"][..external_count]
+                .iter()
+                .map(|value| serde_json::json!({"type": "PATTERN", "value": value}))
+                .collect::<Vec<_>>();
+            let grammar = serde_json::json!({
+                "name": format!("anonymous_external_extra_{with_immediate}_{external_count}"),
+                "externals": externals,
+                "extras": [{"type": "PATTERN", "value": "\\n"}],
+                "rules": {
+                    "source_file": {"type": "REPEAT", "content": if with_immediate {
+                        serde_json::json!({"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "a"}})
+                    } else {
+                        serde_json::json!({"type": "STRING", "value": "a"})
+                    }}
+                }
+            });
+            let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language_with_declining_scanner(&name, &parser_code);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            for source in ["", "a", "\na\na\n", "\n\n"] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert_eq!(
+                    root.has_error(),
+                    with_immediate && source.contains('\n'),
+                    "{source:?}"
+                );
+                assert_eq!(root.end_byte(), source.len(), "{source:?}");
+                assert_eq!(
+                    root.children(&mut root.walk())
+                        .filter(|node| node.kind() == "a")
+                        .count(),
+                    source.matches('a').count(),
+                    "{source:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_shared_extra_with_mixed_immediate_syntax() {
+    let grammar = serde_json::json!({
+        "name": "shared_extra_with_mixed_immediate_syntax",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {
+            "source_file": {"type": "SEQ", "members": [
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                {"type": "CHOICE", "members": [{"type": "SYMBOL", "name": "other"}, {"type": "BLANK"}]}
+            ]},
+            "other": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["x", "xy", "\nx", "\nxy"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(
+            tree.root_node().has_error(),
+            source.starts_with('\n'),
+            "{source:?}"
+        );
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_shared_extra_with_immediate_alternative() {
+    let grammar = serde_json::json!({
+        "name": "shared_extra_with_immediate_alternative",
+        "externals": [{"type": "PATTERN", "value": "\\n"}],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {"source_file": {"type": "CHOICE", "members": [
+            {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+            {"type": "STRING", "value": "y"}
+        ]}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, has_error) in [("x", false), ("y", false), ("\nx", true), ("\ny", false)] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().has_error(), has_error, "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_external_extra_updates_scanner_state() {
+    let grammar = serde_json::json!({
+        "name": "external_extra_updates_state",
+        "externals": [
+            {"type": "PATTERN", "value": "\\n"},
+            {"type": "SYMBOL", "name": "_after_extra"}
+        ],
+        "extras": [{"type": "PATTERN", "value": "\\n"}],
+        "rules": {"source_file": {"type": "SEQ", "members": [
+            {"type": "STRING", "value": "a"},
+            {"type": "SYMBOL", "name": "_after_extra"}
+        ]}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_scanner(
+        &name,
+        &parser_code,
+        r#"
+#include "tree_sitter/parser.h"
+#include <stdlib.h>
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return calloc(1, sizeof(bool)); }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) { free(payload); }
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) {
+  buffer[0] = *(bool *)payload;
+  return 1;
+}
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {
+  *(bool *)payload = length > 0 && buffer[0];
+}
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+  if (valid_symbols[0] && lexer->lookahead == '\n') {
+    lexer->advance(lexer, false);
+    lexer->mark_end(lexer);
+    *(bool *)payload = true;
+    lexer->result_symbol = 0;
+    return true;
+  }
+  if (valid_symbols[1] && *(bool *)payload) {
+    *(bool *)payload = false;
+    lexer->result_symbol = 1;
+    return true;
+  }
+  return false;
+}
+"#,
+    );
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["\na", "\n\na", "a"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().has_error(), source == "a", "{source:?}");
+        assert_eq!(tree.root_node().end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_literal_token_with_overlapping_external_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "literal_token_with_overlapping_external_extra_pattern",
+        "externals": [{"type": "PATTERN", "value": "a"}],
+        "extras": [{"type": "PATTERN", "value": "a"}],
+        "rules": {"source_file": {"type": "REPEAT", "content": {"type": "STRING", "value": "a"}}}
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["a", "aa", "aaa"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error(), "{source:?}");
+        let children = root.children(&mut root.walk()).collect::<Vec<_>>();
+        assert_eq!(children.len(), 1, "{source:?}");
+        assert_eq!(children[0].kind(), "a");
+        assert_eq!(root.end_byte(), source.len());
+    }
+}
+
+#[test]
+fn test_immediate_token_with_overlapping_external_extra_pattern() {
+    let grammar = serde_json::json!({
+        "name": "overlapping_anonymous_external_extra",
+        "externals": [{"type": "PATTERN", "value": "a"}],
+        "extras": [{"type": "PATTERN", "value": "a"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {
+                "type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "ab"}
+            }}
+        }
+    });
+    let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let language = get_test_language_with_declining_scanner(&name, &parser_code);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["", "ab", "abab", "aab", "a"] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(
+            root.has_error(),
+            matches!(source, "aab" | "a"),
+            "{source:?}"
+        );
+        assert_eq!(root.end_byte(), source.len(), "{source:?}");
+    }
+}
+
+#[test]
+fn test_immediate_token_with_reused_anonymous_extra_pattern() {
+    for with_external in [false, true] {
+        let grammar = serde_json::json!({
+            "name": format!("reused_anonymous_extra_{with_external}"),
+            "externals": if with_external { vec![serde_json::json!({"type": "PATTERN", "value": "\\s"})] } else { vec![] },
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "program": {
+                    "type": "SEQ",
+                    "members": [
+                        {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "x"}},
+                        {"type": "CHOICE", "members": [
+                            {"type": "PATTERN", "value": "\\s"},
+                            {"type": "BLANK"}
+                        ]}
+                    ]
+                }
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language_with_declining_scanner(&name, &parser_code);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for source in ["x", "x ", "x\n"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{source:?}");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+        for source in [" x", "\tx", "\nx", " x "] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error(), "{source:?}");
+        }
+    }
+}
+
+fn get_test_language_with_declining_scanner(
+    name: &str,
+    parser_code: &str,
+) -> tree_sitter::Language {
+    get_test_language_with_scanner(
+        name,
+        parser_code,
+        r#"
+#include "tree_sitter/parser.h"
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) { return false; }
+"#,
+    )
+}
+
+fn get_test_language_with_scanner(
+    name: &str,
+    parser_code: &str,
+    scanner: &str,
+) -> tree_sitter::Language {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        scanner.replace("GRAMMAR", name),
+    )
+    .unwrap();
+    get_test_language(name, parser_code, Some(fixture.path()))
+}
+
+#[test]
+fn test_regex_extra_preserves_matching_named_token() {
+    for (suffix, token_name) in [("named", "comment"), ("hidden", "_comment")] {
+        let grammar = serde_json::json!({
+            "name": format!("matching_declared_extra{suffix}"),
+            "extras": [
+                {"type": "PATTERN", "value": "\\s"},
+                {"type": "PATTERN", "value": "#.*"}
+            ],
+            "rules": {
+                "program": {
+                    "type": "SEQ",
+                    "members": [
+                        {"type": "STRING", "value": "x"},
+                        {"type": "CHOICE", "members": [
+                            {"type": "SYMBOL", "name": token_name},
+                            {"type": "BLANK"}
+                        ]},
+                        {"type": "STRING", "value": "y"}
+                    ]
+                },
+                token_name: {"type": "PATTERN", "value": "#.*"}
+            }
+        });
+        let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &parser_code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("x # hi\ny # there\n", None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let expected = if token_name == "comment" {
+            "(program (comment) (comment))"
+        } else {
+            "(program)"
+        };
+        assert_eq!(tree.root_node().to_sexp(), expected);
+    }
+}
+
+#[test]
+fn test_recovery_through_many_nonterminal_extras() {
+    let language = get_test_fixture_language("recovery_extra_chain");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let line = "#pragma warning disable x #:x\n";
+    let measure = |parser: &mut Parser, count: usize, blocks: usize| {
+        let source = format!("{}x;", line.repeat(count)).repeat(blocks);
+        let mut fastest = Duration::MAX;
+        for _ in 0..3 {
+            let started = cpu_time::ThreadTime::now();
+            let mut samples = 0;
+            let elapsed = loop {
+                let tree = parser.parse(&source, None).unwrap();
+                samples += 1;
+                let root = tree.root_node();
+                assert!(root.has_error());
+                assert_eq!(root.named_child_count(), (count + 1) * blocks);
+                assert_eq!(
+                    root.named_child(((count + 1) * blocks - 1) as u32)
+                        .unwrap()
+                        .kind(),
+                    "statement"
+                );
+                assert_eq!(root.end_byte(), source.len());
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(100) {
+                    break elapsed;
+                }
+            };
+            fastest = fastest.min(elapsed / samples);
+        }
+        fastest
+    };
+    for blocks in [1, 2, 3] {
+        measure(&mut parser, 1000, blocks);
+        measure(&mut parser, 10_000, blocks);
+        let small = measure(&mut parser, 1000, blocks);
+        let large = measure(&mut parser, 10_000, blocks);
+        assert!(
+            large < small * 30,
+            "blocks: {blocks}, small: {small:?}, large: {large:?}"
+        );
+    }
+}
+
+#[test]
+fn test_incremental_recovery_before_changed_nonterminal_extra() {
+    let language = get_test_fixture_language("incremental_extra_recovery");
+    for prefix in ["a ", "a /*gap*/ ", "a #pragma warning disable y\n "] {
+        for utf16 in [false, true] {
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let mut parse = |source: &str, old: Option<&tree_sitter::Tree>| {
+                if utf16 {
+                    parser
+                        .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), old)
+                        .unwrap()
+                } else {
+                    parser.parse(source, old).unwrap()
+                }
+            };
+            let mut source = format!("{prefix}#pragma warning disable x\n b;");
+            let position = prefix.len() + "#pragma ".len();
+            let mut tree = parse(&source, None);
+            let original = tree.root_node().to_sexp();
+            assert!(!tree.root_node().has_error());
+            let scale = if utf16 { 2 } else { 1 };
+            for replacement in [" ", "w", " ", "w"] {
+                source.replace_range(position..=position, replacement);
+                let before = &source[..position];
+                let row = before.bytes().filter(|byte| *byte == b'\n').count();
+                let column = before.rsplit('\n').next().unwrap().len() * scale;
+                tree.edit(&InputEdit {
+                    start_byte: position * scale,
+                    old_end_byte: (position + 1) * scale,
+                    new_end_byte: (position + 1) * scale,
+                    start_position: Point::new(row, column),
+                    old_end_position: Point::new(row, column + scale),
+                    new_end_position: Point::new(row, column + scale),
+                });
+                tree = parse(&source, Some(&tree));
+                let fresh = parse(&source, None);
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(tree.root_node().range(), fresh.root_node().range());
+                assert_eq!(tree.root_node().has_error(), replacement == " ");
+                if replacement == "w" {
+                    assert_eq!(tree.root_node().to_sexp(), original);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_incremental_recovery_with_ambiguous_lookahead() {
+    let language = get_test_fixture_language("ambiguous_reuse");
+    for utf16 in [false, true] {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let mut parse = |source: &str, old: Option<&tree_sitter::Tree>| {
+            if utf16 {
+                parser
+                    .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), old)
+                    .unwrap()
+            } else {
+                parser.parse(source, old).unwrap()
+            }
+        };
+        let original = "{switch(x){f\ny+;}return;}";
+        let edited = "{switch(x)#else\n{f\ny+;}return;}";
+        let scale = if utf16 { 2 } else { 1 };
+        let mut tree = parse(original, None);
+        for source in [edited, original, edited, original] {
+            let inserting = source == edited;
+            tree.edit(&InputEdit {
+                start_byte: 10 * scale,
+                old_end_byte: if inserting { 10 } else { 16 } * scale,
+                new_end_byte: if inserting { 16 } else { 10 } * scale,
+                start_position: Point::new(0, 10 * scale),
+                old_end_position: if inserting {
+                    Point::new(0, 10 * scale)
+                } else {
+                    Point::new(1, 0)
+                },
+                new_end_position: if inserting {
+                    Point::new(1, 0)
+                } else {
+                    Point::new(0, 10 * scale)
+                },
+            });
+            tree = parse(source, Some(&tree));
+            let fresh = parse(source, None);
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().range(), fresh.root_node().range());
+            assert!(tree.root_node().has_error());
+        }
+    }
+}
+
+#[test]
+fn test_incremental_lexing_after_nonterminal_extra() {
+    let language = get_test_fixture_language("incremental_nonterminal_extra");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let original = b"main :: () {}\n// comment\n#import \"Basic\";\n";
+    let mut source = original.to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    let expected =
+        "(program (block_decl (identifier) (function (block))) (comment) (import (string)))";
+    assert_eq!(tree.root_node().to_sexp(), expected);
+    let position = source
+        .windows(7)
+        .position(|text| text == b"#import")
+        .unwrap();
+    for _ in 0..2 {
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position,
+                deleted_length: 0,
+                inserted_text: b"/".to_vec(),
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position,
+                deleted_length: 1,
+                inserted_text: Vec::new(),
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        assert_eq!(source, original);
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        assert!(!tree.root_node().has_error());
+    }
+}
 
 #[test]
 fn test_parsing_simple_string() {
@@ -84,10 +1578,10 @@ fn test_parsing_with_logging() {
         )
         .unwrap();
 
-    assert!(messages.contains(&(
-        LogType::Parse,
-        "reduce sym:struct_item, child_count:3".to_string()
-    )));
+    assert!(messages.iter().any(|(kind, message)| {
+        *kind == LogType::Parse
+            && message.starts_with("reduce sym:struct_item, child_count:3, state:")
+    }));
     assert!(messages.contains(&(LogType::Lex, "skip character:' '".to_string())));
 
     let mut row_starts_from_0 = false;
@@ -551,6 +2045,33 @@ fn test_parsing_after_editing_end_of_code() {
     );
 
     assert_eq!(recorder.strings_read(), vec![" * ", "abc.d)",]);
+}
+
+#[test]
+fn test_parsing_after_editing_keyword_context() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("keyword_reuse"))
+        .unwrap();
+    let mut source = b"\"``\"&while'';if;then;elif;then``;fi".to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    perform_edit(
+        &mut tree,
+        &mut source,
+        &Edit {
+            position: 13,
+            deleted_length: 0,
+            inserted_text: b"esac".to_vec(),
+        },
+    )
+    .unwrap();
+    let incremental = parser.parse(&source, Some(&tree)).unwrap();
+    let fresh = parser.parse(&source, None).unwrap();
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(incremental.root_node().end_byte(), source.len());
 }
 
 #[test]
@@ -1289,6 +2810,78 @@ fn test_parsing_with_one_included_range() {
         Point::new(0, source_code.find("console").unwrap())
     );
     assert_eq!(js_tree.included_ranges(), &[script_content_node.range()]);
+}
+
+#[test]
+fn test_parsing_with_empty_included_ranges_and_parser_reuse() {
+    let source = "// header\n[0, // first\n1, // second\n2] // footer\n";
+    let ranges = ["[0, ", "1, ", "2]"]
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let start_byte = source.find(text).unwrap();
+            Range {
+                start_byte,
+                end_byte: start_byte + text.len(),
+                start_point: Point::new(i + 1, 0),
+                end_point: Point::new(i + 1, text.len()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let empty_range = |byte, point| Range {
+        start_byte: byte,
+        end_byte: byte,
+        start_point: point,
+        end_point: point,
+    };
+    let mut ranges_with_empty = vec![empty_range(0, Point::new(0, 0))];
+    for range in &ranges {
+        ranges_with_empty.extend([
+            empty_range(range.start_byte, range.start_point),
+            *range,
+            empty_range(range.end_byte, range.end_point),
+        ]);
+    }
+    ranges_with_empty.push(empty_range(source.len(), Point::new(4, 0)));
+
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("json")).unwrap();
+    for included_ranges in [&ranges, &ranges_with_empty, &ranges] {
+        parser.set_included_ranges(included_ranges).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let reused_tree = parser.parse(source, Some(&tree)).unwrap();
+        for tree in [&tree, &reused_tree] {
+            let root = tree.root_node();
+            assert!(!root.has_error());
+            assert_eq!(
+                root.to_sexp(),
+                "(document (array (number) (number) (number)))"
+            );
+            let array = root.named_child(0).unwrap();
+            for (i, range) in ranges.iter().enumerate() {
+                let number = array.named_child(i as u32).unwrap();
+                let start = range.start_byte + usize::from(i == 0);
+                assert_eq!(number.start_byte(), start);
+                assert_eq!(number.end_byte(), start + 1);
+                assert_eq!(
+                    number.start_position(),
+                    Point::new(i + 1, usize::from(i == 0))
+                );
+            }
+        }
+    }
+
+    parser
+        .set_included_ranges(&[
+            empty_range(0, Point::new(0, 0)),
+            empty_range(ranges[0].start_byte, ranges[0].start_point),
+            empty_range(source.len(), Point::new(4, 0)),
+        ])
+        .unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), "(document)");
+    assert_eq!(tree.root_node().start_byte(), source.len());
+    assert_eq!(tree.root_node().end_byte(), source.len());
 }
 
 #[test]
@@ -2313,6 +3906,33 @@ fn test_grammars_that_can_hang_on_eof() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
     parser.parse("\"", None).unwrap();
+
+    // Two lex states that advance to each other on NUL, each with enough single-character
+    // transitions for an advance map.
+    let (parser_name, parser_code) = generate_parser(
+        r#"
+        {
+            "name": "test_null_char_cycle_regex",
+            "rules": {
+                "source_file": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "STRING", "value": "\"" },
+                        { "type": "PATTERN", "value": "(\\x00(\\x00|[bdfhjlnp])|[bdfhjlnp]x)*" },
+                        { "type": "STRING", "value": "\"" }
+                    ]
+                }
+            },
+            "extras": [ { "type": "PATTERN", "value": "\\s" } ]
+        }
+        "#,
+    )
+    .unwrap();
+
+    parser
+        .set_language(&get_test_language(&parser_name, &parser_code, None))
+        .unwrap();
+    parser.parse("\"", None).unwrap();
 }
 
 #[test]
@@ -2386,6 +4006,119 @@ fn test_parsing_null_characters_in_character_classes_containing_them() {
 }
 
 #[test]
+fn test_parsing_end_of_input_as_null_terminator() {
+    // As in the Go grammar: the newline token keeps the lex state after an identifier from
+    // merging with the start state, which accepts the end of the input, and the operators give it
+    // enough single-character transitions for an advance map.
+    let grammar = r#"
+        {
+            "name": "NAME",
+            "rules": {
+                "source_file": {
+                    "type": "REPEAT",
+                    "content": { "type": "SYMBOL", "name": "statement" }
+                },
+                "statement": {
+                    "type": "SEQ",
+                    "members": [
+                        { "type": "SYMBOL", "name": "identifier" },
+                        {
+                            "type": "REPEAT",
+                            "content": {
+                                "type": "SEQ",
+                                "members": [
+                                    {
+                                        "type": "CHOICE",
+                                        "members": [
+                                            { "type": "STRING", "value": "+" },
+                                            { "type": "STRING", "value": "-" },
+                                            { "type": "STRING", "value": "*" },
+                                            { "type": "STRING", "value": "/" },
+                                            { "type": "STRING", "value": "%" },
+                                            { "type": "STRING", "value": "&" },
+                                            { "type": "STRING", "value": "|" },
+                                            { "type": "STRING", "value": "^" }
+                                        ]
+                                    },
+                                    { "type": "SYMBOL", "name": "identifier" }
+                                ]
+                            }
+                        },
+                        {
+                            "type": "CHOICE",
+                            "members": [
+                                { "type": "STRING", "value": "\n" },
+                                { "type": "STRING", "value": ";" },
+                                NULL_TERMINATOR
+                            ]
+                        }
+                    ]
+                },
+                "identifier": { "type": "PATTERN", "value": "[a-z]+" }
+            },
+            "extras": [ { "type": "PATTERN", "value": "\\s" } ]
+        }
+        "#;
+    let language = |name: &str, null_terminator: &str| {
+        let grammar = grammar
+            .replace("NAME", name)
+            .replace("NULL_TERMINATOR", null_terminator);
+        let (parser_name, parser_code) = generate_parser(&grammar).unwrap();
+        get_test_language(&parser_name, &parser_code, None)
+    };
+    let mut parser = Parser::new();
+
+    parser
+        .set_language(&language(
+            "test_null_terminator",
+            r#"{ "type": "STRING", "value": "\u0000" }"#,
+        ))
+        .unwrap();
+    for (source, expected) in [
+        ("", "(source_file)"),
+        (
+            "a+b\n",
+            "(source_file (statement (identifier) (identifier)))",
+        ),
+        ("a+b", "(source_file (statement (identifier) (identifier)))"),
+        (
+            "a;b*c",
+            "(source_file (statement (identifier)) (statement (identifier) (identifier)))",
+        ),
+        (
+            "a\0b",
+            "(source_file (statement (identifier)) (statement (identifier)))",
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.to_sexp(), expected, "source: {source:?}");
+        assert!(!root.has_error(), "source: {source:?}");
+        assert_eq!(root.end_byte(), source.len(), "source: {source:?}");
+    }
+
+    // The `+` operator splits NUL out of this class into a transition of its own, which still
+    // must not match the end of the input.
+    parser
+        .set_language(&language(
+            "test_null_class_terminator",
+            r#"{ "type": "PATTERN", "value": "[\\x00+]" }"#,
+        ))
+        .unwrap();
+    let tree = parser.parse("a\0b\n", None).unwrap();
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(source_file (statement (identifier)) (statement (identifier)))"
+    );
+    let tree = parser.parse("a+b", None).unwrap();
+    assert!(
+        tree.root_node().has_error(),
+        "{}",
+        tree.root_node().to_sexp()
+    );
+}
+
+#[test]
 fn test_parse_stack_recursive_merge_error_cost_calculation_bug() {
     let source_code = r"
 fn main() {
@@ -2450,6 +4183,111 @@ fn test_parsing_get_column_at_eof() {
         .unwrap();
 
     parser.parse("a", None).unwrap();
+}
+
+#[test]
+fn test_parsing_external_indentation_at_eof_after_padding() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("uses_current_column"))
+        .unwrap();
+
+    for source in ["do", "do ", "do  ", "do\t", "do\n"] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), "(ERROR)", "{source:?}");
+    }
+}
+
+#[test]
+fn test_parsing_truncated_external_words() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("external_word_token"))
+        .unwrap();
+    for source in [
+        "\nl",
+        "\nle",
+        "\nlet a = b;\n@ here\nl",
+        "\nlet a = b;\n@ here\nle",
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let start = source.rfind('\n').unwrap() + 1;
+        let word = tree
+            .root_node()
+            .descendant_for_byte_range(start, source.len())
+            .unwrap();
+        assert_eq!(word.kind(), "identifier", "{source:?}");
+        assert_eq!(word.byte_range(), start..source.len());
+        assert!(tree.root_node().has_error());
+    }
+}
+
+#[test]
+fn test_parsing_truncated_indentation_blocks() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("uses_current_column"))
+        .unwrap();
+    for (source, expected) in [
+        ("\ndo a", "(ERROR (identifier))"),
+        ("\ndo a\n  ", "(ERROR (block (identifier)))"),
+        ("\ndo a\n   ", "(ERROR (block (identifier)))"),
+        ("\ndo a\n   e", "(ERROR (identifier) (identifier))"),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
+    }
+    let source = "\na = do b\n       c + do e\n              f\n              g\n       h\ni\n";
+    for length in 32..=37 {
+        let tree = parser.parse(&source[..length], None).unwrap();
+        let block = tree.root_node().descendant_for_byte_range(8, 25).unwrap();
+        assert_eq!(block.kind(), "block", "prefix {length}");
+        assert_eq!(block.byte_range(), 8..25, "prefix {length}");
+    }
+}
+
+#[test]
+fn test_parsing_truncated_python_match_patterns() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("python")).unwrap();
+    let source = "\nmatch command.split():\n    case [\"north\"] | [\"go\", \"north\"]:\n        current_room = current_room.neighbor(\"north\")\n    case [\"get\", obj] | [\"pick\", \"up\", obj] | [\"pick\", ";
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert_eq!(root.kind(), "module");
+    assert_eq!(root.named_child(0).unwrap().kind(), "match_statement");
+    assert!(root.has_error());
+}
+
+#[test]
+fn test_parsing_truncated_bash_with_missing_tokens_at_eof() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("bash")).unwrap();
+
+    for (source, expected) in [
+        (
+            "\n(\n  ./start-server --port=80\n) &\n\ntime ( cd tests && sh run-tests.sh ",
+            "(program (subshell (command name: (command_name (word)) argument: (word))) (command name: (command_name (word)) (subshell (list (command name: (command_name (word)) argument: (word)) (command name: (command_name (word)) argument: (word))) (MISSING \")\"))))",
+        ),
+        (
+            "\nif (( 1 < 2 ? 1 : 2 )); then\n\treturn 1\n",
+            "(program (if_statement condition: (command name: (command_name (arithmetic_expansion (ternary_expression condition: (binary_expression left: (number) right: (number)) consequence: (number) alternative: (number))))) (command name: (command_name (word)) argument: (number)) (MISSING \"fi\")))",
+        ),
+        (
+            "\nwhoami | cat\ncat foo | ",
+            "(program (pipeline (command name: (command_name (word))) (command name: (command_name (word)))) (pipeline (command name: (command_name (word)) argument: (word)) (command name: (command_name (MISSING word)))))",
+        ),
+        (
+            "\na | b && c && d; d e f || ",
+            "(program (list (list (pipeline (command name: (command_name (word))) (command name: (command_name (word)))) (command name: (command_name (word)))) (command name: (command_name (word)))) (list (command name: (command_name (word)) argument: (word) argument: (word)) (command name: (command_name (MISSING word)))))",
+        ),
+        (
+            "\n$(eval ec",
+            "(program (command name: (command_name (command_substitution (command name: (command_name (word)) argument: (word)) (MISSING \")\")))))",
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
+    }
 }
 
 #[test]

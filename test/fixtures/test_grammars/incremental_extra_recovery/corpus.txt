@@ -1,0 +1,7 @@
+==================
+Directive between declaration identifiers
+==================
+a #pragma warning disable x
+ b;
+---
+(source_file (statement (type (identifier)) (directive (identifier)) (identifier)))

@@ -30,7 +30,7 @@ use crate::{
     node_types::VariableInfo,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::StrPool,
-    tables::{ActionList, ActionListPool, LexTable, ParseAction, ParseTable, ParseTableEntry},
+    tables::{ActionListId, LexTable, ParseAction, ParseTable},
 };
 
 pub struct Tables {
@@ -38,6 +38,60 @@ pub struct Tables {
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
+}
+
+#[derive(Clone, Copy, Default)]
+#[expect(clippy::struct_field_names)]
+struct SymbolIndexer {
+    external_count: u32,
+    terminal_count: u32,
+    non_terminal_count: u32,
+}
+
+impl SymbolIndexer {
+    const fn new(syntax_grammar: &SyntaxGrammar, lexical_grammar: &LexicalGrammar) -> Self {
+        Self {
+            external_count: syntax_grammar.external_tokens.len() as u32,
+            terminal_count: lexical_grammar.variables.len() as u32,
+            non_terminal_count: syntax_grammar.variables.len() as u32,
+        }
+    }
+
+    #[inline]
+    const fn index(self, symbol: Symbol) -> usize {
+        let position = match symbol.kind {
+            SymbolType::External => symbol.index,
+            SymbolType::End => self.external_count,
+            SymbolType::EndOfNonTerminalExtra => self.external_count + 1,
+            SymbolType::Terminal => self.external_count + 2 + symbol.index,
+            SymbolType::NonTerminal => self.token_count() + symbol.index,
+        };
+        position as usize
+    }
+
+    #[inline]
+    const fn symbol(self, index: usize) -> Symbol {
+        let position = index as u32;
+        if position < self.external_count {
+            Symbol::external(index)
+        } else if position == self.external_count {
+            Symbol::end()
+        } else if position == self.external_count + 1 {
+            Symbol::end_of_nonterminal_extra()
+        } else if position < self.token_count() {
+            Symbol::terminal((position - self.external_count - 2) as usize)
+        } else {
+            Symbol::non_terminal((position - self.token_count()) as usize)
+        }
+    }
+
+    const fn token_count(self) -> u32 {
+        self.external_count + 2 + self.terminal_count
+    }
+
+    const fn symbol_count(self) -> u32 {
+        self.token_count() + self.non_terminal_count
+    }
 }
 
 #[expect(
@@ -78,24 +132,32 @@ pub fn build_tables(
         &coincident_token_index,
         str_pool,
     );
+    // The parse table does not treat as a keyword a token whose replacement by the word token is
+    // left to each lexer state because of a lexical conflict. The minimizer exempts a keyword and
+    // the word token from its lexical conflict check, so counting such a token would merge states
+    // that differ only in it. That changes the order of the stack versions of an ambiguous
+    // grammar, and with it the tree chosen among equivalent readings of valid input.
+    let mut conflict_free_keywords = keywords.clone();
+    for (keyword, _) in &unsafe_keyword_pairs {
+        conflict_free_keywords.remove(*keyword);
+    }
     populate_error_state(
         &mut parse_table,
         syntax_grammar,
         lexical_grammar,
         &coincident_token_index,
         &token_conflict_map,
-        &keywords,
+        &conflict_free_keywords,
         str_pool,
     );
     populate_used_symbols(&mut parse_table, syntax_grammar, lexical_grammar);
-    let mut parse_table = ActionListPool::intern_table(parse_table);
     minimize_parse_table(
         &mut parse_table,
         syntax_grammar,
         lexical_grammar,
         simple_aliases,
         &token_conflict_map,
-        &keywords,
+        &conflict_free_keywords,
         str_pool,
         optimizations,
     );
@@ -178,7 +240,7 @@ fn get_following_tokens(
 }
 
 fn populate_error_state(
-    parse_table: &mut ParseTable<ParseTableEntry>,
+    parse_table: &mut ParseTable,
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
     coincident_token_index: &CoincidentTokenIndex,
@@ -186,11 +248,8 @@ fn populate_error_state(
     keywords: &TokenSet,
     str_pool: &StrPool,
 ) {
-    let state = &mut parse_table.states[0];
     let n = lexical_grammar.variables.len();
 
-    // First identify the *conflict-free tokens*: tokens that do not overlap with
-    // any other token in any way, besides matching exactly the same string.
     let conflict_free_tokens = (0..n)
         .filter_map(|i| {
             let conflicts_with_other_tokens = (0..n).any(|j| {
@@ -210,13 +269,14 @@ fn populate_error_state(
         })
         .collect::<TokenSet>();
 
-    let recover_entry = ParseTableEntry {
-        reusable: false,
-        actions: ActionList::One(ParseAction::Recover),
-    };
+    let recover_entry = ActionListId::new(
+        parse_table.action_lists.push(&[ParseAction::Recover]),
+        false,
+    );
+    let state = &mut parse_table.states[0];
+    let existing_symbols = state.terminal_entries.keys().copied().collect::<TokenSet>();
+    let mut recovery_entries = Vec::new();
 
-    // Exclude from the error-recovery state any token that conflicts with one of
-    // the *conflict-free tokens* identified above.
     for i in 0..n {
         let symbol = Symbol::terminal(i);
         if !conflict_free_tokens.contains(symbol)
@@ -238,26 +298,26 @@ fn populate_error_state(
             "error recovery - include token {}",
             str_pool.resolve(lexical_grammar.variables[i].name)
         );
-        state
-            .terminal_entries
-            .entry(symbol)
-            .or_insert_with(|| recover_entry.clone());
-    }
-
-    for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
-        if external_token.corresponding_internal_token.is_none() {
-            state
-                .terminal_entries
-                .entry(Symbol::external(i))
-                .or_insert_with(|| recover_entry.clone());
+        if !existing_symbols.contains(symbol) {
+            recovery_entries.push((symbol, recover_entry));
         }
     }
 
+    for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
+        let symbol = Symbol::external(i);
+        if external_token.corresponding_internal_token.is_none()
+            && !existing_symbols.contains(symbol)
+        {
+            recovery_entries.push((symbol, recover_entry));
+        }
+    }
+
+    state.terminal_entries.extend(recovery_entries);
     state.terminal_entries.insert(Symbol::end(), recover_entry);
 }
 
 fn populate_used_symbols(
-    parse_table: &mut ParseTable<ParseTableEntry>,
+    parse_table: &mut ParseTable,
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
 ) {
@@ -276,6 +336,11 @@ fn populate_used_symbols(
             non_terminal_usages[symbol.index as usize] = true;
         }
     }
+    for token in &syntax_grammar.external_tokens {
+        if let Some(symbol) = token.corresponding_internal_token {
+            terminal_usages[symbol.index as usize] = true;
+        }
+    }
     parse_table.symbols.push(Symbol::end());
     for (i, value) in terminal_usages.into_iter().enumerate() {
         if value {
@@ -284,7 +349,7 @@ fn populate_used_symbols(
             // very large numbers of tokens. This is an optimization, but it's also important to
             // ensure that a subtree's symbol can be successfully reassigned to the word token
             // without having to move the subtree to the heap.
-            // See https://github.com/tree-sitter/tree-sitter/issues/258
+            // See `tree-sitter/tree-sitter#258`.
             if syntax_grammar.word_token == Some(Symbol::terminal(i)) {
                 parse_table.symbols.insert(1, Symbol::terminal(i));
             } else {
@@ -364,65 +429,47 @@ fn identify_keywords(
     let mut guard_demoted = TokenSet::new();
     let mut immediate_keywords = TokenSet::new();
 
-    // First find all of the candidate keyword tokens: tokens that start with
-    // letters or underscore and can match the same string as a word token.
     let keyword_candidates = lexical_grammar
         .variables
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
-            cursor.reset(vec![variable.start_state]);
-            if all_chars_are_alphabetical(&cursor)
+            cursor.reset([variable.start_state]);
+            let is_candidate = all_chars_are_alphabetical(&cursor)
                 && token_conflict_map.does_match_same_string(i, word_token.index as usize)
-                && !token_conflict_map.does_match_different_string(i, word_token.index as usize)
-            {
+                && !token_conflict_map.does_match_different_string(i, word_token.index as usize);
+            if !is_candidate {
+                return None;
+            }
+            debug!(
+                "Keywords - add candidate {}",
+                str_pool.resolve(lexical_grammar.variables[i].name)
+            );
+            if variable.is_immediate {
+                immediate_keywords.insert(Symbol::terminal(i));
+            }
+            let explicitly_reserved = syntax_grammar
+                .reserved_word_sets
+                .iter()
+                .any(|tokens| tokens.contains(Symbol::terminal(i)));
+            if variable.is_immediate && !explicitly_reserved {
                 debug!(
-                    "Keywords - add candidate {}",
+                    "Keywords - exclude {} because it is an immediate token",
                     str_pool.resolve(lexical_grammar.variables[i].name)
                 );
-                if variable.is_immediate {
-                    immediate_keywords.insert(Symbol::terminal(i));
-                }
-                let explicitly_reserved = syntax_grammar
-                    .reserved_word_sets
-                    .iter()
-                    .any(|tokens| tokens.contains(Symbol::terminal(i)));
-                if variable.is_immediate && !explicitly_reserved {
-                    debug!(
-                        "Keywords - exclude {} because it is an immediate token",
-                        str_pool.resolve(lexical_grammar.variables[i].name)
-                    );
-                    guard_demoted.insert(Symbol::terminal(i));
-                    return None;
-                }
-                Some(Symbol::terminal(i))
-            } else {
-                None
+                guard_demoted.insert(Symbol::terminal(i));
+                return None;
             }
+            Some(Symbol::terminal(i))
         })
         .collect::<TokenSet>();
 
-    // Exclude keyword candidates that shadow another keyword candidate.
-    let keywords = keyword_candidates
-        .iter()
-        .filter(|token| {
-            for other_token in keyword_candidates.iter() {
-                if other_token != *token
-                    && token_conflict_map
-                        .does_match_same_string(other_token.index as usize, token.index as usize)
-                {
-                    debug!(
-                        "Keywords - exclude {} because it matches the same string as {}",
-                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
-                        str_pool
-                            .resolve(lexical_grammar.variables[other_token.index as usize].name)
-                    );
-                    return false;
-                }
-            }
-            true
-        })
-        .collect::<TokenSet>();
+    let keywords = remove_shadowed_keywords(
+        &keyword_candidates,
+        lexical_grammar,
+        token_conflict_map,
+        str_pool,
+    );
 
     for token in keywords.iter().chain(guard_demoted.iter()) {
         for other_index in 0..lexical_grammar.variables.len() {
@@ -474,6 +521,34 @@ fn identify_keywords(
     (keywords, unsafe_pairs, immediate_keywords)
 }
 
+fn remove_shadowed_keywords(
+    candidates: &TokenSet,
+    lexical_grammar: &LexicalGrammar,
+    token_conflict_map: &TokenConflictMap,
+    str_pool: &StrPool,
+) -> TokenSet {
+    candidates
+        .iter()
+        .filter(|token| {
+            for other_token in candidates.iter() {
+                if other_token != *token
+                    && token_conflict_map
+                        .does_match_same_string(other_token.index as usize, token.index as usize)
+                {
+                    debug!(
+                        "Keywords - exclude {} because it matches the same string as {}",
+                        str_pool.resolve(lexical_grammar.variables[token.index as usize].name),
+                        str_pool
+                            .resolve(lexical_grammar.variables[other_token.index as usize].name)
+                    );
+                    return false;
+                }
+            }
+            true
+        })
+        .collect::<TokenSet>()
+}
+
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {
     let mut valid_terminal_indices = Vec::new();
     for state in &mut parse_table.states {
@@ -483,7 +558,7 @@ fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenC
                 valid_terminal_indices.push(token.index);
             }
         }
-        for (token, id) in &mut state.terminal_entries {
+        for (token, id) in state.terminal_entries.iter_mut() {
             if token.is_terminal() {
                 for &i in &valid_terminal_indices {
                     if token_conflict_map.does_overlap(i as usize, token.index as usize) {

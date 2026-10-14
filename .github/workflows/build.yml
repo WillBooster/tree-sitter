@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@v5.0.1
+      - uses: jdx/mise-action@v5.1.1
       # Installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup toolchain install
       - run: cargo fmt --all --check
@@ -28,7 +28,7 @@ jobs:
       # The released CLI is built with the wasm feature: the test job builds it with the release profile on the shipping
       # runners, and this step lints its feature-gated sources, tests, and benches.
       - run: cargo clippy -p tree-sitter-cli --all-targets --locked --features wasm
-      - uses: taiki-e/install-action@v2.87.22
+      - uses: taiki-e/install-action@v2.87.27
         with:
           tool: taplo@0.10.0
       - run: taplo check && taplo format --check
@@ -114,7 +114,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@v5.0.1
+      - uses: jdx/mise-action@v5.1.1
       - run: rustup toolchain install
       - uses: ./.github/actions/cache
         id: cache
@@ -123,7 +123,8 @@ jobs:
       - run: cargo xtask fetch-fixtures
       - if: steps.cache.outputs.cache-hit != 'true'
         run: cargo xtask generate-fixtures --wasm
-      - run: cargo test -p tree-sitter-cli --features wasm --locked tests::wasm_language_test
+      - name: Test native and Wasmtime parsers
+        run: cargo test -p tree-sitter-cli --features wasm --lib --locked
       - run: npm ci
         working-directory: lib/binding_web
       # Without emcc on the runner, xtask builds the Wasm library in the emscripten Docker image.
@@ -140,7 +141,7 @@ jobs:
         working-directory: lib/binding_web
       - run: node -e "require('@willbooster/web-tree-sitter').Parser.init().then(() => console.log('Loaded the CommonJS bundle'))"
         working-directory: lib/binding_web
-      - run: npx tsc -p test/types
+      - run: npx tsc -p test/types && npx eslint --no-ignore test/types/cjs.cts
         working-directory: lib/binding_web
   # The single required check for this workflow, so that the ruleset does not have to list each matrix leg.
   build-result:

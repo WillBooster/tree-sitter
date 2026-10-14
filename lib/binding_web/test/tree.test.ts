@@ -77,11 +77,14 @@ describe('Tree', () => {
         '(program (expression_statement (binary_expression left: (identifier) right: (identifier))))'
       );
 
+      let variableNode = tree.rootNode.firstChild!.firstChild!.lastChild;
+      expect(variableNode!.startIndex).toBe(input.indexOf('cde'));
+
       [input, edit] = spliceInput(input, input.indexOf('δ'), 0, '👍 * ');
       expect(input).toBe('αβ👍 * δ + cde');
       tree.edit(edit);
 
-      const variableNode = tree.rootNode.firstChild!.firstChild!.lastChild;
+      variableNode = tree.rootNode.firstChild!.firstChild!.lastChild;
       expect(variableNode!.startIndex).toBe(input.indexOf('cde'));
 
       tree = parser.parse(input, tree)!;

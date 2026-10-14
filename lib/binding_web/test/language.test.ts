@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language } from '../src';
-import { Parser } from '../src';
+import { LookaheadIterator, Language, Query, Edit } from '../src';
+import { Parser, LANGUAGE_VERSION } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
 import { pathToFileURL } from 'url';
@@ -21,9 +21,8 @@ describe('Language', () => {
 
       const lang = Language.loadSync(wasmModule);
       expect(lang.name).toBe('javascript');
-      expect(lang.abiVersion).toBe(15);
+      expect(lang.abiVersion).toBe(LANGUAGE_VERSION);
 
-      // Verify the language actually works by parsing a snippet
       const parser = new Parser();
       parser.setLanguage(lang);
       const tree = parser.parse('const x = 1;');
@@ -54,6 +53,129 @@ describe('Language', () => {
   });
 
   describe('.load', () => {
+    it('parses, edits, and queries compact tables', async () => {
+      const lang = await Language.load(languageURL('javascript'));
+      const parser = new Parser();
+      parser.setLanguage(lang);
+      const input = 'const x = {field: 1};';
+      const tree = parser.parse(input)!;
+      const query = new Query(lang, '(pair key: (property_identifier) @key)');
+      try {
+        expect(tree.rootNode.hasError).toBe(false);
+        expect(query.captures(tree.rootNode).map(capture => capture.node.text)).toEqual(['field']);
+        const position = input.indexOf('1');
+        tree.edit(new Edit({
+          startIndex: position,
+          oldEndIndex: position + 1,
+          newEndIndex: position + 1,
+          startPosition: { row: 0, column: position },
+          oldEndPosition: { row: 0, column: position + 1 },
+          newEndPosition: { row: 0, column: position + 1 },
+        }));
+        const edited = input.replace('1', '2');
+        const incremental = parser.parse(edited, tree)!;
+        const fresh = parser.parse(edited)!;
+        const malformed = parser.parse('const x = {field: };')!;
+        try {
+          expect(incremental.rootNode.toString()).toBe(fresh.rootNode.toString());
+          expect(incremental.rootNode.text).toBe(edited);
+          expect(incremental.rootNode.hasError).toBe(false);
+          expect(malformed.rootNode.hasError).toBe(true);
+        } finally {
+          incremental.delete();
+          fresh.delete();
+          malformed.delete();
+        }
+      } finally {
+        query.delete();
+        tree.delete();
+        parser.delete();
+      }
+    });
+
+    it('preserves keyword tokens across UTF-16 input boundaries', async () => {
+      const lang = await Language.load(languageURL('c'));
+      const parser = new Parser();
+      parser.setLanguage(lang);
+      try {
+        for (const length of [4, 127, 128, 129, 300]) {
+          const identifier = `if${'x'.repeat(length - 2)}`;
+          const input = `int ${identifier} = 1; const char *s = "λ😀";`;
+          const messages: string[] = [];
+          parser.setLogger(message => messages.push(message));
+          const reference = parser.parse(input)!;
+          parser.setLogger(null);
+          try {
+            expect(reference.rootNode.hasError).toBe(false);
+            expect(reference.rootNode.descendantsOfType('identifier').map(node => node.text)).toContain(identifier);
+            expect(messages.length).toBeGreaterThan(0);
+            for (const chunk of [1, 2, 3, 7, 128, 4096]) {
+              const tree = parser.parse(index => input.slice(index, index + chunk))!;
+              try {
+                expect(tree.rootNode.toString()).toBe(reference.rootNode.toString());
+                expect(tree.rootNode.text).toBe(input);
+                const position = input.indexOf('1');
+                tree.edit(new Edit({
+                  startIndex: position,
+                  oldEndIndex: position + 1,
+                  newEndIndex: position + 1,
+                  startPosition: { row: 0, column: position },
+                  oldEndPosition: { row: 0, column: position + 1 },
+                  newEndPosition: { row: 0, column: position + 1 },
+                }));
+                const edited = input.replace('1', '2');
+                const incremental = parser.parse(index => edited.slice(index, index + chunk), tree)!;
+                const fresh = parser.parse(edited)!;
+                try {
+                  expect(incremental.rootNode.toString()).toBe(fresh.rootNode.toString());
+                  expect(incremental.rootNode.text).toBe(edited);
+                  expect(incremental.rootNode.hasError).toBe(false);
+                } finally {
+                  incremental.delete();
+                  fresh.delete();
+                }
+              } finally {
+                tree.delete();
+              }
+            }
+          } finally {
+            reference.delete();
+          }
+        }
+      } finally {
+        parser.delete();
+      }
+    });
+
+    it('recognizes keywords spanning excluded UTF-16 ranges', async () => {
+      const lang = await Language.load(languageURL('c'));
+      const parser = new Parser();
+      parser.setLanguage(lang);
+      const input = 'int main() { re@@@@turn 0; }';
+      const start = input.indexOf('@@@@');
+      const options = {
+        includedRanges: [
+          { startIndex: 0, endIndex: start, startPosition: { row: 0, column: 0 }, endPosition: { row: 0, column: start } },
+          { startIndex: start + 4, endIndex: input.length, startPosition: { row: 0, column: start + 4 }, endPosition: { row: 0, column: input.length } },
+        ],
+      };
+      try {
+        const tree = parser.parse(input, null, options)!;
+        try {
+          expect(tree.rootNode.hasError).toBe(false);
+          const statement = tree.rootNode.descendantsOfType('return_statement')[0];
+          expect(statement.text).toBe('re@@@@turn 0;');
+          expect(statement.firstChild!.type).toBe('return');
+          expect(statement.firstChild!.startIndex).toBe(start - 2);
+          expect(statement.firstChild!.endIndex).toBe(start + 8);
+        } finally {
+          tree.delete();
+        }
+      } finally {
+        parser.delete();
+      }
+    });
+
     it('loads a language from a file URL', async () => {
       const wasmURL = pathToFileURL(languageURL('javascript'));
       expect(wasmURL).toBeInstanceOf(URL);
@@ -61,7 +183,6 @@ describe('Language', () => {
       const lang = await Language.load(wasmURL);
       expect(lang.name).toBe('javascript');
 
-      // Verify the language actually works by parsing a snippet
       const parser = new Parser();
       parser.setLanguage(lang);
       const tree = parser.parse('const x = 1;');
@@ -91,10 +212,26 @@ describe('Language', () => {
     });
   });
 
+  describe('with another ABI version', () => {
+    it('is rejected by parsers and queries', () => {
+      // A grammar with another ABI version would have to come from another CLI, so the reported version is replaced.
+      const abiVersion = vi.spyOn(C, '_ts_language_abi_version').mockReturnValue(16);
+      const parser = new Parser();
+      try {
+        const message = 'Incompatible language version 0x10. Expected 0x57420001.';
+        expect(() => parser.setLanguage(JavaScript)).toThrow(message);
+        expect(() => new Query(JavaScript, '(identifier)')).toThrow(message);
+      } finally {
+        abiVersion.mockRestore();
+        parser.delete();
+      }
+    });
+  });
+
   describe('.name, .version', () => {
     it('returns the name and version of the language', () => {
       expect(JavaScript.name).toBe('javascript');
-      expect(JavaScript.abiVersion).toBe(15);
+      expect(JavaScript.abiVersion).toBe(LANGUAGE_VERSION);
     });
   });
 

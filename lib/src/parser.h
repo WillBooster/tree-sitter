@@ -83,11 +83,6 @@ typedef union {
 typedef struct {
   uint16_t lex_state;
   uint16_t external_lex_state;
-} TSLexMode;
-
-typedef struct {
-  uint16_t lex_state;
-  uint16_t external_lex_state;
   uint16_t reserved_word_set_id;
 } TSLexerMode;
 
@@ -103,6 +98,8 @@ typedef struct {
   int32_t start;
   int32_t end;
 } TSCharacterRange;
+
+#define TS_KEYWORD_PREFIX 0x10000u
 
 struct TSLanguage {
   uint32_t abi_version;
@@ -149,6 +146,13 @@ struct TSLanguage {
   const TSMapSlice *supertype_map_slices;
   const TSSymbol *supertype_map_entries;
   TSLanguageMetadata metadata;
+  const uint32_t *alias_sequence_offsets;
+  uint32_t alias_sequence_count;
+  const uint16_t *lex_mode_ids;
+  uint32_t lex_mode_count;
+  const TSMapSlice *reserved_word_slices;
+  uint32_t external_state_stride;
+  uint32_t (*keyword_lookup_fn)(const char *, uint32_t);
 };
 
 static inline bool set_contains(const TSCharacterRange *ranges, uint32_t len, int32_t lookahead) {

@@ -58,23 +58,20 @@ impl std::fmt::Display for NonTerminalWordTokenError {
     }
 }
 
-/// A single extracted token.
 #[derive(Clone, Debug)]
 pub struct LexicalToken {
-    /// Generated for anon tokens, rule name for absorbed variables
     pub name: StrId,
     pub kind: VariableType,
-    /// Pool root defining this token
     pub root: RuleId,
 }
 
-/// The extra pass's outputs besides the in-place rewrites.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ExtractedGrammarMeta {
     pub kinds: Vec<VariableType>,
     pub lexical_variables: Vec<LexicalToken>,
     pub separator_roots: Vec<RuleId>,
     pub extra_symbols: Vec<Symbol>,
+    pub external_only_extra_symbols: Vec<Symbol>,
     pub external_tokens: Vec<ExternalToken>,
     pub reserved_sets: Vec<(StrId, Vec<Symbol>)>,
     pub supertypes: Vec<Symbol>,
@@ -83,7 +80,6 @@ pub(super) struct ExtractedGrammarMeta {
     pub word: Option<Symbol>,
 }
 
-/// Token de-duper over pool subtrees
 #[derive(Default)]
 struct TokenExtractor {
     lexical: Vec<LexicalToken>,
@@ -92,7 +88,6 @@ struct TokenExtractor {
 }
 
 impl TokenExtractor {
-    /// Find or create the lexical token for `token_root`. Returns the terminal index if found
     fn extract_token(
         &mut self,
         pool: &mut RulePool,
@@ -137,10 +132,6 @@ impl TokenExtractor {
         Ok(index)
     }
 
-    /// In-place token extraction over one root.
-    ///  - `String`/`Pattern`: always extracted
-    ///  - `token(...)`: metadata extracts the inner child when no other metadata
-    ///    params are set, otherwise the whole metadata node
     fn extract_in_root(
         &mut self,
         pool: &mut RulePool,
@@ -217,7 +208,6 @@ impl TokenExtractor {
         Ok(())
     }
 
-    /// Structural lookup
     fn find(&self, pool: &RulePool, root: RuleId) -> Option<u32> {
         self.memo.get(&pool.subtree_hash(root)).and_then(|cands| {
             cands
@@ -238,22 +228,19 @@ pub(super) fn extract_tokens(
     for (i, v) in g.variables.iter().enumerate() {
         extractor.extract_in_root(&mut g.pool, v.root, Some(v.name), i == 0, &mut stack)?;
     }
+    let syntax_token_count = extractor.lexical.len();
+    let syntax_has_non_immediate_tokens = extractor.lexical.iter().any(|token| {
+        !matches!(g.pool.node(token.root), Rule::Metadata { params, .. } if g.pool.params(params).is_main_token)
+    });
     for (&root, &(name, _)) in g.external_roots.iter().zip(&interned.external_tokens) {
         extractor.extract_in_root(&mut g.pool, root, name, false, &mut stack)?;
     }
 
-    // If a variable's entire rule was extracted as a token and that token didn't
-    // appear within any other rule, then remove that variable from the syntax
-    // grammar, giving its name to the token in the lexical grammar. Any symbols
-    // that pointed to that variable will need to be updated to point to the
-    // token in the lexical grammar. Symbols that pointed to later variables
-    // will need to have their indices decremented.
     let old_len = g.variables.len();
     let mut replacements: FxHashMap<u32, u32> = FxHashMap::default();
     let mut retained = Vec::with_capacity(old_len);
     let mut kinds = Vec::with_capacity(old_len);
 
-    // The start variable cannot be absorbed
     retained.push(g.variables[0]);
     kinds.push(interned.kinds[0]);
     for (i, v) in g.variables.iter().enumerate().skip(1) {
@@ -275,7 +262,6 @@ pub(super) fn extract_tokens(
     }
     g.variables = retained;
 
-    // Prefix-sum renumbering
     let mut shift = vec![0u32; old_len];
     let mut removed = 0u32;
     for (i, slot) in shift.iter_mut().enumerate() {
@@ -301,7 +287,6 @@ pub(super) fn extract_tokens(
         renumber_root(&mut g.pool, root, &replace_symbol, &mut stack);
     }
 
-    // Renumber each conflict through absorption, then canonicalize
     let conflicts = interned
         .conflicts
         .iter()
@@ -318,7 +303,6 @@ pub(super) fn extract_tokens(
         .iter()
         .map(|&s| {
             let sym = replace_symbol(s);
-            // A supertype that got absorbed into a token isn't allowed
             if sym.is_terminal() {
                 Err(ExtractTokensError::SupertypeTerminal(
                     g.pool
@@ -335,11 +319,27 @@ pub(super) fn extract_tokens(
 
     let mut separator_roots = Vec::new();
     let mut extra_symbols = Vec::with_capacity(g.extra_roots.len());
+    let mut external_only_extra_symbols = Vec::new();
     for &root in &g.extra_roots {
         if let Some(s) = g.pool.node(root).symbol() {
             extra_symbols.push(replace_symbol(s));
         } else if let Some(i) = extractor.find(&g.pool, root) {
-            extra_symbols.push(Symbol::terminal(i as usize));
+            let symbol = Symbol::terminal(i as usize);
+            if matches!(g.pool.node(root), Rule::Pattern(..))
+                && extractor.lexical[i as usize].kind == VariableType::Auxiliary
+                && ((i as usize) < syntax_token_count
+                    || (syntax_token_count > 0 && !syntax_has_non_immediate_tokens))
+            {
+                separator_roots.push(root);
+            } else {
+                if matches!(g.pool.node(root), Rule::Pattern(..))
+                    && extractor.lexical[i as usize].kind == VariableType::Auxiliary
+                {
+                    external_only_extra_symbols.push(symbol);
+                    separator_roots.push(root);
+                }
+                extra_symbols.push(symbol);
+            }
         } else {
             separator_roots.push(root);
         }
@@ -421,6 +421,7 @@ pub(super) fn extract_tokens(
         lexical_variables: extractor.lexical,
         separator_roots,
         extra_symbols,
+        external_only_extra_symbols,
         external_tokens,
         reserved_sets,
         supertypes,

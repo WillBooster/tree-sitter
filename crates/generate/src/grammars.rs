@@ -11,7 +11,7 @@ use super::{
     rules::{Symbol, TokenSet},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VariableType {
     Hidden,
     Auxiliary,
@@ -244,6 +244,16 @@ impl Production {
     pub const fn step_range(self) -> std::ops::Range<usize> {
         self.steps_start as usize..(self.steps_start + self.steps_len) as usize
     }
+
+    #[inline]
+    #[must_use]
+    pub fn contents(self, steps: &[ProductionStep]) -> ProdRef<'_> {
+        ProdRef {
+            steps: &steps[self.step_range()],
+            dynamic_precedence: self.dynamic_precedence,
+            requires_eof_lookahead: self.requires_eof_lookahead,
+        }
+    }
 }
 
 /// Flattened output: one backing store of steps, productions as `[start, len)`
@@ -253,6 +263,13 @@ pub struct ProductionStore {
     pub steps: Vec<ProductionStep>,
     pub productions: Vec<Production>,
     pub var_prods: Vec<(u32, u32)>,
+}
+
+impl ProductionStore {
+    #[must_use]
+    pub fn production(&self, id: u32) -> ProdRef<'_> {
+        self.productions[id as usize].contents(&self.steps)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -277,6 +294,7 @@ pub struct ExternalToken {
 pub struct SyntaxGrammar {
     pub variables: Vec<SyntaxVariable>,
     pub extra_symbols: Vec<Symbol>,
+    pub external_only_extra_symbols: Vec<Symbol>,
     pub expected_conflicts: Vec<Vec<Symbol>>,
     pub external_tokens: Vec<ExternalToken>,
     pub supertype_symbols: Vec<Symbol>,
@@ -291,14 +309,31 @@ pub struct SyntaxGrammar {
 }
 
 impl SyntaxGrammar {
+    pub fn supertype_alias(&self, symbol: Symbol, aliases: &AliasMap) -> Option<Symbol> {
+        if !self.supertype_symbols.contains(&symbol) {
+            return None;
+        }
+        let alias = aliases.get(&symbol)?;
+        if !alias.is_named
+            || self.variables.iter().enumerate().any(|(index, _)| {
+                self.variable_prod_ids(index).any(|id| {
+                    self.production(id).steps.iter().any(|step| {
+                        step.symbol() == symbol && step.alias().is_some_and(|other| other != *alias)
+                    })
+                })
+            })
+        {
+            return None;
+        }
+        self.supertype_symbols.iter().copied().find(|target| {
+            self.variables[target.index as usize].name == alias.value
+                && !aliases.contains_key(target)
+        })
+    }
+
     #[must_use]
     pub fn production(&self, id: u32) -> ProdRef<'_> {
-        let p = self.productions[id as usize];
-        ProdRef {
-            steps: &self.steps[p.step_range()],
-            dynamic_precedence: p.dynamic_precedence,
-            requires_eof_lookahead: p.requires_eof_lookahead,
-        }
+        self.productions[id as usize].contents(&self.steps)
     }
 
     /// The pooled production ids belonging to a variable
@@ -309,8 +344,7 @@ impl SyntaxGrammar {
     }
 }
 
-/// A production in the pooled [`SyntaxGrammar`] storage
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ProdRef<'a> {
     pub steps: &'a [ProductionStep],
     pub dynamic_precedence: i32,

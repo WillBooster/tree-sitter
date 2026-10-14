@@ -11,6 +11,7 @@
 #define MAX_LINK_COUNT 8
 #define MAX_NODE_POOL_SIZE 50
 #define MAX_ITERATOR_COUNT 64
+#define MAX_EXTRA_CHAIN_COUNT 64
 
 #if defined _WIN32 && !defined __GNUC__
 #define forceinline __forceinline
@@ -35,6 +36,8 @@ struct StackNode {
   unsigned error_cost;
   unsigned node_count;
   int dynamic_precedence;
+  uint64_t pending_generation;
+  bool has_pending;
 };
 
 typedef struct {
@@ -45,6 +48,11 @@ typedef struct {
 } StackIterator;
 
 typedef Array(StackNode *) StackNodeArray;
+
+typedef struct {
+  StackNode *start;
+  StackNode *end;
+} ExtraChain;
 
 typedef enum {
   StackStatusActive,
@@ -68,6 +76,8 @@ struct Stack {
   StackNodeArray node_pool;
   StackNode *base_node;
   SubtreePool *subtree_pool;
+  uint64_t pending_generation;
+  Array(ExtraChain) extra_chains;
 };
 
 typedef unsigned StackAction;
@@ -140,7 +150,8 @@ static StackNode *stack_node_new(
   Subtree subtree,
   bool is_pending,
   TSStateId state,
-  StackNodeArray *pool
+  StackNodeArray *pool,
+  uint64_t pending_generation
 ) {
   StackNode *node = pool->size > 0
     ? array_pop(pool)
@@ -148,7 +159,9 @@ static StackNode *stack_node_new(
   *node = (StackNode) {
     .ref_count = 1,
     .link_count = 0,
-    .state = state
+    .state = state,
+    .pending_generation = pending_generation,
+    .has_pending = is_pending,
   };
 
   if (previous_node) {
@@ -163,6 +176,11 @@ static StackNode *stack_node_new(
     node->error_cost = previous_node->error_cost;
     node->dynamic_precedence = previous_node->dynamic_precedence;
     node->node_count = previous_node->node_count;
+
+    if (subtree.ptr && ts_subtree_extra(subtree)) {
+      node->pending_generation = previous_node->pending_generation;
+      node->has_pending = previous_node->has_pending;
+    }
 
     if (subtree.ptr) {
       node->error_cost += ts_subtree_error_cost(subtree);
@@ -197,7 +215,20 @@ static bool stack__subtree_is_equivalent(Subtree left, Subtree right) {
   );
 }
 
+static void stack__invalidate_extra_chains(Stack *stack, const StackNode *node) {
+  // A merge can change an ancestor shared by several stack versions.
+  for (uint32_t i = 0; i < stack->extra_chains.size; i++) {
+    ExtraChain chain = *array_get(&stack->extra_chains, i);
+    if (node->position.bytes >= chain.end->position.bytes &&
+        node->position.bytes <= chain.start->position.bytes) {
+      stack_node_release(chain.start, &stack->node_pool, stack->subtree_pool);
+      array_erase(&stack->extra_chains, i--);
+    }
+  }
+}
+
 static void stack_node_add_link(
+  Stack *stack,
   StackNode *self,
   StackLink link,
   SubtreePool *subtree_pool
@@ -218,6 +249,7 @@ static void stack_node_add_link(
         ) {
           ts_subtree_retain(link.subtree);
           ts_subtree_release(subtree_pool, existing_link->subtree);
+          stack__invalidate_extra_chains(stack, self);
           existing_link->subtree = link.subtree;
           self->dynamic_precedence =
             link.node->dynamic_precedence + ts_subtree_dynamic_precedence(link.subtree);
@@ -232,7 +264,7 @@ static void stack_node_add_link(
         existing_link->node->error_cost == link.node->error_cost
       ) {
         for (int j = 0; j < link.node->link_count; j++) {
-          stack_node_add_link(existing_link->node, link.node->links[j], subtree_pool);
+          stack_node_add_link(stack, existing_link->node, link.node->links[j], subtree_pool);
         }
         int32_t dynamic_precedence = link.node->dynamic_precedence;
         if (link.subtree.ptr) {
@@ -251,6 +283,7 @@ static void stack_node_add_link(
   stack_node_retain(link.node);
   unsigned node_count = link.node->node_count;
   int dynamic_precedence = link.node->dynamic_precedence;
+  stack__invalidate_extra_chains(stack, self);
   self->links[self->link_count++] = link;
 
   if (link.subtree.ptr) {
@@ -321,6 +354,39 @@ static void ts_stack__add_slice(
   array_push(&self->slices, slice);
 }
 
+static StackNode *stack__skip_extra_chains(Stack *self, StackNode *node) {
+  StackNode *start = node;
+  uint32_t cached_index = UINT32_MAX;
+  unsigned steps = 0;
+  while (node->link_count == 1 && node->links[0].subtree.ptr &&
+         ts_subtree_extra(node->links[0].subtree) && node->state == node->links[0].node->state) {
+    for (uint32_t i = 0; i < self->extra_chains.size; i++) {
+      ExtraChain chain = *array_get(&self->extra_chains, i);
+      if (node == chain.start) {
+        cached_index = i;
+        node = chain.end;
+        break;
+      }
+    }
+    if (cached_index != UINT32_MAX) break;
+    node = node->links[0].node;
+    steps++;
+  }
+  // Single links do not save traversal and can evict useful directive chains.
+  if (steps > 1 || cached_index != UINT32_MAX) {
+    stack_node_retain(start);
+    if (cached_index == UINT32_MAX && self->extra_chains.size == MAX_EXTRA_CHAIN_COUNT) {
+      cached_index = 0;
+    }
+    if (cached_index != UINT32_MAX) {
+      stack_node_release(array_get(&self->extra_chains, cached_index)->start, &self->node_pool, self->subtree_pool);
+      array_erase(&self->extra_chains, cached_index);
+    }
+    array_push(&self->extra_chains, ((ExtraChain) {.start = start, .end = node}));
+  }
+  return node;
+}
+
 static StackSliceArray stack__iter(
   Stack *self,
   StackVersion version,
@@ -348,11 +414,30 @@ static StackSliceArray stack__iter(
   array_push(&self->iterators, new_iterator);
 
   while (self->iterators.size > 0) {
+    // Coalescing bounds summary-only traversal. The order-dependent summary callback
+    // can change candidate selection when duplicate visits are removed.
+    if (!include_subtrees) {
+      for (uint32_t i = 0; i < self->iterators.size; i++) {
+        for (uint32_t j = i + 1; j < self->iterators.size; j++) {
+          StackIterator *left = array_get(&self->iterators, i);
+          StackIterator *right = array_get(&self->iterators, j);
+          if (left->node == right->node && left->subtree_count == right->subtree_count) {
+            array_delete(&right->subtrees);
+            array_erase(&self->iterators, j--);
+          }
+        }
+      }
+    }
     for (uint32_t i = 0, size = self->iterators.size; i < size; i++) {
       StackIterator *iterator = array_get(&self->iterators, i);
       StackNode *node = iterator->node;
 
       StackAction action = callback(payload, iterator);
+      // Keep competing paths in breadth-first order: their first position wins.
+      if (!include_subtrees && self->iterators.size == 1 && action == StackActionNone) {
+        node = stack__skip_extra_chains(self, node);
+        iterator->node = node;
+      }
       bool should_pop = action & StackActionPop;
       bool should_stop = action & StackActionStop || node->link_count == 0;
 
@@ -431,13 +516,17 @@ Stack *ts_stack_new(SubtreePool *subtree_pool) {
   array_reserve(&self->node_pool, MAX_NODE_POOL_SIZE);
 
   self->subtree_pool = subtree_pool;
-  self->base_node = stack_node_new(NULL, NULL_SUBTREE, false, 1, &self->node_pool);
+  self->base_node = stack_node_new(NULL, NULL_SUBTREE, false, 1, &self->node_pool, self->pending_generation);
   ts_stack_clear(self);
 
   return self;
 }
 
 void ts_stack_delete(Stack *self) {
+  for (uint32_t i = 0; i < self->extra_chains.size; i++) {
+    stack_node_release(array_get(&self->extra_chains, i)->start, &self->node_pool, self->subtree_pool);
+  }
+  array_delete(&self->extra_chains);
   if (self->slices.contents)
     array_delete(&self->slices);
   if (self->iterators.contents)
@@ -517,7 +606,7 @@ void ts_stack_push(
   TSStateId state
 ) {
   StackHead *head = array_get(&self->heads, version);
-  StackNode *new_node = stack_node_new(head->node, subtree, pending, state, &self->node_pool);
+  StackNode *new_node = stack_node_new(head->node, subtree, pending, state, &self->node_pool, self->pending_generation);
   if (!subtree.ptr) head->node_count_at_last_error = new_node->node_count;
   head->node = new_node;
 }
@@ -550,10 +639,30 @@ forceinline StackAction pop_pending_callback(void *payload, const StackIterator 
 }
 
 StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version) {
+  StackNode *node = array_get(&self->heads, version)->node;
+  if (node->pending_generation == self->pending_generation && !node->has_pending) {
+    array_clear(&self->slices);
+    return self->slices;
+  }
+  StackNode *end = stack__skip_extra_chains(self, node);
+  bool no_pending = end->link_count == 0;
+  if (end->link_count == 1) {
+    StackLink link = end->links[0];
+    no_pending = !link.subtree.ptr || (!ts_subtree_extra(link.subtree) && !link.is_pending);
+  }
+  if (no_pending || (end->pending_generation == self->pending_generation && !end->has_pending)) {
+    node->pending_generation = self->pending_generation;
+    node->has_pending = false;
+    array_clear(&self->slices);
+    return self->slices;
+  }
   StackSliceArray pop = stack__iter(self, version, pop_pending_callback, NULL, 0);
   if (pop.size > 0) {
     ts_stack_renumber_version(self, array_get(&pop, 0)->version, version);
     array_get(&pop, 0)->version = version;
+  } else {
+    node->pending_generation = self->pending_generation;
+    node->has_pending = false;
   }
   return pop;
 }
@@ -707,10 +816,11 @@ StackVersion ts_stack_copy_version(Stack *self, StackVersion version) {
 
 bool ts_stack_merge(Stack *self, StackVersion version1, StackVersion version2) {
   if (!ts_stack_can_merge(self, version1, version2)) return false;
+  self->pending_generation++;
   StackHead *head1 = array_get(&self->heads, version1);
   StackHead *head2 = array_get(&self->heads, version2);
   for (uint32_t i = 0; i < head2->node->link_count; i++) {
-    stack_node_add_link(head1->node, head2->node->links[i], self->subtree_pool);
+    stack_node_add_link(self, head1->node, head2->node->links[i], self->subtree_pool);
   }
   if (head1->node->state == ERROR_STATE) {
     head1->node_count_at_last_error = head1->node->node_count;
@@ -764,6 +874,12 @@ Subtree ts_stack_resume(Stack *self, StackVersion version) {
 }
 
 void ts_stack_clear(Stack *self) {
+  for (uint32_t i = 0; i < self->extra_chains.size; i++) {
+    stack_node_release(array_get(&self->extra_chains, i)->start, &self->node_pool, self->subtree_pool);
+  }
+  array_clear(&self->extra_chains);
+  self->base_node->pending_generation = self->pending_generation;
+  self->base_node->has_pending = false;
   stack_node_retain(self->base_node);
   for (uint32_t i = 0; i < self->heads.size; i++) {
     stack_head_delete(array_get(&self->heads, i), &self->node_pool, self->subtree_pool);

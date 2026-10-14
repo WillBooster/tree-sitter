@@ -233,8 +233,12 @@ static void ts_parser__breakdown_lookahead(
 ) {
   bool did_descend = false;
   Subtree tree = reusable_node_tree(reusable_node);
-  while (ts_subtree_child_count(tree) > 0 && ts_subtree_parse_state(tree) != state) {
-    LOG("state_mismatch sym:%s", TREE_NAME(tree));
+  // Reductions can fork the stack after lookahead selection. Shift leaves on
+  // every branch so competing recovery paths can merge at the same position.
+  while (ts_subtree_child_count(tree) > 0 && (
+    ts_subtree_parse_state(tree) != state || ts_stack_version_count(self->stack) > 1
+  )) {
+    LOG("breakdown_lookahead sym:%s", TREE_NAME(tree));
     reusable_node_descend(reusable_node);
     tree = reusable_node_tree(reusable_node);
     did_descend = true;
@@ -452,7 +456,7 @@ static bool ts_parser__external_scanner_scan(
     bool result = ts_wasm_store_call_scanner_scan(
       self->wasm_store,
       (uintptr_t)self->external_scanner_payload,
-      external_lex_state * self->language->external_token_count
+      external_lex_state * ts_language_external_state_stride(self->language)
     );
     if (ts_wasm_store_has_error(self->wasm_store)) {
       self->has_scanner_error = true;
@@ -479,6 +483,12 @@ static bool ts_parser__can_reuse_first_leaf(
 ) {
   TSSymbol leaf_symbol = ts_subtree_leaf_symbol(tree);
   TSStateId leaf_state = ts_subtree_leaf_parse_state(tree);
+  if (
+    leaf_state != state &&
+    (leaf_symbol == self->language->keyword_capture_token || !table_entry->is_reusable) &&
+    ts_subtree_leaf_is_keyword(tree)
+  ) return false;
+
   TSLexerMode current_lex_mode = ts_language_lex_mode_for_state(self->language, state);
   TSLexerMode leaf_lex_mode = ts_language_lex_mode_for_state(self->language, leaf_state);
 
@@ -488,7 +498,6 @@ static bool ts_parser__can_reuse_first_leaf(
   // the same thing happens when incrementally reparsing.
   if (current_lex_mode.lex_state == (uint16_t)(-1)) return false;
 
-  // If the token was created in a state with the same set of lookaheads, it is reusable.
   if (
     table_entry->action_count > 0 &&
     memcmp(&leaf_lex_mode, &current_lex_mode, sizeof(TSLexerMode)) == 0 &&
@@ -498,13 +507,12 @@ static bool ts_parser__can_reuse_first_leaf(
     )
   ) return true;
 
-  // Empty tokens are not reusable in states with different lookaheads.
   if (ts_subtree_size(tree).bytes == 0 && leaf_symbol != ts_builtin_sym_end) return false;
 
-  // If the current state allows external tokens or other tokens that conflict with this
-  // token, this token is not reusable.
   return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable;
 }
+
+static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
 
 static Subtree ts_parser__lex(
   TSParser *self,
@@ -523,6 +531,12 @@ static Subtree ts_parser__lex(
   bool found_external_token = false;
   bool error_mode = parse_state == ERROR_STATE;
   bool skipped_error = false;
+  bool retry_internal = false;
+  bool internal_eof = false;
+  bool internal_already_failed = false;
+  Length failed_internal_position = length_zero();
+  Length failed_internal_token_start = length_zero();
+  ColumnData failed_internal_column_data = {0};
   bool called_get_column = false;
   int32_t first_error_character = 0;
   Length error_start_position = length_zero();
@@ -534,10 +548,12 @@ static Subtree ts_parser__lex(
 
   for (;;) {
     bool found_token = false;
+    bool internal_only = retry_internal;
+    retry_internal = false;
     Length current_position = self->lexer.current_position;
     ColumnData column_data = self->lexer.column_data;
 
-    if (lex_mode.external_lex_state != 0) {
+    if (lex_mode.external_lex_state != 0 && !internal_only) {
       LOG(
         "lex_external state:%d, row:%u, column:%u",
         lex_mode.external_lex_state,
@@ -558,23 +574,14 @@ static Subtree ts_parser__lex(
           external_scanner_state_len
         );
 
-        // Avoid infinite loops caused by the external scanner returning empty tokens.
-        // Empty tokens are needed in some circumstances, e.g. indent/dedent tokens
-        // in Python. Ignore the following classes of empty tokens:
-        //
-        // * Tokens produced during error recovery. When recovering from an error,
-        //   all tokens are allowed, so it's easy to accidentally return unwanted
-        //   empty tokens.
-        // * Tokens that are marked as 'extra' in the grammar. These don't change
-        //   the parse state, so they would definitely cause an infinite loop.
-        if (
-          self->lexer.token_end_position.bytes <= current_position.bytes &&
-          !external_scanner_state_changed
-        ) {
+        if (self->lexer.token_end_position.bytes <= current_position.bytes) {
           TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
+          bool unusable_eof_token = internal_eof &&
+            !ts_parser__eof_token_is_usable(self, version, symbol);
           TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
           bool token_is_extra = (next_parse_state == parse_state);
-          if (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra) {
+          if ((!external_scanner_state_changed || unusable_eof_token) &&
+              (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra)) {
             LOG(
               "ignore_empty_external_token symbol:%s",
               SYM_NAME(self->language->external_scanner.symbol_map[self->lexer.data.result_symbol])
@@ -594,20 +601,56 @@ static Subtree ts_parser__lex(
       self->lexer.column_data = column_data;
     }
 
-    LOG(
-      "lex_internal state:%d, row:%u, column:%u",
-      lex_mode.lex_state,
-      current_position.extent.row,
-      current_position.extent.column
-    );
-    ts_lexer_start(&self->lexer);
-    found_token = ts_parser__call_main_lex_fn(self, lex_mode);
-    ts_lexer_finish(&self->lexer, &lookahead_end_byte);
-    if (found_token) break;
+    if (internal_already_failed) {
+      ts_lexer_reset(&self->lexer, failed_internal_position);
+      ts_lexer_start(&self->lexer);
+      self->lexer.token_start_position = failed_internal_token_start;
+      self->lexer.column_data = failed_internal_column_data;
+      internal_already_failed = false;
+    } else {
+      LOG(
+        "lex_internal state:%d, row:%u, column:%u",
+        lex_mode.lex_state,
+        current_position.extent.row,
+        current_position.extent.column
+      );
+      ts_lexer_start(&self->lexer);
+      found_token = ts_parser__call_main_lex_fn(self, lex_mode);
+      ts_lexer_finish(&self->lexer, &lookahead_end_byte);
+    }
+    if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
+      internal_eof = true;
+      ts_lexer_reset(&self->lexer, start_position);
+      continue;
+    }
+    if (found_token && (
+      error_mode || self->lexer.data.result_symbol != ts_builtin_sym_end ||
+      ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end)
+    )) break;
 
     if (!error_mode) {
+      internal_eof = found_token && self->lexer.data.result_symbol == ts_builtin_sym_end;
       error_mode = true;
       lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
+      ts_lexer_reset(&self->lexer, start_position);
+      retry_internal = lex_mode.external_lex_state != 0 &&
+        !self->lexer.data.eof(&self->lexer.data);
+      if (retry_internal && self->language->keyword_capture_token != 0) {
+        for (unsigned i = 0; i < self->language->external_token_count; i++) {
+          if (self->language->external_scanner.symbol_map[i] == self->language->keyword_capture_token) {
+            retry_internal = false;
+            break;
+          }
+        }
+      }
+      continue;
+    }
+
+    if (internal_only) {
+      internal_already_failed = true;
+      failed_internal_position = self->lexer.current_position;
+      failed_internal_token_start = self->lexer.token_start_position;
+      failed_internal_column_data = self->lexer.column_data;
       ts_lexer_reset(&self->lexer, start_position);
       continue;
     }
@@ -647,6 +690,7 @@ static Subtree ts_parser__lex(
     );
   } else {
     bool is_keyword = false;
+    bool is_keyword_exact = false;
     TSSymbol symbol = self->lexer.data.result_symbol;
     Length padding = length_sub(self->lexer.token_start_position, start_position);
     Length size = length_sub(self->lexer.token_end_position, self->lexer.token_start_position);
@@ -656,20 +700,103 @@ static Subtree ts_parser__lex(
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
       uint32_t end_byte = self->lexer.token_end_position.bytes;
-      ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-      ts_lexer_start(&self->lexer);
+      uint32_t start_byte = self->lexer.token_start_position.bytes;
+      bool bulk_keyword = false;
+      TSSymbol candidate = 0;
+      if (self->language->keyword_lookup_fn
+          && (self->lexer.input.encoding == TSInputEncodingUTF8
+#ifdef __EMSCRIPTEN__
+              || self->lexer.input.encoding == TSInputEncodingUTF16LE
+              || self->lexer.input.encoding == TSInputEncodingUTF16BE
+#endif
+          )
+          && start_byte >= self->lexer.chunk_start
+          && end_byte >= start_byte && end_byte - self->lexer.chunk_start <= self->lexer.chunk_size) {
+        uint32_t low = 0, high = self->lexer.included_range_count;
+        while (low < high) {
+          uint32_t mid = low + (high - low) / 2;
+          if (self->lexer.included_ranges[mid].end_byte < end_byte) low = mid + 1;
+          else high = mid;
+        }
+        if (low < self->lexer.included_range_count) {
+          TSRange range = self->lexer.included_ranges[low];
+          if (start_byte >= range.start_byte) {
+            const char *text = self->lexer.chunk + start_byte - self->lexer.chunk_start;
+            uint32_t length = end_byte - start_byte;
+#ifdef __EMSCRIPTEN__
+            char ascii[128];
+            if (self->lexer.input.encoding != TSInputEncodingUTF8) {
+              if ((length & 1) || length / 2 > sizeof(ascii) || self->lexer.logger.log) {
+                text = NULL;
+              } else {
+                const uint8_t *bytes = (const uint8_t *)text;
+                unsigned low_byte = self->lexer.input.encoding == TSInputEncodingUTF16LE ? 0 : 1;
+                length /= 2;
+                for (uint32_t i = 0; i < length; i++) {
+                  if (bytes[2 * i + low_byte] >= 128 || bytes[2 * i + (1 - low_byte)] != 0) {
+                    text = NULL;
+                    break;
+                  }
+                  ascii[i] = bytes[2 * i + low_byte];
+                }
+                if (text) text = ascii;
+              }
+            }
+            if (text) {
+#endif
+              uint32_t keyword;
+              if (ts_language_is_wasm(self->language)) {
+                bulk_keyword = ts_wasm_store_call_keyword_lookup(self->wasm_store, text, length, &keyword);
+              } else {
+                keyword = self->language->keyword_lookup_fn(text, length);
+                bulk_keyword = true;
+              }
+              if (bulk_keyword) {
+                is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
+                candidate = (TSSymbol)keyword;
+              }
+#ifdef __EMSCRIPTEN__
+            }
+#endif
+          }
+        }
+      }
+      if (!bulk_keyword) {
+        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+        ts_lexer_start(&self->lexer);
 
-      is_keyword = ts_parser__call_keyword_lex_fn(self);
+        is_keyword = ts_parser__call_keyword_lex_fn(self);
 
-      if (
-        is_keyword &&
-        self->lexer.token_end_position.bytes == end_byte &&
-        (
-          ts_language_has_actions(self->language, parse_state, self->lexer.data.result_symbol) ||
-          ts_language_is_reserved_word(self->language, parse_state, self->lexer.data.result_symbol)
-        )
-      ) {
-        symbol = self->lexer.data.result_symbol;
+        if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
+          candidate = self->lexer.data.result_symbol;
+        }
+      }
+
+      is_keyword_exact = candidate != 0;
+      if (candidate) {
+        bool keyword_is_valid =
+          ts_language_has_actions(self->language, parse_state, candidate) ||
+          ts_language_is_reserved_word(self->language, parse_state, candidate);
+        bool recovery_accepts_keyword = false;
+        if (!keyword_is_valid && !ts_language_has_actions(self->language, parse_state, symbol)) {
+          if (parse_state != ERROR_STATE) {
+            ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
+          }
+          StackSummary *summary = ts_stack_get_summary(self->stack, version);
+          if (summary) {
+            for (unsigned i = 0; i < summary->size; i++) {
+              TSStateId state = array_get(summary, i)->state;
+              if (state != ERROR_STATE && ts_language_has_actions(self->language, state, candidate)) {
+                recovery_accepts_keyword = true;
+                break;
+              }
+            }
+          }
+        }
+        if (keyword_is_valid || recovery_accepts_keyword) {
+          is_keyword = keyword_is_valid;
+          symbol = candidate;
+        }
       }
     }
 
@@ -683,6 +810,7 @@ static Subtree ts_parser__lex(
       found_external_token,
       called_get_column,
       is_keyword,
+      is_keyword_exact,
       self->language
     );
 
@@ -702,6 +830,36 @@ static Subtree ts_parser__lex(
     ts_subtree_total_size(result).bytes
   );
   return result;
+}
+
+static bool ts_parser__eof_token_is_usable(
+  TSParser *self,
+  StackVersion version,
+  TSSymbol lookahead
+) {
+  TSStateId current_state = ts_stack_state(self->stack, version);
+  if (ts_language_has_actions(self->language, current_state, lookahead)) return true;
+  ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
+  StackSummary *summary = ts_stack_get_summary(self->stack, version);
+  for (unsigned i = 0; i < summary->size; i++) {
+    TSStateId state = array_get(summary, i)->state;
+    if (state == ERROR_STATE) continue;
+    TSStateId marker_state = ts_language_next_state(self->language, state, lookahead);
+    if (marker_state != 0 && marker_state != state &&
+        ts_language_has_actions(self->language, marker_state, ts_builtin_sym_end)) {
+      return true;
+    }
+    LookaheadIterator iterator = ts_language_lookaheads(self->language, state);
+    while (ts_lookahead_iterator__next(&iterator)) {
+      if (iterator.symbol == 0 || iterator.symbol >= self->language->token_count) continue;
+      TSStateId next_state = ts_language_next_state(self->language, state, iterator.symbol);
+      if (next_state != 0 && next_state != state &&
+          ts_language_has_reduce_action(self->language, next_state, lookahead)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 static Subtree ts_parser__get_cached_token(
@@ -799,6 +957,14 @@ static Subtree ts_parser__reuse_node(
       reason = "is_missing";
     } else if (ts_subtree_is_fragile(result)) {
       reason = "is_fragile";
+    } else if (
+      ts_subtree_child_count(result) > 0 &&
+      !ts_subtree_extra(result) &&
+      reusable_node_precedes_unstable_extra(&self->reusable_node)
+    ) {
+      // Nonterminal extras can postpone reductions. Reusing this reduced subtree would hide
+      // intermediate states that recovery inside the following extra may need.
+      reason = "precedes_unstable_extra";
     } else if (ts_parser__has_included_range_difference(
                  self,
                  byte_offset,
@@ -1307,56 +1473,52 @@ static void ts_parser__recover(
   unsigned node_count_since_error = ts_stack_node_count_since_error(self->stack, version);
   unsigned current_error_cost = ts_stack_error_cost(self->stack, version);
 
-  // When the parser is in the error state, there are two strategies for recovering with a
-  // given lookahead token:
-  // 1. Find a previous state on the stack in which that lookahead token would be valid. Then,
-  //    create a new stack version that is in that state again. This entails popping all of the
-  //    subtrees that have been pushed onto the stack since that previous state, and wrapping
-  //    them in an ERROR node.
-  // 2. Wrap the lookahead token in an ERROR node, push that ERROR node onto the stack, and
-  //    move on to the next lookahead token, remaining in the error state.
-  //
-  // First, try the strategy 1. Upon entering the error state, the parser recorded a summary
-  // of the previous parse states and their depths. Look at each state in the summary, to see
-  // if the current lookahead token would be valid in that state.
   if (summary && !ts_subtree_is_error(lookahead)) {
-    for (unsigned i = 0; i < summary->size; i++) {
-      StackSummaryEntry entry = *array_get(summary, i);
+    TSSymbol symbol = ts_subtree_symbol(lookahead);
+    unsigned recovery_pass_count = ts_subtree_is_keyword(lookahead) &&
+      symbol != self->language->keyword_capture_token ? 2 : 1;
+    for (unsigned recovery_pass = 0; recovery_pass < recovery_pass_count && !did_recover; recovery_pass++) {
+      TSSymbol recovery_symbol = recovery_pass == 0 ? symbol : self->language->keyword_capture_token;
+      for (unsigned i = 0; i < summary->size; i++) {
+        StackSummaryEntry entry = *array_get(summary, i);
 
-      if (entry.state == ERROR_STATE) continue;
-      if (entry.position.bytes == position.bytes) continue;
-      unsigned depth = entry.depth;
-      if (node_count_since_error > 0) depth++;
+        if (entry.state == ERROR_STATE) continue;
+        if (entry.position.bytes == position.bytes) continue;
+        unsigned depth = entry.depth;
+        if (node_count_since_error > 0) depth++;
 
-      // Do not recover in ways that create redundant stack versions.
-      bool would_merge = false;
-      for (unsigned j = 0; j < previous_version_count; j++) {
-        if (
-          ts_stack_state(self->stack, j) == entry.state &&
-          ts_stack_position(self->stack, j).bytes == position.bytes
-        ) {
-          would_merge = true;
-          break;
+        bool would_merge = false;
+        for (unsigned j = 0; j < previous_version_count; j++) {
+          if (
+            ts_stack_state(self->stack, j) == entry.state &&
+            ts_stack_position(self->stack, j).bytes == position.bytes
+          ) {
+            would_merge = true;
+            break;
+          }
         }
-      }
-      if (would_merge) continue;
+        if (would_merge) continue;
 
-      // Do not recover if the result would clearly be worse than some existing stack version.
-      unsigned new_cost =
-        current_error_cost +
-        entry.depth * ERROR_COST_PER_SKIPPED_TREE +
-        (position.bytes - entry.position.bytes) * ERROR_COST_PER_SKIPPED_CHAR +
-        (position.extent.row - entry.position.extent.row) * ERROR_COST_PER_SKIPPED_LINE;
-      if (ts_parser__better_version_exists(self, version, false, new_cost)) break;
+        unsigned new_cost =
+          current_error_cost +
+          entry.depth * ERROR_COST_PER_SKIPPED_TREE +
+          (position.bytes - entry.position.bytes) * ERROR_COST_PER_SKIPPED_CHAR +
+          (position.extent.row - entry.position.extent.row) * ERROR_COST_PER_SKIPPED_LINE;
+        if (ts_parser__better_version_exists(self, version, false, new_cost)) break;
 
-      // If the current lookahead token is valid in some previous state, recover to that state.
-      // Then stop looking for further recoveries.
-      if (ts_language_has_actions(self->language, entry.state, ts_subtree_symbol(lookahead))) {
-        if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
-          did_recover = true;
-          LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
-          LOG_STACK();
-          break;
+        if (
+          ts_language_has_actions(self->language, entry.state, recovery_symbol) &&
+          (recovery_pass == 0 || (
+            !ts_language_has_actions(self->language, entry.state, symbol) &&
+            !ts_language_is_reserved_word(self->language, entry.state, symbol)
+          ))
+        ) {
+          if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
+            did_recover = true;
+            LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
+            LOG_STACK();
+            break;
+          }
         }
       }
     }
@@ -1383,11 +1545,6 @@ static void ts_parser__recover(
     return;
   }
 
-  // If strategy 1 succeeded, a new stack version will have been created which is able to handle
-  // the current lookahead token. Now, in addition, try strategy 2 described above: skip the
-  // current lookahead token by wrapping it in an ERROR node.
-
-  // Don't pursue this additional strategy if there are already too many stack versions.
   if (did_recover && ts_stack_version_count(self->stack) > MAX_VERSION_COUNT) {
     ts_stack_halt(self->stack, version);
     ts_subtree_release(&self->tree_pool, lookahead);
@@ -1680,10 +1837,10 @@ static bool ts_parser__advance(
           TSStateId next_state;
           if (action.shift.extra) {
             next_state = state;
-            LOG("shift_extra");
+            LOG("shift_extra state:%u", state);
           } else {
             next_state = action.shift.state;
-            LOG("shift state:%u", next_state);
+            LOG("shift state:%u, from_state:%u", next_state, state);
           }
 
           if (ts_subtree_child_count(lookahead) > 0) {
@@ -1699,7 +1856,7 @@ static bool ts_parser__advance(
         case TSParseActionTypeReduce: {
           bool is_fragile = table_entry.action_count > 1;
           bool end_of_non_terminal_extra = lookahead.ptr == NULL;
-          LOG("reduce sym:%s, child_count:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count);
+          LOG("reduce sym:%s, child_count:%u, state:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count, state);
           StackVersion reduction_version = ts_parser__reduce(
             self, version, action.reduce.symbol, action.reduce.child_count,
             action.reduce.dynamic_precedence, action.reduce.production_id,
@@ -1713,7 +1870,7 @@ static bool ts_parser__advance(
         }
 
         case TSParseActionTypeAccept: {
-          LOG("accept");
+          LOG("accept state:%u", state);
           ts_parser__accept(self, version, lookahead);
           return true;
         }
@@ -1744,6 +1901,8 @@ static bool ts_parser__advance(
       // (and completing the non-terminal extra rule) run the lexer again based
       // on the current parse state.
       if (!lookahead.ptr) {
+        ts_parser__breakdown_top_of_stack(self, version);
+        state = ts_stack_state(self->stack, version);
         needs_lex = true;
       } else {
         ts_language_table_entry(
@@ -2059,10 +2218,7 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   self->language = NULL;
 
   if (language) {
-    if (
-      language->abi_version > TREE_SITTER_LANGUAGE_VERSION ||
-      language->abi_version < TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION
-    ) return false;
+    if (!ts_language_has_supported_abi(language)) return false;
 
     if (!ts_language_is_parseable(language)) return false;
 
