@@ -1268,6 +1268,7 @@ fn test_node_display_with_quoted_aliases() {
         (false, "a b"),
         (false, "a\")b"),
         (false, "a\")"),
+        (false, "ab)) (c2 (MISSING \"*/"),
     ]
     .into_iter()
     .enumerate()
