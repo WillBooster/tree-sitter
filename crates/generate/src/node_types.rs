@@ -1037,8 +1037,6 @@ fn build_regular_entries(
     }
 }
 
-/// Sort the subtype map topologically so that subtypes are listed before
-/// their supertypes.
 #[cfg(feature = "load")]
 fn sort_subtype_map_topologically(
     subtype_map: &mut [(NodeTypeRef, Vec<NodeTypeRef>)],
@@ -1052,11 +1050,12 @@ fn sort_subtype_map_topologically(
         }
     }
     loop {
-        let mut next_node_types = top_sort.pop_all();
+        let mut next_node_types = top_sort.pop_batch::<Vec<_>>();
         match (next_node_types.is_empty(), top_sort.is_empty()) {
             (true, true) => break,
             (true, false) => {
                 let mut items = top_sort
+                    .pop_iter()
                     .map(|node_type| str_pool.resolve(node_type.kind).to_string())
                     .collect::<Vec<String>>();
                 items.sort();
