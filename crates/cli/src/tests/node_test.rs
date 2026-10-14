@@ -1321,6 +1321,47 @@ fn test_node_display_with_quoted_aliases() {
 }
 
 #[test]
+fn test_node_display_rejects_impossible_quoted_payload_depth() {
+    let grammar = serde_json::json!({
+        "name": "quoted_payload_depth",
+        "rules": {
+            "root": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "_inner"},
+                {"type": "SYMBOL", "name": "x"},
+                {"type": "STRING", "value": "!"}
+            ]},
+            "_inner": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "a"},
+                {"type": "ALIAS", "named": true, "value": "\"", "content": {"type": "STRING", "value": "b"}}
+            ]},
+            "x": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "SYMBOL", "name": "inner2"}
+            ]},
+            "inner2": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "@"},
+                {"type": "ALIAS", "named": false, "value": "y", "content": {"type": "STRING", "value": "%"}}
+            ]}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("a#@!", None).unwrap();
+    let node = tree.root_node();
+    assert_eq!(
+        node.to_sexp(),
+        "(root (MISSING \") (x (inner2 (MISSING \"y\"))))"
+    );
+    assert_eq!(
+        format!("{node:#}"),
+        "(root\n  (MISSING \")\n  (x\n    (inner2\n      (MISSING \"y\"))))"
+    );
+}
+
+#[test]
 fn test_node_field_names() {
     // - "x":
     //      This isn't used in the test, but prevents `_hidden_rule1` from being eliminated as a
