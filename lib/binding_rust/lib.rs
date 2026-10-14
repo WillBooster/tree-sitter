@@ -3972,9 +3972,9 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         next.clear();
         while let Some(c) = c_iter.next() {
             if quote != '\0' {
-                // `MISSING` token names and `UNEXPECTED` characters are quoted without
-                // escaping and always end their node, so only a matching quote that is
-                // followed by a `)` ending a token closes the quoted token.
+                // `to_sexp` does not escape quotes in anonymous MISSING names or
+                // quoted UNEXPECTED characters, so their node boundary disambiguates
+                // the delimiter. Named MISSING payloads are emitted without delimiters.
                 if c == quote && quote_ends_token(c_iter.clone()) {
                     quote = '\0';
                 }
