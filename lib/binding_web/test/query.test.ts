@@ -585,7 +585,7 @@ describe('Query', () => {
     });
   });
 
-  it('Stops captures when the progress callback cancels and resets on the next execution', () => {
+  it('Cancels captures behind an unfinished match, drains completed captures, and permits reuse', () => {
     const numbers = Array.from({ length: 1000 }, (_, i) => i).join(',');
     tree = parser.parse(`[${numbers}];`)!;
     query = new Query(JavaScript, '(array (number) @first (string)) (number) @number');
@@ -603,6 +603,36 @@ describe('Query', () => {
 
     expect(query.captures(tree.rootNode)).toHaveLength(1000);
     expect(calls).toBe(1);
+  });
+
+  it('Propagates capture callback failures without retaining the callback for later queries', () => {
+    const numbers = Array.from({ length: 1000 }, (_, i) => i).join(',');
+    tree = parser.parse(`[${numbers}];`)!;
+    query = new Query(JavaScript, '(number) @number');
+    const failure = new Error('capture progress failed');
+    let calls = 0;
+    for (let attempt = 0; attempt < 256; attempt++) {
+      expect(() => query!.captures(tree!.rootNode, {
+        progressCallback: () => {
+          calls++;
+          throw failure;
+        },
+      })).toThrow(failure);
+    }
+    expect(calls).toBe(256);
+    expect(query.captures(tree.rootNode)).toHaveLength(1000);
+    expect(calls).toBe(256);
+  });
+
+  it('Completes captures when an instrumentation callback returns nothing', () => {
+    tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
+    query = new Query(JavaScript, '(number) @number');
+    const offsets: number[] = [];
+    const captures = query.captures(tree.rootNode, {
+      progressCallback: state => { offsets.push(state.currentOffset); },
+    });
+    expect(captures).toHaveLength(1000);
+    expect(offsets.length).toBeGreaterThan(0);
   });
 
   describe('Executes with a timeout', { timeout: 10000 }, () => {

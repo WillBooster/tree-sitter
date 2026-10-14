@@ -76,8 +76,10 @@ export interface QueryOptions {
    * if query execution should be cancelled. You can also use this to instrument query execution
    * and check where the query is at in the document. The progress callback takes a single argument,
    * which is a {@link QueryState} representing the current state of the query.
+   * Return `true` to cancel execution, or `false` or nothing to continue.
    */
-  progressCallback?: (state: QueryState) => void;
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Observers return void, while cancellation callbacks return boolean.
+  progressCallback?: (state: QueryState) => boolean | void;
 }
 
 /**
@@ -874,65 +876,76 @@ export class Query {
       throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
     }
 
-    if (progressCallback) {
-      C.currentQueryProgressCallback = progressCallback;
+    let callbackFailure: { error: unknown } | undefined;
+    C.currentQueryProgressCallback = progressCallback ? state => {
+      try {
+        return progressCallback(state);
+      } catch (error) {
+        callbackFailure = { error };
+        return true;
+      }
+    } : null;
+
+    try {
+      marshalNode(node);
+
+      C._ts_query_captures_wasm(
+        this[0],
+        node.tree[0],
+        startPosition.row,
+        startPosition.column,
+        endPosition.row,
+        endPosition.column,
+        startIndex,
+        endIndex,
+        startContainingPosition.row,
+        startContainingPosition.column,
+        endContainingPosition.row,
+        endContainingPosition.column,
+        startContainingIndex,
+        endContainingIndex,
+        matchLimit,
+        maxStartDepth,
+      );
+    } finally {
+      C.currentQueryProgressCallback = null;
     }
-
-    marshalNode(node);
-
-    C._ts_query_captures_wasm(
-      this[0],
-      node.tree[0],
-      startPosition.row,
-      startPosition.column,
-      endPosition.row,
-      endPosition.column,
-      startIndex,
-      endIndex,
-      startContainingPosition.row,
-      startContainingPosition.column,
-      endContainingPosition.row,
-      endContainingPosition.column,
-      startContainingIndex,
-      endContainingIndex,
-      matchLimit,
-      maxStartDepth,
-    );
 
     const count = C.getValue(TRANSFER_BUFFER, 'i32');
     const startAddress = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const didExceedMatchLimit = C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32');
-    const result = new Array<QueryCapture>();
-    this.exceededMatchLimit = Boolean(didExceedMatchLimit);
-
-    const captures = new Array<QueryCapture>();
-    let address = startAddress;
-    for (let i = 0; i < count; i++) {
-      const patternIndex = C.getValue(address, 'i32');
-      address += SIZE_OF_INT;
-      const captureCount = C.getValue(address, 'i32');
-      address += SIZE_OF_INT;
-      const captureIndex = C.getValue(address, 'i32');
-      address += SIZE_OF_INT;
-
-      captures.length = captureCount;
-      address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
-
-      if (this.textPredicates[patternIndex].every(p => p(captures))) {
-        const capture = captures[captureIndex];
-        const setProperties = this.setProperties[patternIndex];
-        capture.setProperties = setProperties;
-        const assertedProperties = this.assertedProperties[patternIndex];
-        capture.assertedProperties = assertedProperties;
-        const refutedProperties = this.refutedProperties[patternIndex];
-        capture.refutedProperties = refutedProperties;
-        result.push(capture);
+    try {
+      if (callbackFailure) {
+        throw callbackFailure.error;
       }
-    }
+      const result = new Array<QueryCapture>();
+      this.exceededMatchLimit = Boolean(C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32'));
 
-    C._free(startAddress);
-    C.currentQueryProgressCallback = null;
-    return result;
+      const captures = new Array<QueryCapture>();
+      let address = startAddress;
+      for (let i = 0; i < count; i++) {
+        const patternIndex = C.getValue(address, 'i32');
+        address += SIZE_OF_INT;
+        const captureCount = C.getValue(address, 'i32');
+        address += SIZE_OF_INT;
+        const captureIndex = C.getValue(address, 'i32');
+        address += SIZE_OF_INT;
+
+        captures.length = captureCount;
+        address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
+
+        if (this.textPredicates[patternIndex].every(p => p(captures))) {
+          const capture = captures[captureIndex];
+          capture.setProperties = this.setProperties[patternIndex];
+          capture.assertedProperties = this.assertedProperties[patternIndex];
+          capture.refutedProperties = this.refutedProperties[patternIndex];
+          result.push(capture);
+        }
+      }
+
+      return result;
+    } finally {
+      C._free(startAddress);
+    }
   }
 
   /** Get the predicates for a given pattern. */

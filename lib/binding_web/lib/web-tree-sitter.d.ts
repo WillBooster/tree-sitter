@@ -203,7 +203,7 @@ export type MainModule = WasmModule & typeof RuntimeExports & {
   currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => void) | null;
-  currentQueryProgressCallback: ((state: {currentOffset: number}) => void) | null;
+  currentQueryProgressCallback: ((state: {currentOffset: number}) => boolean | void) | null;
 };
 
 export default function MainModuleFactory(options?: Partial<EmscriptenModule>): Promise<MainModule>;
