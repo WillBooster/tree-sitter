@@ -2124,6 +2124,42 @@ fn test_parsing_after_editing_end_of_code() {
 }
 
 #[test]
+fn test_parsing_after_eof_edit_reuses_unchanged_keyword_statements() {
+    for (language, unit) in [
+        ("python", "def f(a):\n    if a:\n        return a\n"),
+        ("javascript", "function f(a) { if (a) { return a; } }\n"),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let mut source = unit.repeat(32).into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let edit = Edit {
+            position: source.len(),
+            deleted_length: 0,
+            inserted_text: b"\n".to_vec(),
+        };
+        perform_edit(&mut tree, &mut source, &edit).unwrap();
+        let mut recorder = ReadRecorder::new(&source);
+        let incremental = parser
+            .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
+            .unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert!(!incremental.root_node().has_error());
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+        let bytes_read: usize = recorder.strings_read().iter().map(|s| s.len()).sum();
+        assert!(
+            bytes_read < source.len() / 5,
+            "{language}: read {bytes_read} of {} bytes",
+            source.len()
+        );
+    }
+}
+
+#[test]
 fn test_parsing_after_undoing_edit_before_contextual_keyword() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("java")).unwrap();

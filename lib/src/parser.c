@@ -484,11 +484,6 @@ static bool ts_parser__can_reuse_first_leaf(
   TSSymbol leaf_symbol = ts_subtree_leaf_symbol(tree);
   TSStateId leaf_state = ts_subtree_leaf_parse_state(tree);
   if (
-    ts_subtree_leaf_is_keyword(tree) &&
-    !table_entry->is_reusable &&
-    ts_subtree_child_count(tree) > 0
-  ) return false;
-  if (
     leaf_state != state &&
     (leaf_symbol == self->language->keyword_capture_token || !table_entry->is_reusable) &&
     ts_subtree_leaf_is_keyword(tree)
@@ -992,6 +987,12 @@ static Subtree ts_parser__reuse_node(
 
     TSSymbol leaf_symbol = ts_subtree_leaf_symbol(result);
     ts_language_table_entry(self->language, *state, leaf_symbol, table_entry);
+    if (
+      ts_subtree_leaf_is_keyword(result) &&
+      !table_entry->is_reusable &&
+      ts_subtree_parse_state(result) != *state &&
+      reusable_node_descend(&self->reusable_node)
+    ) continue;
     if (!ts_parser__can_reuse_first_leaf(self, *state, result, table_entry)) {
       LOG(
         "cant_reuse_node symbol:%s, first_leaf_symbol:%s",
