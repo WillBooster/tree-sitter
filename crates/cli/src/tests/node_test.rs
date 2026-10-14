@@ -1298,8 +1298,18 @@ fn test_node_display_with_quoted_aliases() {
         let complete = parser.parse("/**/;", None).unwrap();
         let alias_node = complete.root_node().child(0).unwrap().child(1).unwrap();
         assert_eq!(format!("{alias_node:#}"), alias_node.to_sexp());
+        assert_eq!(
+            format!("{alias_node:#2}"),
+            format!("\n    {}", alias_node.to_sexp())
+        );
         let tree = parser.parse("/*;", None).unwrap();
         let node = tree.root_node();
+        let missing = node.child(0).unwrap().child(1).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(
+            format!("{missing:#2}"),
+            format!("\n    {}", missing.to_sexp())
+        );
         let payload = if named {
             alias.to_owned()
         } else {
@@ -1312,6 +1322,10 @@ fn test_node_display_with_quoted_aliases() {
         assert_eq!(
             format!("{:#}", node.child(0).unwrap()),
             format!("({parent}\n  (MISSING {payload}))")
+        );
+        assert_eq!(
+            format!("{:#2}", node.child(0).unwrap()),
+            format!("\n    ({parent}\n      (MISSING {payload}))")
         );
         assert_eq!(
             format!("{node:#}"),
@@ -1358,6 +1372,10 @@ fn test_node_display_rejects_impossible_quoted_payload_depth() {
     assert_eq!(
         format!("{node:#}"),
         "(root\n  (MISSING \")\n  (x\n    (inner2\n      (MISSING \"y\"))))"
+    );
+    assert_eq!(
+        format!("{node:#2}"),
+        "\n    (root\n      (MISSING \")\n      (x\n        (inner2\n          (MISSING \"y\"))))"
     );
 }
 

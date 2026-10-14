@@ -4037,7 +4037,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     )
     .is_some()
     {
-        if scratch.is_empty() && indent_level > 0 {
+        if scratch.is_empty() && indent_level > initial_indent_level {
             // ")"
             indent_level -= 1;
             write!(formatted, ")").unwrap();
@@ -4067,7 +4067,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 )
                 .unwrap();
                 if scratch.is_empty() {
-                    while indent_level > 0 {
+                    while indent_level > initial_indent_level {
                         indent_level -= 1;
                         write!(formatted, ")").unwrap();
                     }
