@@ -48,11 +48,15 @@ fn test_nested_json_error_recovery_preserves_following_token_ranges() {
         .child_by_field_name("value")
         .unwrap();
     assert_eq!(malformed.kind(), "object");
-    let error = malformed.named_child(0).unwrap();
-    assert!(error.is_error());
-    assert_eq!(error.byte_range(), 8..19);
+    let pair = malformed.named_child(0).unwrap();
+    assert_eq!(pair.kind(), "pair");
+    assert_eq!(pair.byte_range(), 8..19);
+    let missing_colon = pair.child(1).unwrap();
+    assert_eq!(missing_colon.kind(), ":");
+    assert!(missing_colon.is_missing());
+    assert!(missing_colon.byte_range().is_empty());
     for (index, range, text) in [(0, 8..13, "\"bar\""), (1, 14..19, "\"baz\"")] {
-        let string = error.named_child(index).unwrap();
+        let string = pair.named_child(index).unwrap();
         assert_eq!(string.kind(), "string");
         assert_eq!(string.byte_range(), range);
         assert_eq!(string.utf8_text(source.as_bytes()).unwrap(), text);
