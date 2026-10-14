@@ -4030,11 +4030,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         let has_payload = separated
             && (next == "(MISSING" || next == "(UNEXPECTED")
             && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
-            && c_iter
-                .clone()
-                .take_while(|c| !c.is_whitespace() && *c != '(' && *c != ')')
-                .last()
-                != Some(':');
+            && !sexp_field_follows(c_iter.clone());
         Some(has_payload)
     };
 
@@ -4090,6 +4086,18 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     }
 
     formatted
+}
+
+fn sexp_field_follows(mut chars: impl Iterator<Item = char>) -> bool {
+    let mut last = None;
+    for c in chars.by_ref() {
+        match c {
+            '(' | ')' | '\'' | '"' => return false,
+            ' ' => break,
+            _ => last = Some(c),
+        }
+    }
+    last == Some(':') && chars.next() == Some('(')
 }
 
 fn quote_suffix_minimum_depths(sexp: &str) -> [Vec<(usize, usize)>; 2] {

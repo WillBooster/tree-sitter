@@ -1373,6 +1373,8 @@ fn test_node_display_with_quotes_in_named_aliases() {
 #[test]
 fn test_node_display_with_quoted_aliases() {
     for (index, (named, alias)) in [
+        (true, "token:"),
+        (false, "token: ("),
         (true, "\""),
         (true, "'"),
         (true, "\"ab"),
