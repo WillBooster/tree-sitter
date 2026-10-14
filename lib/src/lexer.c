@@ -425,7 +425,9 @@ static bool ts_lexer__is_at_included_range_start(const TSLexer *_self) {
   const Lexer *self = (const Lexer *)_self;
   if (self->current_included_range_index < self->included_range_count) {
     TSRange *current_range = &self->included_ranges[self->current_included_range_index];
-    return self->current_position.bytes == current_range->start_byte;
+    return self->current_position.bytes == current_range->start_byte &&
+      (self->current_included_range_index == 0 ||
+       self->included_ranges[self->current_included_range_index - 1].end_byte < current_range->start_byte);
   } else {
     return false;
   }

@@ -2982,6 +2982,45 @@ fn test_parsing_with_one_included_range() {
 }
 
 #[test]
+fn test_contiguous_included_ranges_preserve_javascript_expressions() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for source in [
+        "foo(bar)",
+        "a + b",
+        "x.y(z)",
+        "function f() { return value; }",
+    ] {
+        parser.set_included_ranges(&[]).unwrap();
+        let expected = parser.parse(source, None).unwrap().root_node().to_sexp();
+        for split in 1..source.len() {
+            let ranges = [
+                Range {
+                    start_byte: 0,
+                    end_byte: split,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, split),
+                },
+                Range {
+                    start_byte: split,
+                    end_byte: source.len(),
+                    start_point: Point::new(0, split),
+                    end_point: Point::new(0, source.len()),
+                },
+            ];
+            parser.set_included_ranges(&ranges).unwrap();
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                expected,
+                "{source:?} at {split}"
+            );
+            assert_eq!(tree.included_ranges(), ranges);
+        }
+    }
+}
+
+#[test]
 fn test_parsing_with_empty_included_ranges_and_parser_reuse() {
     let source = "// header\n[0, // first\n1, // second\n2] // footer\n";
     let ranges = ["[0, ", "1, ", "2]"]
