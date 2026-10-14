@@ -1272,11 +1272,13 @@ fn test_node_display_with_quoted_aliases() {
     .into_iter()
     .enumerate()
     {
+        let parent = ["\"", "'", "\"parent", "'parent"][index % 4];
         let grammar = serde_json::json!({
             "name": format!("missing_quoted_alias_{index}"),
             "rules": {
                 "root": {"type": "SEQ", "members": [
-                    {"type": "SYMBOL", "name": "block_comment"},
+                    {"type": "ALIAS", "named": true, "value": parent,
+                     "content": {"type": "SYMBOL", "name": "block_comment"}},
                     {"type": "SYMBOL", "name": "after"}
                 ]},
                 "block_comment": {"type": "SEQ", "members": [
@@ -1304,11 +1306,15 @@ fn test_node_display_with_quoted_aliases() {
         };
         assert_eq!(
             node.to_sexp(),
-            format!("(root (block_comment (MISSING {payload})) (after))")
+            format!("(root ({parent} (MISSING {payload})) (after))")
+        );
+        assert_eq!(
+            format!("{:#}", node.child(0).unwrap()),
+            format!("({parent}\n  (MISSING {payload}))")
         );
         assert_eq!(
             format!("{node:#}"),
-            format!("(root\n  (block_comment\n    (MISSING {payload}))\n  (after))")
+            format!("(root\n  ({parent}\n    (MISSING {payload}))\n  (after))")
         );
     }
 }
