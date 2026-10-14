@@ -3954,6 +3954,7 @@ impl fmt::Display for QueryError {
 #[doc(hidden)]
 #[must_use]
 pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
+    let sexp = sexp.trim();
     let mut indent_level = initial_indent_level;
     let mut formatted = String::with_capacity(sexp.len());
     let mut has_field = false;

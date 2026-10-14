@@ -1262,6 +1262,7 @@ fn test_node_display_with_quoted_aliases() {
         (true, "\\ab"),
         (false, "\""),
         (false, "'"),
+        (false, " "),
         (false, "*/"),
         (false, "a\"b"),
         (false, "\"ab"),
@@ -1305,6 +1306,14 @@ fn test_node_display_with_quoted_aliases() {
             format!("{alias_node:#2}"),
             format!("\n    {}", alias_node.to_sexp())
         );
+        for padding in ["", " ", "\n", "\t", "\r\n", "\u{2003}"] {
+            let input = format!("{padding}{}{padding}", alias_node.to_sexp());
+            assert_eq!(tree_sitter::format_sexp(&input, 0), alias_node.to_sexp());
+            assert_eq!(
+                tree_sitter::format_sexp(&input, 2),
+                format!("\n    {}", alias_node.to_sexp())
+            );
+        }
         let tree = parser.parse("/*;", None).unwrap();
         let node = tree.root_node();
         let missing = node.child(0).unwrap().child(1).unwrap();
