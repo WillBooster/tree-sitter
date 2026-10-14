@@ -975,6 +975,71 @@ fn test_node_descendant_for_empty_range_at_hidden_subtree_end() {
 }
 
 #[test]
+fn test_node_empty_range_preserves_anonymous_boundaries() {
+    for hidden in [false, true] {
+        for empty in [false, true] {
+            let mut members = vec![
+                serde_json::json!({"type": "SYMBOL", "name": "lead"}),
+                serde_json::json!({"type": "ALIAS", "named": false, "value": "anonymous", "content": {
+                    "type": "SYMBOL", "name": "boundary"
+                }}),
+            ];
+            if empty {
+                members.push(serde_json::json!({"type": "SYMBOL", "name": "terminal"}));
+            }
+            let body = serde_json::json!({"type": "SEQ", "members": members});
+            let grammar = serde_json::json!({
+                "name": format!("anonymous_boundary_{}_{}", u8::from(hidden), u8::from(empty)),
+                "rules": {
+                    "root": {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "z"},
+                        if hidden { serde_json::json!({"type": "SYMBOL", "name": "_hidden"}) } else { body.clone() }
+                    ]},
+                    "_hidden": body,
+                    "lead": {"type": "STRING", "value": "a"},
+                    "boundary": if empty {
+                        serde_json::json!({"type": "EOF"})
+                    } else {
+                        serde_json::json!({"type": "SEQ", "members": [
+                            {"type": "STRING", "value": "b"},
+                            {"type": "SYMBOL", "name": "terminal"}
+                        ]})
+                    },
+                    "terminal": {"type": "EOF"}
+                }
+            });
+            let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+            let mut parser = Parser::new();
+            parser
+                .set_language(&get_test_language(&name, &code, None))
+                .unwrap();
+            let tree = parser
+                .parse(if empty { "za" } else { "zab" }, None)
+                .unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error());
+            let expected = if empty { root.child(2).unwrap() } else { root };
+            if empty {
+                assert_eq!(expected.kind(), "anonymous");
+                assert!(!expected.is_named());
+            }
+            let end = root.end_byte();
+            let point = root.end_position();
+            assert_eq!(root.descendant_for_byte_range(end, end), Some(expected));
+            assert_eq!(
+                root.descendant_for_point_range(point, point),
+                Some(expected)
+            );
+            assert_eq!(root.named_descendant_for_byte_range(end, end), Some(root));
+            assert_eq!(
+                root.named_descendant_for_point_range(point, point),
+                Some(root)
+            );
+        }
+    }
+}
+
+#[test]
 fn test_node_edit() {
     let mut code = JSON_EXAMPLE.as_bytes().to_vec();
     let mut tree = parse_json_example();
