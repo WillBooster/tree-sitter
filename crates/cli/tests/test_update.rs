@@ -277,11 +277,23 @@ fn test_update_distinguishes_error_node_names_from_parse_errors() {
           "name": "error_names",
           "rules": {
             "source_file": {"type": "SEQ", "members": [
+              {"type": "SYMBOL", "name": "MISSING"},
+              {"type": "SYMBOL", "name": "UNEXPECTED"},
               {"type": "SYMBOL", "name": "MISSING_word"},
               {"type": "SYMBOL", "name": "ERROR_word"},
               {"type": "SYMBOL", "name": "UNEXPECTED_word"},
               {"type": "STRING", "value": ";"}
             ]},
+            "MISSING": {"type": "CHOICE", "members": [
+              {"type": "STRING", "value": "missing"},
+              {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "("},
+                {"type": "SYMBOL", "name": "word"},
+                {"type": "STRING", "value": ")"}
+              ]}
+            ]},
+            "UNEXPECTED": {"type": "FIELD", "name": "value", "content": {"type": "SYMBOL", "name": "word"}},
+            "word": {"type": "STRING", "value": "unexpected"},
             "MISSING_word": {"type": "PATTERN", "value": "[a-z]+"},
             "ERROR_word": {"type": "PATTERN", "value": "[0-9]+"},
             "UNEXPECTED_word": {"type": "PATTERN", "value": "[A-Z]+"}
@@ -292,18 +304,29 @@ fn test_update_distinguishes_error_node_names_from_parse_errors() {
     .unwrap();
     run(grammar_dir, &cache_dir, &["generate", "src/grammar.json"]);
     let corpus_path = corpus_dir.join("names.txt");
-    let corpus = "==========\nValid names\n==========\n\nname 1 VALUE;\n\n---\n\n(source_file)\n";
+    let corpus = "==========\nValid names\n==========\n\nmissing unexpected name 1 VALUE;\n\n---\n\n(source_file)\n";
     fs::write(&corpus_path, corpus).unwrap();
     run(grammar_dir, &cache_dir, &["test", "--update"]);
     let updated = corpus.replace(
         "(source_file)",
-        "(source_file\n  (MISSING_word)\n  (ERROR_word)\n  (UNEXPECTED_word))",
+        "(source_file\n  (MISSING)\n  (UNEXPECTED\n    (word))\n  (MISSING_word)\n  (ERROR_word)\n  (UNEXPECTED_word))",
     );
     assert_eq!(read(&corpus_path), updated);
     run(grammar_dir, &cache_dir, &["test"]);
 
-    for invalid_source in ["name 1 VALUE", "?"] {
-        let invalid = corpus.replace("name 1 VALUE;", invalid_source);
+    let nested = corpus.replace("missing unexpected", "(unexpected) unexpected");
+    fs::write(&corpus_path, &nested).unwrap();
+    run(grammar_dir, &cache_dir, &["test", "--update"]);
+    assert_eq!(
+        read(&corpus_path),
+        updated
+            .replace("missing unexpected", "(unexpected) unexpected")
+            .replace("(MISSING)", "(MISSING\n    (word))")
+    );
+    run(grammar_dir, &cache_dir, &["test"]);
+
+    for invalid_source in ["missing unexpected name 1 VALUE", "?"] {
+        let invalid = corpus.replace("missing unexpected name 1 VALUE;", invalid_source);
         fs::write(&corpus_path, &invalid).unwrap();
         let output = execute(grammar_dir, &cache_dir, &["test", "--update"]);
         assert!(!output.status.success(), "{invalid_source}");

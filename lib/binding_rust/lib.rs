@@ -3973,6 +3973,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         first_token = false;
         let open_nodes = if root_token { 1 } else { open_nodes };
         next.clear();
+        let mut separated = false;
         while let Some(c) = c_iter.next() {
             byte_offset += c.len_utf8();
             if quote != '\0' {
@@ -4006,6 +4007,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
             {
                 quote = c;
             } else if c == ' ' {
+                separated = true;
                 break;
             } else if c == ')' {
                 saw_paren = true;
@@ -4014,32 +4016,34 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
             next.push(c);
         }
 
-        // at the end
         if c_iter.peek().is_none() && next.is_empty() {
             if saw_paren {
-                // but did we see a ) before ending?
                 saw_paren = false;
-                return Some(());
+                return Some(false);
             }
             if !did_last {
-                // but did we account for the end empty string as if we're splitting?
                 did_last = true;
-                return Some(());
+                return Some(false);
             }
             return None;
         }
-        Some(())
+        let has_payload = separated
+            && (next == "(MISSING" || next == "(UNEXPECTED")
+            && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
+            && c_iter
+                .clone()
+                .take_while(|c| !c.is_whitespace() && *c != '(' && *c != ')')
+                .last()
+                != Some(':');
+        Some(has_payload)
     };
 
-    while fetch_next_str(
+    while let Some(has_payload) = fetch_next_str(
         &mut scratch,
         '\0',
         indent_level.saturating_sub(initial_indent_level),
-    )
-    .is_some()
-    {
+    ) {
         if scratch.is_empty() && indent_level > initial_indent_level {
-            // ")"
             indent_level -= 1;
             write!(formatted, ")").unwrap();
         } else if scratch.starts_with('(') {
@@ -4055,11 +4059,9 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 indent_level += 1;
             }
 
-            // "(node_name"
             write!(formatted, "{scratch}").unwrap();
 
-            // "(MISSING node_name" or "(UNEXPECTED 'x'"
-            if scratch == "(MISSING" || scratch == "(UNEXPECTED" {
+            if has_payload {
                 let payload_quote = if scratch == "(UNEXPECTED" { '\'' } else { '"' };
                 fetch_next_str(
                     &mut scratch,
@@ -4077,7 +4079,6 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 }
             }
         } else if scratch.ends_with(':') {
-            // "field:"
             writeln!(formatted).unwrap();
             for _ in 0..indent_level {
                 write!(formatted, "  ").unwrap();
