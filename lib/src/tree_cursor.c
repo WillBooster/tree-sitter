@@ -62,6 +62,8 @@ static inline CursorChildIterator ts_tree_cursor_iterate_children(const TreeCurs
   };
 }
 
+static inline bool ts_tree_cursor_child_is_visible(Subtree, const TSSymbol *, uint32_t);
+
 static inline bool ts_tree_cursor_child_iterator_next(
   CursorChildIterator *self,
   TreeCursorEntry *result,
@@ -76,12 +78,8 @@ static inline bool ts_tree_cursor_child_iterator_next(
     .structural_child_index = self->structural_child_index,
     .descendant_index = self->descendant_index,
   };
-  *visible = ts_subtree_visible(*child);
-  bool extra = ts_subtree_extra(*child);
-  if (!extra) {
-    if (self->alias_sequence) {
-      *visible |= self->alias_sequence[self->structural_child_index];
-    }
+  *visible = ts_tree_cursor_child_is_visible(*child, self->alias_sequence, self->structural_child_index);
+  if (!ts_subtree_extra(*child)) {
     self->structural_child_index++;
   }
 
@@ -131,15 +129,10 @@ static inline bool ts_tree_cursor_child_iterator_previous(
     .structural_child_index = self->structural_child_index,
     .descendant_index = self->descendant_index,
   };
-  *visible = ts_subtree_visible(*child);
-  bool extra = ts_subtree_extra(*child);
+  *visible = ts_tree_cursor_child_is_visible(*child, self->alias_sequence, self->structural_child_index);
 
   self->position = length_backtrack(self->position, ts_subtree_padding(*child));
   self->child_index--;
-
-  if (!extra && self->alias_sequence) {
-    *visible |= self->alias_sequence[self->structural_child_index];
-  }
 
   if (self->child_index < self->parent.ptr->child_count) {
     Subtree previous_child = ts_subtree_children(self->parent)[self->child_index];
@@ -151,15 +144,24 @@ static inline bool ts_tree_cursor_child_iterator_previous(
     Length size = ts_subtree_size(previous_child);
     self->position = length_backtrack(self->position, size);
 
-    bool previous_visible = ts_subtree_visible(previous_child);
-    if (previous_is_structural && self->alias_sequence) {
-      previous_visible |= self->alias_sequence[self->structural_child_index];
-    }
+    bool previous_visible = ts_tree_cursor_child_is_visible(
+      previous_child, self->alias_sequence, self->structural_child_index
+    );
     self->descendant_index -= ts_subtree_visible_descendant_count(previous_child);
     if (previous_visible) self->descendant_index--;
   }
 
   return true;
+}
+
+static inline bool ts_tree_cursor_child_is_visible(
+  Subtree child,
+  const TSSymbol *alias_sequence,
+  uint32_t structural_child_index
+) {
+  return ts_subtree_visible(child) || (
+    !ts_subtree_extra(child) && alias_sequence && alias_sequence[structural_child_index]
+  );
 }
 
 // TSTreeCursor - lifecycle

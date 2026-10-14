@@ -728,6 +728,23 @@ fn test_tree_cursor_fields() {
     cursor.goto_next_sibling();
     assert_eq!(cursor.node().kind(), "formal_parameters");
     assert_eq!(cursor.field_name(), Some("parameters"));
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "comment");
+    assert_eq!(cursor.field_name(), None);
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "identifier");
+    assert_eq!(cursor.field_name(), Some("name"));
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "comment");
+    assert_eq!(cursor.field_name(), None);
+
+    assert!(cursor.goto_previous_sibling());
+    assert_eq!(cursor.node().kind(), "function");
+    assert_eq!(cursor.field_name(), None);
+    assert!(!cursor.goto_previous_sibling());
 }
 
 #[test]
