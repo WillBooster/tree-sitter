@@ -3981,7 +3981,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 {
                     quote = '\0';
                 }
-            } else if c == '\'' || c == '"' {
+            } else if (c == '\'' || c == '"') && (next.is_empty() || next == "(") {
                 quote = c;
             } else if c == ' ' {
                 break;

@@ -1208,6 +1208,43 @@ fn test_node_display_with_quoted_missing_token() {
 }
 
 #[test]
+fn test_node_display_with_quotes_in_named_aliases() {
+    let grammar = serde_json::json!({
+        "name": "quoted_aliases",
+        "rules": {
+            "program": {"type": "SEQ", "members": [
+                {"type": "ALIAS", "named": true, "value": "a'b", "content": {"type": "SYMBOL", "name": "pair"}},
+                {"type": "ALIAS", "named": true, "value": "a\"b", "content": {"type": "SYMBOL", "name": "pair"}},
+                {"type": "SYMBOL", "name": "end"}
+            ]},
+            "pair": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "c"},
+                {"type": "SYMBOL", "name": "d"}
+            ]},
+            "c": {"type": "STRING", "value": "c"},
+            "d": {"type": "STRING", "value": "d"},
+            "end": {"type": "STRING", "value": ";"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let tree = parser.parse("cdcd;", None).unwrap();
+    let node = tree.root_node();
+    assert!(!node.has_error());
+    assert_eq!(
+        node.to_sexp(),
+        "(program (a'b (c) (d)) (a\"b (c) (d)) (end))"
+    );
+    assert_eq!(
+        format!("{node:#}"),
+        "(program\n  (a'b\n    (c)\n    (d))\n  (a\"b\n    (c)\n    (d))\n  (end))"
+    );
+}
+
+#[test]
 fn test_node_field_names() {
     // - "x":
     //      This isn't used in the test, but prevents `_hidden_rule1` from being eliminated as a
