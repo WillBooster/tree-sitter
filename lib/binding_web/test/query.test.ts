@@ -585,6 +585,26 @@ describe('Query', () => {
     });
   });
 
+  it('Stops captures when the progress callback cancels and resets on the next execution', () => {
+    const numbers = Array.from({ length: 1000 }, (_, i) => i).join(',');
+    tree = parser.parse(`[${numbers}];`)!;
+    query = new Query(JavaScript, '(array (number) @first (string)) (number) @number');
+
+    let calls = 0;
+    const captures = query.captures(tree.rootNode, {
+      progressCallback: () => {
+        calls++;
+        return true;
+      },
+    });
+    expect(captures.length).toBeGreaterThan(0);
+    expect(captures.length).toBeLessThan(1000);
+    expect(calls).toBe(1);
+
+    expect(query.captures(tree.rootNode)).toHaveLength(1000);
+    expect(calls).toBe(1);
+  });
+
   describe('Executes with a timeout', { timeout: 10000 }, () => {
     it('Returns less than the expected matches', () => {
       tree = parser.parse('function foo() { while (true) { } }\n'.repeat(1000))!;
