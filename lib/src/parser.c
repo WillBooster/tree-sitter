@@ -1641,6 +1641,8 @@ static void ts_parser__recover(
   self->has_error = has_error;
 }
 
+static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state);
+
 static bool ts_parser__insert_missing_token(
   TSParser *self,
   StackVersion version,
@@ -1707,11 +1709,10 @@ static bool ts_parser__insert_missing_token(
   bool require_reduction
 ) {
   TSStateId state = ts_stack_state(self->stack, version);
-  for (
-    TSSymbol missing_symbol = 1;
-    missing_symbol < (uint16_t)self->language->token_count;
-    missing_symbol++
-  ) {
+  TSSymbol first_symbol = require_reduction ? 1 : ts_parser__sole_missing_token(self, state);
+  if (first_symbol == 0) return false;
+  uint32_t symbol_limit = require_reduction ? self->language->token_count : first_symbol + 1;
+  for (TSSymbol missing_symbol = first_symbol; missing_symbol < symbol_limit; missing_symbol++) {
     TSStateId state_after_missing_symbol = ts_language_next_state(
       self->language, state, missing_symbol
     );
@@ -1723,12 +1724,9 @@ static bool ts_parser__insert_missing_token(
     ts_language_table_entry(
       self->language, state_after_missing_symbol, ts_subtree_leaf_symbol(lookahead), &entry
     );
-    bool has_reduce = entry.action_count > 0 && entry.actions[0].type == TSParseActionTypeReduce;
-    bool can_insert = require_reduction ? has_reduce : (
-      entry.action_count > 0 && !has_reduce &&
-      !ts_language_symbol_metadata(self->language, missing_symbol).named
-    );
-    if (!can_insert) continue;
+    if (entry.action_count == 0) continue;
+    bool has_reduce = entry.actions[0].type == TSParseActionTypeReduce;
+    if (has_reduce != require_reduction) continue;
 
     // In case the parser is currently outside of any included range, the lexer will
     // snap to the beginning of the next included range. The missing token's padding
@@ -1769,6 +1767,20 @@ static bool ts_parser__insert_missing_token(
     }
   }
   return false;
+}
+
+static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
+  TSSymbol result = 0;
+  LookaheadIterator iter = ts_language_lookaheads(self->language, state);
+  while (ts_lookahead_iterator__next(&iter)) {
+    if (iter.symbol == 0 || iter.symbol >= self->language->token_count) continue;
+    TSStateId next_state = ts_language_next_state(self->language, state, iter.symbol);
+    if (next_state == 0 || next_state == state) continue;
+    if (result != 0) return 0;
+    result = iter.symbol;
+  }
+  if (result != 0 && ts_language_symbol_metadata(self->language, result).named) return 0;
+  return result;
 }
 
 static bool ts_parser__check_progress(TSParser *self, Subtree *lookahead, const uint32_t *position, unsigned operations) {
