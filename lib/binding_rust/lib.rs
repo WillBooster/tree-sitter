@@ -3935,7 +3935,7 @@ impl fmt::Display for QueryError {
             QueryErrorKind::NodeType => "Invalid node type ",
             QueryErrorKind::Capture => "Invalid capture name ",
             QueryErrorKind::Predicate => "Invalid predicate: ",
-            QueryErrorKind::Structure => "Impossible pattern:\n",
+            QueryErrorKind::Structure => "Invalid pattern structure:\n",
             QueryErrorKind::Syntax => "Invalid syntax:\n",
             QueryErrorKind::Language => "",
         };
