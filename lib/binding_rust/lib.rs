@@ -2201,7 +2201,7 @@ impl fmt::Display for Node<'_> {
         let result = unsafe { CStr::from_ptr(c_string) }
             .to_str()
             .unwrap()
-            .to_owned();
+            .to_string();
         unsafe { ts_free(c_string.cast::<c_void>()) };
         f.write_str(&result)
     }
