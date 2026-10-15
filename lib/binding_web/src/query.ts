@@ -78,6 +78,7 @@ export interface QueryOptions {
    * which is a {@link QueryState} representing the current state of the query.
    * Return `true` to cancel execution, or `false` or nothing to continue.
    * Capture observers may return incidental values; only `true` cancels capture execution.
+   * For matches, incidental return values retain their WebAssembly-to-C boolean conversion.
    */
   progressCallback?: (state: QueryState) => void;
 }

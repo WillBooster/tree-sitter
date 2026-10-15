@@ -620,6 +620,8 @@ describe('Query', () => {
       })).toThrow(failure);
     }
     expect(calls).toBe(256);
+    expect(query.matches(tree.rootNode)).toHaveLength(1000);
+    expect(calls).toBe(256);
     expect(query.captures(tree.rootNode)).toHaveLength(1000);
     expect(calls).toBe(256);
   });
