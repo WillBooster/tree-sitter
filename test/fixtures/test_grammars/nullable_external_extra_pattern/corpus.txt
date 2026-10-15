@@ -1,5 +1,5 @@
 ==================
-Scanner consumes an anonymous nullable extra pattern
+External-only nullable extra pattern is accepted and parses
 ==================
 
 x y
