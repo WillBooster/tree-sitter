@@ -663,6 +663,33 @@ describe('Query', () => {
     },
   );
 
+  it.each([
+    ['captures', 'captures'], ['captures', 'matches'],
+    ['matches', 'captures'], ['matches', 'matches'],
+  ] as const)(
+    'Restores %s state when its callback throws after nested %s',
+    (outerMethod, innerMethod) => {
+      tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
+      query = new Query(JavaScript, '(array (number) @first (string)) (number) @number');
+      const failure = new Error('outer progress failed');
+      let nestedCalls = 0;
+      expect(() => query![outerMethod](tree!.rootNode, {
+        matchLimit: 65536,
+        progressCallback: () => {
+          nestedCalls++;
+          query![innerMethod](tree!.rootNode, { matchLimit: 1 });
+          expect(query!.matchLimit).toBe(1);
+          expect(query!.didExceedMatchLimit()).toBe(true);
+          throw failure;
+        },
+      })).toThrow(failure);
+      expect(nestedCalls).toBe(1);
+      expect(query.matchLimit).toBe(65536);
+      expect(query.didExceedMatchLimit()).toBe(false);
+      expect(query[outerMethod](tree.rootNode, { matchLimit: 65536 })).toHaveLength(1000);
+    },
+  );
+
   it.each(['captures', 'matches'] as const)(
     'Keeps nested %s cancellation local to its execution',
     method => {

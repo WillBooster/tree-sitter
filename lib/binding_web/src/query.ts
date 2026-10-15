@@ -762,10 +762,12 @@ export class Query {
           maxStartDepth,
         );
       },
-      (rawCount, startAddress, didExceedMatchLimit) => {
-        const result = new Array<QueryMatch>(rawCount);
-        this.exceededMatchLimit = didExceedMatchLimit;
+      exceededMatchLimit => {
         this.matchLimit = matchLimit;
+        this.exceededMatchLimit = exceededMatchLimit;
+      },
+      (rawCount, startAddress) => {
+        const result = new Array<QueryMatch>(rawCount);
 
         let filteredCount = 0;
         let address = startAddress;
@@ -849,10 +851,12 @@ export class Query {
           maxStartDepth,
         );
       },
-      (count, startAddress, didExceedMatchLimit) => {
-        const result = new Array<QueryCapture>();
-        this.exceededMatchLimit = didExceedMatchLimit;
+      exceededMatchLimit => {
         this.matchLimit = matchLimit;
+        this.exceededMatchLimit = exceededMatchLimit;
+      },
+      (count, startAddress) => {
+        const result = new Array<QueryCapture>();
 
         const captures = new Array<QueryCapture>();
         let address = startAddress;
@@ -1033,7 +1037,8 @@ function prepareQuery(query: Query, options: QueryOptions) {
 function executeQuery<T>(
   progressCallback: NonNullable<typeof C.currentQueryProgressCallback> | undefined,
   execute: () => void,
-  readResult: (count: number, address: number, exceededMatchLimit: boolean) => T,
+  updateState: (exceededMatchLimit: boolean) => void,
+  readResult: (count: number, address: number) => T,
 ): T {
   const previousCallback = C.currentQueryProgressCallback;
   let callbackFailure: { error: unknown } | undefined;
@@ -1054,11 +1059,13 @@ function executeQuery<T>(
   const address = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
   const exceededMatchLimit = Boolean(C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32'));
   try {
+    updateState(exceededMatchLimit);
     if (callbackFailure) {
       throw callbackFailure.error;
     }
-    return readResult(count, address, exceededMatchLimit);
+    return readResult(count, address);
   } finally {
     C._free(address);
+    updateState(exceededMatchLimit);
   }
 }
