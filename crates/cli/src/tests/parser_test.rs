@@ -31,6 +31,68 @@ use crate::{
 };
 
 #[test]
+fn test_partial_reduction_precedence_is_independent_of_rule_order() {
+    let orders = [
+        ["lower", "unrelated", "preferred"],
+        ["lower", "preferred", "unrelated"],
+        ["unrelated", "lower", "preferred"],
+        ["unrelated", "preferred", "lower"],
+        ["preferred", "lower", "unrelated"],
+        ["preferred", "unrelated", "lower"],
+    ];
+    for (named, shift_preferred) in [(false, false), (true, false), (false, true), (true, true)] {
+        for (index, order) in orders.iter().enumerate() {
+            let mut rules = serde_json::Map::new();
+            rules.insert("source".into(), serde_json::json!({
+                "type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "lower"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "b"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "unrelated"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "c"}]},
+                    if shift_preferred { serde_json::json!({"type": "SYMBOL", "name": "preferred"}) } else { serde_json::json!({"type": "SEQ", "members": [{"type": "SYMBOL", "name": "preferred"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "a"}]}) }
+                ]
+            }));
+            for name in order {
+                let terminal = if shift_preferred && *name == "preferred" {
+                    serde_json::json!({"type": "SEQ", "members": [{"type": "STRING", "value": "z"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "a"}]})
+                } else {
+                    serde_json::json!({"type": "STRING", "value": "z"})
+                };
+                rules.insert((*name).into(), if named && *name != "unrelated" {
+                    serde_json::json!({"type": "PREC", "value": if *name == "lower" { "low" } else { "high" }, "content": terminal})
+                } else {
+                    terminal
+                });
+            }
+            let grammar = serde_json::json!({
+                "name": format!("partial_reduction_precedence_{named}_{shift_preferred}_{index}"),
+                "rules": rules,
+                "precedences": [if named {
+                    serde_json::json!([{"type": "STRING", "value": "high"}, {"type": "STRING", "value": "low"}])
+                } else {
+                    serde_json::json!([{"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}])
+                }],
+                "conflicts": [["preferred", "unrelated"]]
+            });
+            let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language(&name, &code, None);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            for source in ["zxa", "zxc"] {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{named}/{shift_preferred}: {order:?}: {source}"
+                );
+            }
+            let tree = parser.parse("zxb", None).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{named}/{shift_preferred}: {order:?}: zxb"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();
