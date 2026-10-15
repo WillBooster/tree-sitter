@@ -80,7 +80,7 @@ export interface QueryOptions {
    * Capture observers may return incidental values; only `true` cancels capture execution.
    * For matches, legacy WebAssembly conversion can treat incidental numeric returns, such as
    * the length returned by Array.push, as cancellation. Use a block body with no return value
-   * when observing progress.
+   * when observing progress. Nested queries preserve the outer execution and its callback.
    */
   progressCallback?: (state: QueryState) => void;
 }
@@ -724,104 +724,75 @@ export class Query {
     node: Node,
     options: QueryOptions = {}
   ): QueryMatch[] {
-    const startPosition = options.startPosition ?? ZERO_POINT;
-    const endPosition = options.endPosition ?? ZERO_POINT;
-    const startIndex = options.startIndex ?? 0;
-    const endIndex = options.endIndex ?? 0;
-    const startContainingPosition = options.startContainingPosition ?? ZERO_POINT;
-    const endContainingPosition = options.endContainingPosition ?? ZERO_POINT;
-    const startContainingIndex = options.startContainingIndex ?? 0;
-    const endContainingIndex = options.endContainingIndex ?? 0;
-    const matchLimit = options.matchLimit ?? 0xFFFFFFFF;
-    const maxStartDepth = options.maxStartDepth ?? 0xFFFFFFFF;
-    const progressCallback = options.progressCallback;
-
-    if (typeof matchLimit !== 'number') {
-      throw new Error('Arguments must be numbers');
-    }
-    this.matchLimit = matchLimit;
-
-    if (endIndex !== 0 && startIndex > endIndex) {
-      throw new Error('`startIndex` cannot be greater than `endIndex`');
-    }
-
-    if (endPosition !== ZERO_POINT && (
-      startPosition.row > endPosition.row ||
-      (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
-    )) {
-      throw new Error('`startPosition` cannot be greater than `endPosition`');
-    }
-
-    if (endContainingIndex !== 0 && startContainingIndex > endContainingIndex) {
-      throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
-    }
-
-    if (endContainingPosition !== ZERO_POINT && (
-      startContainingPosition.row > endContainingPosition.row ||
-      (startContainingPosition.row === endContainingPosition.row &&
-        startContainingPosition.column > endContainingPosition.column)
-    )) {
-      throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
-    }
-
-    if (progressCallback) {
-      C.currentQueryProgressCallback = progressCallback;
-    }
-
-    marshalNode(node);
-
-    C._ts_query_matches_wasm(
-      this[0],
-      node.tree[0],
-      startPosition.row,
-      startPosition.column,
-      endPosition.row,
-      endPosition.column,
+    const {
+      startPosition,
+      endPosition,
       startIndex,
       endIndex,
-      startContainingPosition.row,
-      startContainingPosition.column,
-      endContainingPosition.row,
-      endContainingPosition.column,
+      startContainingPosition,
+      endContainingPosition,
       startContainingIndex,
       endContainingIndex,
       matchLimit,
       maxStartDepth,
+      progressCallback,
+    } = prepareQuery(this, options);
+
+    return executeQuery(
+      progressCallback,
+      () => {
+        marshalNode(node);
+
+        C._ts_query_matches_wasm(
+          this[0],
+          node.tree[0],
+          startPosition.row,
+          startPosition.column,
+          endPosition.row,
+          endPosition.column,
+          startIndex,
+          endIndex,
+          startContainingPosition.row,
+          startContainingPosition.column,
+          endContainingPosition.row,
+          endContainingPosition.column,
+          startContainingIndex,
+          endContainingIndex,
+          matchLimit,
+          maxStartDepth,
+        );
+      },
+      (rawCount, startAddress, didExceedMatchLimit) => {
+        const result = new Array<QueryMatch>(rawCount);
+        this.exceededMatchLimit = didExceedMatchLimit;
+        this.matchLimit = matchLimit;
+
+        let filteredCount = 0;
+        let address = startAddress;
+        for (let i = 0; i < rawCount; i++) {
+          const patternIndex = C.getValue(address, 'i32');
+          address += SIZE_OF_INT;
+          const captureCount = C.getValue(address, 'i32');
+          address += SIZE_OF_INT;
+
+          const captures = new Array<QueryCapture>(captureCount);
+          address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
+
+          if (this.textPredicates[patternIndex].every((p) => p(captures))) {
+            result[filteredCount] = { patternIndex, captures };
+            const setProperties = this.setProperties[patternIndex];
+            result[filteredCount].setProperties = setProperties;
+            const assertedProperties = this.assertedProperties[patternIndex];
+            result[filteredCount].assertedProperties = assertedProperties;
+            const refutedProperties = this.refutedProperties[patternIndex];
+            result[filteredCount].refutedProperties = refutedProperties;
+            filteredCount++;
+          }
+        }
+        result.length = filteredCount;
+        return result;
+      },
     );
-
-    const rawCount = C.getValue(TRANSFER_BUFFER, 'i32');
-    const startAddress = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const didExceedMatchLimit = C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32');
-    const result = new Array<QueryMatch>(rawCount);
-    this.exceededMatchLimit = Boolean(didExceedMatchLimit);
-
-    let filteredCount = 0;
-    let address = startAddress;
-    for (let i = 0; i < rawCount; i++) {
-      const patternIndex = C.getValue(address, 'i32');
-      address += SIZE_OF_INT;
-      const captureCount = C.getValue(address, 'i32');
-      address += SIZE_OF_INT;
-
-      const captures = new Array<QueryCapture>(captureCount);
-      address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
-
-      if (this.textPredicates[patternIndex].every((p) => p(captures))) {
-        result[filteredCount] = { patternIndex, captures };
-        const setProperties = this.setProperties[patternIndex];
-        result[filteredCount].setProperties = setProperties;
-        const assertedProperties = this.assertedProperties[patternIndex];
-        result[filteredCount].assertedProperties = assertedProperties;
-        const refutedProperties = this.refutedProperties[patternIndex];
-        result[filteredCount].refutedProperties = refutedProperties;
-        filteredCount++;
-      }
-    }
-    result.length = filteredCount;
-
-    C._free(startAddress);
-    C.currentQueryProgressCallback = null;
-    return result;
   }
 
   /**
@@ -839,117 +810,75 @@ export class Query {
     node: Node,
     options: QueryOptions = {}
   ): QueryCapture[] {
-    const startPosition = options.startPosition ?? ZERO_POINT;
-    const endPosition = options.endPosition ?? ZERO_POINT;
-    const startIndex = options.startIndex ?? 0;
-    const endIndex = options.endIndex ?? 0;
-    const startContainingPosition = options.startContainingPosition ?? ZERO_POINT;
-    const endContainingPosition = options.endContainingPosition ?? ZERO_POINT;
-    const startContainingIndex = options.startContainingIndex ?? 0;
-    const endContainingIndex = options.endContainingIndex ?? 0;
-    const matchLimit = options.matchLimit ?? 0xFFFFFFFF;
-    const maxStartDepth = options.maxStartDepth ?? 0xFFFFFFFF;
-    const progressCallback = options.progressCallback;
+    const {
+      startPosition,
+      endPosition,
+      startIndex,
+      endIndex,
+      startContainingPosition,
+      endContainingPosition,
+      startContainingIndex,
+      endContainingIndex,
+      matchLimit,
+      maxStartDepth,
+      progressCallback,
+    } = prepareQuery(this, options);
 
-    if (typeof matchLimit !== 'number') {
-      throw new Error('Arguments must be numbers');
-    }
-    this.matchLimit = matchLimit;
-
-    if (endIndex !== 0 && startIndex > endIndex) {
-      throw new Error('`startIndex` cannot be greater than `endIndex`');
-    }
-
-    if (endPosition !== ZERO_POINT && (
-      startPosition.row > endPosition.row ||
-      (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
-    )) {
-      throw new Error('`startPosition` cannot be greater than `endPosition`');
-    }
-
-    if (endContainingIndex !== 0 && startContainingIndex > endContainingIndex) {
-      throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
-    }
-
-    if (endContainingPosition !== ZERO_POINT && (
-      startContainingPosition.row > endContainingPosition.row ||
-      (startContainingPosition.row === endContainingPosition.row &&
-        startContainingPosition.column > endContainingPosition.column)
-    )) {
-      throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
-    }
-
-    let callbackFailure: { error: unknown } | undefined;
     const callback: ((state: QueryState) => unknown) | undefined = progressCallback;
-    C.currentQueryProgressCallback = callback ? state => {
-      try {
-        return callback(state) === true;
-      } catch (error) {
-        callbackFailure = { error };
-        return true;
-      }
-    } : null;
+    return executeQuery(
+      callback ? state => callback(state) === true : undefined,
+      () => {
+        marshalNode(node);
 
-    try {
-      marshalNode(node);
+        C._ts_query_captures_wasm(
+          this[0],
+          node.tree[0],
+          startPosition.row,
+          startPosition.column,
+          endPosition.row,
+          endPosition.column,
+          startIndex,
+          endIndex,
+          startContainingPosition.row,
+          startContainingPosition.column,
+          endContainingPosition.row,
+          endContainingPosition.column,
+          startContainingIndex,
+          endContainingIndex,
+          matchLimit,
+          maxStartDepth,
+        );
+      },
+      (count, startAddress, didExceedMatchLimit) => {
+        const result = new Array<QueryCapture>();
+        this.exceededMatchLimit = didExceedMatchLimit;
+        this.matchLimit = matchLimit;
 
-      C._ts_query_captures_wasm(
-        this[0],
-        node.tree[0],
-        startPosition.row,
-        startPosition.column,
-        endPosition.row,
-        endPosition.column,
-        startIndex,
-        endIndex,
-        startContainingPosition.row,
-        startContainingPosition.column,
-        endContainingPosition.row,
-        endContainingPosition.column,
-        startContainingIndex,
-        endContainingIndex,
-        matchLimit,
-        maxStartDepth,
-      );
-    } finally {
-      C.currentQueryProgressCallback = null;
-    }
+        const captures = new Array<QueryCapture>();
+        let address = startAddress;
+        for (let i = 0; i < count; i++) {
+          const patternIndex = C.getValue(address, 'i32');
+          address += SIZE_OF_INT;
+          const captureCount = C.getValue(address, 'i32');
+          address += SIZE_OF_INT;
+          const captureIndex = C.getValue(address, 'i32');
+          address += SIZE_OF_INT;
 
-    const count = C.getValue(TRANSFER_BUFFER, 'i32');
-    const startAddress = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    try {
-      if (callbackFailure) {
-        throw callbackFailure.error;
-      }
-      const result = new Array<QueryCapture>();
-      this.exceededMatchLimit = Boolean(C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32'));
+          captures.length = captureCount;
+          address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
 
-      const captures = new Array<QueryCapture>();
-      let address = startAddress;
-      for (let i = 0; i < count; i++) {
-        const patternIndex = C.getValue(address, 'i32');
-        address += SIZE_OF_INT;
-        const captureCount = C.getValue(address, 'i32');
-        address += SIZE_OF_INT;
-        const captureIndex = C.getValue(address, 'i32');
-        address += SIZE_OF_INT;
-
-        captures.length = captureCount;
-        address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
-
-        if (this.textPredicates[patternIndex].every(p => p(captures))) {
-          const capture = captures[captureIndex];
-          capture.setProperties = this.setProperties[patternIndex];
-          capture.assertedProperties = this.assertedProperties[patternIndex];
-          capture.refutedProperties = this.refutedProperties[patternIndex];
-          result.push(capture);
+          if (this.textPredicates[patternIndex].every(p => p(captures))) {
+            const capture = captures[captureIndex];
+            capture.setProperties = this.setProperties[patternIndex];
+            capture.assertedProperties = this.assertedProperties[patternIndex];
+            capture.refutedProperties = this.refutedProperties[patternIndex];
+            result.push(capture);
+          }
         }
-      }
 
-      return result;
-    } finally {
-      C._free(startAddress);
-    }
+        return result;
+      },
+    );
   }
 
   /** Get the predicates for a given pattern. */
@@ -1043,5 +972,93 @@ export class Query {
    */
   isPatternGuaranteedAtStep(byteIndex: number): boolean {
     return C._ts_query_is_pattern_guaranteed_at_step(this[0], byteIndex) === 1;
+  }
+}
+
+function prepareQuery(query: Query, options: QueryOptions) {
+  const parameters = {
+    startPosition: options.startPosition ?? ZERO_POINT,
+    endPosition: options.endPosition ?? ZERO_POINT,
+    startIndex: options.startIndex ?? 0,
+    endIndex: options.endIndex ?? 0,
+    startContainingPosition: options.startContainingPosition ?? ZERO_POINT,
+    endContainingPosition: options.endContainingPosition ?? ZERO_POINT,
+    startContainingIndex: options.startContainingIndex ?? 0,
+    endContainingIndex: options.endContainingIndex ?? 0,
+    matchLimit: options.matchLimit ?? 0xFFFFFFFF,
+    maxStartDepth: options.maxStartDepth ?? 0xFFFFFFFF,
+    progressCallback: options.progressCallback,
+  };
+  const {
+    startPosition,
+    endPosition,
+    startIndex,
+    endIndex,
+    startContainingPosition,
+    endContainingPosition,
+    startContainingIndex,
+    endContainingIndex,
+    matchLimit,
+  } = parameters;
+  if (typeof matchLimit !== 'number') {
+    throw new Error('Arguments must be numbers');
+  }
+  query.matchLimit = matchLimit;
+
+  if (endIndex !== 0 && startIndex > endIndex) {
+    throw new Error('`startIndex` cannot be greater than `endIndex`');
+  }
+
+  if (endPosition !== ZERO_POINT && (
+    startPosition.row > endPosition.row ||
+    (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
+  )) {
+    throw new Error('`startPosition` cannot be greater than `endPosition`');
+  }
+
+  if (endContainingIndex !== 0 && startContainingIndex > endContainingIndex) {
+    throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
+  }
+
+  if (endContainingPosition !== ZERO_POINT && (
+    startContainingPosition.row > endContainingPosition.row ||
+    (startContainingPosition.row === endContainingPosition.row &&
+      startContainingPosition.column > endContainingPosition.column)
+  )) {
+    throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
+  }
+  return parameters;
+}
+
+function executeQuery<T>(
+  progressCallback: NonNullable<typeof C.currentQueryProgressCallback> | undefined,
+  execute: () => void,
+  readResult: (count: number, address: number, exceededMatchLimit: boolean) => T,
+): T {
+  const previousCallback = C.currentQueryProgressCallback;
+  let callbackFailure: { error: unknown } | undefined;
+  C.currentQueryProgressCallback = progressCallback ? state => {
+    try {
+      return progressCallback(state);
+    } catch (error) {
+      callbackFailure = { error };
+      return true;
+    }
+  } : null;
+  try {
+    execute();
+  } finally {
+    C.currentQueryProgressCallback = previousCallback;
+  }
+  const count = C.getValue(TRANSFER_BUFFER, 'i32');
+  const address = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
+  const exceededMatchLimit = Boolean(C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32'));
+  try {
+    if (callbackFailure) {
+      throw callbackFailure.error;
+    }
+    return readResult(count, address, exceededMatchLimit);
+  } finally {
+    C._free(address);
   }
 }

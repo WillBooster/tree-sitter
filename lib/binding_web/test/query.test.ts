@@ -605,7 +605,7 @@ describe('Query', () => {
     expect(calls).toBe(1);
   });
 
-  it('Propagates capture callback failures without retaining the callback for later queries', () => {
+  it('Propagates capture callback failures and permits subsequent queries', () => {
     const numbers = Array.from({ length: 1000 }, (_, i) => i).join(',');
     tree = parser.parse(`[${numbers}];`)!;
     query = new Query(JavaScript, '(number) @number');
@@ -624,6 +624,106 @@ describe('Query', () => {
     expect(calls).toBe(256);
     expect(query.captures(tree.rootNode)).toHaveLength(1000);
     expect(calls).toBe(256);
+  });
+
+  it.each([
+    ['captures', 'captures'], ['captures', 'matches'],
+    ['matches', 'captures'], ['matches', 'matches'],
+  ] as const)(
+    'Preserves %s and progress when its callback runs nested %s',
+    (outerMethod, method) => {
+      tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
+      query = new Query(JavaScript, '(number) @number');
+      let calls = 0;
+      let nestedCount = 0;
+      const results = query[outerMethod](tree.rootNode, {
+        matchLimit: 128,
+        progressCallback: () => {
+          calls++;
+          if (calls === 1) {
+            nestedCount = query![method](tree!.rootNode, { matchLimit: 16 }).length;
+          }
+          return false;
+        },
+      });
+      expect(nestedCount).toBe(1000);
+      expect(results).toHaveLength(1000);
+      expect(calls).toBeGreaterThan(1);
+      expect(query.matchLimit).toBe(128);
+      expect(query.didExceedMatchLimit()).toBe(false);
+      expect(query.captures(tree.rootNode)).toHaveLength(1000);
+    },
+  );
+
+  it.each(['captures', 'matches'] as const)(
+    'Keeps nested %s cancellation local to its execution',
+    method => {
+      tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
+      query = new Query(JavaScript, '(number) @number');
+      let calls = 0;
+      let nestedCalls = 0;
+      let nestedCount = 0;
+      const captures = query.captures(tree.rootNode, {
+        progressCallback: () => {
+          calls++;
+          if (calls === 1) {
+            nestedCount = query![method](tree!.rootNode, {
+              progressCallback: () => { nestedCalls++; return true; },
+            }).length;
+          }
+          return false;
+        },
+      });
+      expect(nestedCalls).toBe(1);
+      expect(nestedCount).toBeGreaterThan(0);
+      expect(nestedCount).toBeLessThan(1000);
+      expect(captures).toHaveLength(1000);
+      expect(calls).toBeGreaterThan(1);
+    },
+  );
+
+  it.each(['captures', 'matches'] as const)(
+    'Continues captures after handling nested %s callback failures',
+    method => {
+      tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
+      query = new Query(JavaScript, '(number) @number');
+      const failure = new Error('nested query progress failed');
+      let calls = 0;
+      const captures = query.captures(tree.rootNode, {
+        progressCallback: () => {
+          calls++;
+          if (calls === 1) {
+            for (let attempt = 0; attempt < 256; attempt++) {
+              expect(() => query![method](tree!.rootNode, {
+                progressCallback: () => { throw failure; },
+              })).toThrow(failure);
+            }
+          }
+          return false;
+        },
+      });
+      expect(captures).toHaveLength(1000);
+      expect(calls).toBeGreaterThan(1);
+      expect(query.matches(tree.rootNode)).toHaveLength(1000);
+      expect(query.captures(tree.rootNode)).toHaveLength(1000);
+    },
+  );
+
+  it('Keeps every nested capture execution complete across multiple callback levels', () => {
+    tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
+    query = new Query(JavaScript, '(number) @number');
+    const run = (depth: number): void => {
+      let calls = 0;
+      const captures = query!.captures(tree!.rootNode, {
+        progressCallback: () => {
+          if (++calls === 1 && depth > 0) run(depth - 1);
+          return false;
+        },
+      });
+      expect(captures).toHaveLength(1000);
+      expect(calls).toBeGreaterThan(1);
+    };
+    run(3);
   });
 
   it('Completes captures for void and incidental observer returns', () => {
