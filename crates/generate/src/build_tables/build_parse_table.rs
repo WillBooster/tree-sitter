@@ -194,22 +194,29 @@ impl<'a> ParseStateInfo<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PrecedenceContext {
+    ReduceReduce,
+    ShiftReduce,
+}
+
+#[derive(Clone, Debug)]
+struct Reduction {
+    action: ParseAction,
+    precedence: Precedence,
+    symbol: Symbol,
+    associativity: Option<Associativity>,
+    production_index: u32,
+}
+
 #[derive(Clone, Debug, Default)]
 struct ReductionInfo {
-    precedence: Precedence,
-    symbols: Vec<Symbol>,
-    has_left_assoc: bool,
-    has_right_assoc: bool,
-    has_non_assoc: bool,
+    reductions: Vec<Reduction>,
 }
 
 impl ReductionInfo {
     fn clear(&mut self) {
-        self.symbols.clear();
-        *self = Self {
-            symbols: std::mem::take(&mut self.symbols),
-            ..Self::default()
-        };
+        self.reductions.clear();
     }
 }
 
@@ -324,6 +331,16 @@ impl TerminalEntryBuilder {
 
     const fn len(&self) -> usize {
         self.symbols.len()
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (Symbol, &mut ParseTableEntry)> {
+        let indexer = self.indexer;
+        self.entries
+            .iter_mut()
+            .enumerate()
+            .filter_map(move |(index, entry)| {
+                entry.as_mut().map(|entry| (indexer.symbol(index), entry))
+            })
     }
 
     fn drain(&mut self) -> impl Iterator<Item = (Symbol, ParseTableEntry)> + '_ {
@@ -847,52 +864,62 @@ impl<'a> ParseTableBuilder<'a> {
                         .get_or_insert_with(lookahead, ParseTableEntry::new);
                     let reduction_info = self.reduction_infos.get_mut(lookahead);
 
-                    // While inserting Reduce actions, eagerly resolve conflicts related
-                    // to precedence: avoid inserting lower-precedence reductions, and
-                    // clear the action list when inserting higher-precedence reductions.
                     if table_entry.actions.is_empty() {
-                        // This is the lookahead's first reduction in this state, so its info is
-                        // still from an earlier state.
                         reduction_info.clear();
+                    }
+                    if !table_entry.actions.contains(&action) {
                         table_entry.actions.push(action);
-                    } else {
-                        match Self::compare_precedence(
-                            self.syntax_grammar,
-                            precedence,
-                            &[symbol],
-                            reduction_info.precedence,
-                            &reduction_info.symbols,
-                        ) {
-                            Ordering::Greater => {
-                                table_entry.actions.clear();
-                                table_entry.actions.push(action);
-                                lookaheads_with_conflicts.remove(lookahead);
-                                reduction_info.clear();
-                            }
-                            // Two items that reduce identically build the same tree, so
-                            // there is nothing for the user to resolve. Precedence is
-                            // still compared first, because an item that only repeats an
-                            // existing action can still outrank it and clear the entry.
-                            Ordering::Equal => {
-                                if !table_entry.actions.contains(&action) {
-                                    table_entry.actions.push(action);
-                                    lookaheads_with_conflicts.insert(lookahead);
-                                }
-                            }
-                            Ordering::Less => continue,
-                        }
                     }
-
-                    reduction_info.precedence = precedence;
-                    if let Err(i) = reduction_info.symbols.binary_search(&symbol) {
-                        reduction_info.symbols.insert(i, symbol);
-                    }
-                    match associativity {
-                        Some(Associativity::Left) => reduction_info.has_left_assoc = true,
-                        Some(Associativity::Right) => reduction_info.has_right_assoc = true,
-                        None => reduction_info.has_non_assoc = true,
-                    }
+                    reduction_info.reductions.push(Reduction {
+                        action,
+                        precedence,
+                        symbol,
+                        associativity,
+                        production_index: item.prod_id,
+                    });
                 }
+            }
+        }
+
+        for (lookahead, entry) in self.terminal_entries.iter_mut() {
+            let info = self.reduction_infos.get_mut(lookahead);
+            if info.reductions.len() <= 1 {
+                continue;
+            }
+            let dominated = info
+                .reductions
+                .iter()
+                .map(|reduction| {
+                    info.reductions.iter().any(|other| {
+                        Self::compare_precedence(
+                            self.syntax_grammar,
+                            other.precedence,
+                            &[other.symbol],
+                            reduction.precedence,
+                            &[reduction.symbol],
+                            PrecedenceContext::ReduceReduce,
+                        ) == Ordering::Greater
+                    })
+                })
+                .collect::<Vec<_>>();
+            if dominated.iter().all(|dominated| *dominated) {
+                lookaheads_with_conflicts.insert(lookahead);
+                continue;
+            }
+            let mut index = 0;
+            info.reductions.retain(|_| {
+                let keep = !dominated[index];
+                index += 1;
+                keep
+            });
+            entry.actions.clear();
+            for reduction in &info.reductions {
+                if !entry.actions.contains(&reduction.action) {
+                    entry.actions.push(reduction.action);
+                }
+            }
+            if entry.actions.len() > 1 {
+                lookaheads_with_conflicts.insert(lookahead);
             }
         }
 
@@ -1098,11 +1125,7 @@ impl<'a> ParseTableBuilder<'a> {
         let reduction_info = self.reduction_infos.get(conflicting_lookahead);
 
         // Determine which items in the set conflict with each other, and the
-        // precedences associated with SHIFT vs REDUCE actions. There won't
-        // be multiple REDUCE actions with different precedences; that is
-        // sorted out ahead of time in `add_actions`. But there can still be
-        // REDUCE-REDUCE conflicts where all actions have the *same*
-        // precedence, and there can still be SHIFT/REDUCE conflicts.
+        // precedences associated with SHIFT vs REDUCE actions.
         let mut considered_associativity = false;
         let mut shift_precedence = Vec::<(Precedence, Symbol)>::new();
         let mut conflicting_items = BTreeSet::new();
@@ -1157,21 +1180,35 @@ impl<'a> ParseTableBuilder<'a> {
                 return Ok(());
             }
 
+            let mut has_left_assoc = false;
+            let mut has_right_assoc = false;
+            let mut has_non_assoc = false;
+            for reduction in &reduction_info.reductions {
+                match reduction.associativity {
+                    Some(Associativity::Left) => has_left_assoc = true,
+                    Some(Associativity::Right) => has_right_assoc = true,
+                    None => has_non_assoc = true,
+                }
+            }
+
             // If the SHIFT action has higher precedence, remove all the REDUCE actions.
             let mut shift_is_less = false;
             let mut shift_is_equal = false;
             let mut shift_is_more = false;
             for p in shift_precedence {
-                match Self::compare_precedence(
-                    self.syntax_grammar,
-                    p.0,
-                    &[p.1],
-                    reduction_info.precedence,
-                    &reduction_info.symbols,
-                ) {
-                    Ordering::Greater => shift_is_more = true,
-                    Ordering::Less => shift_is_less = true,
-                    Ordering::Equal => shift_is_equal = true,
+                for reduction in &reduction_info.reductions {
+                    match Self::compare_precedence(
+                        self.syntax_grammar,
+                        p.0,
+                        &[p.1],
+                        reduction.precedence,
+                        &[reduction.symbol],
+                        PrecedenceContext::ShiftReduce,
+                    ) {
+                        Ordering::Greater => shift_is_more = true,
+                        Ordering::Less => shift_is_less = true,
+                        Ordering::Equal => shift_is_equal = true,
+                    }
                 }
             }
 
@@ -1189,11 +1226,7 @@ impl<'a> ParseTableBuilder<'a> {
                 // associative.
                 if shift_is_equal
                     && matches!(
-                        (
-                            reduction_info.has_left_assoc,
-                            reduction_info.has_non_assoc,
-                            reduction_info.has_right_assoc,
-                        ),
+                        (has_left_assoc, has_non_assoc, has_right_assoc,),
                         (false, false, true)
                     )
                 {
@@ -1210,11 +1243,7 @@ impl<'a> ParseTableBuilder<'a> {
 
                 // If all Reduce actions are left associative, remove the SHIFT action.
                 // If all Reduce actions are right associative, remove the REDUCE actions.
-                match (
-                    reduction_info.has_left_assoc,
-                    reduction_info.has_non_assoc,
-                    reduction_info.has_right_assoc,
-                ) {
+                match (has_left_assoc, has_non_assoc, has_right_assoc) {
                     (true, false, false) => {
                         entry.actions.pop();
                         conflicting_items.retain(|item| item.is_done());
@@ -1236,31 +1265,21 @@ impl<'a> ParseTableBuilder<'a> {
             return Ok(());
         }
 
-        // Determine the set of parent symbols involved in this conflict.
-        let mut actual_conflict = Vec::new();
-        for item in &conflicting_items {
-            let symbol = Symbol::non_terminal(item.variable_index as usize);
-            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
-                actual_conflict.extend(
-                    self.auxiliary_contexts
-                        .parents(auxiliary_context, item.variable_index as usize)
-                        .unwrap(),
-                );
-            } else {
-                actual_conflict.push(symbol);
-            }
-        }
-        actual_conflict.sort_unstable();
-        actual_conflict.dedup();
+        let legacy_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
+        conflicting_items.retain(|item| {
+            !item.is_done()
+                || reduction_info.reductions.iter().any(|reduction| {
+                    reduction.symbol.index == item.variable_index
+                        && reduction.production_index == item.prod_id
+                })
+        });
+        let actual_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
 
-        // If this set of symbols has been whitelisted, then there's no error.
-        if self
-            .syntax_grammar
-            .expected_conflicts
-            .contains(&actual_conflict)
-        {
-            self.actual_conflicts.remove(&actual_conflict);
-            return Ok(());
+        for conflict in [&actual_conflict, &legacy_conflict] {
+            if self.syntax_grammar.expected_conflicts.contains(conflict) {
+                self.actual_conflicts.remove(conflict);
+                return Ok(());
+            }
         }
 
         let mut conflict_error = ConflictError::default();
@@ -1386,23 +1405,41 @@ impl<'a> ParseTableBuilder<'a> {
         Err(conflict_error)?
     }
 
+    fn conflict_symbols(
+        &self,
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+    ) -> Vec<Symbol> {
+        let mut symbols = Vec::new();
+        for item in items {
+            let symbol = Symbol::non_terminal(item.variable_index as usize);
+            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
+                symbols.extend(
+                    self.auxiliary_contexts
+                        .parents(auxiliary_context, item.variable_index as usize)
+                        .unwrap(),
+                );
+            } else {
+                symbols.push(symbol);
+            }
+        }
+        symbols.sort_unstable();
+        symbols.dedup();
+        symbols
+    }
+
     fn compare_precedence(
         grammar: &SyntaxGrammar,
         left: Precedence,
         left_symbols: &[Symbol],
         right: Precedence,
         right_symbols: &[Symbol],
+        context: PrecedenceContext,
     ) -> Ordering {
         let precedence_entry_matches =
             |entry: &PrecedenceEntry, precedence: Precedence, symbols: &[Symbol]| -> bool {
                 match entry {
-                    PrecedenceEntry::Name(n) => {
-                        if let Precedence::Name(p) = precedence {
-                            *n == p
-                        } else {
-                            false
-                        }
-                    }
+                    PrecedenceEntry::Name(n) => precedence == Precedence::Name(*n),
                     PrecedenceEntry::Symbol(n) => symbols
                         .iter()
                         .any(|s| &grammar.variables[s.index as usize].name == n),
@@ -1410,35 +1447,36 @@ impl<'a> ParseTableBuilder<'a> {
             };
 
         match (left, right) {
-            // Integer precedences can be compared to other integer precedences,
-            // and to the default precedence, which is zero.
             (Precedence::Integer(l), Precedence::Integer(r)) if l != 0 || r != 0 => l.cmp(&r),
             (Precedence::Integer(l), Precedence::None) if l != 0 => l.cmp(&0),
             (Precedence::None, Precedence::Integer(r)) if r != 0 => 0.cmp(&r),
 
-            // Named precedences can be compared to other named precedences.
             _ => grammar
                 .precedence_orderings
                 .iter()
                 .find_map(|list| {
-                    let mut saw_left = false;
-                    let mut saw_right = false;
-                    for entry in list {
+                    let (mut left_index, mut right_index, mut shared_index) = (None, None, None);
+                    for (index, entry) in list.iter().enumerate() {
                         let matches_left = precedence_entry_matches(entry, left, left_symbols);
                         let matches_right = precedence_entry_matches(entry, right, right_symbols);
-                        if matches_left {
-                            saw_left = true;
-                            if saw_right {
-                                return Some(Ordering::Less);
+                        match (matches_left, matches_right) {
+                            (true, true) if matches!(context, PrecedenceContext::ReduceReduce) => {
+                                shared_index.get_or_insert(index);
                             }
-                        } else if matches_right {
-                            saw_right = true;
-                            if saw_left {
-                                return Some(Ordering::Greater);
+                            (true, _) => {
+                                left_index.get_or_insert(index);
                             }
+                            (false, true) => {
+                                right_index.get_or_insert(index);
+                            }
+                            _ => {}
                         }
                     }
-                    None
+                    left_index
+                        .or(shared_index)
+                        .zip(right_index.or(shared_index))
+                        .map(|(left, right)| right.cmp(&left))
+                        .filter(|ordering| *ordering != Ordering::Equal)
                 })
                 .unwrap_or(Ordering::Equal),
         }

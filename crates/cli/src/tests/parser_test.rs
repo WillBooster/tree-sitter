@@ -31,6 +31,178 @@ use crate::{
 };
 
 #[test]
+fn test_partial_reduction_precedence_is_independent_of_rule_order() {
+    let orders = [
+        ["lower", "unrelated", "preferred"],
+        ["lower", "preferred", "unrelated"],
+        ["unrelated", "lower", "preferred"],
+        ["unrelated", "preferred", "lower"],
+        ["preferred", "lower", "unrelated"],
+        ["preferred", "unrelated", "lower"],
+    ];
+    for mode in 0..4 {
+        for (index, order) in orders.iter().enumerate() {
+            let mut rules = serde_json::Map::new();
+            rules.insert("source".into(), serde_json::json!({
+                "type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "lower"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "b"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "unrelated"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "c"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "preferred"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "a"}]}
+                ]
+            }));
+            for name in order {
+                let terminal = serde_json::json!({"type": "STRING", "value": "z"});
+                rules.insert((*name).into(), if mode > 0 && *name != "unrelated" {
+                    serde_json::json!({"type": "PREC", "value": if mode >= 2 { "shared" } else if *name == "lower" { "low" } else { "high" }, "content": terminal})
+                } else {
+                    terminal
+                });
+            }
+            let grammar = serde_json::json!({
+                "name": format!("partial_reduction_precedence_{mode}_{index}"),
+                "rules": rules,
+                "precedences": [match mode {
+                    0 => serde_json::json!([{"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
+                    1 => serde_json::json!([{"type": "STRING", "value": "high"}, {"type": "STRING", "value": "low"}]),
+                    2 => serde_json::json!([{"type": "STRING", "value": "shared"}, {"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
+                    _ => serde_json::json!([{"type": "STRING", "value": "shared"}, {"type": "SYMBOL", "name": "lower"}]),
+                }],
+                "conflicts": [["preferred", "unrelated"]]
+            });
+            let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language(&name, &code, None);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            for source in ["zxa", "zxc"] {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(!tree.root_node().has_error(), "{mode}: {order:?}: {source}");
+            }
+            let tree = parser.parse("zxb", None).unwrap();
+            assert!(tree.root_node().has_error(), "{mode}: {order:?}: zxb");
+        }
+    }
+}
+
+#[test]
+fn test_named_reduction_precedence_with_a_shared_rule_symbol() {
+    for shared_first in [false, true] {
+        for reverse in [false, true] {
+            let mut members = ["higher", "lower"].map(|name| serde_json::json!({
+                "type": "PREC", "value": name,
+                "content": {"type": "ALIAS", "named": true, "value": name, "content": {"type": "STRING", "value": "z"}}
+            }));
+            if reverse {
+                members.reverse();
+            }
+            let shared = serde_json::json!({"type": "SYMBOL", "name": "a"});
+            let higher = serde_json::json!({"type": "STRING", "value": "higher"});
+            let lower = serde_json::json!({"type": "STRING", "value": "lower"});
+            let grammar = serde_json::json!({
+                "name": format!("shared_rule_precedence_{shared_first}_{reverse}"),
+                "rules": {
+                    "source": {"type": "SYMBOL", "name": "a"},
+                    "a": {"type": "CHOICE", "members": members}
+                },
+                "precedences": [if shared_first { vec![shared, higher, lower] } else { vec![higher, shared, lower] }]
+            });
+            let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language(&name, &code, None);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let tree = parser.parse("z", None).unwrap();
+            assert!(!tree.root_node().has_error(), "{shared_first}: {reverse}");
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source (a (higher)))",
+                "{shared_first}: {reverse}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_conflict_declarations_allow_precedence_discarded_reductions() {
+    for legacy in [false, true] {
+        let grammar = serde_json::json!({
+            "name": format!("precedence_discarded_conflicts_{legacy}"),
+            "conflicts": [if legacy { vec!["a", "b", "s"] } else { vec!["a", "s"] }],
+            "rules": {
+                "source": {"type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "a"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "b"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SYMBOL", "name": "s"}
+                ]},
+                "a": {"type": "PREC", "value": 2, "content": {"type": "STRING", "value": "z"}},
+                "b": {"type": "PREC", "value": 1, "content": {"type": "STRING", "value": "z"}},
+                "s": {"type": "PREC", "value": 2, "content": {"type": "SEQ", "members": [{"type": "STRING", "value": "z"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "y"}]}}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, expected) in [("zx", "(source (a))"), ("zxy", "(source (s))")] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{legacy}: {source}");
+            assert_eq!(tree.root_node().to_sexp(), expected, "{legacy}: {source}");
+        }
+    }
+}
+
+#[test]
+fn test_collective_shift_precedence_with_unordered_reductions() {
+    for (index, order) in [["low", "u", "p"], ["low", "p", "u"]].iter().enumerate() {
+        for include_shift in [false, true] {
+            let mut rules = serde_json::Map::new();
+            rules.insert("source".into(), serde_json::json!({
+                "type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "p"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "u"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "low"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SYMBOL", "name": "s"}
+                ]
+            }));
+            for name in order {
+                rules.insert(
+                    (*name).into(),
+                    serde_json::json!({
+                        "type": "PREC", "value": name,
+                        "content": {"type": "STRING", "value": "z"}
+                    }),
+                );
+            }
+            rules.insert("s".into(), serde_json::json!({
+                "type": "PREC", "value": "s",
+                "content": {"type": "SEQ", "members": [{"type": "STRING", "value": "z"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "y"}]}
+            }));
+            let precedences = [["p", "low"], ["u", "low"], ["s", "p"], ["u", "s"]]
+                .map(|list| list.map(|name| serde_json::json!({"type": "STRING", "value": name})));
+            let grammar = serde_json::json!({
+                "name": format!("collective_shift_precedence_{index}_{include_shift}"),
+                "rules": rules,
+                "precedences": precedences,
+                "conflicts": [if include_shift { vec!["p", "u", "s"] } else { vec!["p", "u"] }]
+            });
+            let result = generate_parser(&grammar.to_string());
+            if include_shift {
+                let (name, code) = result.unwrap();
+                let language = get_test_language(&name, &code, None);
+                let mut parser = Parser::new();
+                parser.set_language(&language).unwrap();
+                let tree = parser.parse("zxy", None).unwrap();
+                assert!(!tree.root_node().has_error(), "{order:?}");
+                assert_eq!(tree.root_node().to_sexp(), "(source (s))", "{order:?}");
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{order:?}: undeclared shift/reduce ambiguity generated"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();
