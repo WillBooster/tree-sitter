@@ -3046,22 +3046,25 @@ fn test_empty_included_ranges_preserve_disjoint_statement_boundaries() {
     };
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let ranges = [range(0, 3), range(4, 7)];
+    let ranges = [range(0, 3), range(4, 9)];
     parser.set_included_ranges(&ranges).unwrap();
-    let expected = parser.parse("foo bar", None).unwrap();
-    assert!(!expected.root_node().has_error());
+    let expected = parser.parse("foo (bar)", None).unwrap();
+    assert_eq!(
+        expected.root_node().to_sexp(),
+        "(program (expression_statement (identifier)) (expression_statement (parenthesized_expression (identifier))))"
+    );
     for ranges in [
-        vec![range(0, 3), range(4, 4), range(4, 7)],
+        vec![range(0, 3), range(4, 4), range(4, 9)],
         vec![
             range(0, 0),
             range(0, 3),
             range(3, 3),
             range(4, 4),
-            range(4, 7),
+            range(4, 9),
         ],
     ] {
         parser.set_included_ranges(&ranges).unwrap();
-        let tree = parser.parse("foo bar", None).unwrap();
+        let tree = parser.parse("foo (bar)", None).unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected.root_node().to_sexp());
         assert_eq!(tree.included_ranges(), ranges);
     }
