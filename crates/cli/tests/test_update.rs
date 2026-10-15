@@ -353,6 +353,17 @@ fn test_update_distinguishes_error_node_names_from_parse_errors() {
         );
     }
 
+    fs::write(&corpus_path, &nested).unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with('-') && line[1..].trim() == "(MISSING"),
+        "{stdout}"
+    );
+
     for invalid_source in [
         "missing unexpected name 1 VALUE end",
         "missing unexpected name 1 VALUE;",
