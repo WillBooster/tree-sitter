@@ -416,7 +416,7 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                   currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
                   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
                   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => void) | null;
-                  currentQueryProgressCallback: ((state: {currentOffset: number}) => void) | null;
+                  currentQueryProgressCallback: ((state: {currentOffset: number}) => boolean | void) | null;
                 };
                 "},
             )
