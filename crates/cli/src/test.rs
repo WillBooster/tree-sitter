@@ -572,7 +572,11 @@ impl TestSummary {
                     writeln!(f, "  {}", paint(Some(AnsiColor::Red), actual))?;
                 } else {
                     writeln!(f, "\n  {}. {name}:", i + 1)?;
-                    if *is_cst || format_sexp(actual, 2) != *actual_pretty {
+                    if *is_cst
+                        || format_sexp(actual, 2) != *actual_pretty
+                        || expected.contains("(MISSING (")
+                        || expected.contains("(UNEXPECTED (")
+                    {
                         writeln!(
                             f,
                             "{}",

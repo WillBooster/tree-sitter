@@ -426,6 +426,13 @@ fn test_update_preserves_missing_alias_payloads() {
     let output = execute(grammar_dir, &cache_dir, &["test", "--update"]);
     assert!(!output.status.success());
     assert_eq!(read(&corpus_path), rejected);
+
+    fs::write(&corpus_path, corpus.replace("/*;", "/**/;")).unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("(MISSING (ab)"), "{stdout}");
+    assert!(!stdout.contains("(MISSING\n"), "{stdout}");
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
