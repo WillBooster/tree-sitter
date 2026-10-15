@@ -2194,22 +2194,16 @@ impl fmt::Debug for Node<'_> {
 
 impl fmt::Display for Node<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let sexp = self.to_sexp();
-        if sexp.is_empty() {
-            write!(f, "")
-        } else if !f.alternate() {
-            write!(f, "{sexp}")
-        } else {
-            write!(
-                f,
-                "{}",
-                format_sexp_with_payloads(
-                    &sexp,
-                    f.width().unwrap_or(0),
-                    sexp_node_payloads(*self).into_iter(),
-                )
-            )
+        if !f.alternate() {
+            return f.write_str(&self.to_sexp());
         }
+        let c_string = unsafe { ts_node_string_pretty(self.0, f.width().unwrap_or(0)) };
+        let result = unsafe { CStr::from_ptr(c_string) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        unsafe { ts_free(c_string.cast::<c_void>()) };
+        f.write_str(&result)
     }
 }
 
@@ -3965,14 +3959,6 @@ impl fmt::Display for QueryError {
 #[doc(hidden)]
 #[must_use]
 pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
-    format_sexp_with_payloads(sexp, initial_indent_level, core::iter::empty())
-}
-
-fn format_sexp_with_payloads(
-    sexp: &str,
-    initial_indent_level: usize,
-    mut payloads: impl Iterator<Item = bool>,
-) -> String {
     let sexp = sexp.trim();
     let mut indent_level = initial_indent_level;
     let mut formatted = String::with_capacity(sexp.len());
@@ -4046,17 +4032,10 @@ fn format_sexp_with_payloads(
             }
             return None;
         }
-        let node_payload = if payload_quote == '\0' && next.starts_with('(') {
-            payloads.next()
-        } else {
-            None
-        };
-        let has_payload = node_payload.unwrap_or_else(|| {
-            separated
-                && (next == "(MISSING" || next == "(UNEXPECTED")
-                && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
-                && !sexp_field_follows(c_iter.clone())
-        });
+        let has_payload = separated
+            && (next == "(MISSING" || next == "(UNEXPECTED")
+            && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
+            && !sexp_field_follows(c_iter.clone());
         Some(has_payload)
     };
 
@@ -4112,30 +4091,6 @@ fn format_sexp_with_payloads(
     }
 
     formatted
-}
-
-fn sexp_node_payloads(root: Node<'_>) -> Vec<bool> {
-    let mut payloads = Vec::new();
-    let mut cursor = root.walk();
-    loop {
-        let node = cursor.node();
-        if node == root || node.is_named() || node.is_missing() {
-            payloads.push(
-                node.is_missing()
-                    || (node.is_error()
-                        && node.child_count() == 0
-                        && node.end_byte() > node.start_byte()),
-            );
-        }
-        if cursor.goto_first_child() {
-            continue;
-        }
-        while !cursor.goto_next_sibling() {
-            if !cursor.goto_parent() {
-                return payloads;
-            }
-        }
-    }
 }
 
 fn sexp_field_follows(mut chars: impl Iterator<Item = char>) -> bool {
@@ -4194,6 +4149,7 @@ pub fn wasm_stdlib_symbols() -> impl Iterator<Item = &'static str> {
 }
 
 unsafe extern "C" {
+    fn ts_node_string_pretty(node: ffi::TSNode, initial_indent_level: usize) -> *mut c_char;
     static mut ts_current_free: unsafe extern "C" fn(ptr: *mut c_void);
 }
 

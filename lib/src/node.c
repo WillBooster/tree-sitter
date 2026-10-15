@@ -545,7 +545,18 @@ char *ts_node_string(TSNode self) {
     alias_symbol,
     ts_language_symbol_metadata(self.tree->language, alias_symbol).visible,
     self.tree->language,
-    false
+    (SubtreeStringOptions) {0}
+  );
+}
+
+char *ts_node_string_pretty(TSNode self, size_t initial_indent_level) {
+  TSSymbol alias_symbol = ts_node__alias(&self);
+  return ts_subtree_string(
+    ts_node__subtree(self),
+    alias_symbol,
+    ts_language_symbol_metadata(self.tree->language, alias_symbol).visible,
+    self.tree->language,
+    (SubtreeStringOptions) {.pretty = true, .initial_indent_level = initial_indent_level}
   );
 }
 

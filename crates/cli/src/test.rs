@@ -866,6 +866,7 @@ fn run_tests(
             // A test that names several languages is written back once, with the output of the
             // first language that updated it.
             let mut updated_output = None;
+            let mut matching_output = None;
             for (i, language_name) in attributes.languages.iter().enumerate() {
                 if !language_name.is_empty() {
                     let language = opts
@@ -912,7 +913,7 @@ fn run_tests(
                         });
                         let actual = render_test_output(&input, &tree, attributes.cst, true)?;
                         let actual_pretty =
-                            render_failure_output(&tree, &actual, attributes.cst, true);
+                            render_pretty_output(&tree, &actual, attributes.cst, true, 2);
                         test_summary.parse_failures.push(TestFailure::new(
                             &name,
                             actual,
@@ -943,6 +944,17 @@ fn run_tests(
                             },
                         });
                         test_summary.parse_stats.successful_parses += 1;
+                        if opts.update {
+                            matching_output.get_or_insert_with(|| {
+                                render_pretty_output(
+                                    &tree,
+                                    &actual,
+                                    attributes.cst,
+                                    opts.show_fields || has_fields,
+                                    0,
+                                )
+                            });
+                        }
                     } else {
                         if opts.update {
                             // Only bail early before updating if `actual` does not match `output`.
@@ -951,7 +963,15 @@ fn run_tests(
                             if tree.root_node().has_error() {
                                 test_summary.has_parse_errors = true;
                             } else {
-                                updated_output.get_or_insert_with(|| actual.clone());
+                                updated_output.get_or_insert_with(|| {
+                                    render_pretty_output(
+                                        &tree,
+                                        &actual,
+                                        attributes.cst,
+                                        opts.show_fields || has_fields,
+                                        0,
+                                    )
+                                });
                                 test_summary.parse_results.add_case(TestResult {
                                     name: name.clone(),
                                     info: TestInfo::ParseTest {
@@ -971,11 +991,12 @@ fn run_tests(
                                 },
                             });
                         }
-                        let actual_pretty = render_failure_output(
+                        let actual_pretty = render_pretty_output(
                             &tree,
                             &actual,
                             attributes.cst,
                             opts.show_fields || has_fields,
+                            2,
                         );
                         test_summary.parse_failures.push(TestFailure::new(
                             &name,
@@ -996,16 +1017,17 @@ fn run_tests(
                     parser.set_language(opts.languages.values().next().unwrap())?;
                 }
             }
-            if opts.update
-                && let Some(output) = updated_output
-            {
-                corrected_entries.push(TestCorrection {
-                    output_range,
-                    output: if attributes.cst {
+            if opts.update {
+                let output = updated_output.or(matching_output).unwrap_or_else(|| {
+                    if attributes.cst {
                         output
                     } else {
                         format_sexp(&output, 0)
-                    },
+                    }
+                });
+                corrected_entries.push(TestCorrection {
+                    output_range,
+                    output,
                 });
             }
             test_summary.test_num += 1;
@@ -1113,11 +1135,17 @@ pub(crate) fn render_test_output(
     }
 }
 
-fn render_failure_output(tree: &Tree, actual: &str, cst: bool, include_fields: bool) -> String {
+fn render_pretty_output(
+    tree: &Tree,
+    actual: &str,
+    cst: bool,
+    include_fields: bool,
+    indent_level: usize,
+) -> String {
     if cst {
         return actual.to_string();
     }
-    let output = format!("{:#2}", tree.root_node());
+    let output = format!("{:#width$}", tree.root_node(), width = indent_level);
     if include_fields {
         output
     } else {
@@ -1224,7 +1252,7 @@ pub fn parse_tests(path: &Path) -> Result<TestEntry> {
 }
 
 /// Replace ` word: (` with ` (` throughout the string.
-/// Intended to operate on `to_sexp()` output where elements are separated by single spaces.
+/// Field labels must follow a space, as in compact and indented tree serialization.
 #[must_use]
 pub fn strip_sexp_fields(sexp: &str) -> String {
     let mut result = String::with_capacity(sexp.len());

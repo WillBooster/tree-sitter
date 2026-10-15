@@ -261,6 +261,13 @@ fn test_update_rewrites_only_the_expected_outputs_of_the_tests_that_ran() {
     run(&grammar_dir, &cache_dir, &["test"]);
     run(&grammar_dir, &cache_dir, &["test", "--update"]);
     assert_eq!(read(&corpus_dir.join("crlf.txt")), CRLF);
+    assert_eq!(
+        read(&corpus_dir.join("selected.txt")),
+        UPDATED.replace(
+            "(source_file (word) (word))",
+            "(source_file\n  (word)\n  (word))"
+        )
+    );
 }
 
 #[test]
@@ -346,7 +353,7 @@ fn test_update_distinguishes_error_node_names_from_parse_errors() {
 }
 
 #[test]
-fn test_update_preserves_matching_missing_alias_output() {
+fn test_update_preserves_missing_alias_payloads() {
     let temp_dir = tempfile::tempdir().unwrap();
     let grammar_dir = temp_dir.path();
     let cache_dir = grammar_dir.join("cache");
@@ -364,8 +371,9 @@ fn test_update_preserves_matching_missing_alias_output() {
             ]},
             "block": {"type": "SEQ", "members": [
               {"type": "STRING", "value": "/*"},
-              {"type": "ALIAS", "named": true, "value": "(ab",
-               "content": {"type": "STRING", "value": "*/"}}
+              {"type": "FIELD", "name": "closing", "content": {
+                "type": "ALIAS", "named": true, "value": "(ab",
+                "content": {"type": "STRING", "value": "*/"}}}
             ]}
           },
           "extras": [{"type": "PATTERN", "value": "\\s"}]
@@ -379,7 +387,13 @@ fn test_update_preserves_matching_missing_alias_output() {
     fs::write(&corpus_path, corpus).unwrap();
     run(grammar_dir, &cache_dir, &["test"]);
     run(grammar_dir, &cache_dir, &["test", "--update"]);
-    assert_eq!(read(&corpus_path), corpus);
+    assert_eq!(
+        read(&corpus_path),
+        corpus.replace(
+            "(root (block (MISSING (ab)))",
+            "(root\n  (block\n    (MISSING (ab)))"
+        )
+    );
     run(grammar_dir, &cache_dir, &["test"]);
 
     fs::write(
@@ -390,6 +404,10 @@ fn test_update_preserves_matching_missing_alias_output() {
     let output = execute(grammar_dir, &cache_dir, &["test"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("(MISSING (ab)"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("closing:"));
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-fields"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("closing: (MISSING (ab)"));
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {

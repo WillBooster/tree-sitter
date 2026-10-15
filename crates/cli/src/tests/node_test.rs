@@ -1474,6 +1474,47 @@ fn test_node_display_with_quoted_aliases() {
 }
 
 #[test]
+fn test_node_display_with_hidden_missing_and_error_children() {
+    let grammar = serde_json::json!({
+        "name": "hidden_display",
+        "rules": {
+            "root": {"type": "REPEAT1", "content": {"type": "SYMBOL", "name": "stmt"}},
+            "stmt": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "."},
+                {"type": "FIELD", "name": "value", "content": {"type": "SYMBOL", "name": "id"}},
+                {"type": "STRING", "value": ";"}
+            ]},
+            "id": {"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": [
+                    {"type": "BLANK"}, {"type": "STRING", "value": "!"}
+                ]},
+                {"type": "SYMBOL", "name": "_id"}
+            ]},
+            "_id": {"type": "PATTERN", "value": "[A-Za-z0-9_]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let actual: Vec<_> = [".;.name;", "name.name;"]
+        .into_iter()
+        .map(|source| {
+            let tree = parser.parse(source, None).unwrap();
+            format!("{:#}", tree.root_node())
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            "(root\n  (stmt\n    value: (id\n      (MISSING _id)))\n  (stmt\n    value: (id)))",
+            "(root\n  (ERROR)\n  (stmt\n    value: (id)))",
+        ]
+    );
+}
+
+#[test]
 fn test_node_display_rejects_impossible_quoted_payload_depth() {
     let grammar = serde_json::json!({
         "name": "quoted_payload_depth",

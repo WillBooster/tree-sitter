@@ -29,6 +29,7 @@ struct TSTree {
 
 TSTree *ts_tree_new(Subtree root, const TSLanguage *language, const TSRange *included_ranges, unsigned included_range_count);
 TSNode ts_node_new(const TSTree *tree, const Subtree *subtree, Length position, TSSymbol alias);
+char *ts_node_string_pretty(TSNode self, size_t initial_indent_level);
 
 #ifdef __cplusplus
 }
