@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    grammars::{InputGrammar, PrecedenceEntry, ProductionStore},
+    grammars::{InputGrammar, PrecedenceEntry, ProductionStore, VariableType},
     strpool::StrPool,
 };
 
@@ -273,13 +273,15 @@ fn validate_extras(
             && is_nullable_symbol(symbol, nullable_tokens, nullable_variables)
         {
             let name = match symbol.kind {
-                SymbolType::Terminal => lexical_grammar.variables[symbol.index as usize].name,
-                SymbolType::NonTerminal => grammar.variables[symbol.index as usize].name,
+                SymbolType::Terminal => {
+                    let variable = &lexical_grammar.variables[symbol.index as usize];
+                    (variable.kind != VariableType::Auxiliary).then_some(variable.name)
+                }
+                SymbolType::NonTerminal => Some(grammar.variables[symbol.index as usize].name),
                 _ => unreachable!(),
             };
-            return Err(EmptyStringExtraError(
-                grammar.pool.resolve(name).to_string(),
-            ));
+            let name = name.map_or("<ANONYMOUS>", |name| grammar.pool.resolve(name));
+            return Err(EmptyStringExtraError(name.to_string()));
         }
     }
     Ok(())
