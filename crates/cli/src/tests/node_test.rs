@@ -1373,6 +1373,10 @@ fn test_node_display_with_quotes_in_named_aliases() {
 #[test]
 fn test_node_display_with_quoted_aliases() {
     for (index, (named, alias)) in [
+        (true, "(ab"),
+        (true, "(foo"),
+        (true, "token:"),
+        (false, "token: ("),
         (true, "\""),
         (true, "'"),
         (true, "\"ab"),
@@ -1399,7 +1403,8 @@ fn test_node_display_with_quoted_aliases() {
     .into_iter()
     .enumerate()
     {
-        let parent = ["\"", "'", "\"parent", "'parent"][index % 4];
+        let parents = ["MISSING", "UNEXPECTED", "\"", "'", "\"parent", "'parent"];
+        let parent = parents[index % parents.len()];
         let grammar = serde_json::json!({
             "name": format!("missing_quoted_alias_{index}"),
             "rules": {
@@ -1466,6 +1471,47 @@ fn test_node_display_with_quoted_aliases() {
             format!("(root\n  ({parent}\n    (MISSING {payload}))\n  (after))")
         );
     }
+}
+
+#[test]
+fn test_node_display_with_hidden_missing_and_error_children() {
+    let grammar = serde_json::json!({
+        "name": "hidden_display",
+        "rules": {
+            "root": {"type": "REPEAT1", "content": {"type": "SYMBOL", "name": "stmt"}},
+            "stmt": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "."},
+                {"type": "FIELD", "name": "value", "content": {"type": "SYMBOL", "name": "id"}},
+                {"type": "STRING", "value": ";"}
+            ]},
+            "id": {"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": [
+                    {"type": "BLANK"}, {"type": "STRING", "value": "!"}
+                ]},
+                {"type": "SYMBOL", "name": "_id"}
+            ]},
+            "_id": {"type": "PATTERN", "value": "[A-Za-z0-9_]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let actual: Vec<_> = [".;.name;", "name.name;"]
+        .into_iter()
+        .map(|source| {
+            let tree = parser.parse(source, None).unwrap();
+            format!("{:#}", tree.root_node())
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            "(root\n  (stmt\n    value: (id\n      (MISSING _id)))\n  (stmt\n    value: (id)))",
+            "(root\n  (ERROR)\n  (stmt\n    value: (id)))",
+        ]
+    );
 }
 
 #[test]

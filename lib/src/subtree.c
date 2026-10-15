@@ -853,13 +853,19 @@ typedef struct {
   const TSFieldMapEntry *field_map_end;
 } WriteToStringFrame;
 
+static size_t ts_subtree__write_indent(char *string, size_t limit, size_t indent_level);
+
 static size_t ts_subtree__write_to_string(
   Subtree self, char *string, size_t limit,
-  const TSLanguage *language, bool include_all,
+  const TSLanguage *language, SubtreeStringOptions options,
   TSSymbol root_alias_symbol, bool root_alias_is_named, const char *root_field_name
 ) {
   char *cursor = string;
   char **writer = (limit > 1) ? &cursor : &string;
+  size_t indent_level = options.initial_indent_level;
+  if (options.pretty && indent_level > 0) {
+    cursor += ts_subtree__write_indent(*writer, limit, indent_level);
+  }
 
   Array(WriteToStringFrame) stack = array_new();
   array_push(&stack, ((WriteToStringFrame) {
@@ -876,7 +882,9 @@ static size_t ts_subtree__write_to_string(
 
     if (!node.ptr) {
       if (!frame->is_root) {
-        cursor += snprintf(*writer, limit, " ");
+        cursor += options.pretty
+          ? ts_subtree__write_indent(*writer, limit, indent_level)
+          : snprintf(*writer, limit, " ");
         if (frame->field_name) {
           cursor += snprintf(*writer, limit, "%s: ", frame->field_name);
         }
@@ -888,7 +896,7 @@ static size_t ts_subtree__write_to_string(
 
     if (!frame->pre_written) {
       bool is_visible =
-        include_all ||
+        options.include_all ||
         ts_subtree_missing(node) ||
         (
           frame->alias_symbol
@@ -898,7 +906,9 @@ static size_t ts_subtree__write_to_string(
 
       if (is_visible) {
         if (!frame->is_root) {
-          cursor += snprintf(*writer, limit, " ");
+          cursor += options.pretty
+            ? ts_subtree__write_indent(*writer, limit, indent_level)
+            : snprintf(*writer, limit, " ");
           if (frame->field_name) {
             cursor += snprintf(*writer, limit, "%s: ", frame->field_name);
           }
@@ -944,6 +954,7 @@ static size_t ts_subtree__write_to_string(
       }
 
       frame->is_visible = is_visible;
+      if (options.pretty && is_visible) indent_level++;
       frame->pre_written = true;
     }
 
@@ -984,7 +995,10 @@ static size_t ts_subtree__write_to_string(
       continue;
     }
 
-    if (frame->is_visible) cursor += snprintf(*writer, limit, ")");
+    if (frame->is_visible) {
+      cursor += snprintf(*writer, limit, ")");
+      if (options.pretty) indent_level--;
+    }
     (void)array_pop(&stack);
   }
 
@@ -992,23 +1006,32 @@ static size_t ts_subtree__write_to_string(
   return cursor - string;
 }
 
+static size_t ts_subtree__write_indent(char *string, size_t limit, size_t indent_level) {
+  size_t size = snprintf(string, limit, "\n");
+  for (size_t i = 0; i < indent_level; i++) {
+    char *position = limit > 1 ? string + size : string;
+    size += snprintf(position, limit, "  ");
+  }
+  return size;
+}
+
 char *ts_subtree_string(
   Subtree self,
   TSSymbol alias_symbol,
   bool alias_is_named,
   const TSLanguage *language,
-  bool include_all
+  SubtreeStringOptions options
 ) {
   char scratch_string[1];
   size_t size = ts_subtree__write_to_string(
     self, scratch_string, 1,
-    language, include_all,
+    language, options,
     alias_symbol, alias_is_named, ROOT_FIELD
   ) + 1;
   char *result = ts_malloc(size * sizeof(char));
   ts_subtree__write_to_string(
     self, result, size,
-    language, include_all,
+    language, options,
     alias_symbol, alias_is_named, ROOT_FIELD
   );
   return result;

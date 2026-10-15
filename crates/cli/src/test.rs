@@ -559,6 +559,7 @@ impl TestSummary {
                 TestFailure {
                     name,
                     actual,
+                    actual_pretty,
                     expected,
                     is_cst,
                 },
@@ -567,15 +568,14 @@ impl TestSummary {
                 if expected == "NO ERROR" {
                     writeln!(f, "\n  {}. {name}:\n", i + 1)?;
                     writeln!(f, "  Expected an ERROR node, but got:")?;
-                    let actual = if *is_cst {
-                        actual
-                    } else {
-                        &format_sexp(actual, 2)
-                    };
+                    let actual = if *is_cst { actual } else { actual_pretty };
                     writeln!(f, "  {}", paint(Some(AnsiColor::Red), actual))?;
                 } else {
                     writeln!(f, "\n  {}. {name}:", i + 1)?;
-                    if *is_cst {
+                    if *is_cst
+                        || format_sexp(actual, 2) != *actual_pretty
+                        || expected.contains("(MISSING (")
+                    {
                         writeln!(
                             f,
                             "{}",
@@ -585,7 +585,7 @@ impl TestSummary {
                         writeln!(
                             f,
                             "{}",
-                            TestDiff::new(&format_sexp(actual, 2), &format_sexp(expected, 2))
+                            TestDiff::new(actual_pretty, &format_sexp(expected, 2))
                                 .with_markers(self.use_markers)
                         )?;
                     }
@@ -792,12 +792,15 @@ impl std::fmt::Display for TestDiff<'_> {
 pub struct TestFailure {
     name: String,
     actual: String,
+    #[schemars(skip)]
+    #[serde(skip)]
+    actual_pretty: String,
     expected: String,
     is_cst: bool,
 }
 
 impl TestFailure {
-    fn new<T, U, V>(name: T, actual: U, expected: V, is_cst: bool) -> Self
+    fn new<T, U, V>(name: T, actual: U, expected: V, is_cst: bool, actual_pretty: String) -> Self
     where
         T: Into<String>,
         U: Into<String>,
@@ -806,6 +809,7 @@ impl TestFailure {
         Self {
             name: name.into(),
             actual: actual.into(),
+            actual_pretty,
             expected: expected.into(),
             is_cst,
         }
@@ -865,6 +869,8 @@ fn run_tests(
             // A test that names several languages is written back once, with the output of the
             // first language that updated it.
             let mut updated_output = None;
+            let mut matching_output = None;
+            let mut rejected_update = false;
             for (i, language_name) in attributes.languages.iter().enumerate() {
                 if !language_name.is_empty() {
                     let language = opts
@@ -910,11 +916,14 @@ fn run_tests(
                             },
                         });
                         let actual = render_test_output(&input, &tree, attributes.cst, true)?;
+                        let actual_pretty =
+                            render_pretty_output(&tree, &actual, attributes.cst, true, 2);
                         test_summary.parse_failures.push(TestFailure::new(
                             &name,
                             actual,
                             "NO ERROR",
                             attributes.cst,
+                            actual_pretty,
                         ));
                     }
 
@@ -939,15 +948,35 @@ fn run_tests(
                             },
                         });
                         test_summary.parse_stats.successful_parses += 1;
+                        if opts.update {
+                            matching_output.get_or_insert_with(|| {
+                                render_pretty_output(
+                                    &tree,
+                                    &actual,
+                                    attributes.cst,
+                                    opts.show_fields || has_fields,
+                                    0,
+                                )
+                            });
+                        }
                     } else {
                         if opts.update {
                             // Only bail early before updating if `actual` does not match `output`.
                             // Sometimes users want to test cases that are intended to have
                             // errors, hence why this check isn't shown above.
-                            if actual.contains("ERROR") || actual.contains("MISSING") {
+                            if tree.root_node().has_error() {
                                 test_summary.has_parse_errors = true;
+                                rejected_update = true;
                             } else {
-                                updated_output.get_or_insert_with(|| actual.clone());
+                                updated_output.get_or_insert_with(|| {
+                                    render_pretty_output(
+                                        &tree,
+                                        &actual,
+                                        attributes.cst,
+                                        opts.show_fields || has_fields,
+                                        0,
+                                    )
+                                });
                                 test_summary.parse_results.add_case(TestResult {
                                     name: name.clone(),
                                     info: TestInfo::ParseTest {
@@ -967,11 +996,19 @@ fn run_tests(
                                 },
                             });
                         }
+                        let actual_pretty = render_pretty_output(
+                            &tree,
+                            &actual,
+                            attributes.cst,
+                            opts.show_fields || has_fields,
+                            2,
+                        );
                         test_summary.parse_failures.push(TestFailure::new(
                             &name,
                             actual,
                             &output,
                             attributes.cst,
+                            actual_pretty,
                         ));
 
                         if attributes.fail_fast {
@@ -985,15 +1022,13 @@ fn run_tests(
                     parser.set_language(opts.languages.values().next().unwrap())?;
                 }
             }
-            if opts.update {
-                let output = updated_output.unwrap_or(output);
+            if opts.update
+                && !rejected_update
+                && let Some(output) = updated_output.or(matching_output)
+            {
                 corrected_entries.push(TestCorrection {
                     output_range,
-                    output: if attributes.cst {
-                        output
-                    } else {
-                        format_sexp(&output, 0)
-                    },
+                    output,
                 });
             }
             test_summary.test_num += 1;
@@ -1101,6 +1136,24 @@ pub(crate) fn render_test_output(
     }
 }
 
+fn render_pretty_output(
+    tree: &Tree,
+    actual: &str,
+    cst: bool,
+    include_fields: bool,
+    indent_level: usize,
+) -> String {
+    if cst {
+        return actual.to_string();
+    }
+    let output = format!("{:#width$}", tree.root_node(), width = indent_level);
+    if include_fields {
+        output
+    } else {
+        strip_sexp_fields(&output)
+    }
+}
+
 // Parse time is interpreted in ns before converting to ms to avoid truncation issues
 // Parse rates often have several outliers, leading to a large standard deviation. Taking
 // the log of these rates serves to "flatten" out the distribution, yielding a more
@@ -1200,7 +1253,7 @@ pub fn parse_tests(path: &Path) -> Result<TestEntry> {
 }
 
 /// Replace ` word: (` with ` (` throughout the string.
-/// Intended to operate on `to_sexp()` output where elements are separated by single spaces.
+/// Field labels must follow a space, as in compact and indented tree serialization.
 #[must_use]
 pub fn strip_sexp_fields(sexp: &str) -> String {
     let mut result = String::with_capacity(sexp.len());
