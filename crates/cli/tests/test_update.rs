@@ -408,6 +408,20 @@ fn test_update_preserves_missing_alias_payloads() {
     let output = execute(grammar_dir, &cache_dir, &["test", "--show-fields"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("closing: (MISSING (ab)"));
+
+    fs::write(
+        &corpus_path,
+        corpus.replace(
+            "(root (block (MISSING (ab)))",
+            "(root (block (MISSING (ab)) (other)))",
+        ),
+    )
+    .unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("(MISSING (ab)"));
+    assert!(!stdout.contains("(MISSING\n"), "{stdout}");
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
