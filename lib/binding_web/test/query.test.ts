@@ -634,11 +634,18 @@ describe('Query', () => {
     (outerMethod, method) => {
       tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
       query = new Query(JavaScript, '(number) @number');
+      const expectedOffsets: number[] = [];
+      query[outerMethod](tree.rootNode, {
+        matchLimit: 128,
+        progressCallback: state => { expectedOffsets.push(state.currentOffset); },
+      });
+      const offsets: number[] = [];
       let calls = 0;
       let nestedCount = 0;
       const results = query[outerMethod](tree.rootNode, {
         matchLimit: 128,
-        progressCallback: () => {
+        progressCallback: state => {
+          offsets.push(state.currentOffset);
           calls++;
           if (calls === 1) {
             nestedCount = query![method](tree!.rootNode, { matchLimit: 16 }).length;
@@ -649,6 +656,7 @@ describe('Query', () => {
       expect(nestedCount).toBe(1000);
       expect(results).toHaveLength(1000);
       expect(calls).toBeGreaterThan(1);
+      expect(offsets).toEqual(expectedOffsets);
       expect(query.matchLimit).toBe(128);
       expect(query.didExceedMatchLimit()).toBe(false);
       expect(query.captures(tree.rootNode)).toHaveLength(1000);
