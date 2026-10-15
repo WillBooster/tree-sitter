@@ -261,15 +261,217 @@ fn test_update_rewrites_only_the_expected_outputs_of_the_tests_that_ran() {
     run(&grammar_dir, &cache_dir, &["test"]);
     run(&grammar_dir, &cache_dir, &["test", "--update"]);
     assert_eq!(read(&corpus_dir.join("crlf.txt")), CRLF);
+    assert_eq!(
+        read(&corpus_dir.join("selected.txt")),
+        UPDATED.replace(
+            "(source_file (word) (word))",
+            "(source_file\n  (word)\n  (word))"
+        )
+    );
+}
+
+#[test]
+fn test_update_distinguishes_error_node_names_from_parse_errors() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grammar_dir = temp_dir.path();
+    let cache_dir = grammar_dir.join("cache");
+    let corpus_dir = grammar_dir.join("test/corpus");
+    fs::create_dir_all(grammar_dir.join("src")).unwrap();
+    fs::create_dir_all(&corpus_dir).unwrap();
+    fs::write(
+        grammar_dir.join("src/grammar.json"),
+        r#"{
+          "name": "error_names",
+          "rules": {
+            "source_file": {"type": "SEQ", "members": [
+              {"type": "SYMBOL", "name": "MISSING"},
+              {"type": "SYMBOL", "name": "UNEXPECTED"},
+              {"type": "SYMBOL", "name": "MISSING_word"},
+              {"type": "SYMBOL", "name": "ERROR_word"},
+              {"type": "SYMBOL", "name": "UNEXPECTED_word"},
+              {"type": "STRING", "value": "end"},
+              {"type": "STRING", "value": ";"}
+            ]},
+            "MISSING": {"type": "CHOICE", "members": [
+              {"type": "STRING", "value": "missing"},
+              {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "("},
+                {"type": "SYMBOL", "name": "word"},
+                {"type": "STRING", "value": ")"}
+              ]}
+            ]},
+            "UNEXPECTED": {"type": "FIELD", "name": "value", "content": {"type": "SYMBOL", "name": "word"}},
+            "word": {"type": "STRING", "value": "unexpected"},
+            "MISSING_word": {"type": "PATTERN", "value": "[a-z]+"},
+            "ERROR_word": {"type": "PATTERN", "value": "[0-9]+"},
+            "UNEXPECTED_word": {"type": "PATTERN", "value": "[A-Z]+"}
+          },
+          "extras": [{"type": "PATTERN", "value": "\\s"}]
+        }"#,
+    )
+    .unwrap();
+    run(grammar_dir, &cache_dir, &["generate", "src/grammar.json"]);
+    let corpus_path = corpus_dir.join("names.txt");
+    let corpus = "==========\nValid names\n==========\n\nmissing unexpected name 1 VALUE end;\n\n---\n\n(source_file)\n";
+    fs::write(&corpus_path, corpus).unwrap();
+    run(grammar_dir, &cache_dir, &["test", "--update"]);
+    let updated = corpus.replace(
+        "(source_file)",
+        "(source_file\n  (MISSING)\n  (UNEXPECTED\n    (word))\n  (MISSING_word)\n  (ERROR_word)\n  (UNEXPECTED_word))",
+    );
+    assert_eq!(read(&corpus_path), updated);
+    run(grammar_dir, &cache_dir, &["test"]);
+
+    let nested = corpus.replace("missing unexpected", "(unexpected) unexpected");
+    fs::write(&corpus_path, &nested).unwrap();
+    run(grammar_dir, &cache_dir, &["test", "--update"]);
+    assert_eq!(
+        read(&corpus_path),
+        updated
+            .replace("missing unexpected", "(unexpected) unexpected")
+            .replace("(MISSING)", "(MISSING\n    (word))")
+    );
+    run(grammar_dir, &cache_dir, &["test"]);
+
+    for (unexpected_child, expected_child) in
+        [("value: (word)", "value: (word))"), ("(word)", "(word))")]
+    {
+        fs::write(
+            &corpus_path,
+            corpus.replace(
+                "(source_file)",
+                &format!("(source_file (MISSING) (UNEXPECTED {unexpected_child}) (MISSING_word) (ERROR_word) (UNEXPECTED_word) (extra))"),
+            ),
+        )
+        .unwrap();
+        let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+        assert!(!output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for expected_line in ["(MISSING)", "(UNEXPECTED", expected_child] {
+            assert!(
+                stdout
+                    .lines()
+                    .any(|line| line.starts_with(' ') && line.trim() == expected_line),
+                "{stdout}"
+            );
+        }
+    }
+
+    fs::write(&corpus_path, &nested).unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with('-') && line[1..].trim() == "(MISSING"),
+        "{stdout}"
+    );
+
+    for invalid_source in [
+        "missing unexpected name 1 VALUE end",
+        "missing unexpected name 1 VALUE;",
+        "?",
+    ] {
+        let invalid = corpus.replace("missing unexpected name 1 VALUE end;", invalid_source);
+        fs::write(&corpus_path, &invalid).unwrap();
+        let output = execute(grammar_dir, &cache_dir, &["test", "--update"]);
+        assert!(!output.status.success(), "{invalid_source}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cannot be updated automatically")
+        );
+        if invalid_source.ends_with("VALUE;") {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("(MISSING \"end\")"));
+        }
+        assert_eq!(read(&corpus_path), invalid);
+    }
+}
+
+#[test]
+fn test_update_preserves_missing_alias_payloads() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grammar_dir = temp_dir.path();
+    let cache_dir = grammar_dir.join("cache");
+    let corpus_dir = grammar_dir.join("test/corpus");
+    fs::create_dir_all(grammar_dir.join("src")).unwrap();
+    fs::create_dir_all(&corpus_dir).unwrap();
+    fs::write(
+        grammar_dir.join("src/grammar.json"),
+        r#"{
+          "name": "missing_alias",
+          "rules": {
+            "root": {"type": "SEQ", "members": [
+              {"type": "SYMBOL", "name": "block"},
+              {"type": "STRING", "value": ";"}
+            ]},
+            "block": {"type": "SEQ", "members": [
+              {"type": "STRING", "value": "/*"},
+              {"type": "FIELD", "name": "closing", "content": {
+                "type": "ALIAS", "named": true, "value": "(ab",
+                "content": {"type": "STRING", "value": "*/"}}}
+            ]}
+          },
+          "extras": [{"type": "PATTERN", "value": "\\s"}]
+        }"#,
+    )
+    .unwrap();
+    run(grammar_dir, &cache_dir, &["generate", "src/grammar.json"]);
+    let corpus_path = corpus_dir.join("missing.txt");
+    let corpus =
+        "==========\nMissing alias\n==========\n\n/*;\n\n---\n\n(root (block (MISSING (ab)))\n";
+    fs::write(&corpus_path, corpus).unwrap();
+    run(grammar_dir, &cache_dir, &["test"]);
+    run(grammar_dir, &cache_dir, &["test", "--update"]);
+    assert_eq!(
+        read(&corpus_path),
+        corpus.replace(
+            "(root (block (MISSING (ab)))",
+            "(root\n  (block\n    (MISSING (ab)))"
+        )
+    );
+    run(grammar_dir, &cache_dir, &["test"]);
+
+    fs::write(
+        &corpus_path,
+        corpus.replace("(root (block (MISSING (ab)))", "(root)"),
+    )
+    .unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("(MISSING (ab)"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("closing:"));
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-fields"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("closing: (MISSING (ab)"));
+
+    fs::write(
+        &corpus_path,
+        corpus.replace(
+            "(root (block (MISSING (ab)))",
+            "(root (block (MISSING (ab)) (other)))",
+        ),
+    )
+    .unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("(MISSING (ab)"));
+    assert!(!stdout.contains("(MISSING\n"), "{stdout}");
+    let rejected = read(&corpus_path);
+    let output = execute(grammar_dir, &cache_dir, &["test", "--update"]);
+    assert!(!output.status.success());
+    assert_eq!(read(&corpus_path), rejected);
+
+    fs::write(&corpus_path, corpus.replace("/*;", "/**/;")).unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("(MISSING (ab)"), "{stdout}");
+    assert!(!stdout.contains("(MISSING\n"), "{stdout}");
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
-    let output = Command::new(env!("CARGO_BIN_EXE_tree-sitter"))
-        .args(args)
-        .current_dir(dir)
-        .env("TREE_SITTER_LIBDIR", cache_dir)
-        .output()
-        .unwrap();
+    let output = execute(dir, cache_dir, args);
     assert!(
         output.status.success(),
         "tree-sitter {args:?} failed:\n{}\n{}",
@@ -277,6 +479,16 @@ fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
         String::from_utf8_lossy(&output.stderr),
     );
     output
+}
+
+fn execute(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tree-sitter"))
+        .args(args)
+        .current_dir(dir)
+        .env("TREE_SITTER_LIBDIR", cache_dir)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap()
 }
 
 fn read(path: &Path) -> String {
