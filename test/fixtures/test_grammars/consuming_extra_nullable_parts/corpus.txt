@@ -1,0 +1,10 @@
+==================
+Nullable pieces with a consuming delimiter
+==================
+
+x #! comment
+y
+
+---
+
+(source_file (comment))

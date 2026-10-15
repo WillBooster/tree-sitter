@@ -1,0 +1,9 @@
+==================
+External-only nullable extra pattern is accepted and parses
+==================
+
+x y
+
+---
+
+(source_file)
