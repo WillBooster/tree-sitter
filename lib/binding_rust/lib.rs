@@ -2194,14 +2194,16 @@ impl fmt::Debug for Node<'_> {
 
 impl fmt::Display for Node<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let sexp = self.to_sexp();
-        if sexp.is_empty() {
-            write!(f, "")
-        } else if !f.alternate() {
-            write!(f, "{sexp}")
-        } else {
-            write!(f, "{}", format_sexp(&sexp, f.width().unwrap_or(0)))
+        if !f.alternate() {
+            return f.write_str(&self.to_sexp());
         }
+        let c_string = unsafe { ts_node_string_pretty(self.0, f.width().unwrap_or(0)) };
+        let result = unsafe { CStr::from_ptr(c_string) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe { ts_free(c_string.cast::<c_void>()) };
+        f.write_str(&result)
     }
 }
 
@@ -3976,6 +3978,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
         first_token = false;
         let open_nodes = if root_token { 1 } else { open_nodes };
         next.clear();
+        let mut separated = false;
         while let Some(c) = c_iter.next() {
             byte_offset += c.len_utf8();
             if quote != '\0' {
@@ -4009,6 +4012,7 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
             {
                 quote = c;
             } else if c == ' ' {
+                separated = true;
                 break;
             } else if c == ')' {
                 saw_paren = true;
@@ -4017,32 +4021,30 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
             next.push(c);
         }
 
-        // at the end
         if c_iter.peek().is_none() && next.is_empty() {
             if saw_paren {
-                // but did we see a ) before ending?
                 saw_paren = false;
-                return Some(());
+                return Some(false);
             }
             if !did_last {
-                // but did we account for the end empty string as if we're splitting?
                 did_last = true;
-                return Some(());
+                return Some(false);
             }
             return None;
         }
-        Some(())
+        let has_payload = separated
+            && (next == "(MISSING" || next == "(UNEXPECTED")
+            && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
+            && !sexp_field_follows(c_iter.clone());
+        Some(has_payload)
     };
 
-    while fetch_next_str(
+    while let Some(has_payload) = fetch_next_str(
         &mut scratch,
         '\0',
         indent_level.saturating_sub(initial_indent_level),
-    )
-    .is_some()
-    {
+    ) {
         if scratch.is_empty() && indent_level > initial_indent_level {
-            // ")"
             indent_level -= 1;
             write!(formatted, ")").unwrap();
         } else if scratch.starts_with('(') {
@@ -4058,11 +4060,9 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 indent_level += 1;
             }
 
-            // "(node_name"
             write!(formatted, "{scratch}").unwrap();
 
-            // "(MISSING node_name" or "(UNEXPECTED 'x'"
-            if scratch.starts_with("(MISSING") || scratch.starts_with("(UNEXPECTED") {
+            if has_payload {
                 let payload_quote = if scratch == "(UNEXPECTED" { '\'' } else { '"' };
                 fetch_next_str(
                     &mut scratch,
@@ -4080,7 +4080,6 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
                 }
             }
         } else if scratch.ends_with(':') {
-            // "field:"
             writeln!(formatted).unwrap();
             for _ in 0..indent_level {
                 write!(formatted, "  ").unwrap();
@@ -4092,6 +4091,18 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     }
 
     formatted
+}
+
+fn sexp_field_follows(mut chars: impl Iterator<Item = char>) -> bool {
+    let mut last = None;
+    for c in chars.by_ref() {
+        match c {
+            '(' | ')' | '\'' | '"' => return false,
+            ' ' => break,
+            _ => last = Some(c),
+        }
+    }
+    last == Some(':') && chars.next() == Some('(')
 }
 
 fn quote_suffix_minimum_depths(sexp: &str) -> [Vec<(usize, usize)>; 2] {
@@ -4138,6 +4149,7 @@ pub fn wasm_stdlib_symbols() -> impl Iterator<Item = &'static str> {
 }
 
 unsafe extern "C" {
+    fn ts_node_string_pretty(node: ffi::TSNode, initial_indent_level: usize) -> *mut c_char;
     static mut ts_current_free: unsafe extern "C" fn(ptr: *mut c_void);
 }
 
