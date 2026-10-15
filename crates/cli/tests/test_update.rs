@@ -333,6 +333,26 @@ fn test_update_distinguishes_error_node_names_from_parse_errors() {
     );
     run(grammar_dir, &cache_dir, &["test"]);
 
+    fs::write(
+        &corpus_path,
+        corpus.replace(
+            "(source_file)",
+            "(source_file (MISSING) (UNEXPECTED value: (word)) (MISSING_word) (ERROR_word) (UNEXPECTED_word) (extra))",
+        ),
+    )
+    .unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test", "--show-diff-markers"]);
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for expected_line in ["(MISSING)", "(UNEXPECTED", "value: (word))"] {
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.starts_with(' ') && line.trim() == expected_line),
+            "{stdout}"
+        );
+    }
+
     for invalid_source in [
         "missing unexpected name 1 VALUE end",
         "missing unexpected name 1 VALUE;",
