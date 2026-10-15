@@ -486,6 +486,7 @@ fn execute(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(dir)
         .env("TREE_SITTER_LIBDIR", cache_dir)
+        .env("NO_COLOR", "1")
         .output()
         .unwrap()
 }
