@@ -77,9 +77,9 @@ export interface QueryOptions {
    * and check where the query is at in the document. The progress callback takes a single argument,
    * which is a {@link QueryState} representing the current state of the query.
    * Return `true` to cancel execution, or `false` or nothing to continue.
+   * Capture observers may return incidental values; only `true` cancels capture execution.
    */
-  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- Observers return void, while cancellation callbacks return boolean.
-  progressCallback?: (state: QueryState) => boolean | void;
+  progressCallback?: (state: QueryState) => void;
 }
 
 /**
@@ -877,9 +877,10 @@ export class Query {
     }
 
     let callbackFailure: { error: unknown } | undefined;
-    C.currentQueryProgressCallback = progressCallback ? state => {
+    const callback: ((state: QueryState) => unknown) | undefined = progressCallback;
+    C.currentQueryProgressCallback = callback ? state => {
       try {
-        return progressCallback(state);
+        return callback(state) === true;
       } catch (error) {
         callbackFailure = { error };
         return true;

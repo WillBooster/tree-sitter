@@ -624,7 +624,7 @@ describe('Query', () => {
     expect(calls).toBe(256);
   });
 
-  it('Completes captures when an instrumentation callback returns nothing', () => {
+  it('Completes captures for void and incidental observer returns', () => {
     tree = parser.parse(`[${Array.from({ length: 1000 }, (_, i) => i).join(',')}];`)!;
     query = new Query(JavaScript, '(number) @number');
     const offsets: number[] = [];
@@ -633,6 +633,12 @@ describe('Query', () => {
     });
     expect(captures).toHaveLength(1000);
     expect(offsets.length).toBeGreaterThan(0);
+    const previousCalls = offsets.length;
+    const observedCaptures = query.captures(tree.rootNode, {
+      progressCallback: state => offsets.push(state.currentOffset),
+    });
+    expect(observedCaptures).toHaveLength(1000);
+    expect(offsets.length).toBeGreaterThan(previousCalls);
   });
 
   describe('Executes with a timeout', { timeout: 10000 }, () => {
