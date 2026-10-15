@@ -423,12 +423,16 @@ static uint32_t ts_lexer__get_column(TSLexer *_self) {
 // scanners need to perform custom actions at these boundaries.
 static bool ts_lexer__is_at_included_range_start(const TSLexer *_self) {
   const Lexer *self = (const Lexer *)_self;
-  if (self->current_included_range_index < self->included_range_count) {
-    TSRange *current_range = &self->included_ranges[self->current_included_range_index];
-    return self->current_position.bytes == current_range->start_byte;
-  } else {
-    return false;
+  if (self->current_included_range_index >= self->included_range_count) return false;
+  const TSRange *current_range = &self->included_ranges[self->current_included_range_index];
+  if (self->current_position.bytes != current_range->start_byte) return false;
+
+  uint32_t previous = self->current_included_range_index;
+  while (previous > 0 &&
+         self->included_ranges[previous - 1].start_byte == self->included_ranges[previous - 1].end_byte) {
+    previous--;
   }
+  return previous == 0 || self->included_ranges[previous - 1].end_byte < current_range->start_byte;
 }
 
 static void ts_lexer__log(const TSLexer *_self, const char *fmt, ...) {

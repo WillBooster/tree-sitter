@@ -416,6 +416,18 @@ fn test_query_errors_on_invalid_syntax() {
 }
 
 #[test]
+fn test_query_rejects_excessive_pattern_nesting() {
+    let language = get_language("json");
+    for (opening, closing) in [("(array ", ")"), ("(", ")"), ("[", "]"), ("key:", "")] {
+        let source = opening.repeat(300) + "(array)" + &closing.repeat(300);
+        let error = Query::new(&language, &source).unwrap_err();
+        assert_eq!(error.kind, QueryErrorKind::Structure, "{opening}");
+        let shallow = opening.repeat(10) + "(array)" + &closing.repeat(10);
+        Query::new(&language, &shallow).unwrap();
+    }
+}
+
+#[test]
 fn test_query_errors_on_anchor_at_group_edge() {
     allocations::record(|| {
         let language = get_language("javascript");
