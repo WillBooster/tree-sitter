@@ -2494,6 +2494,9 @@ impl Query {
     /// The query is associated with a particular language, and can only be run
     /// on syntax nodes parsed with that language. References to Queries can be
     /// shared between multiple threads.
+    ///
+    /// Patterns are limited to 100 levels of nesting, including groups, alternations,
+    /// and field constraints. Exceeding this limit returns [`QueryErrorKind::Structure`].
     pub fn new(language: &Language, source: &str) -> Result<Self, QueryError> {
         let ptr = Self::new_raw(language, source)?;
         unsafe { Self::from_raw_parts(ptr, source) }
@@ -3932,7 +3935,7 @@ impl fmt::Display for QueryError {
             QueryErrorKind::NodeType => "Invalid node type ",
             QueryErrorKind::Capture => "Invalid capture name ",
             QueryErrorKind::Predicate => "Invalid predicate: ",
-            QueryErrorKind::Structure => "Impossible pattern:\n",
+            QueryErrorKind::Structure => "Invalid pattern structure:\n",
             QueryErrorKind::Syntax => "Invalid syntax:\n",
             QueryErrorKind::Language => "",
         };
