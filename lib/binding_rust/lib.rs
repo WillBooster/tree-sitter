@@ -2200,7 +2200,15 @@ impl fmt::Display for Node<'_> {
         } else if !f.alternate() {
             write!(f, "{sexp}")
         } else {
-            write!(f, "{}", format_sexp(&sexp, f.width().unwrap_or(0)))
+            write!(
+                f,
+                "{}",
+                format_sexp_with_payloads(
+                    &sexp,
+                    f.width().unwrap_or(0),
+                    sexp_node_payloads(*self).into_iter(),
+                )
+            )
         }
     }
 }
@@ -3957,6 +3965,14 @@ impl fmt::Display for QueryError {
 #[doc(hidden)]
 #[must_use]
 pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
+    format_sexp_with_payloads(sexp, initial_indent_level, core::iter::empty())
+}
+
+fn format_sexp_with_payloads(
+    sexp: &str,
+    initial_indent_level: usize,
+    mut payloads: impl Iterator<Item = bool>,
+) -> String {
     let sexp = sexp.trim();
     let mut indent_level = initial_indent_level;
     let mut formatted = String::with_capacity(sexp.len());
@@ -4030,10 +4046,17 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
             }
             return None;
         }
-        let has_payload = separated
-            && (next == "(MISSING" || next == "(UNEXPECTED")
-            && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
-            && !sexp_field_follows(c_iter.clone());
+        let node_payload = if payload_quote == '\0' && next.starts_with('(') {
+            payloads.next()
+        } else {
+            None
+        };
+        let has_payload = node_payload.unwrap_or_else(|| {
+            separated
+                && (next == "(MISSING" || next == "(UNEXPECTED")
+                && c_iter.peek().is_some_and(|&c| c != '(' && c != ')')
+                && !sexp_field_follows(c_iter.clone())
+        });
         Some(has_payload)
     };
 
@@ -4089,6 +4112,30 @@ pub fn format_sexp(sexp: &str, initial_indent_level: usize) -> String {
     }
 
     formatted
+}
+
+fn sexp_node_payloads(root: Node<'_>) -> Vec<bool> {
+    let mut payloads = Vec::new();
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        if node == root || node.is_named() || node.is_missing() {
+            payloads.push(
+                node.is_missing()
+                    || (node.is_error()
+                        && node.child_count() == 0
+                        && node.end_byte() > node.start_byte()),
+            );
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return payloads;
+            }
+        }
+    }
 }
 
 fn sexp_field_follows(mut chars: impl Iterator<Item = char>) -> bool {

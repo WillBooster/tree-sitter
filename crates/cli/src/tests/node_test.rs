@@ -1373,6 +1373,8 @@ fn test_node_display_with_quotes_in_named_aliases() {
 #[test]
 fn test_node_display_with_quoted_aliases() {
     for (index, (named, alias)) in [
+        (true, "(ab"),
+        (true, "(foo"),
         (true, "token:"),
         (false, "token: ("),
         (true, "\""),
@@ -1401,7 +1403,8 @@ fn test_node_display_with_quoted_aliases() {
     .into_iter()
     .enumerate()
     {
-        let parent = ["\"", "'", "\"parent", "'parent"][index % 4];
+        let parents = ["MISSING", "UNEXPECTED", "\"", "'", "\"parent", "'parent"];
+        let parent = parents[index % parents.len()];
         let grammar = serde_json::json!({
             "name": format!("missing_quoted_alias_{index}"),
             "rules": {
