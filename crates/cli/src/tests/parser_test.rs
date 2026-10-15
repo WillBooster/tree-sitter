@@ -40,7 +40,7 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
         ["preferred", "lower", "unrelated"],
         ["preferred", "unrelated", "lower"],
     ];
-    for named in [false, true] {
+    for mode in 0..3 {
         for (index, order) in orders.iter().enumerate() {
             let mut rules = serde_json::Map::new();
             rules.insert("source".into(), serde_json::json!({
@@ -52,19 +52,19 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
             }));
             for name in order {
                 let terminal = serde_json::json!({"type": "STRING", "value": "z"});
-                rules.insert((*name).into(), if named && *name != "unrelated" {
-                    serde_json::json!({"type": "PREC", "value": if *name == "lower" { "low" } else { "high" }, "content": terminal})
+                rules.insert((*name).into(), if mode > 0 && *name != "unrelated" {
+                    serde_json::json!({"type": "PREC", "value": if mode == 2 { "shared" } else if *name == "lower" { "low" } else { "high" }, "content": terminal})
                 } else {
                     terminal
                 });
             }
             let grammar = serde_json::json!({
-                "name": format!("partial_reduction_precedence_{named}_{index}"),
+                "name": format!("partial_reduction_precedence_{mode}_{index}"),
                 "rules": rules,
-                "precedences": [if named {
-                    serde_json::json!([{"type": "STRING", "value": "high"}, {"type": "STRING", "value": "low"}])
-                } else {
-                    serde_json::json!([{"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}])
+                "precedences": [match mode {
+                    0 => serde_json::json!([{"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
+                    1 => serde_json::json!([{"type": "STRING", "value": "high"}, {"type": "STRING", "value": "low"}]),
+                    _ => serde_json::json!([{"type": "STRING", "value": "shared"}, {"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
                 }],
                 "conflicts": [["preferred", "unrelated"]]
             });
@@ -74,13 +74,47 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
             parser.set_language(&language).unwrap();
             for source in ["zxa", "zxc"] {
                 let tree = parser.parse(source, None).unwrap();
-                assert!(
-                    !tree.root_node().has_error(),
-                    "{named}: {order:?}: {source}"
-                );
+                assert!(!tree.root_node().has_error(), "{mode}: {order:?}: {source}");
             }
             let tree = parser.parse("zxb", None).unwrap();
-            assert!(tree.root_node().has_error(), "{named}: {order:?}: zxb");
+            assert!(tree.root_node().has_error(), "{mode}: {order:?}: zxb");
+        }
+    }
+}
+
+#[test]
+fn test_named_reduction_precedence_with_a_shared_rule_symbol() {
+    for shared_first in [false, true] {
+        for reverse in [false, true] {
+            let mut members = ["higher", "lower"].map(|name| serde_json::json!({
+                "type": "PREC", "value": name,
+                "content": {"type": "ALIAS", "named": true, "value": name, "content": {"type": "STRING", "value": "z"}}
+            }));
+            if reverse {
+                members.reverse();
+            }
+            let shared = serde_json::json!({"type": "SYMBOL", "name": "a"});
+            let higher = serde_json::json!({"type": "STRING", "value": "higher"});
+            let lower = serde_json::json!({"type": "STRING", "value": "lower"});
+            let grammar = serde_json::json!({
+                "name": format!("shared_rule_precedence_{shared_first}_{reverse}"),
+                "rules": {
+                    "source": {"type": "SYMBOL", "name": "a"},
+                    "a": {"type": "CHOICE", "members": members}
+                },
+                "precedences": [if shared_first { vec![shared, higher, lower] } else { vec![higher, shared, lower] }]
+            });
+            let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language(&name, &code, None);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let tree = parser.parse("z", None).unwrap();
+            assert!(!tree.root_node().has_error(), "{shared_first}: {reverse}");
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source (a (higher)))",
+                "{shared_first}: {reverse}"
+            );
         }
     }
 }

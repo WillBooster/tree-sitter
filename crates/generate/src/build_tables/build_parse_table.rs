@@ -194,6 +194,12 @@ impl<'a> ParseStateInfo<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum PrecedenceContext {
+    ReduceReduce,
+    ShiftReduce,
+}
+
 #[derive(Clone, Debug)]
 struct Reduction {
     action: ParseAction,
@@ -891,6 +897,7 @@ impl<'a> ParseTableBuilder<'a> {
                             &[other.symbol],
                             reduction.precedence,
                             &[reduction.symbol],
+                            PrecedenceContext::ReduceReduce,
                         ) == Ordering::Greater
                     })
                 })
@@ -1200,6 +1207,7 @@ impl<'a> ParseTableBuilder<'a> {
                     &[p.1],
                     reduction_precedence,
                     &reduction_symbols,
+                    PrecedenceContext::ShiftReduce,
                 ) {
                     Ordering::Greater => shift_is_more = true,
                     Ordering::Less => shift_is_less = true,
@@ -1429,6 +1437,7 @@ impl<'a> ParseTableBuilder<'a> {
         left_symbols: &[Symbol],
         right: Precedence,
         right_symbols: &[Symbol],
+        context: PrecedenceContext,
     ) -> Ordering {
         let precedence_entry_matches =
             |entry: &PrecedenceEntry, precedence: Precedence, symbols: &[Symbol]| -> bool {
@@ -1463,16 +1472,19 @@ impl<'a> ParseTableBuilder<'a> {
                     for entry in list {
                         let matches_left = precedence_entry_matches(entry, left, left_symbols);
                         let matches_right = precedence_entry_matches(entry, right, right_symbols);
-                        if matches_left {
-                            saw_left = true;
-                            if saw_right {
-                                return Some(Ordering::Less);
+                        match (matches_left, matches_right) {
+                            (true, true) if matches!(context, PrecedenceContext::ReduceReduce) => {
+                                match (saw_left, saw_right) {
+                                    (true, false) => return Some(Ordering::Greater),
+                                    (false, true) => return Some(Ordering::Less),
+                                    _ => {}
+                                }
                             }
-                        } else if matches_right {
-                            saw_right = true;
-                            if saw_left {
-                                return Some(Ordering::Greater);
-                            }
+                            (true, _) if saw_right => return Some(Ordering::Less),
+                            (true, _) => saw_left = true,
+                            (false, true) if saw_left => return Some(Ordering::Greater),
+                            (false, true) => saw_right = true,
+                            _ => {}
                         }
                     }
                     None
