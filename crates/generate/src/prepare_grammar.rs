@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    grammars::{InputGrammar, PrecedenceEntry, ProductionStore},
+    grammars::{InputGrammar, PrecedenceEntry, ProductionStore, VariableType},
     strpool::StrPool,
 };
 
@@ -62,6 +62,7 @@ pub enum PrepareGrammarError {
     FlattenGrammar(#[from] FlattenGrammarError),
     ExpandTokens(#[from] ExpandTokensError),
     ProcessInlines(#[from] ProcessInlinesError),
+    ValidateExtras(#[from] EmptyStringExtraError),
 }
 
 pub type ValidatePrecedenceResult<T> = Result<T, ValidatePrecedenceError>;
@@ -92,6 +93,10 @@ impl std::fmt::Display for IndirectRecursionError {
         Ok(())
     }
 }
+
+#[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
+#[error("The extra rule `{0}` matches the empty string. Extras must consume input.")]
+pub struct EmptyStringExtraError(pub String);
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
 #[error("Undeclared precedence '{}' in rule '{}'", self.precedence, self.rule)]
@@ -141,7 +146,22 @@ pub fn prepare_grammar(
     let mut state = FlattenState::default();
     let mut out = ProductionStore::default();
     flatten_grammar(&g, &ext_meta, &mut state, &mut out)?;
-    validate_non_advancing_recursion(&g, &out, &nullable_tokens, &repetition_owners)?;
+    let nullable_variables = nullable_variables(&out, &nullable_tokens);
+    validate_non_advancing_recursion(
+        &g,
+        &out,
+        &nullable_tokens,
+        &nullable_variables,
+        &repetition_owners,
+    )?;
+    validate_extras(
+        &g,
+        &ext_meta.extra_symbols,
+        &ext_meta.external_only_extra_symbols,
+        &lexical_grammar,
+        &nullable_tokens,
+        &nullable_variables,
+    )?;
 
     let default_aliases = extract_default_aliases(&g, &ext_meta, &mut out);
     let inlines = process_inlines(&g, &ext_meta, &mut out)?;
@@ -194,36 +214,9 @@ fn validate_non_advancing_recursion(
     grammar: &InputGrammar,
     productions: &ProductionStore,
     nullable_tokens: &[bool],
+    nullable_variables: &[bool],
     repetition_owners: &[StrId],
 ) -> Result<(), NonAdvancingRecursionError> {
-    let mut nullable_variables = vec![false; grammar.variables.len()];
-    loop {
-        let mut changed = false;
-        for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
-            if !nullable_variables[i]
-                && productions.productions[start as usize..end as usize]
-                    .iter()
-                    .any(|production| {
-                        productions.steps[production.step_range()]
-                            .iter()
-                            .all(|step| {
-                                is_nullable_symbol(
-                                    step.symbol(),
-                                    nullable_tokens,
-                                    &nullable_variables,
-                                )
-                            })
-                    })
-            {
-                nullable_variables[i] = true;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
     let mut transitions = IndexMap::new();
     for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
         let mut targets = BTreeSet::new();
@@ -232,7 +225,7 @@ fn validate_non_advancing_recursion(
             let consuming = steps
                 .iter()
                 .filter(|step| {
-                    !is_nullable_symbol(step.symbol(), nullable_tokens, &nullable_variables)
+                    !is_nullable_symbol(step.symbol(), nullable_tokens, nullable_variables)
                 })
                 .count();
             if consuming > 1 {
@@ -265,6 +258,65 @@ fn validate_non_advancing_recursion(
         return Err(NonAdvancingRecursionError(names));
     }
     Ok(())
+}
+
+fn validate_extras(
+    grammar: &InputGrammar,
+    extras: &[Symbol],
+    external_only_extras: &[Symbol],
+    lexical_grammar: &LexicalGrammar,
+    nullable_tokens: &[bool],
+    nullable_variables: &[bool],
+) -> Result<(), EmptyStringExtraError> {
+    for &symbol in extras {
+        if !external_only_extras.contains(&symbol)
+            && is_nullable_symbol(symbol, nullable_tokens, nullable_variables)
+        {
+            let name = match symbol.kind {
+                SymbolType::Terminal => {
+                    let variable = &lexical_grammar.variables[symbol.index as usize];
+                    (variable.kind != VariableType::Auxiliary).then_some(variable.name)
+                }
+                SymbolType::NonTerminal => Some(grammar.variables[symbol.index as usize].name),
+                _ => unreachable!(),
+            };
+            let name = name.map_or("<ANONYMOUS>", |name| grammar.pool.resolve(name));
+            return Err(EmptyStringExtraError(name.to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn nullable_variables(productions: &ProductionStore, nullable_tokens: &[bool]) -> Vec<bool> {
+    let mut nullable_variables = vec![false; productions.var_prods.len()];
+    loop {
+        let mut changed = false;
+        for (i, &(start, end)) in productions.var_prods.iter().enumerate() {
+            if !nullable_variables[i]
+                && productions.productions[start as usize..end as usize]
+                    .iter()
+                    .any(|production| {
+                        productions.steps[production.step_range()]
+                            .iter()
+                            .all(|step| {
+                                is_nullable_symbol(
+                                    step.symbol(),
+                                    nullable_tokens,
+                                    &nullable_variables,
+                                )
+                            })
+                    })
+            {
+                nullable_variables[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    nullable_variables
 }
 
 const fn is_nullable_symbol(symbol: Symbol, tokens: &[bool], variables: &[bool]) -> bool {

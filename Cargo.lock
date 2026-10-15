@@ -2213,7 +2213,6 @@ dependencies = [
  "indexmap",
  "log",
  "pathdiff",
- "regex",
  "regex-syntax",
  "rquickjs",
  "rustc-hash",
