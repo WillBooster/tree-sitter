@@ -345,6 +345,53 @@ fn test_update_distinguishes_error_node_names_from_parse_errors() {
     }
 }
 
+#[test]
+fn test_update_preserves_matching_missing_alias_output() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let grammar_dir = temp_dir.path();
+    let cache_dir = grammar_dir.join("cache");
+    let corpus_dir = grammar_dir.join("test/corpus");
+    fs::create_dir_all(grammar_dir.join("src")).unwrap();
+    fs::create_dir_all(&corpus_dir).unwrap();
+    fs::write(
+        grammar_dir.join("src/grammar.json"),
+        r#"{
+          "name": "missing_alias",
+          "rules": {
+            "root": {"type": "SEQ", "members": [
+              {"type": "SYMBOL", "name": "block"},
+              {"type": "STRING", "value": ";"}
+            ]},
+            "block": {"type": "SEQ", "members": [
+              {"type": "STRING", "value": "/*"},
+              {"type": "ALIAS", "named": true, "value": "(ab",
+               "content": {"type": "STRING", "value": "*/"}}
+            ]}
+          },
+          "extras": [{"type": "PATTERN", "value": "\\s"}]
+        }"#,
+    )
+    .unwrap();
+    run(grammar_dir, &cache_dir, &["generate", "src/grammar.json"]);
+    let corpus_path = corpus_dir.join("missing.txt");
+    let corpus =
+        "==========\nMissing alias\n==========\n\n/*;\n\n---\n\n(root (block (MISSING (ab)))\n";
+    fs::write(&corpus_path, corpus).unwrap();
+    run(grammar_dir, &cache_dir, &["test"]);
+    run(grammar_dir, &cache_dir, &["test", "--update"]);
+    assert_eq!(read(&corpus_path), corpus);
+    run(grammar_dir, &cache_dir, &["test"]);
+
+    fs::write(
+        &corpus_path,
+        corpus.replace("(root (block (MISSING (ab)))", "(root)"),
+    )
+    .unwrap();
+    let output = execute(grammar_dir, &cache_dir, &["test"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("(MISSING (ab)"));
+}
+
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
     let output = execute(dir, cache_dir, args);
     assert!(

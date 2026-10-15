@@ -559,6 +559,7 @@ impl TestSummary {
                 TestFailure {
                     name,
                     actual,
+                    actual_pretty,
                     expected,
                     is_cst,
                 },
@@ -567,11 +568,7 @@ impl TestSummary {
                 if expected == "NO ERROR" {
                     writeln!(f, "\n  {}. {name}:\n", i + 1)?;
                     writeln!(f, "  Expected an ERROR node, but got:")?;
-                    let actual = if *is_cst {
-                        actual
-                    } else {
-                        &format_sexp(actual, 2)
-                    };
+                    let actual = if *is_cst { actual } else { actual_pretty };
                     writeln!(f, "  {}", paint(Some(AnsiColor::Red), actual))?;
                 } else {
                     writeln!(f, "\n  {}. {name}:", i + 1)?;
@@ -585,7 +582,7 @@ impl TestSummary {
                         writeln!(
                             f,
                             "{}",
-                            TestDiff::new(&format_sexp(actual, 2), &format_sexp(expected, 2))
+                            TestDiff::new(actual_pretty, &format_sexp(expected, 2))
                                 .with_markers(self.use_markers)
                         )?;
                     }
@@ -792,12 +789,15 @@ impl std::fmt::Display for TestDiff<'_> {
 pub struct TestFailure {
     name: String,
     actual: String,
+    #[schemars(skip)]
+    #[serde(skip)]
+    actual_pretty: String,
     expected: String,
     is_cst: bool,
 }
 
 impl TestFailure {
-    fn new<T, U, V>(name: T, actual: U, expected: V, is_cst: bool) -> Self
+    fn new<T, U, V>(name: T, actual: U, expected: V, is_cst: bool, actual_pretty: String) -> Self
     where
         T: Into<String>,
         U: Into<String>,
@@ -806,6 +806,7 @@ impl TestFailure {
         Self {
             name: name.into(),
             actual: actual.into(),
+            actual_pretty,
             expected: expected.into(),
             is_cst,
         }
@@ -910,11 +911,14 @@ fn run_tests(
                             },
                         });
                         let actual = render_test_output(&input, &tree, attributes.cst, true)?;
+                        let actual_pretty =
+                            render_failure_output(&tree, &actual, attributes.cst, true);
                         test_summary.parse_failures.push(TestFailure::new(
                             &name,
                             actual,
                             "NO ERROR",
                             attributes.cst,
+                            actual_pretty,
                         ));
                     }
 
@@ -967,11 +971,18 @@ fn run_tests(
                                 },
                             });
                         }
+                        let actual_pretty = render_failure_output(
+                            &tree,
+                            &actual,
+                            attributes.cst,
+                            opts.show_fields || has_fields,
+                        );
                         test_summary.parse_failures.push(TestFailure::new(
                             &name,
                             actual,
                             &output,
                             attributes.cst,
+                            actual_pretty,
                         ));
 
                         if attributes.fail_fast {
@@ -985,8 +996,9 @@ fn run_tests(
                     parser.set_language(opts.languages.values().next().unwrap())?;
                 }
             }
-            if opts.update {
-                let output = updated_output.unwrap_or(output);
+            if opts.update
+                && let Some(output) = updated_output
+            {
                 corrected_entries.push(TestCorrection {
                     output_range,
                     output: if attributes.cst {
@@ -1098,6 +1110,18 @@ pub(crate) fn render_test_output(
         } else {
             strip_sexp_fields(&out)
         })
+    }
+}
+
+fn render_failure_output(tree: &Tree, actual: &str, cst: bool, include_fields: bool) -> String {
+    if cst {
+        return actual.to_string();
+    }
+    let output = format!("{:#2}", tree.root_node());
+    if include_fields {
+        output
+    } else {
+        strip_sexp_fields(&output)
     }
 }
 
