@@ -1439,13 +1439,7 @@ impl<'a> ParseTableBuilder<'a> {
         let precedence_entry_matches =
             |entry: &PrecedenceEntry, precedence: Precedence, symbols: &[Symbol]| -> bool {
                 match entry {
-                    PrecedenceEntry::Name(n) => {
-                        if let Precedence::Name(p) = precedence {
-                            *n == p
-                        } else {
-                            false
-                        }
-                    }
+                    PrecedenceEntry::Name(n) => precedence == Precedence::Name(*n),
                     PrecedenceEntry::Symbol(n) => symbols
                         .iter()
                         .any(|s| &grammar.variables[s.index as usize].name == n),
@@ -1453,38 +1447,36 @@ impl<'a> ParseTableBuilder<'a> {
             };
 
         match (left, right) {
-            // Integer precedences can be compared to other integer precedences,
-            // and to the default precedence, which is zero.
             (Precedence::Integer(l), Precedence::Integer(r)) if l != 0 || r != 0 => l.cmp(&r),
             (Precedence::Integer(l), Precedence::None) if l != 0 => l.cmp(&0),
             (Precedence::None, Precedence::Integer(r)) if r != 0 => 0.cmp(&r),
 
-            // Named precedences can be compared to other named precedences.
             _ => grammar
                 .precedence_orderings
                 .iter()
                 .find_map(|list| {
-                    let mut saw_left = false;
-                    let mut saw_right = false;
-                    for entry in list {
+                    let (mut left_index, mut right_index, mut shared_index) = (None, None, None);
+                    for (index, entry) in list.iter().enumerate() {
                         let matches_left = precedence_entry_matches(entry, left, left_symbols);
                         let matches_right = precedence_entry_matches(entry, right, right_symbols);
                         match (matches_left, matches_right) {
                             (true, true) if matches!(context, PrecedenceContext::ReduceReduce) => {
-                                match (saw_left, saw_right) {
-                                    (true, false) => return Some(Ordering::Greater),
-                                    (false, true) => return Some(Ordering::Less),
-                                    _ => {}
-                                }
+                                shared_index.get_or_insert(index);
                             }
-                            (true, _) if saw_right => return Some(Ordering::Less),
-                            (true, _) => saw_left = true,
-                            (false, true) if saw_left => return Some(Ordering::Greater),
-                            (false, true) => saw_right = true,
+                            (true, _) => {
+                                left_index.get_or_insert(index);
+                            }
+                            (false, true) => {
+                                right_index.get_or_insert(index);
+                            }
                             _ => {}
                         }
                     }
-                    None
+                    left_index
+                        .or(shared_index)
+                        .zip(right_index.or(shared_index))
+                        .map(|(left, right)| right.cmp(&left))
+                        .filter(|ordering| *ordering != Ordering::Equal)
                 })
                 .unwrap_or(Ordering::Equal),
         }

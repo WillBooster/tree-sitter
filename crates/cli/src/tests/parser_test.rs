@@ -40,7 +40,7 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
         ["preferred", "lower", "unrelated"],
         ["preferred", "unrelated", "lower"],
     ];
-    for mode in 0..3 {
+    for mode in 0..4 {
         for (index, order) in orders.iter().enumerate() {
             let mut rules = serde_json::Map::new();
             rules.insert("source".into(), serde_json::json!({
@@ -53,7 +53,7 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
             for name in order {
                 let terminal = serde_json::json!({"type": "STRING", "value": "z"});
                 rules.insert((*name).into(), if mode > 0 && *name != "unrelated" {
-                    serde_json::json!({"type": "PREC", "value": if mode == 2 { "shared" } else if *name == "lower" { "low" } else { "high" }, "content": terminal})
+                    serde_json::json!({"type": "PREC", "value": if mode >= 2 { "shared" } else if *name == "lower" { "low" } else { "high" }, "content": terminal})
                 } else {
                     terminal
                 });
@@ -64,7 +64,8 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
                 "precedences": [match mode {
                     0 => serde_json::json!([{"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
                     1 => serde_json::json!([{"type": "STRING", "value": "high"}, {"type": "STRING", "value": "low"}]),
-                    _ => serde_json::json!([{"type": "STRING", "value": "shared"}, {"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
+                    2 => serde_json::json!([{"type": "STRING", "value": "shared"}, {"type": "SYMBOL", "name": "preferred"}, {"type": "SYMBOL", "name": "lower"}]),
+                    _ => serde_json::json!([{"type": "STRING", "value": "shared"}, {"type": "SYMBOL", "name": "lower"}]),
                 }],
                 "conflicts": [["preferred", "unrelated"]]
             });
