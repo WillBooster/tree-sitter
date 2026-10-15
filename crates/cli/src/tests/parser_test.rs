@@ -149,6 +149,59 @@ fn test_conflict_declarations_allow_precedence_discarded_reductions() {
 }
 
 #[test]
+fn test_collective_shift_precedence_with_unordered_reductions() {
+    for (index, order) in [["low", "u", "p"], ["low", "p", "u"]].iter().enumerate() {
+        for include_shift in [false, true] {
+            let mut rules = serde_json::Map::new();
+            rules.insert("source".into(), serde_json::json!({
+                "type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "p"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "u"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "low"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SYMBOL", "name": "s"}
+                ]
+            }));
+            for name in order {
+                rules.insert(
+                    (*name).into(),
+                    serde_json::json!({
+                        "type": "PREC", "value": name,
+                        "content": {"type": "STRING", "value": "z"}
+                    }),
+                );
+            }
+            rules.insert("s".into(), serde_json::json!({
+                "type": "PREC", "value": "s",
+                "content": {"type": "SEQ", "members": [{"type": "STRING", "value": "z"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "y"}]}
+            }));
+            let precedences = [["p", "low"], ["u", "low"], ["s", "p"], ["u", "s"]]
+                .map(|list| list.map(|name| serde_json::json!({"type": "STRING", "value": name})));
+            let grammar = serde_json::json!({
+                "name": format!("collective_shift_precedence_{index}_{include_shift}"),
+                "rules": rules,
+                "precedences": precedences,
+                "conflicts": [if include_shift { vec!["p", "u", "s"] } else { vec!["p", "u"] }]
+            });
+            let result = generate_parser(&grammar.to_string());
+            if include_shift {
+                let (name, code) = result.unwrap();
+                let language = get_test_language(&name, &code, None);
+                let mut parser = Parser::new();
+                parser.set_language(&language).unwrap();
+                let tree = parser.parse("zxy", None).unwrap();
+                assert!(!tree.root_node().has_error(), "{order:?}");
+                assert_eq!(tree.root_node().to_sexp(), "(source (s))", "{order:?}");
+            } else {
+                assert!(
+                    result.is_err(),
+                    "{order:?}: undeclared shift/reduce ambiguity generated"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();

@@ -1180,15 +1180,10 @@ impl<'a> ParseTableBuilder<'a> {
                 return Ok(());
             }
 
-            let reduction_precedence = reduction_info.reductions.last().unwrap().precedence;
-            let mut reduction_symbols = Vec::new();
             let mut has_left_assoc = false;
             let mut has_right_assoc = false;
             let mut has_non_assoc = false;
             for reduction in &reduction_info.reductions {
-                if let Err(index) = reduction_symbols.binary_search(&reduction.symbol) {
-                    reduction_symbols.insert(index, reduction.symbol);
-                }
                 match reduction.associativity {
                     Some(Associativity::Left) => has_left_assoc = true,
                     Some(Associativity::Right) => has_right_assoc = true,
@@ -1201,17 +1196,19 @@ impl<'a> ParseTableBuilder<'a> {
             let mut shift_is_equal = false;
             let mut shift_is_more = false;
             for p in shift_precedence {
-                match Self::compare_precedence(
-                    self.syntax_grammar,
-                    p.0,
-                    &[p.1],
-                    reduction_precedence,
-                    &reduction_symbols,
-                    PrecedenceContext::ShiftReduce,
-                ) {
-                    Ordering::Greater => shift_is_more = true,
-                    Ordering::Less => shift_is_less = true,
-                    Ordering::Equal => shift_is_equal = true,
+                for reduction in &reduction_info.reductions {
+                    match Self::compare_precedence(
+                        self.syntax_grammar,
+                        p.0,
+                        &[p.1],
+                        reduction.precedence,
+                        &[reduction.symbol],
+                        PrecedenceContext::ShiftReduce,
+                    ) {
+                        Ordering::Greater => shift_is_more = true,
+                        Ordering::Less => shift_is_less = true,
+                        Ordering::Equal => shift_is_equal = true,
+                    }
                 }
             }
 
