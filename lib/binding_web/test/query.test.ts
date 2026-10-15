@@ -164,8 +164,6 @@ describe('Query', () => {
         gaff(5);
       `)!;
 
-      // Find all calls to functions beginning with 'g', where one argument
-      // is an array literal.
       query = new Query(JavaScript, `
         (call_expression
           function: (identifier) @name
@@ -501,8 +499,6 @@ describe('Query', () => {
         },
       ]);
 
-      // disabling captures still works when there are multiple captures on a
-      // single node.
       query.disableCapture('name2');
       matches = query.matches(tree.rootNode);
       expect(formatMatches(matches)).toEqual([
@@ -568,7 +564,6 @@ describe('Query', () => {
         (class_declaration body: (class_body) @body)
       `);
 
-      // disable the patterns that match names
       query.disablePattern(0);
       query.disablePattern(2);
 
@@ -804,7 +799,6 @@ describe('Query', () => {
   });
 });
 
-// Helper functions
 function formatMatches(matches: QueryMatch[]): Omit<QueryMatch, 'pattern'>[] {
   return matches.map(({ patternIndex, captures }) => ({
     patternIndex,

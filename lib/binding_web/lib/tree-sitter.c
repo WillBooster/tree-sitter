@@ -4,10 +4,6 @@
 #include <emscripten.h>
 #include <tree_sitter/api.h>
 
-/*****************************/
-/* Section - Data marshaling */
-/*****************************/
-
 static const uint32_t INPUT_BUFFER_SIZE = 10 * 1024;
 
 const void *TRANSFER_BUFFER[12] = {
@@ -126,10 +122,6 @@ static void marshal_language_metadata(const TSLanguageMetadata *metadata) {
   TRANSFER_BUFFER[3] = (const void*)(uint32_t)metadata->patch_version;
 }
 
-/********************/
-/* Section - Parser */
-/********************/
-
 extern void tree_sitter_parse_callback(
   char *input_buffer,
   uint32_t index,
@@ -245,10 +237,6 @@ void ts_parser_included_ranges_wasm(TSParser *self) {
   TRANSFER_BUFFER[1] = copied_ranges;
 }
 
-/**********************/
-/* Section - Language */
-/**********************/
-
 int ts_language_type_is_named_wasm(const TSLanguage *self, TSSymbol typeId) {
   const TSSymbolType symbolType = ts_language_symbol_type(self, typeId);
   return symbolType == TSSymbolTypeRegular;
@@ -278,16 +266,11 @@ void ts_language_subtypes_wasm(const TSLanguage *self, TSSymbol supertype) {
   TRANSFER_BUFFER[1] = subtypes;
 }
 
-/******************/
-/* Section - Tree */
-/******************/
-
 void ts_tree_root_node_wasm(const TSTree *tree) {
   marshal_node(TRANSFER_BUFFER, ts_tree_root_node(tree));
 }
 
 void ts_tree_root_node_with_offset_wasm(const TSTree *tree) {
-  // read int and point from transfer buffer
   const void **address = TRANSFER_BUFFER + SIZE_OF_NODE;
   uint32_t offset = code_unit_to_byte((uint32_t)address[0]);
   TSPoint extent = unmarshal_point(address + 1);
@@ -319,10 +302,6 @@ void ts_tree_get_changed_ranges_wasm(TSTree *tree, TSTree *other) {
   TRANSFER_BUFFER[0] = (const void *)range_count;
   TRANSFER_BUFFER[1] = (const void *)ranges;
 }
-
-/************************/
-/* Section - TreeCursor */
-/************************/
 
 void ts_tree_cursor_new_wasm(const TSTree *tree) {
   TSNode node = unmarshal_node(tree);
@@ -487,10 +466,6 @@ void ts_tree_cursor_current_node_wasm(const TSTree *tree) {
   TSTreeCursor cursor = unmarshal_cursor(TRANSFER_BUFFER, tree);
   marshal_node(TRANSFER_BUFFER, ts_tree_cursor_current_node(&cursor));
 }
-
-/******************/
-/* Section - Node */
-/******************/
 
 static TSTreeCursor scratch_cursor = {0};
 static TSQueryCursor *scratch_query_cursor = NULL;
@@ -763,15 +738,12 @@ void ts_node_descendants_of_type_wasm(
 
   Array(const void *) result = array_new();
 
-  // Walk the tree depth first looking for matching nodes.
   ts_tree_cursor_reset(&scratch_cursor, node);
   bool already_visited_children = false;
   while (true) {
     TSNode descendant = ts_tree_cursor_current_node(&scratch_cursor);
 
     if (!already_visited_children) {
-      // If this node is before the selected range, then avoid
-      // descending into it.
       if (point_lte(ts_node_end_point(descendant), start_point)) {
         if (ts_tree_cursor_goto_next_sibling(&scratch_cursor)) {
           already_visited_children = false;
@@ -784,19 +756,15 @@ void ts_node_descendants_of_type_wasm(
         continue;
       }
 
-      // If this node is after the selected range, then stop walking.
       if (point_lte(end_point, ts_node_start_point(descendant))) {
         break;
       }
 
-      // Add the node to the result if its type matches one of the given
-      // node types.
       if (symbols_contain(symbols, symbol_count, ts_node_symbol(descendant))) {
         array_grow_by(&result, SIZE_OF_NODE);
         marshal_node(result.contents + result.size - SIZE_OF_NODE, descendant);
       }
 
-      // Continue walking.
       if (ts_tree_cursor_goto_first_child(&scratch_cursor)) {
         already_visited_children = false;
       } else if (ts_tree_cursor_goto_next_sibling(&scratch_cursor)) {
@@ -861,10 +829,6 @@ uint16_t ts_node_next_parse_state_wasm(const TSTree *tree) {
   TSNode node = unmarshal_node(tree);
   return ts_node_next_parse_state(node);
 }
-
-/******************/
-/* Section - Query */
-/******************/
 
 static TSQueryCursor *acquire_query_cursor(void);
 static void release_query_cursor(TSQueryCursor *cursor);
