@@ -575,7 +575,6 @@ impl TestSummary {
                     if *is_cst
                         || format_sexp(actual, 2) != *actual_pretty
                         || expected.contains("(MISSING (")
-                        || expected.contains("(UNEXPECTED (")
                     {
                         writeln!(
                             f,
