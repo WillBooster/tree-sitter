@@ -867,6 +867,7 @@ fn run_tests(
             // first language that updated it.
             let mut updated_output = None;
             let mut matching_output = None;
+            let mut rejected_update = false;
             for (i, language_name) in attributes.languages.iter().enumerate() {
                 if !language_name.is_empty() {
                     let language = opts
@@ -962,6 +963,7 @@ fn run_tests(
                             // errors, hence why this check isn't shown above.
                             if tree.root_node().has_error() {
                                 test_summary.has_parse_errors = true;
+                                rejected_update = true;
                             } else {
                                 updated_output.get_or_insert_with(|| {
                                     render_pretty_output(
@@ -1017,14 +1019,10 @@ fn run_tests(
                     parser.set_language(opts.languages.values().next().unwrap())?;
                 }
             }
-            if opts.update {
-                let output = updated_output.or(matching_output).unwrap_or_else(|| {
-                    if attributes.cst {
-                        output
-                    } else {
-                        format_sexp(&output, 0)
-                    }
-                });
+            if opts.update
+                && !rejected_update
+                && let Some(output) = updated_output.or(matching_output)
+            {
                 corrected_entries.push(TestCorrection {
                     output_range,
                     output,

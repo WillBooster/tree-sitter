@@ -422,6 +422,10 @@ fn test_update_preserves_missing_alias_payloads() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("(MISSING (ab)"));
     assert!(!stdout.contains("(MISSING\n"), "{stdout}");
+    let rejected = read(&corpus_path);
+    let output = execute(grammar_dir, &cache_dir, &["test", "--update"]);
+    assert!(!output.status.success());
+    assert_eq!(read(&corpus_path), rejected);
 }
 
 fn run(dir: &Path, cache_dir: &Path, args: &[&str]) -> Output {
