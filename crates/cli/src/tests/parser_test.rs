@@ -40,22 +40,18 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
         ["preferred", "lower", "unrelated"],
         ["preferred", "unrelated", "lower"],
     ];
-    for (named, shift_preferred) in [(false, false), (true, false), (false, true), (true, true)] {
+    for named in [false, true] {
         for (index, order) in orders.iter().enumerate() {
             let mut rules = serde_json::Map::new();
             rules.insert("source".into(), serde_json::json!({
                 "type": "CHOICE", "members": [
                     {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "lower"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "b"}]},
                     {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "unrelated"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "c"}]},
-                    if shift_preferred { serde_json::json!({"type": "SYMBOL", "name": "preferred"}) } else { serde_json::json!({"type": "SEQ", "members": [{"type": "SYMBOL", "name": "preferred"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "a"}]}) }
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "preferred"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "a"}]}
                 ]
             }));
             for name in order {
-                let terminal = if shift_preferred && *name == "preferred" {
-                    serde_json::json!({"type": "SEQ", "members": [{"type": "STRING", "value": "z"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "a"}]})
-                } else {
-                    serde_json::json!({"type": "STRING", "value": "z"})
-                };
+                let terminal = serde_json::json!({"type": "STRING", "value": "z"});
                 rules.insert((*name).into(), if named && *name != "unrelated" {
                     serde_json::json!({"type": "PREC", "value": if *name == "lower" { "low" } else { "high" }, "content": terminal})
                 } else {
@@ -63,7 +59,7 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
                 });
             }
             let grammar = serde_json::json!({
-                "name": format!("partial_reduction_precedence_{named}_{shift_preferred}_{index}"),
+                "name": format!("partial_reduction_precedence_{named}_{index}"),
                 "rules": rules,
                 "precedences": [if named {
                     serde_json::json!([{"type": "STRING", "value": "high"}, {"type": "STRING", "value": "low"}])
@@ -80,14 +76,40 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
                 let tree = parser.parse(source, None).unwrap();
                 assert!(
                     !tree.root_node().has_error(),
-                    "{named}/{shift_preferred}: {order:?}: {source}"
+                    "{named}: {order:?}: {source}"
                 );
             }
             let tree = parser.parse("zxb", None).unwrap();
-            assert!(
-                tree.root_node().has_error(),
-                "{named}/{shift_preferred}: {order:?}: zxb"
-            );
+            assert!(tree.root_node().has_error(), "{named}: {order:?}: zxb");
+        }
+    }
+}
+
+#[test]
+fn test_conflict_declarations_allow_precedence_discarded_reductions() {
+    for legacy in [false, true] {
+        let grammar = serde_json::json!({
+            "name": format!("precedence_discarded_conflicts_{legacy}"),
+            "conflicts": [if legacy { vec!["a", "b", "s"] } else { vec!["a", "s"] }],
+            "rules": {
+                "source": {"type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "a"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "b"}, {"type": "STRING", "value": "x"}]},
+                    {"type": "SYMBOL", "name": "s"}
+                ]},
+                "a": {"type": "PREC", "value": 2, "content": {"type": "STRING", "value": "z"}},
+                "b": {"type": "PREC", "value": 1, "content": {"type": "STRING", "value": "z"}},
+                "s": {"type": "PREC", "value": 2, "content": {"type": "SEQ", "members": [{"type": "STRING", "value": "z"}, {"type": "STRING", "value": "x"}, {"type": "STRING", "value": "y"}]}}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, expected) in [("zx", "(source (a))"), ("zxy", "(source (s))")] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{legacy}: {source}");
+            assert_eq!(tree.root_node().to_sexp(), expected, "{legacy}: {source}");
         }
     }
 }

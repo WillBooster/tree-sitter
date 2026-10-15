@@ -1151,10 +1151,6 @@ impl<'a> ParseTableBuilder<'a> {
                 .get(*lookaheads)
                 .contains(conflicting_lookahead)
                 && item.variable_index != u32::MAX
-                && reduction_info.reductions.iter().any(|reduction| {
-                    reduction.symbol.index == item.variable_index
-                        && reduction.production_index == item.prod_id
-                })
             {
                 conflicting_items.insert(item);
             }
@@ -1177,80 +1173,82 @@ impl<'a> ParseTableBuilder<'a> {
                 return Ok(());
             }
 
-            let shift = *entry.actions.last().unwrap();
-            let mut surviving_reductions = Vec::new();
-            let mut keep_shift = true;
+            let reduction_precedence = reduction_info.reductions.last().unwrap().precedence;
+            let mut reduction_symbols = Vec::new();
             let mut has_left_assoc = false;
             let mut has_right_assoc = false;
             let mut has_non_assoc = false;
             for reduction in &reduction_info.reductions {
+                if let Err(index) = reduction_symbols.binary_search(&reduction.symbol) {
+                    reduction_symbols.insert(index, reduction.symbol);
+                }
                 match reduction.associativity {
                     Some(Associativity::Left) => has_left_assoc = true,
                     Some(Associativity::Right) => has_right_assoc = true,
                     None => has_non_assoc = true,
                 }
             }
-            let right_associative = !has_left_assoc && !has_non_assoc && has_right_assoc;
-            for reduction in &reduction_info.reductions {
-                let mut shift_is_less = false;
-                let mut shift_is_equal = false;
-                let mut shift_is_more = false;
-                for p in &shift_precedence {
-                    match Self::compare_precedence(
-                        self.syntax_grammar,
-                        p.0,
-                        &[p.1],
-                        reduction.precedence,
-                        &[reduction.symbol],
-                    ) {
-                        Ordering::Greater => shift_is_more = true,
-                        Ordering::Less => shift_is_less = true,
-                        Ordering::Equal => shift_is_equal = true,
-                    }
+
+            // If the SHIFT action has higher precedence, remove all the REDUCE actions.
+            let mut shift_is_less = false;
+            let mut shift_is_equal = false;
+            let mut shift_is_more = false;
+            for p in shift_precedence {
+                match Self::compare_precedence(
+                    self.syntax_grammar,
+                    p.0,
+                    &[p.1],
+                    reduction_precedence,
+                    &reduction_symbols,
+                ) {
+                    Ordering::Greater => shift_is_more = true,
+                    Ordering::Less => shift_is_less = true,
+                    Ordering::Equal => shift_is_equal = true,
                 }
-                let keep_reduce = if shift_is_more && !shift_is_less {
-                    false
-                } else if shift_is_less && !shift_is_more {
-                    if shift_is_equal && right_associative {
-                        false
-                    } else {
-                        keep_shift = false;
-                        true
-                    }
-                } else if !shift_is_less && !shift_is_more {
-                    considered_associativity = true;
-                    match (has_left_assoc, has_non_assoc, has_right_assoc) {
-                        (true, false, false) => {
-                            keep_shift = false;
-                            true
-                        }
-                        (false, false, true) => false,
-                        _ => true,
-                    }
+            }
+
+            if shift_is_more && !shift_is_less {
+                entry.actions.keep_last();
+            }
+            // If the REDUCE actions have higher precedence, remove the SHIFT action.
+            else if shift_is_less && !shift_is_more {
+                // Exception: if one SHIFT interpretation ties the REDUCE actions in
+                // precedence while another has lower precedence, and the REDUCE
+                // actions are purely right associative, honor that right
+                // associativity by shifting rather than reducing. The
+                // lower-precedence interpretation coexists with the tying one, so on
+                // its own it must not force a REDUCE that would flip the tie to left
+                // associative.
+                if shift_is_equal
+                    && matches!(
+                        (has_left_assoc, has_non_assoc, has_right_assoc,),
+                        (false, false, true)
+                    )
+                {
+                    entry.actions.keep_last();
                 } else {
-                    true
-                };
-                if keep_reduce && !surviving_reductions.contains(&reduction.action) {
-                    surviving_reductions.push(reduction.action);
+                    entry.actions.pop();
+                    conflicting_items.retain(|item| item.is_done());
                 }
             }
-            entry.actions.clear();
-            for action in surviving_reductions {
-                entry.actions.push(action);
+            // If the SHIFT and REDUCE actions have the same precedence, consider
+            // the REDUCE actions' associativity.
+            else if !shift_is_less && !shift_is_more {
+                considered_associativity = true;
+
+                // If all Reduce actions are left associative, remove the SHIFT action.
+                // If all Reduce actions are right associative, remove the REDUCE actions.
+                match (has_left_assoc, has_non_assoc, has_right_assoc) {
+                    (true, false, false) => {
+                        entry.actions.pop();
+                        conflicting_items.retain(|item| item.is_done());
+                    }
+                    (false, false, true) => {
+                        entry.actions.keep_last();
+                    }
+                    _ => {}
+                }
             }
-            if keep_shift {
-                entry.actions.push(shift);
-            } else {
-                conflicting_items.retain(|item| item.is_done());
-            }
-            conflicting_items.retain(|item| {
-                !item.is_done()
-                    || reduction_info.reductions.iter().any(|reduction| {
-                        reduction.symbol.index == item.variable_index
-                            && reduction.production_index == item.prod_id
-                            && entry.actions.contains(&reduction.action)
-                    })
-            });
         }
 
         // If all of the actions but one have been eliminated, then there's no problem.
@@ -1262,31 +1260,21 @@ impl<'a> ParseTableBuilder<'a> {
             return Ok(());
         }
 
-        // Determine the set of parent symbols involved in this conflict.
-        let mut actual_conflict = Vec::new();
-        for item in &conflicting_items {
-            let symbol = Symbol::non_terminal(item.variable_index as usize);
-            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
-                actual_conflict.extend(
-                    self.auxiliary_contexts
-                        .parents(auxiliary_context, item.variable_index as usize)
-                        .unwrap(),
-                );
-            } else {
-                actual_conflict.push(symbol);
-            }
-        }
-        actual_conflict.sort_unstable();
-        actual_conflict.dedup();
+        let legacy_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
+        conflicting_items.retain(|item| {
+            !item.is_done()
+                || reduction_info.reductions.iter().any(|reduction| {
+                    reduction.symbol.index == item.variable_index
+                        && reduction.production_index == item.prod_id
+                })
+        });
+        let actual_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
 
-        // If this set of symbols has been whitelisted, then there's no error.
-        if self
-            .syntax_grammar
-            .expected_conflicts
-            .contains(&actual_conflict)
-        {
-            self.actual_conflicts.remove(&actual_conflict);
-            return Ok(());
+        for conflict in [&actual_conflict, &legacy_conflict] {
+            if self.syntax_grammar.expected_conflicts.contains(conflict) {
+                self.actual_conflicts.remove(conflict);
+                return Ok(());
+            }
         }
 
         let mut conflict_error = ConflictError::default();
@@ -1410,6 +1398,29 @@ impl<'a> ParseTableBuilder<'a> {
         self.actual_conflicts.insert(actual_conflict);
 
         Err(conflict_error)?
+    }
+
+    fn conflict_symbols(
+        &self,
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+    ) -> Vec<Symbol> {
+        let mut symbols = Vec::new();
+        for item in items {
+            let symbol = Symbol::non_terminal(item.variable_index as usize);
+            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
+                symbols.extend(
+                    self.auxiliary_contexts
+                        .parents(auxiliary_context, item.variable_index as usize)
+                        .unwrap(),
+                );
+            } else {
+                symbols.push(symbol);
+            }
+        }
+        symbols.sort_unstable();
+        symbols.dedup();
+        symbols
     }
 
     fn compare_precedence(
