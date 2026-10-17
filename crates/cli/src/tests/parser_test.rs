@@ -246,6 +246,28 @@ fn test_nested_json_error_recovery_preserves_following_token_ranges() {
 }
 
 #[test]
+fn test_incremental_parse_restores_missing_opening_delimiter() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("go")).unwrap();
+    let mut source = b"package p\nconst a = []string{\"a\", \"b\"}\n".to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    let expected = tree.root_node().to_sexp();
+    let edit = Edit {
+        position: source.windows(3).position(|w| w == b"ng{").unwrap(),
+        deleted_length: 3,
+        inserted_text: Vec::new(),
+    };
+    let undo = invert_edit(&source, &edit);
+    perform_edit(&mut tree, &mut source, &edit).unwrap();
+    tree = parser.parse(&source, Some(&tree)).unwrap();
+    assert!(tree.root_node().to_sexp().contains("(MISSING \"{\")"));
+    perform_edit(&mut tree, &mut source, &undo).unwrap();
+    let restored = parser.parse(&source, Some(&tree)).unwrap();
+    assert_eq!(restored.root_node().to_sexp(), expected);
+}
+
+#[test]
 fn test_recovery_lexer_preserves_keyword_tokens() {
     for precedence in [0, 1] {
         let grammar =

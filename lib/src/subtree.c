@@ -472,7 +472,9 @@ void ts_subtree_summarize_children(
     self.ptr->first_leaf.parse_state = ts_subtree_leaf_parse_state(first_child);
     self.ptr->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
 
-    if (ts_subtree_fragile_left(first_child)) self.ptr->fragile_left = true;
+    if (ts_subtree_fragile_left(first_child) || ts_subtree_missing(first_child)) {
+      self.ptr->fragile_left = true;
+    }
     if (ts_subtree_fragile_right(last_child)) self.ptr->fragile_right = true;
 
     if (
