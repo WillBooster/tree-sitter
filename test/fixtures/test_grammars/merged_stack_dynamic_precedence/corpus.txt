@@ -1,0 +1,39 @@
+===============================
+Qualified cast without prior ambiguity
+===============================
+
+(T.U)(a).b;
+
+---
+
+(program (expression (cast_expression (qualified_name (identifier) (identifier)) (member_access_expression (parenthesized_expression (expression (identifier))) (identifier)))))
+
+===============================
+Qualified cast after an ambiguous generic call
+===============================
+
+F<T>(x)(y)+(T.U)(a).b;
+
+---
+
+(program (expression (binary_expression (expression (invocation_expression (invocation_expression (generic_name (identifier) (identifier)) (expression (identifier))) (expression (identifier)))) (expression (cast_expression (qualified_name (identifier) (identifier)) (member_access_expression (parenthesized_expression (expression (identifier))) (identifier)))))))
+
+===============================
+Simple cast after an ambiguous generic call
+===============================
+
+F<T>(x)(y)+(T)(a).b;
+
+---
+
+(program (expression (binary_expression (expression (invocation_expression (invocation_expression (generic_name (identifier) (identifier)) (expression (identifier))) (expression (identifier)))) (expression (cast_expression (identifier) (member_access_expression (parenthesized_expression (expression (identifier))) (identifier)))))))
+
+===============================
+Qualified cast after an ambiguous previous statement
+===============================
+
+F<T>(x)(y);(T.U)(a).b;
+
+---
+
+(program (expression (invocation_expression (invocation_expression (generic_name (identifier) (identifier)) (expression (identifier))) (expression (identifier)))) (expression (cast_expression (qualified_name (identifier) (identifier)) (member_access_expression (parenthesized_expression (expression (identifier))) (identifier)))))
