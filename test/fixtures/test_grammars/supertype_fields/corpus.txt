@@ -2,7 +2,7 @@
 Fields inside ordinary and aliased supertypes
 =====================================
 
-[a] [a, ...b] alias ...c; assign ...d; restrict ...e;
+[a] [a, ...b] alias ...c; assign ...d; restrict ...e; single ...f; pair ...g h;
 
 ---
 
@@ -11,4 +11,6 @@ Fields inside ordinary and aliased supertypes
   (list (name) (spread (name)))
   (aliased (wrapped (spread (name))))
   (assigned (spread (name)))
-  (restricted (spread (name))))
+  (restricted (spread (name)))
+  (wrapped_single (spread (name)))
+  (wrapped_pair (spread (name)) (name)))

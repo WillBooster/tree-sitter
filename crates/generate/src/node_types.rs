@@ -332,7 +332,7 @@ fn compute_variable_info_fixed_point(
                     if child_is_hidden && child_symbol.is_non_terminal() {
                         did_change |= inherit_hidden_child_info(
                             &result[child_symbol.index as usize],
-                            step.field().is_none(),
+                            step.field(),
                             &mut variable_info,
                             &mut production_field_quantities,
                             &mut production_children_quantity,
@@ -398,7 +398,7 @@ fn compute_variable_info_fixed_point(
 /// anything changed.
 fn inherit_hidden_child_info(
     child_variable_info: &VariableInfo,
-    step_has_no_field: bool,
+    outer_field: Option<StrId>,
     variable_info: &mut VariableInfo,
     production_field_quantities: &mut FxHashMap<StrId, ChildQuantity>,
     production_children_quantity: &mut ChildQuantity,
@@ -407,7 +407,7 @@ fn inherit_hidden_child_info(
     variable_info.has_multi_step_production |= child_variable_info.has_multi_step_production;
     let mut did_change = inherit_hidden_child_fields(
         child_variable_info,
-        None,
+        outer_field,
         variable_info,
         production_field_quantities,
     );
@@ -422,7 +422,7 @@ fn inherit_hidden_child_info(
 
     // If a hidden child can have named children without fields, then the parent
     // node can appear to have those same children.
-    if step_has_no_field {
+    if outer_field.is_none() {
         let grandchildren_info = &child_variable_info.children_without_fields;
         if !grandchildren_info.types.is_empty() {
             production_children_without_fields_quantity

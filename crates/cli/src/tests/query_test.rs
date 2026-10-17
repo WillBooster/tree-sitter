@@ -3114,6 +3114,8 @@ fn test_supertype_field_node_schema() {
         ("list", false, true, "spread"),
         ("assigned", true, false, "item"),
         ("restricted", true, false, "spread"),
+        ("wrapped_single", true, false, "item"),
+        ("wrapped_pair", true, true, "item"),
     ] {
         let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
         let field = &node["fields"]["spread"];
