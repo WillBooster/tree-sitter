@@ -244,45 +244,38 @@ static void stack_node_add_link(
 
   for (int i = 0; i < self->link_count; i++) {
     StackLink *existing_link = &self->links[i];
-    if (stack__subtree_is_equivalent(existing_link->subtree, link.subtree)) {
-      // In general, we preserve ambiguities until they are removed from the stack
-      // during a pop operation where multiple paths lead to the same node. But in
-      // the special case where two links directly connect the same pair of nodes,
-      // we can safely remove the ambiguity ahead of time without changing behavior.
-      if (existing_link->node == link.node) {
-        if (
-          ts_subtree_dynamic_precedence(link.subtree) >
-          ts_subtree_dynamic_precedence(existing_link->subtree)
-        ) {
-          ts_subtree_retain(link.subtree);
-          ts_subtree_release(subtree_pool, existing_link->subtree);
-          stack__invalidate_extra_chains(stack, self);
-          existing_link->subtree = link.subtree;
-          self->dynamic_precedence =
-            link.node->dynamic_precedence + ts_subtree_dynamic_precedence(link.subtree);
-        }
-        return;
-      }
+    if (!stack__subtree_is_equivalent(existing_link->subtree, link.subtree)) continue;
+    bool same_predecessor = existing_link->node == link.node;
+    bool mergeable_predecessors = same_predecessor || (
+      existing_link->node->state == link.node->state &&
+      existing_link->node->position.bytes == link.node->position.bytes &&
+      existing_link->node->error_cost == link.node->error_cost
+    );
+    if (!mergeable_predecessors) continue;
 
-      // If the previous nodes are mergeable, merge them recursively.
-      if (
-        existing_link->node->state == link.node->state &&
-        existing_link->node->position.bytes == link.node->position.bytes &&
-        existing_link->node->error_cost == link.node->error_cost
-      ) {
-        for (int j = 0; j < link.node->link_count; j++) {
-          stack_node_add_link(stack, existing_link->node, link.node->links[j], subtree_pool);
-        }
-        int32_t dynamic_precedence = link.node->dynamic_precedence;
-        if (link.subtree.ptr) {
-          dynamic_precedence += ts_subtree_dynamic_precedence(link.subtree);
-        }
-        if (dynamic_precedence > self->dynamic_precedence) {
-          self->dynamic_precedence = dynamic_precedence;
-        }
-        return;
+    if (
+      link.subtree.ptr &&
+      ts_subtree_dynamic_precedence(link.subtree) >
+      ts_subtree_dynamic_precedence(existing_link->subtree)
+    ) {
+      ts_subtree_retain(link.subtree);
+      ts_subtree_release(subtree_pool, existing_link->subtree);
+      stack__invalidate_extra_chains(stack, self);
+      existing_link->subtree = link.subtree;
+    }
+    if (!same_predecessor) {
+      for (int j = 0; j < link.node->link_count; j++) {
+        stack_node_add_link(stack, existing_link->node, link.node->links[j], subtree_pool);
       }
     }
+    int32_t dynamic_precedence = existing_link->node->dynamic_precedence;
+    if (existing_link->subtree.ptr) {
+      dynamic_precedence += ts_subtree_dynamic_precedence(existing_link->subtree);
+    }
+    if (dynamic_precedence > self->dynamic_precedence) {
+      self->dynamic_precedence = dynamic_precedence;
+    }
+    return;
   }
 
   if (self->link_count == MAX_LINK_COUNT) return;
