@@ -102,21 +102,21 @@ static void stack_node_release(
   StackNodeArray *pool,
   SubtreePool *subtree_pool
 ) {
+  StackNodeArray pending = array_new();
 recur:
   ts_assert(self->ref_count != 0);
   self->ref_count--;
-  if (self->ref_count > 0) return;
+  if (self->ref_count > 0) goto next;
 
   StackNode *first_predecessor = NULL;
-  if (self->link_count > 0) {
-    for (unsigned i = self->link_count - 1; i > 0; i--) {
-      StackLink link = self->links[i];
-      if (link.subtree.ptr) ts_subtree_release(subtree_pool, link.subtree);
-      stack_node_release(link.node, pool, subtree_pool);
-    }
-    StackLink link = self->links[0];
+  for (unsigned i = self->link_count; i > 0; i--) {
+    StackLink link = self->links[i - 1];
     if (link.subtree.ptr) ts_subtree_release(subtree_pool, link.subtree);
-    first_predecessor = self->links[0].node;
+    if (i == 1) {
+      first_predecessor = link.node;
+    } else {
+      array_push(&pending, link.node);
+    }
   }
 
   if (pool->size < MAX_NODE_POOL_SIZE) {
@@ -129,6 +129,13 @@ recur:
     self = first_predecessor;
     goto recur;
   }
+
+next:
+  if (pending.size > 0) {
+    self = array_pop(&pending);
+    goto recur;
+  }
+  array_delete(&pending);
 }
 
 /// Get the number of nodes in the subtree, for the purpose of measuring
