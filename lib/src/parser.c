@@ -122,6 +122,7 @@ typedef struct {
   unsigned node_count;
   int dynamic_precedence;
   bool is_in_error;
+  bool is_unconfirmed;
 } ErrorStatus;
 
 typedef enum {
@@ -251,12 +252,24 @@ static void ts_parser__breakdown_lookahead(
   }
 }
 
+static ErrorComparison ts_parser__compare_versions_by_cost(ErrorStatus a, ErrorStatus b);
+
 static ErrorComparison ts_parser__compare_versions(
   TSParser *self,
   ErrorStatus a,
   ErrorStatus b
 ) {
   (void)self;
+  // A version whose fallback missing token no reduction has incorporated yet can still turn out to
+  // have opened a construct that the input never closes. Until then it must not remove the versions
+  // recovering without that token, or that construct can absorb the following valid code.
+  ErrorComparison comparison = ts_parser__compare_versions_by_cost(a, b);
+  if (comparison == ErrorComparisonTakeLeft && a.is_unconfirmed) return ErrorComparisonPreferLeft;
+  if (comparison == ErrorComparisonTakeRight && b.is_unconfirmed) return ErrorComparisonPreferRight;
+  return comparison;
+}
+
+static ErrorComparison ts_parser__compare_versions_by_cost(ErrorStatus a, ErrorStatus b) {
   if (!a.is_in_error && b.is_in_error) {
     if (a.cost < b.cost) {
       return ErrorComparisonTakeLeft;
@@ -305,7 +318,8 @@ static ErrorStatus ts_parser__version_status(
     .cost = cost,
     .node_count = ts_stack_node_count_since_error(self->stack, version),
     .dynamic_precedence = ts_stack_dynamic_precedence(self->stack, version),
-    .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE
+    .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE,
+    .is_unconfirmed = ts_stack_has_unconfirmed_missing_token(self->stack, version),
   };
 }
 
@@ -1110,6 +1124,8 @@ static void ts_parser__shift(
   }
 }
 
+static void ts_parser__confirm_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children);
+
 static StackVersion ts_parser__reduce(
   TSParser *self,
   StackVersion version,
@@ -1157,6 +1173,7 @@ static StackVersion ts_parser__reduce(
     // created and pushed.
     SubtreeArray children = slice.subtrees;
     ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
+    ts_parser__confirm_missing_token(self, slice_version, &children);
 
     MutableSubtree parent = ts_subtree_new_node(
       symbol, &children, production_id, self->language
@@ -1225,6 +1242,16 @@ static StackVersion ts_parser__reduce(
   return ts_stack_version_count(self->stack) > initial_version_count
     ? initial_version_count
     : STACK_VERSION_NONE;
+}
+
+static void ts_parser__confirm_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children) {
+  if (!ts_stack_has_unconfirmed_missing_token(self->stack, version)) return;
+  for (uint32_t i = 0; i < children->size; i++) {
+    if (ts_subtree_missing(*array_get(children, i))) {
+      ts_stack_set_unconfirmed_missing_token(self->stack, version, false);
+      return;
+    }
+  }
 }
 
 static void ts_parser__accept(
@@ -1649,8 +1676,6 @@ static void ts_parser__recover(
 
 static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state);
 
-static bool ts_parser__only_shifts(const TSParseAction *actions, uint32_t count);
-
 static bool ts_parser__insert_missing_token(
   TSParser *self,
   StackVersion version,
@@ -1755,6 +1780,7 @@ static bool ts_parser__insert_missing_token(
       missing_tree, false,
       state_after_missing_symbol
     );
+    ts_stack_set_unconfirmed_missing_token(self->stack, version_with_missing_tree, !require_reduction);
 
     if (ts_parser__do_all_potential_reductions(
       self, version_with_missing_tree,
@@ -1781,12 +1807,7 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
   TSSymbol result = 0;
   LookaheadIterator iter = ts_language_lookaheads(self->language, state);
   while (ts_lookahead_iterator__next(&iter)) {
-    if (iter.symbol >= self->language->token_count) continue;
-    // A state that can reduce does not require any token: the versions reduced before this check
-    // continue without one. Inserting a token there extends an already complete construct, whose
-    // error recovery can then absorb the following valid code.
-    if (!ts_parser__only_shifts(iter.actions, iter.action_count)) return 0;
-    if (iter.symbol == ts_builtin_sym_end) continue;
+    if (iter.symbol == 0 || iter.symbol >= self->language->token_count) continue;
     TSStateId next_state = ts_language_next_state(self->language, state, iter.symbol);
     if (next_state == 0 || next_state == state) continue;
     if (result != 0) return 0;
@@ -1794,13 +1815,6 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
   }
   if (result != 0 && ts_language_symbol_metadata(self->language, result).named) return 0;
   return result;
-}
-
-static bool ts_parser__only_shifts(const TSParseAction *actions, uint32_t count) {
-  for (uint32_t i = 0; i < count; i++) {
-    if (actions[i].type != TSParseActionTypeShift) return false;
-  }
-  return true;
 }
 
 static bool ts_parser__check_progress(TSParser *self, Subtree *lookahead, const uint32_t *position, unsigned operations) {
