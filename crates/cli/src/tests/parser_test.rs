@@ -203,6 +203,73 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 }
 
 #[test]
+fn test_missing_token_recovery_preserves_following_declarations() {
+    let alias_with_error = ("type_alias_declaration", true);
+    let (alias, export) = (
+        ("type_alias_declaration", false),
+        ("export_statement", false),
+    );
+    let for_in = ("for_in_statement", false);
+    let exports = [export; 7];
+    // Recovery absorbs the seven exports right after `export[` into the erroneous statement; the
+    // seven exports after the blank line must stay separate.
+    let after_invalid_export = [
+        &[export, export, ("expression_statement", true)][..],
+        &exports,
+    ]
+    .concat();
+    for (language, source, expected) in [
+        (
+            "typescript/typescript",
+            "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
+            &[alias_with_error, export, alias][..],
+        ),
+        (
+            "typescript/typescript",
+            "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
+            &[alias_with_error, export, alias],
+        ),
+        (
+            "typescript/typescript",
+            "bar satisfies number]\n\"foobar\" as const\n",
+            &[
+                ("expression_statement", true),
+                ("expression_statement", false),
+            ],
+        ),
+        (
+            "javascript",
+            "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
+            &[
+                ("ERROR", true),
+                for_in,
+                for_in,
+                for_in,
+                for_in,
+                for_in,
+                for_in,
+            ],
+        ),
+        (
+            "javascript",
+            "export { name1, name2, name3, nameN };\nexport { variable1 as name1, variable2 as name2, nameN };\nexport[ { variable1 as \"string name\" };\nexport let name1, name2, nameN;\nexport let name1 = value1, name2 = value2, name3, nameN;\n\nexport default expression;\nexport default { field1: 42, field2: [] }\nexport default function () { }\nexport default function name1() { }\nexport { name1 as default };\n\nexport * from 'foo';\nexport * as someIdentifier from \"someModule\";\nexport * as \"string name\" from \"someModule\";\nexport { name1, name2, nameN } from 'foo';\nexport { import1 as name1, import2 as name2, nameN } from 'foo';\nexport { import1 as \"string name\" } from 'foo';\nexport { \"string import\" as \"string export\" } from 'foo';\n\n",
+            after_invalid_export.as_slice(),
+        ),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let mut cursor = tree.walk();
+        let children = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .map(|node| (node.kind(), node.has_error()))
+            .collect::<Vec<_>>();
+        assert_eq!(children, expected, "{source}");
+    }
+}
+
+#[test]
 fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();

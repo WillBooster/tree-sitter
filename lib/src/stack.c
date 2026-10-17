@@ -67,6 +67,7 @@ typedef struct {
   Subtree last_external_token;
   Subtree lookahead_when_paused;
   StackStatus status;
+  bool has_unconfirmed_missing_token;
 } StackHead;
 
 struct Stack {
@@ -339,6 +340,7 @@ static StackVersion ts_stack__add_version(
     .last_external_token = array_get(&self->heads, original_version)->last_external_token,
     .status = StackStatusActive,
     .lookahead_when_paused = NULL_SUBTREE,
+    .has_unconfirmed_missing_token = array_get(&self->heads, original_version)->has_unconfirmed_missing_token,
   };
   array_push(&self->heads, head);
   stack_node_retain(node);
@@ -600,6 +602,14 @@ unsigned ts_stack_error_cost(const Stack *self, StackVersion version) {
     result += ERROR_COST_PER_RECOVERY;
   }
   return result;
+}
+
+bool ts_stack_has_unconfirmed_missing_token(const Stack *self, StackVersion version) {
+  return array_get(&self->heads, version)->has_unconfirmed_missing_token;
+}
+
+void ts_stack_set_unconfirmed_missing_token(Stack *self, StackVersion version, bool value) {
+  array_get(&self->heads, version)->has_unconfirmed_missing_token = value;
 }
 
 unsigned ts_stack_node_count_since_error(const Stack *self, StackVersion version) {

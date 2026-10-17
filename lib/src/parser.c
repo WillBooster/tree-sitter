@@ -122,6 +122,7 @@ typedef struct {
   unsigned node_count;
   int dynamic_precedence;
   bool is_in_error;
+  bool is_unconfirmed;
 } ErrorStatus;
 
 typedef enum {
@@ -294,6 +295,21 @@ static ErrorComparison ts_parser__compare_versions(
   return ErrorComparisonNone;
 }
 
+// Compares two stack versions, where `higher` is ranked above `lower`. A version whose fallback
+// missing token no reduction has incorporated yet can still turn out to have opened a construct that
+// the input never closes. Until then it neither removes nor overtakes a higher-ranked version that
+// has resumed parsing, or the construct can absorb the following valid code.
+static ErrorComparison ts_parser__compare_ranked_versions(
+  TSParser *self,
+  ErrorStatus higher,
+  ErrorStatus lower
+) {
+  ErrorComparison comparison = ts_parser__compare_versions(self, higher, lower);
+  bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
+  if (displaces_higher && lower.is_unconfirmed && !higher.is_in_error) return ErrorComparisonNone;
+  return comparison;
+}
+
 static ErrorStatus ts_parser__version_status(
   TSParser *self,
   StackVersion version
@@ -305,7 +321,8 @@ static ErrorStatus ts_parser__version_status(
     .cost = cost,
     .node_count = ts_stack_node_count_since_error(self->stack, version),
     .dynamic_precedence = ts_stack_dynamic_precedence(self->stack, version),
-    .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE
+    .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE,
+    .is_unconfirmed = ts_stack_has_unconfirmed_missing_token(self->stack, version),
   };
 }
 
@@ -1110,6 +1127,8 @@ static void ts_parser__shift(
   }
 }
 
+static void ts_parser__confirm_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children);
+
 static StackVersion ts_parser__reduce(
   TSParser *self,
   StackVersion version,
@@ -1157,6 +1176,7 @@ static StackVersion ts_parser__reduce(
     // created and pushed.
     SubtreeArray children = slice.subtrees;
     ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
+    ts_parser__confirm_missing_token(self, slice_version, &children);
 
     MutableSubtree parent = ts_subtree_new_node(
       symbol, &children, production_id, self->language
@@ -1225,6 +1245,16 @@ static StackVersion ts_parser__reduce(
   return ts_stack_version_count(self->stack) > initial_version_count
     ? initial_version_count
     : STACK_VERSION_NONE;
+}
+
+static void ts_parser__confirm_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children) {
+  if (!ts_stack_has_unconfirmed_missing_token(self->stack, version)) return;
+  for (uint32_t i = 0; i < children->size; i++) {
+    if (ts_subtree_missing(*array_get(children, i))) {
+      ts_stack_set_unconfirmed_missing_token(self->stack, version, false);
+      return;
+    }
+  }
 }
 
 static void ts_parser__accept(
@@ -1753,6 +1783,7 @@ static bool ts_parser__insert_missing_token(
       missing_tree, false,
       state_after_missing_symbol
     );
+    ts_stack_set_unconfirmed_missing_token(self->stack, version_with_missing_tree, !require_reduction);
 
     if (ts_parser__do_all_potential_reductions(
       self, version_with_missing_tree,
@@ -2069,7 +2100,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
     for (StackVersion j = 0; j < i; j++) {
       ErrorStatus status_j = ts_parser__version_status(self, j);
 
-      switch (ts_parser__compare_versions(self, status_j, status_i)) {
+      switch (ts_parser__compare_ranked_versions(self, status_j, status_i)) {
         case ErrorComparisonTakeLeft:
           made_changes = true;
           ts_stack_remove_version(self->stack, i);
