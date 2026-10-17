@@ -1649,6 +1649,8 @@ static void ts_parser__recover(
 
 static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state);
 
+static bool ts_parser__only_shifts(const TSParseAction *actions, uint32_t count);
+
 static bool ts_parser__insert_missing_token(
   TSParser *self,
   StackVersion version,
@@ -1779,7 +1781,12 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
   TSSymbol result = 0;
   LookaheadIterator iter = ts_language_lookaheads(self->language, state);
   while (ts_lookahead_iterator__next(&iter)) {
-    if (iter.symbol == 0 || iter.symbol >= self->language->token_count) continue;
+    if (iter.symbol >= self->language->token_count) continue;
+    // A state that can reduce does not require any token: the versions reduced before this check
+    // continue without one. Inserting a token there extends an already complete construct, whose
+    // error recovery can then absorb the following valid code.
+    if (!ts_parser__only_shifts(iter.actions, iter.action_count)) return 0;
+    if (iter.symbol == ts_builtin_sym_end) continue;
     TSStateId next_state = ts_language_next_state(self->language, state, iter.symbol);
     if (next_state == 0 || next_state == state) continue;
     if (result != 0) return 0;
@@ -1787,6 +1794,13 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
   }
   if (result != 0 && ts_language_symbol_metadata(self->language, result).named) return 0;
   return result;
+}
+
+static bool ts_parser__only_shifts(const TSParseAction *actions, uint32_t count) {
+  for (uint32_t i = 0; i < count; i++) {
+    if (actions[i].type != TSParseActionTypeShift) return false;
+  }
+  return true;
 }
 
 static bool ts_parser__check_progress(TSParser *self, Subtree *lookahead, const uint32_t *position, unsigned operations) {

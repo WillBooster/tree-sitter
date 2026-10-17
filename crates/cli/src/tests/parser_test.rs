@@ -203,6 +203,31 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 }
 
 #[test]
+fn test_missing_token_recovery_preserves_following_declarations() {
+    let source = "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n";
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_language("typescript/typescript"))
+        .unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert!(root.has_error());
+    let mut cursor = root.walk();
+    let kinds = root
+        .named_children(&mut cursor)
+        .map(|node| (node.kind(), node.has_error()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            ("type_alias_declaration", true),
+            ("export_statement", false),
+            ("type_alias_declaration", false),
+        ]
+    );
+}
+
+#[test]
 fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();
@@ -249,13 +274,13 @@ fn test_nested_json_error_recovery_preserves_following_token_ranges() {
 fn test_incremental_parse_restores_missing_opening_delimiter() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("go")).unwrap();
-    let mut source = b"package p\nconst a = []string{\"a\", \"b\"}\n".to_vec();
+    let mut source = b"package p\ntype T struct{ a int }\n".to_vec();
     let mut tree = parser.parse(&source, None).unwrap();
     assert!(!tree.root_node().has_error());
     let expected = tree.root_node().to_sexp();
     let edit = Edit {
-        position: source.windows(3).position(|w| w == b"ng{").unwrap(),
-        deleted_length: 3,
+        position: source.iter().position(|&b| b == b'{').unwrap(),
+        deleted_length: 1,
         inserted_text: Vec::new(),
     };
     let undo = invert_edit(&source, &edit);
