@@ -296,9 +296,10 @@ static ErrorComparison ts_parser__compare_versions(
 }
 
 // Compares two stack versions, where `higher` is ranked above `lower`. A version whose fallback
-// missing token no reduction has incorporated yet can still turn out to have opened a construct that
-// the input never closes. Until then it neither removes nor overtakes a higher-ranked version that
-// has resumed parsing, or the construct can absorb the following valid code.
+// missing token neither a reduction nor an ERROR has incorporated yet can still turn out to have
+// opened a construct that the input never closes. Until then it neither removes nor overtakes a
+// higher-ranked version that has resumed parsing, or the construct can absorb the following valid
+// code.
 static ErrorComparison ts_parser__compare_ranked_versions(
   TSParser *self,
   ErrorStatus higher,
@@ -1127,7 +1128,7 @@ static void ts_parser__shift(
   }
 }
 
-static void ts_parser__confirm_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children);
+static void ts_parser__clear_incorporated_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children);
 
 static StackVersion ts_parser__reduce(
   TSParser *self,
@@ -1176,7 +1177,7 @@ static StackVersion ts_parser__reduce(
     // created and pushed.
     SubtreeArray children = slice.subtrees;
     ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
-    ts_parser__confirm_missing_token(self, slice_version, &children);
+    ts_parser__clear_incorporated_missing_token(self, slice_version, &children);
 
     MutableSubtree parent = ts_subtree_new_node(
       symbol, &children, production_id, self->language
@@ -1247,7 +1248,7 @@ static StackVersion ts_parser__reduce(
     : STACK_VERSION_NONE;
 }
 
-static void ts_parser__confirm_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children) {
+static void ts_parser__clear_incorporated_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children) {
   if (!ts_stack_has_unconfirmed_missing_token(self->stack, version)) return;
   for (uint32_t i = 0; i < children->size; i++) {
     if (ts_subtree_missing(*array_get(children, i))) {
@@ -1478,6 +1479,11 @@ static bool ts_parser__recover_to_state(
     }
 
     ts_subtree_array_remove_trailing_extras(&slice.subtrees, &self->trailing_extras);
+    // A missing token inside an ERROR no longer opens a construct. If the version stayed unconfirmed,
+    // it would change how ambiguities in the unrelated code that follows are resolved, while the
+    // changed ranges of an incremental parse assume that a subtree's content depends only on its
+    // symbol, parse state, and text.
+    ts_parser__clear_incorporated_missing_token(self, slice.version, &slice.subtrees);
 
     if (slice.subtrees.size > 0) {
       Subtree error = ts_subtree_new_error_node(&slice.subtrees, true, self->language);
