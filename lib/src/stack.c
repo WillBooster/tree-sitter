@@ -234,6 +234,8 @@ static void stack__invalidate_extra_chains(Stack *stack, const StackNode *node) 
   }
 }
 
+static void stack_node_update_node_count(StackNode *self);
+
 static void stack_node_add_link(
   Stack *stack,
   StackNode *self,
@@ -253,11 +255,10 @@ static void stack_node_add_link(
     );
     if (!mergeable_predecessors) continue;
 
-    if (
-      link.subtree.ptr &&
+    bool subtree_changed = link.subtree.ptr &&
       ts_subtree_dynamic_precedence(link.subtree) >
-      ts_subtree_dynamic_precedence(existing_link->subtree)
-    ) {
+      ts_subtree_dynamic_precedence(existing_link->subtree);
+    if (subtree_changed) {
       ts_subtree_retain(link.subtree);
       ts_subtree_release(subtree_pool, existing_link->subtree);
       stack__invalidate_extra_chains(stack, self);
@@ -268,6 +269,7 @@ static void stack_node_add_link(
         stack_node_add_link(stack, existing_link->node, link.node->links[j], subtree_pool);
       }
     }
+    if (subtree_changed || !same_predecessor) stack_node_update_node_count(self);
     int32_t dynamic_precedence = existing_link->node->dynamic_precedence;
     if (existing_link->subtree.ptr) {
       dynamic_precedence += ts_subtree_dynamic_precedence(existing_link->subtree);
@@ -294,6 +296,16 @@ static void stack_node_add_link(
 
   if (node_count > self->node_count) self->node_count = node_count;
   if (dynamic_precedence > self->dynamic_precedence) self->dynamic_precedence = dynamic_precedence;
+}
+
+static void stack_node_update_node_count(StackNode *self) {
+  self->node_count = 0;
+  for (unsigned i = 0; i < self->link_count; i++) {
+    StackLink link = self->links[i];
+    unsigned node_count = link.node->node_count;
+    if (link.subtree.ptr) node_count += stack__subtree_node_count(link.subtree);
+    if (node_count > self->node_count) self->node_count = node_count;
+  }
 }
 
 static void stack_head_delete(
