@@ -3087,6 +3087,84 @@ fn test_query_matches_with_anonymous_tokens() {
 }
 
 #[test]
+fn test_supertype_field_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    let grammar =
+        super::helpers::fixtures::fixtures_dir().join("test_grammars/supertype_fields/grammar.js");
+    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = schema.as_array().unwrap();
+    for (kind, required, multiple, field_type) in [
+        ("list", false, true, "spread"),
+        ("assigned", true, false, "item"),
+        ("restricted", true, false, "spread"),
+        ("wrapped_single", true, false, "item"),
+        ("wrapped_pair", true, true, "item"),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        let field = &node["fields"]["spread"];
+        assert_eq!(field["required"], required, "{kind}");
+        assert_eq!(field["multiple"], multiple, "{kind}");
+        assert_eq!(
+            field["types"],
+            serde_json::json!([{"type": field_type, "named": true}]),
+            "{kind}",
+        );
+    }
+    let aliased = entries
+        .iter()
+        .find(|entry| entry["type"] == "aliased")
+        .unwrap();
+    assert!(aliased["fields"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn test_query_fields_inside_supertypes() {
+    let language = get_test_fixture_language("supertype_fields");
+    let source = "[a] [a, ...b] alias ...c; assign ...d; restrict ...e;";
+    let query = Query::new(
+        &language,
+        r"
+        (list !spread) @plain
+        (list spread: (spread) @spread)
+        (aliased !spread) @aliased
+        (assigned spread: (item) @assigned)
+        (restricted spread: (spread) @restricted)
+        (restricted !spread) @unexpected
+        ",
+    )
+    .unwrap();
+    assert_query_matches(
+        &language,
+        &query,
+        source,
+        &[
+            (0, vec![("plain", "[a]")]),
+            (1, vec![("spread", "...b")]),
+            (2, vec![("aliased", "alias ...c;")]),
+            (3, vec![("assigned", "...d")]),
+            (4, vec![("restricted", "...e")]),
+        ],
+    );
+}
+
+#[test]
 fn test_transparent_supertype_alias_node_schema() {
     for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
         let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
