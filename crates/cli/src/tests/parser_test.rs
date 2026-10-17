@@ -204,7 +204,7 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 
 #[test]
 fn test_missing_token_recovery_preserves_following_declarations() {
-    let for_in = "for_in_statement";
+    let (for_in, export) = ("for_in_statement", "export_statement");
     for (language, source, following) in [
         (
             "typescript/typescript",
@@ -220,6 +220,11 @@ fn test_missing_token_recovery_preserves_following_declarations() {
             "javascript",
             "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
             &[for_in, for_in, for_in, for_in, for_in, for_in],
+        ),
+        (
+            "javascript",
+            "export { name1, name2, name3, nameN };\nexport { variable1 as name1, variable2 as name2, nameN };\nexport[ { variable1 as \"string name\" };\nexport let name1, name2, nameN;\nexport let name1 = value1, name2 = value2, name3, nameN;\n\nexport default expression;\nexport default { field1: 42, field2: [] }\nexport default function () { }\nexport default function name1() { }\nexport { name1 as default };\n\nexport * from 'foo';\nexport * as someIdentifier from \"someModule\";\nexport * as \"string name\" from \"someModule\";\nexport { name1, name2, nameN } from 'foo';\nexport { import1 as name1, import2 as name2, nameN } from 'foo';\nexport { import1 as \"string name\" } from 'foo';\nexport { \"string import\" as \"string export\" } from 'foo';\n\n",
+            &[export, export, export, export, export, export, export],
         ),
     ] {
         let mut parser = Parser::new();

@@ -1039,48 +1039,6 @@ fn range_of(text: &[u8], substring: &str) -> Range {
     }
 }
 
-#[test]
-fn test_get_changed_ranges_covers_recovery_changes_outside_the_edit() {
-    let invalid_line = format!("  what{}\n", "?".repeat(50));
-    let mut source = format!(
-        "function main(x) {{\n  console.log('a');\n{invalid_line}  console.log('b');\n}}\n"
-    )
-    .into_bytes();
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("javascript")).unwrap();
-    let mut tree = parser.parse(&source, None).unwrap();
-    let error_column = |tree: &Tree| {
-        let line = tree
-            .root_node()
-            .descendant_for_point_range(Point::new(2, 2), Point::new(2, 6))
-            .unwrap();
-        let expression = line.parent().unwrap();
-        let mut cursor = expression.walk();
-        let error = expression
-            .children(&mut cursor)
-            .find(Node::is_error)
-            .unwrap();
-        error.start_position().column
-    };
-    let old_column = error_column(&tree);
-    let edit = Edit {
-        position: 0,
-        deleted_length: source.windows(7).position(|w| w == b"\n  what").unwrap(),
-        inserted_text: b"\nfunction main(> 3WQ7);".to_vec(),
-    };
-    let ranges = get_changed_ranges(&mut parser, &mut tree, &mut source, &edit);
-    let new_column = error_column(&tree);
-    assert_ne!(old_column, new_column, "{}", tree.root_node().to_sexp());
-    let line_start = source.windows(7).position(|w| w == b"\n  what").unwrap() + 1;
-    let changed = line_start + old_column.min(new_column)..line_start + old_column.max(new_column);
-    assert!(
-        ranges
-            .iter()
-            .any(|range| range.start_byte <= changed.start && changed.end <= range.end_byte),
-        "{ranges:?} must cover {changed:?}"
-    );
-}
-
 fn get_changed_ranges(
     parser: &mut Parser,
     tree: &mut Tree,

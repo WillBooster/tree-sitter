@@ -252,29 +252,12 @@ static void ts_parser__breakdown_lookahead(
   }
 }
 
-static ErrorComparison ts_parser__compare_versions_by_cost(ErrorStatus a, ErrorStatus b);
-
 static ErrorComparison ts_parser__compare_versions(
   TSParser *self,
   ErrorStatus a,
   ErrorStatus b
 ) {
   (void)self;
-  // A version whose fallback missing token no reduction has incorporated yet can still turn out to
-  // have opened a construct that the input never closes. Until then it must not remove another
-  // version that has resumed parsing without that token, or the construct can absorb the following
-  // valid code. Versions still skipping tokens in the error state stay removable, as before.
-  ErrorComparison comparison = ts_parser__compare_versions_by_cost(a, b);
-  if (comparison == ErrorComparisonTakeLeft && a.is_unconfirmed && !b.is_in_error) {
-    return ErrorComparisonPreferLeft;
-  }
-  if (comparison == ErrorComparisonTakeRight && b.is_unconfirmed && !a.is_in_error) {
-    return ErrorComparisonPreferRight;
-  }
-  return comparison;
-}
-
-static ErrorComparison ts_parser__compare_versions_by_cost(ErrorStatus a, ErrorStatus b) {
   if (!a.is_in_error && b.is_in_error) {
     if (a.cost < b.cost) {
       return ErrorComparisonTakeLeft;
@@ -310,6 +293,21 @@ static ErrorComparison ts_parser__compare_versions_by_cost(ErrorStatus a, ErrorS
   if (a.dynamic_precedence > b.dynamic_precedence) return ErrorComparisonPreferLeft;
   if (b.dynamic_precedence > a.dynamic_precedence) return ErrorComparisonPreferRight;
   return ErrorComparisonNone;
+}
+
+// Compares two stack versions, where `higher` is ranked above `lower`. A version whose fallback
+// missing token no reduction has incorporated yet can still turn out to have opened a construct that
+// the input never closes. Until then it neither removes nor overtakes a higher-ranked version that
+// has resumed parsing, or the construct can absorb the following valid code.
+static ErrorComparison ts_parser__compare_ranked_versions(
+  TSParser *self,
+  ErrorStatus higher,
+  ErrorStatus lower
+) {
+  ErrorComparison comparison = ts_parser__compare_versions(self, higher, lower);
+  bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
+  if (displaces_higher && lower.is_unconfirmed && !higher.is_in_error) return ErrorComparisonNone;
+  return comparison;
 }
 
 static ErrorStatus ts_parser__version_status(
@@ -2102,7 +2100,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
     for (StackVersion j = 0; j < i; j++) {
       ErrorStatus status_j = ts_parser__version_status(self, j);
 
-      switch (ts_parser__compare_versions(self, status_j, status_i)) {
+      switch (ts_parser__compare_ranked_versions(self, status_j, status_i)) {
         case ErrorComparisonTakeLeft:
           made_changes = true;
           ts_stack_remove_version(self->stack, i);
