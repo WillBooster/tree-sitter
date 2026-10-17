@@ -204,35 +204,41 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 
 #[test]
 fn test_missing_token_recovery_preserves_following_declarations() {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_language("typescript/typescript"))
-        .unwrap();
-    for (source, expected) in [
+    let for_in = "for_in_statement";
+    for (language, source, following) in [
         (
+            "typescript/typescript",
             "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[
-                ("type_alias_declaration", true),
-                ("export_statement", false),
-                ("type_alias_declaration", false),
-            ][..],
+            &["export_statement", "type_alias_declaration"][..],
         ),
         (
+            "typescript/typescript",
             "bar satisfies number]\n\"foobar\" as const\n",
-            &[
-                ("expression_statement", true),
-                ("expression_statement", false),
-            ],
+            &["expression_statement"],
+        ),
+        (
+            "javascript",
+            "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
+            &[for_in, for_in, for_in, for_in, for_in, for_in],
         ),
     ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
+        assert!(root.has_error(), "{source}");
+        assert_ne!(root.kind(), "ERROR", "{source}");
         let mut cursor = root.walk();
-        let kinds = root
-            .named_children(&mut cursor)
+        let children = root.named_children(&mut cursor).collect::<Vec<_>>();
+        let trailing = children[children.len().saturating_sub(following.len())..]
+            .iter()
             .map(|node| (node.kind(), node.has_error()))
             .collect::<Vec<_>>();
-        assert_eq!(kinds, expected, "{source}");
+        let expected = following
+            .iter()
+            .map(|&kind| (kind, false))
+            .collect::<Vec<_>>();
+        assert_eq!(trailing, expected, "{source}");
     }
 }
 

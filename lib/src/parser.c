@@ -261,11 +261,16 @@ static ErrorComparison ts_parser__compare_versions(
 ) {
   (void)self;
   // A version whose fallback missing token no reduction has incorporated yet can still turn out to
-  // have opened a construct that the input never closes. Until then it must not remove the versions
-  // recovering without that token, or that construct can absorb the following valid code.
+  // have opened a construct that the input never closes. Until then it must not remove another
+  // version that has resumed parsing without that token, or the construct can absorb the following
+  // valid code. Versions still skipping tokens in the error state stay removable, as before.
   ErrorComparison comparison = ts_parser__compare_versions_by_cost(a, b);
-  if (comparison == ErrorComparisonTakeLeft && a.is_unconfirmed) return ErrorComparisonPreferLeft;
-  if (comparison == ErrorComparisonTakeRight && b.is_unconfirmed) return ErrorComparisonPreferRight;
+  if (comparison == ErrorComparisonTakeLeft && a.is_unconfirmed && !b.is_in_error) {
+    return ErrorComparisonPreferLeft;
+  }
+  if (comparison == ErrorComparisonTakeRight && b.is_unconfirmed && !a.is_in_error) {
+    return ErrorComparisonPreferRight;
+  }
   return comparison;
 }
 
