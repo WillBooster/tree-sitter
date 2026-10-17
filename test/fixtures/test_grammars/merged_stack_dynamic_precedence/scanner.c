@@ -16,7 +16,8 @@ void tree_sitter_merged_stack_dynamic_precedence_external_scanner_destroy(void *
 
 unsigned tree_sitter_merged_stack_dynamic_precedence_external_scanner_serialize(void *payload, char *buffer) {
   (void)payload;
-  // An explicit empty state keeps external-token histories involved in stack merging.
+  // A nonempty serialized state keeps external-token histories involved in stack merging.
+  // Returning no bytes would hide the regression in the unchanged runtime.
   buffer[0] = 0;
   return 1;
 }
