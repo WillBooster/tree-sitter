@@ -380,7 +380,10 @@ static IteratorComparison iterator_compare(
     old_state == TS_TREE_STATE_NONE ||
     new_state == TS_TREE_STATE_NONE ||
     ((old_state == ERROR_STATE) != (new_state == ERROR_STATE)) ||
-    old_error_cost != new_error_cost ||
+    // Error recovery depends on text outside a subtree, so two erroneous subtrees can differ
+    // inside even when their symbol, position, size and error cost all match.
+    old_error_cost > 0 ||
+    new_error_cost > 0 ||
     old_has_external_tokens != new_has_external_tokens ||
     ts_subtree_has_changes(old_tree) ||
     (
