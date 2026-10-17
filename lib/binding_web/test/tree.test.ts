@@ -334,6 +334,30 @@ describe('Tree', () => {
       expect(cursor.currentFieldName).toBe('arguments');
     });
 
+    it.each([false, true])('copies its own position after another cursor is used (deleted: %s)', (deleted) => {
+      tree = parser.parse('a + b')!;
+      cursor = tree.walk();
+      cursor.gotoFirstChild();
+      cursor.gotoFirstChild();
+      cursor.gotoFirstChild();
+      const expectedNode = cursor.currentNode;
+      const expectedDepth = cursor.currentDepth;
+      const other = tree.walk();
+      expect(other.nodeType).toBe('program');
+      if (deleted) other.delete();
+      const copy = cursor.copy();
+      try {
+        expect(copy.currentNode.equals(expectedNode)).toBe(true);
+        expect(copy.currentDepth).toBe(expectedDepth);
+        expect(copy.gotoNextSibling()).toBe(true);
+        expect(copy.nodeType).toBe('+');
+        expect(cursor.currentNode.equals(expectedNode)).toBe(true);
+      } finally {
+        copy.delete();
+        if (!deleted) other.delete();
+      }
+    });
+
     it('returns a cursor that can be reset anywhere in the tree', () => {
       tree = parser.parse('a * b + c / d')!;
       cursor = tree.walk();
