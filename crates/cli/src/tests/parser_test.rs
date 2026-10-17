@@ -213,6 +213,11 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         ),
         (
             "typescript/typescript",
+            "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
+            &["export_statement", "type_alias_declaration"],
+        ),
+        (
+            "typescript/typescript",
             "bar satisfies number]\n\"foobar\" as const\n",
             &["expression_statement"],
         ),
