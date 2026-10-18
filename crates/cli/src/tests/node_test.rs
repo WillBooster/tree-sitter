@@ -1936,6 +1936,12 @@ fn test_hidden_node_fields_respect_inner_shadowing() {
     for (case, tail, source, expected_outer) in [
         ("shadow", None, "a", None),
         (
+            "unshadowed",
+            Some(json!({"type":"SYMBOL", "name":"word"})),
+            "ab",
+            Some("a"),
+        ),
+        (
             "remaining",
             Some(json!({"type":"SYMBOL", "name":"word"})),
             "ab",
@@ -1950,9 +1956,12 @@ fn test_hidden_node_fields_respect_inner_shadowing() {
             None,
         ),
     ] {
-        let mut members = vec![
-            json!({"type":"FIELD", "name":"inner", "content":{"type":"SYMBOL", "name":"word"}}),
-        ];
+        let first = json!({"type":"SYMBOL", "name":"word"});
+        let mut members = vec![if case == "unshadowed" {
+            first
+        } else {
+            json!({"type":"FIELD", "name":"inner", "content":first})
+        }];
         members.extend(tail);
         let grammar = json!({
             "name": format!("hidden_fields_{case}"),
@@ -1970,14 +1979,19 @@ fn test_hidden_node_fields_respect_inner_shadowing() {
         let tree = parser.parse(source, None).unwrap();
         let root = tree.root_node();
         assert!(!root.has_error());
-        assert_eq!(root.field_name_for_child(0), Some("inner"));
-        assert_eq!(
-            root.child_by_field_name("inner")
-                .unwrap()
-                .utf8_text(source.as_bytes())
-                .unwrap(),
-            "a"
-        );
+        if case == "unshadowed" {
+            assert_eq!(root.field_name_for_child(0), Some("outer"));
+            assert!(root.child_by_field_name("inner").is_none());
+        } else {
+            assert_eq!(root.field_name_for_child(0), Some("inner"));
+            assert_eq!(
+                root.child_by_field_name("inner")
+                    .unwrap()
+                    .utf8_text(source.as_bytes())
+                    .unwrap(),
+                "a"
+            );
+        }
         let outer = root.child_by_field_name("outer");
         assert_eq!(
             outer.map(|node| node.utf8_text(source.as_bytes()).unwrap()),
