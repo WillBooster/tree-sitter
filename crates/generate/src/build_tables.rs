@@ -26,7 +26,7 @@ use self::{
 use crate::{
     Diagnostic, OptLevel,
     grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar},
-    nfa::{CharacterSet, NfaCursor},
+    nfa::CharacterSet,
     node_types::VariableInfo,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::StrPool,
@@ -425,7 +425,6 @@ fn identify_keywords(
         Some(_) => unreachable!(),
     };
     let mut unsafe_pairs: Vec<(Symbol, Symbol)> = Vec::new();
-    let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
     let mut guard_demoted = TokenSet::new();
     let mut immediate_keywords = TokenSet::new();
 
@@ -434,9 +433,8 @@ fn identify_keywords(
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
-            cursor.reset([variable.start_state]);
-            let is_candidate = all_chars_are_alphabetical(&cursor)
-                && token_conflict_map.does_match_same_string(i, word_token.index as usize)
+            let is_candidate = token_conflict_map
+                .does_match_same_string(i, word_token.index as usize)
                 && !token_conflict_map.does_match_different_string(i, word_token.index as usize);
             if !is_candidate {
                 return None;
@@ -669,14 +667,4 @@ fn report_state_info<'a>(
             );
         }
     }
-}
-
-fn all_chars_are_alphabetical(cursor: &NfaCursor) -> bool {
-    cursor.transition_chars().all(|(chars, is_sep)| {
-        if is_sep {
-            true
-        } else {
-            chars.chars().all(|c| c.is_alphabetic() || c == '_')
-        }
-    })
 }
