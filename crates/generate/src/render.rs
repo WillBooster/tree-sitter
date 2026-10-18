@@ -17,7 +17,7 @@ use super::{
     LANGUAGE_VERSION,
     build_tables::Tables,
     grammars::{LexicalGrammar, SyntaxGrammar, VariableType},
-    nfa::CharacterSet,
+    nfa::{CharacterSet, NfaCursor, NfaState},
     node_types::ChildType,
     rules::Alias,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
@@ -203,7 +203,8 @@ impl Generator {
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            if keyword_lex_table.states.len() >= 64
+            if !self.keyword_separators_overlap_word(&keyword_lex_table)
+                && keyword_lex_table.states.len() >= 64
                 && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
                 && keyword_lex_table.states.iter().all(|state| {
                     state.eof_action.is_none()
@@ -365,8 +366,7 @@ impl Generator {
         indent!(self);
         let mut transitions = Vec::new();
         let mut rows = Vec::new();
-        let mut unicode_skips = Vec::new();
-        for (state_index, state) in table.states.iter().enumerate() {
+        for state in &table.states {
             let index = transitions.len();
             let mut ranges = Vec::new();
             for (set, action) in &state.advance_actions {
@@ -381,9 +381,6 @@ impl Generator {
                     let last = *range.end() as u32;
                     if first < 128 {
                         ranges.push((first as u8, last.min(127) as u8, destination));
-                    }
-                    if last >= 128 {
-                        unicode_skips.push((state_index, first.max(128), last, destination));
                     }
                 }
             }
@@ -401,7 +398,6 @@ impl Generator {
         }
         dedent!(self);
         add_line!(self, "}};");
-        self.add_keyword_unicode_skips(&unicode_skips);
         add_line!(
             self,
             "static const uint16_t ts_keyword_first_byte[256] = {{"
@@ -445,29 +441,36 @@ impl Generator {
             .push_str(include_str!("templates/keyword_table.h"));
     }
 
-    fn add_keyword_unicode_skips(&mut self, unicode_skips: &[(usize, u32, u32, u32)]) {
-        if unicode_skips.is_empty() {
-            return;
+    fn keyword_separators_overlap_word(&self, table: &LexTable) -> bool {
+        let has_unicode_separator = table.states.iter().any(|state| {
+            state.advance_actions.iter().any(|(set, action)| {
+                !action.in_main_token && set.ranges().any(|range| !range.end().is_ascii())
+            })
+        });
+        if !has_unicode_separator {
+            return false;
         }
-        add_line!(
-            self,
-            "#define TS_KEYWORD_UNICODE_SKIP_COUNT {}u",
-            unicode_skips.len()
+        let word = self.syntax_grammar.word_token.unwrap();
+        let nfa = &self.lexical_grammar.nfa;
+        let cursor = NfaCursor::new(
+            nfa,
+            vec![self.lexical_grammar.variables[word.index as usize].start_state],
         );
-        add_line!(
-            self,
-            "typedef struct {{ uint32_t first, last; uint16_t state, next; }} TSKeywordUnicodeSkip;"
-        );
-        add_line!(
-            self,
-            "static const TSKeywordUnicodeSkip ts_keyword_unicode_skips[] = {{"
-        );
-        indent!(self);
-        for (state, first, last, next) in unicode_skips {
-            add_line!(self, "{{ {first}, {last}, {state}, {next} }},");
-        }
-        dedent!(self);
-        add_line!(self, "}};");
+        cursor.state_ids.iter().any(|&token_state| {
+            let NfaState::Advance {
+                chars,
+                is_sep: false,
+                ..
+            } = &nfa.states[token_state as usize]
+            else {
+                return false;
+            };
+            cursor.state_ids.iter().any(|&separator_state| {
+                matches!(&nfa.states[separator_state as usize],
+                    NfaState::Advance { chars: separators, is_sep: true, .. }
+                        if chars.does_intersect(separators))
+            })
+        })
     }
 
     fn add_lexer_helpers(&mut self) {
