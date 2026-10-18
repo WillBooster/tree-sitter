@@ -3157,6 +3157,62 @@ fn test_supertype_field_node_schema() {
 }
 
 #[test]
+fn test_hidden_child_requiredness_in_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    std::fs::write(
+        directory.path().join("grammar.js"),
+        r#"
+        module.exports = grammar({
+            name: 'hidden_child_cardinality',
+            rules: {
+                source_file: $ => choice($.required_children, $.optional_children),
+                required_children: $ => seq('required', $._statements, 'end'),
+                optional_children: $ => seq('optional', optional($._statements), 'end'),
+                _statements: $ => repeat1(seq($._statement, ';')),
+                _statement: $ => choice($.command, $.other),
+                command: _ => 'c',
+                other: _ => 'o',
+            },
+        });
+    "#,
+    )
+    .unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    for (kind, required) in [("required_children", true), ("optional_children", false)] {
+        let node = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == kind)
+            .unwrap();
+        assert_eq!(
+            node["children"],
+            serde_json::json!({
+                "required": required, "multiple": true,
+                "types": [{"type": "command", "named": true}, {"type": "other", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
 fn test_query_fields_inside_supertypes() {
     let language = get_test_fixture_language("supertype_fields");
     let source = "[a] [a, ...b] alias ...c; assign ...d; restrict ...e;";
