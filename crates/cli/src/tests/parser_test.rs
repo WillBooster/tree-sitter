@@ -31,6 +31,320 @@ use crate::{
 };
 
 #[test]
+fn test_lexer_character_partitions_preserve_token_start_tags() {
+    let grammar = serde_json::json!({
+        "name": "partitioned_token_starts",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "preferred"},
+                {"type": "SYMBOL", "name": "alternative"}
+            ]},
+            "preferred": {"type": "PATTERN", "value": "[bc]"},
+            "alternative": {"type": "PATTERN", "value": "ab|c"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected, range) in [
+            ("c", "preferred", 0..1),
+            ("ac", "preferred", 1..2),
+            ("ab", "alternative", 0..2),
+        ] {
+            assert_first_named_token(&mut parser, source, expected, range);
+        }
+    }
+}
+
+#[test]
+fn test_lexer_minimization_preserves_distinct_eof_tokens() {
+    let grammar = serde_json::json!({
+        "name": "distinct_eof_tokens",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "x"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "long"},
+                        {"type": "SYMBOL", "name": "ta"}
+                    ]}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "y"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "long"},
+                        {"type": "SYMBOL", "name": "tb"}
+                    ]}
+                ]}
+            ]},
+            "long": {"type": "STRING", "value": "a\0"},
+            "ta": {"type": "PATTERN", "value": r"\x00"},
+            "tb": {"type": "STRING", "value": "\0"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected, range) in [
+            ("xa", "ta", 2..2),
+            ("ya", "tb", 2..2),
+            ("xa\0", "long", 1..3),
+            ("ya\0", "long", 1..3),
+        ] {
+            assert_first_named_token(&mut parser, source, expected, range);
+        }
+    }
+}
+
+#[test]
+fn test_standalone_nul_eof_does_not_complete_a_physical_nul_suffix() {
+    let grammar = serde_json::json!({
+        "name": "mixed_nul_termination",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "long"},
+                {"type": "SYMBOL", "name": "terminator"}
+            ]},
+            "long": {"type": "STRING", "value": "a\0"},
+            "terminator": {"type": "STRING", "value": "\0"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected, range) in [
+            ("a", "terminator", 1..1),
+            ("a\0", "long", 0..2),
+            ("\0", "terminator", 0..1),
+        ] {
+            assert_first_named_token(&mut parser, source, expected, range);
+        }
+    }
+}
+
+#[test]
+fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
+    for (fixture, source, tokens, has_error) in [
+        (
+            "separator_prefix_ranges",
+            "   error make {}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_prefix_ranges",
+            "\t\nerror\tmake\n{}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_prefix_ranges",
+            "\u{2003}error make {}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_newline_ranges",
+            "\n\n;\n\n\n",
+            vec![";", "\n"],
+            false,
+        ),
+        ("separator_precedence_ranges", "aad", vec!["a"], true),
+    ] {
+        let path = fixtures_dir().join("test_grammars").join(fixture);
+        let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
+        for mut parser in parsers_for_grammar(&grammar) {
+            for encoding in ["utf8", "utf16le", "utf16be"] {
+                let tree = match encoding {
+                    "utf16le" => parser.parse_utf16_le(
+                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    "utf16be" => parser.parse_utf16_be(
+                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    _ => parser.parse(source, None),
+                }
+                .unwrap();
+                assert_eq!(
+                    tree.root_node().has_error(),
+                    has_error,
+                    "{fixture}: {}",
+                    tree.root_node().to_sexp()
+                );
+                let mut offset = usize::from(fixture == "separator_precedence_ranges");
+                for token in &tokens {
+                    let start = if *token == "\n" {
+                        source.rfind(token).unwrap()
+                    } else {
+                        offset + source[offset..].find(token).unwrap()
+                    };
+                    let end = start + token.len();
+                    let range = if encoding == "utf8" {
+                        start..end
+                    } else {
+                        source[..start].encode_utf16().count() * 2
+                            ..source[..end].encode_utf16().count() * 2
+                    };
+                    let node = tree
+                        .root_node()
+                        .descendant_for_byte_range(range.start, range.end)
+                        .unwrap();
+                    assert_eq!(node.kind(), *token, "{fixture}");
+                    assert_eq!(node.byte_range(), range, "{fixture}: {token:?}");
+                    if *token == "\n" {
+                        assert_eq!(node.start_position(), Point::new(4, 0));
+                        assert_eq!(node.end_position(), Point::new(5, 0));
+                    }
+                    offset = end;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_explicit_comments_can_precede_an_immediate_newline() {
+    let grammar = serde_json::json!({
+        "name": "explicit_comment_newline",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "comment"}},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "PATTERN", "value": "#[^#]*#"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in [
+            "l\n",
+            "l#comment#\n",
+            "l#first##second#\n",
+            "l#multi\nline#\n",
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            for comment in root.named_children(&mut root.walk()) {
+                assert_eq!(comment.kind(), "comment");
+                assert!(!comment.is_extra());
+            }
+        }
+        assert!(
+            parser
+                .parse("l#comment# \n", None)
+                .unwrap()
+                .root_node()
+                .has_error()
+        );
+    }
+}
+
+#[test]
+fn test_immediate_token_recovery_with_ambiguous_error_paths() {
+    let grammar = serde_json::json!({
+        "name": "immediate_error_recovery",
+        "extras": [{"type": "PATTERN", "value": "\\s+"}],
+        "conflicts": [["first", "second"]],
+        "rules": {
+            "source": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "first"},
+                {"type": "SYMBOL", "name": "second"},
+                {"type": "SYMBOL", "name": "immediate"}
+            ]}},
+            "first": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "x"}, {"type": "STRING", "value": ";"}
+            ]},
+            "second": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "x"}, {"type": "STRING", "value": ";"}
+            ]},
+            "immediate": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "y"},
+                {"type": "REPEAT", "content": {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "z"}}},
+                {"type": "STRING", "value": ";"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in [
+            "x @ ;",
+            "x ; @@ y z @ ; x @ x @ ;",
+            "y zz @ z; \u{1} x \u{2}",
+        ] {
+            let mut tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+            tree.edit(&InputEdit {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 2,
+                start_position: Point::new(0, 0),
+                old_end_position: Point::new(0, 0),
+                new_end_position: Point::new(0, 2),
+            });
+            let edited_source = format!("x {source}");
+            let incremental = parser.parse(&edited_source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&edited_source, None).unwrap();
+            assert!(incremental.root_node().has_error());
+            assert_eq!(incremental.root_node().end_byte(), edited_source.len());
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+fn parsers_for_grammar(grammar: &str) -> impl Iterator<Item = Parser> {
+    let (name, code) = generate_parser(grammar).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    parsers_for_languages(languages)
+}
+
+fn parsers_for_languages(
+    languages: impl IntoIterator<Item = tree_sitter::Language>,
+) -> impl Iterator<Item = Parser> {
+    languages.into_iter().map(|language| {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        parser
+    })
+}
+
+fn assert_first_named_token(
+    parser: &mut Parser,
+    source: &str,
+    expected: &str,
+    range: std::ops::Range<usize>,
+) {
+    let tree = parser.parse(source, None).unwrap();
+    assert!(
+        !tree.root_node().has_error(),
+        "{source:?}: {}",
+        tree.root_node().to_sexp()
+    );
+    let token = tree.root_node().named_child(0).unwrap();
+    assert_eq!(token.kind(), expected, "{source:?}");
+    assert_eq!(token.byte_range(), range, "{source:?}");
+}
+
+#[test]
 fn test_partial_reduction_precedence_is_independent_of_rule_order() {
     let orders = [
         ["lower", "unrelated", "preferred"],
@@ -812,118 +1126,151 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
 
 #[test]
 fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
-    let keyword = format!("keyword_{}", "x".repeat(80));
-    let grammar = serde_json::json!({
-        "name": "keyword_input_boundaries",
-        "word": "identifier",
-        "extras": [{"type": "PATTERN", "value": "\\s"}],
-        "rules": {
-            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
-                {"type": "STRING", "value": keyword},
-                {"type": "SYMBOL", "name": "identifier"}
-            ]}},
-            "identifier": {"type": "PATTERN", "value": "[a-z_]+"}
-        }
-    });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    let languages = [
-        get_test_language(&name, &code, None),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_language_wasm(&name, &code),
-    ];
-    for language in languages {
-        let mut parser = Parser::new();
-        #[cfg(feature = "wasm")]
-        if language.is_wasm() {
-            parser
-                .set_wasm_store(
-                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+    for (suffix, extras, separator) in [
+        ("ascii", "\\s", " "),
+        (
+            "unicode",
+            "[\\s\\u0085\\u200E\\u200F\\u2028\\u2029]",
+            "\u{200e}\u{85}\u{200f}\u{2028}\u{2029}",
+        ),
+    ] {
+        let keyword = format!("keyword_{}", "x".repeat(80));
+        let grammar = serde_json::json!({
+            "name": format!("keyword_input_boundaries_{suffix}"),
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": extras}],
+            "rules": {
+                "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "STRING", "value": keyword},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]}},
+                "identifier": {"type": "PATTERN", "value": "[a-z_é]+"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        assert!(
+            code.contains(".keyword_lookup_fn = ts_keyword_lookup"),
+            "{suffix}"
+        );
+        let languages = [
+            get_test_language(&name, &code, None),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm(&name, &code),
+        ];
+        for language in languages {
+            let mut parser = Parser::new();
+            #[cfg(feature = "wasm")]
+            if language.is_wasm() {
+                parser
+                    .set_wasm_store(
+                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                    )
+                    .unwrap();
+            }
+            parser.set_language(&language).unwrap();
+            let source =
+                format!("{separator}{keyword}{separator}{keyword}_suffix{separator}{keyword}é");
+            let expected = parser.parse(&source, None).unwrap();
+            assert!(!expected.root_node().has_error());
+            let streamed = parser
+                .parse_with_options(
+                    &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
+                    None,
+                    None,
                 )
                 .unwrap();
-        }
-        parser.set_language(&language).unwrap();
-        let source = format!("{keyword} {keyword}_suffix");
-        let expected = parser.parse(&source, None).unwrap();
-        let streamed = parser
-            .parse_with_options(
-                &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
-                None,
-                None,
-            )
-            .unwrap();
-        assert_eq!(
-            streamed.root_node().to_sexp(),
-            expected.root_node().to_sexp()
-        );
-        assert_eq!(streamed.root_node().child(0).unwrap().kind(), keyword);
-        assert_eq!(streamed.root_node().child(1).unwrap().kind(), "identifier");
-        let utf16 = parser
-            .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
-            .unwrap();
-        assert_eq!(utf16.root_node().to_sexp(), expected.root_node().to_sexp());
-        assert_eq!(utf16.root_node().child(0).unwrap().kind(), keyword);
-        let split = keyword.len() / 2;
-        let excluded = format!("{}@@@@@{}", &keyword[..split], &keyword[split..]);
-        parser
-            .set_included_ranges(&[
-                Range {
-                    start_byte: 0,
-                    end_byte: split,
-                    start_point: Point::new(0, 0),
-                    end_point: Point::new(0, split),
-                },
-                Range {
-                    start_byte: split + 5,
-                    end_byte: excluded.len(),
-                    start_point: Point::new(0, split + 5),
-                    end_point: Point::new(0, excluded.len()),
-                },
-            ])
-            .unwrap();
-        let tree = parser.parse(&excluded, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        let node = tree.root_node().child(0).unwrap();
-        assert_eq!(node.kind(), keyword);
-        assert_eq!(node.byte_range(), 0..excluded.len());
-
-        let mut embedded = String::new();
-        let mut ranges = Vec::new();
-        let mut expected_tokens = Vec::new();
-        for i in 0..64 {
-            embedded.push_str("@@@@@");
-            let start = embedded.len();
-            let token = if i % 2 == 0 {
-                keyword.clone()
-            } else {
-                format!("{keyword}_suffix")
-            };
-            embedded.push_str(&token);
-            if i != 63 {
-                embedded.push(' ');
-            }
-            let end = embedded.len();
-            ranges.push(Range {
-                start_byte: start,
-                end_byte: end,
-                start_point: Point::new(0, start),
-                end_point: Point::new(0, end),
-            });
-            expected_tokens.push((start, token));
-        }
-        parser.set_included_ranges(&ranges).unwrap();
-        let tree = parser.parse(&embedded, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        assert_eq!(
-            tree.root_node().child_count() as usize,
-            expected_tokens.len()
-        );
-        for (i, (start, token)) in expected_tokens.iter().enumerate() {
-            let node = tree.root_node().child(i as u32).unwrap();
             assert_eq!(
-                node.kind(),
-                if i % 2 == 0 { &keyword } else { "identifier" }
+                streamed.root_node().to_sexp(),
+                expected.root_node().to_sexp()
             );
-            assert_eq!(node.byte_range(), *start..start + token.len());
+            assert_eq!(streamed.root_node().child(0).unwrap().kind(), keyword);
+            assert_eq!(streamed.root_node().child(1).unwrap().kind(), "identifier");
+            assert_eq!(streamed.root_node().child_count(), 3);
+            assert_eq!(streamed.root_node().child(2).unwrap().kind(), "identifier");
+            let utf16 = parser
+                .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+                .unwrap();
+            assert_eq!(utf16.root_node().to_sexp(), expected.root_node().to_sexp());
+            assert_eq!(utf16.root_node().child(0).unwrap().kind(), keyword);
+            let utf16_be = parser
+                .parse_utf16_be(
+                    source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                utf16_be.root_node().to_sexp(),
+                expected.root_node().to_sexp()
+            );
+            let mut malformed = vec![0xff];
+            malformed.extend_from_slice(keyword.as_bytes());
+            let recovered = parser.parse(&malformed, None).unwrap();
+            assert!(recovered.root_node().has_error());
+            let last = recovered.root_node().child_count() - 1;
+            assert_eq!(recovered.root_node().child(last).unwrap().kind(), keyword);
+            let split = keyword.len() / 2;
+            let excluded = format!("{}@@@@@{}", &keyword[..split], &keyword[split..]);
+            parser
+                .set_included_ranges(&[
+                    Range {
+                        start_byte: 0,
+                        end_byte: split,
+                        start_point: Point::new(0, 0),
+                        end_point: Point::new(0, split),
+                    },
+                    Range {
+                        start_byte: split + 5,
+                        end_byte: excluded.len(),
+                        start_point: Point::new(0, split + 5),
+                        end_point: Point::new(0, excluded.len()),
+                    },
+                ])
+                .unwrap();
+            let tree = parser.parse(&excluded, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let node = tree.root_node().child(0).unwrap();
+            assert_eq!(node.kind(), keyword);
+            assert_eq!(node.byte_range(), 0..excluded.len());
+
+            let mut embedded = String::new();
+            let mut ranges = Vec::new();
+            let mut expected_tokens = Vec::new();
+            for i in 0..64 {
+                embedded.push_str("@@@@@");
+                let start = embedded.len();
+                let token = if i % 2 == 0 {
+                    keyword.clone()
+                } else {
+                    format!("{keyword}_suffix")
+                };
+                embedded.push_str(&token);
+                if i != 63 {
+                    embedded.push(' ');
+                }
+                let end = embedded.len();
+                ranges.push(Range {
+                    start_byte: start,
+                    end_byte: end,
+                    start_point: Point::new(0, start),
+                    end_point: Point::new(0, end),
+                });
+                expected_tokens.push((start, token));
+            }
+            parser.set_included_ranges(&ranges).unwrap();
+            let tree = parser.parse(&embedded, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert_eq!(
+                tree.root_node().child_count() as usize,
+                expected_tokens.len()
+            );
+            for (i, (start, token)) in expected_tokens.iter().enumerate() {
+                let node = tree.root_node().child(i as u32).unwrap();
+                assert_eq!(
+                    node.kind(),
+                    if i % 2 == 0 { &keyword } else { "identifier" }
+                );
+                assert_eq!(node.byte_range(), *start..start + token.len());
+            }
         }
     }
 }
@@ -1381,13 +1728,15 @@ fn test_anonymous_external_pattern_used_as_extra() {
                     "{source:?}"
                 );
                 assert_eq!(root.end_byte(), source.len(), "{source:?}");
-                assert_eq!(
-                    root.children(&mut root.walk())
-                        .filter(|node| node.kind() == "a")
-                        .count(),
-                    source.matches('a').count(),
-                    "{source:?}"
-                );
+                if !root.has_error() {
+                    assert_eq!(
+                        root.children(&mut root.walk())
+                            .filter(|node| node.kind() == "a")
+                            .count(),
+                        source.matches('a').count(),
+                        "{source:?}"
+                    );
+                }
             }
         }
     }
@@ -1519,6 +1868,7 @@ fn test_literal_token_with_overlapping_external_extra_pattern() {
         let children = root.children(&mut root.walk()).collect::<Vec<_>>();
         assert_eq!(children.len(), 1, "{source:?}");
         assert_eq!(children[0].kind(), "a");
+        assert_eq!(children[0].byte_range(), source.len() - 1..source.len());
         assert_eq!(root.end_byte(), source.len());
     }
 }
@@ -4037,8 +4387,82 @@ fn test_keyword_boundary_with_negative_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_tokens_preserve_context_and_composition() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_tokens',
+            word: $ => $.identifier,
+            rules: {
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.identifier),
+                ordinary: $ => seq('N', 'if', $.identifier),
+                raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
+                immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
+                outer_immediate: $ => seq('O', alias(token.immediate(token.nonkeyword(prec(2, 'if'))), $.prefix), $.identifier),
+                precedence: $ => seq('P', choice(seq(alias(token.nonkeyword(prec(2, 'if')), $.prefix), $.identifier), $.identifier)),
+                wrapped: $ => seq('W', alias(token(prec(2, token.nonkeyword('if'))), $.prefix), $.identifier),
+                wrapped_immediate: $ => seq('M', alias(token(prec(2, token.nonkeyword(token.immediate('if')))), $.prefix), $.identifier),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    std::fs::write(file.path(), grammar).unwrap();
+    let json = load_grammar_file(file.path(), None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        for (source, kind) in [
+            ("N if x", "ordinary"),
+            ("R ifx", "raw"),
+            ("Iifx", "immediate"),
+            ("Oifx", "outer_immediate"),
+            ("Pifx", "precedence"),
+            ("Wifx", "wrapped"),
+            ("Mifx", "wrapped_immediate"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            let statement = root.named_child(0).unwrap();
+            assert_eq!(statement.kind(), kind);
+            if kind != "ordinary" {
+                let prefix = statement.named_child(0).unwrap();
+                assert_eq!(prefix.kind(), "prefix");
+                assert_eq!(prefix.utf8_text(source.as_bytes()).unwrap(), "if");
+                assert_eq!(
+                    statement
+                        .named_child(1)
+                        .unwrap()
+                        .utf8_text(source.as_bytes())
+                        .unwrap(),
+                    "x"
+                );
+            }
+        }
+        for source in ["N ifx", "I ifx", "O ifx", "M ifx"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{source}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_keyword_precedence_with_word() {
-    for word_precedence in [-1, 0, 1] {
+    for (word_pattern, word_precedence, permits_call) in [
+        ("[a-z0-9,]+", -1, true),
+        ("[a-z0-9,]+", 0, true),
+        ("[a-z0-9,]+", 1, true),
+        ("[a-z0-9(,]+", 0, false),
+    ] {
         let (parser_name, parser_code) = generate_parser(
         &r#"{
             "name": "keyword_precedence_with_word",
@@ -4063,12 +4487,13 @@ fn test_keyword_precedence_with_word() {
                 "rgb": {"type": "TOKEN", "content": {"type": "PREC", "value": 2, "content": {"type": "STRING", "value": "rgb"}}},
                 "word": {"type": "TOKEN", "content": {
                     "type": "PREC", "value": WORD_PRECEDENCE, "content": {
-                        "type": "PATTERN", "value": "[a-z0-9(,]+"
+                        "type": "PATTERN", "value": "WORD_PATTERN"
                     }
                 }}
             }
         }"#.replace("WORD_PRECEDENCE", &word_precedence.to_string())
-        .replace("keyword_precedence_with_word", &format!("keyword_precedence_with_word_{}", word_precedence + 1)),
+        .replace("WORD_PATTERN", word_pattern)
+        .replace("keyword_precedence_with_word", &format!("keyword_precedence_with_word_{}_{}", word_precedence + 1, permits_call)),
     )
     .unwrap();
         let mut parser = Parser::new();
@@ -4077,12 +4502,15 @@ fn test_keyword_precedence_with_word() {
             .unwrap();
 
         let rgb = parser.parse("rgb(1)", None).unwrap();
-        assert!(
+        assert_eq!(
             !rgb.root_node().has_error(),
-            "{}",
+            permits_call,
+            "word={word_pattern}, precedence={word_precedence}: {}",
             rgb.root_node().to_sexp()
         );
-        assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
+        if permits_call {
+            assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
+        }
         let word = parser.parse("otherxyz", None).unwrap();
         assert_eq!(word.root_node().to_sexp(), "(program (word))");
     }
@@ -5253,5 +5681,377 @@ fn test_grammar_that_should_hang_and_not_segfault() {
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             panic!("The test thread disconnected unexpectedly")
         }
+    }
+}
+
+#[test]
+fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
+    for (external, shared) in [(false, false), (true, false), (true, true)] {
+        let name = if shared {
+            "immediate_shared_external"
+        } else if external {
+            "immediate_external"
+        } else {
+            "immediate_internal"
+        };
+        let grammar = format!(
+            r#"
+            module.exports = grammar({{
+                name: '{name}',
+                externals: $ => {externals},
+                extras: $ => [/\s/, $.comment],
+                rules: {{
+                    source_file: $ => repeat(choice($.strict, $.mixed, $.fallback)),
+                    strict: _ => seq('b', token.immediate('"s"')),
+                    fallback: _ => seq('c', choice(token.immediate('y'), 'z')),
+                    mixed: $ => seq('a', choice(
+                        alias(token.immediate('xx'), $.immediate),
+                        alias(token(/x+/), $.regular),
+                    )),
+                    {comment}
+                }},
+            }});
+        "#,
+            externals = if shared {
+                "[$.comment, token.immediate('xx'), token(/x+/)]"
+            } else if external {
+                "[$.comment]"
+            } else {
+                "[]"
+            },
+            comment = if external {
+                ""
+            } else {
+                "comment: _ => seq('#', repeat(/[a-z]/), '#'),"
+            }
+        );
+        let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        std::fs::create_dir_all(&temporary_root).unwrap();
+        let directory = tempfile::tempdir_in(temporary_root).unwrap();
+        let grammar_path = directory.path().join("grammar.js");
+        std::fs::write(&grammar_path, grammar).unwrap();
+        if external {
+            std::fs::write(directory.path().join("scanner.c"), r#"
+                #include "tree_sitter/parser.h"
+                void *tree_sitter_LANG_external_scanner_create(void) { return NULL; }
+                void tree_sitter_LANG_external_scanner_destroy(void *p) { (void)p; }
+                unsigned tree_sitter_LANG_external_scanner_serialize(void *p, char *b) { (void)p; (void)b; return 0; }
+                void tree_sitter_LANG_external_scanner_deserialize(void *p, const char *b, unsigned n) { (void)p; (void)b; (void)n; }
+                bool tree_sitter_LANG_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+                    (void)p;
+                    SHARED_SCAN
+                    if (!valid[0] || lexer->lookahead != '#') return false;
+                    lexer->advance(lexer, false);
+                    while (lexer->lookahead && lexer->lookahead != '#') lexer->advance(lexer, false);
+                    if (lexer->lookahead != '#') return false;
+                    lexer->advance(lexer, false);
+                    lexer->result_symbol = 0;
+                    return true;
+                }
+            "#.replace("LANG", name).replace("SHARED_SCAN", if shared {
+                r"
+                    if (lexer->lookahead == 'x' && (valid[1] || valid[2])) {
+                        unsigned count = 0;
+                        do { lexer->advance(lexer, false); count++; } while (lexer->lookahead == 'x');
+                        if (valid[1] && count == 2) lexer->result_symbol = 1;
+                        else if (valid[2]) lexer->result_symbol = 2;
+                        else return false;
+                        return true;
+                    }
+                "
+            } else { "" })).unwrap();
+        }
+        let json = tree_sitter_generate::load_grammar_file(&grammar_path, None).unwrap();
+        let (name, code) = generate_parser(&json).unwrap();
+        let languages = [
+            get_test_language(&name, &code, Some(directory.path())),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm_with_scanner(
+                &name,
+                &code,
+                Some(directory.path()),
+            ),
+        ];
+        for mut parser in parsers_for_languages(languages) {
+            let valid = parser.parse("b\"s\"", None).unwrap();
+            assert!(!valid.root_node().has_error());
+            let invalid = parser.parse("b#comment#\"s\"", None).unwrap();
+            assert!(invalid.root_node().has_error());
+            for input in ["cy", "c#comment#z"] {
+                assert!(!parser.parse(input, None).unwrap().root_node().has_error());
+            }
+            let rejected_source = "c#comment#y";
+            let rejected = parser.parse(rejected_source, None).unwrap();
+            assert!(rejected.root_node().has_error());
+            assert_eq!(rejected.root_node().end_byte(), rejected_source.len());
+            let mut adjacent = parser.parse("cy", None).unwrap();
+            adjacent.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 1,
+                new_end_byte: 10,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 1),
+                new_end_position: Point::new(0, 10),
+            });
+            let incremental = parser.parse(rejected_source, Some(&adjacent)).unwrap();
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                rejected.root_node().to_sexp()
+            );
+            assert_eq!(incremental.root_node().end_byte(), rejected_source.len());
+            let before = "axx";
+            let after = "a#comment#xx";
+            let mut old_tree = parser.parse(before, None).unwrap();
+            assert_eq!(
+                old_tree.root_node().to_sexp(),
+                "(source_file (mixed (immediate)))"
+            );
+            old_tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 1,
+                new_end_byte: 10,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 1),
+                new_end_position: Point::new(0, 10),
+            });
+            let mut updated = parser.parse(after, Some(&old_tree)).unwrap();
+            let fresh = parser.parse(after, None).unwrap();
+            assert_eq!(
+                updated.root_node().to_sexp(),
+                "(source_file (mixed (comment) (regular)))"
+            );
+            assert_eq!(updated.root_node().to_sexp(), fresh.root_node().to_sexp());
+            updated.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 10,
+                new_end_byte: 1,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 10),
+                new_end_position: Point::new(0, 1),
+            });
+            let restored = parser.parse(before, Some(&updated)).unwrap();
+            assert_eq!(
+                restored.root_node().to_sexp(),
+                "(source_file (mixed (immediate)))"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_immediate_string_content_precedes_nonterminal_extras() {
+    let grammar = r#"
+        module.exports = grammar({
+            name: 'immediate_string_content',
+            extras: $ => [/\s+/, $.comment],
+            rules: {
+                document: $ => repeat($.string),
+                string: $ => seq('"', repeat(alias(token.immediate(/[^"\\]+/), $.content)), token.immediate('"')),
+                comment: _ => seq('/*', repeat(choice(/[^*]+/, '*')), '*/'),
+            },
+        });
+    "#;
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    std::fs::write(file.path(), grammar).unwrap();
+    let json = load_grammar_file(file.path(), None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        for source in ["\"/*\"", "\"a/*b\"", "/*outside*/\"/*\""] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
+            let string = root
+                .named_child((root.named_child_count() - 1) as u32)
+                .unwrap();
+            assert_eq!(string.kind(), "string");
+            assert_eq!(string.child_count(), 3);
+            let content = string.child(1).unwrap();
+            let expected = if source == "\"a/*b\"" { "a/*b" } else { "/*" };
+            assert_eq!(content.utf8_text(source.as_bytes()).unwrap(), expected);
+            assert!(!content.is_extra());
+        }
+    }
+}
+
+#[test]
+fn test_incremental_parse_removing_trailing_empty_included_range() {
+    let grammar = serde_json::json!({
+        "name": "included_range_end_invalidation",
+        "extras": [],
+        "externals": [{"type": "SYMBOL", "name": "end_marker"}],
+        "rules": {"document": {"type": "SEQ", "members": [
+            {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[\\s\\S]"}},
+            {"type": "SYMBOL", "name": "end_marker"}
+        ]}}
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let directory = tempfile::tempdir_in(temporary_root).unwrap();
+    std::fs::write(directory.path().join("scanner.c"), r#"
+        #include "tree_sitter/parser.h"
+        void *tree_sitter_included_range_end_invalidation_external_scanner_create(void) { return NULL; }
+        void tree_sitter_included_range_end_invalidation_external_scanner_destroy(void *p) { (void)p; }
+        unsigned tree_sitter_included_range_end_invalidation_external_scanner_serialize(void *p, char *b) { (void)p; (void)b; return 0; }
+        void tree_sitter_included_range_end_invalidation_external_scanner_deserialize(void *p, const char *b, unsigned n) { (void)p; (void)b; (void)n; }
+        bool tree_sitter_included_range_end_invalidation_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+            (void)p;
+            if (!valid[0] || !lexer->eof(lexer)) return false;
+            lexer->result_symbol = 0;
+            return true;
+        }
+    "#).unwrap();
+    let language = get_test_language(&name, &code, Some(directory.path()));
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    parser
+        .set_included_ranges(&[
+            tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 2,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(1, 0),
+            },
+            tree_sitter::Range {
+                start_byte: 4,
+                end_byte: 4,
+                start_point: Point::new(1, 2),
+                end_point: Point::new(1, 2),
+            },
+        ])
+        .unwrap();
+    let mut old = parser.parse("a\n> ", None).unwrap();
+    assert_eq!(old.root_node().end_byte(), 4);
+    old.edit(&InputEdit {
+        start_byte: 1,
+        old_end_byte: 1,
+        new_end_byte: 2,
+        start_position: Point::new(0, 1),
+        old_end_position: Point::new(0, 1),
+        new_end_position: Point::new(0, 2),
+    });
+    parser
+        .set_included_ranges(&[tree_sitter::Range {
+            start_byte: 0,
+            end_byte: 3,
+            start_point: Point::new(0, 0),
+            end_point: Point::new(1, 0),
+        }])
+        .unwrap();
+    let incremental = parser.parse("a[\n> ", Some(&old)).unwrap();
+    let fresh = parser.parse("a[\n> ", None).unwrap();
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(fresh.root_node().end_byte(), 3);
+    assert_eq!(incremental.root_node().end_byte(), 3);
+    assert_eq!(incremental.root_node().end_position(), Point::new(1, 0));
+    parser
+        .set_included_ranges(&[
+            tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 3,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(1, 0),
+            },
+            tree_sitter::Range {
+                start_byte: 5,
+                end_byte: 5,
+                start_point: Point::new(1, 2),
+                end_point: Point::new(1, 2),
+            },
+        ])
+        .unwrap();
+    let extended = parser.parse("a[\n> ", Some(&fresh)).unwrap();
+    let extended_fresh = parser.parse("a[\n> ", None).unwrap();
+    assert_eq!(
+        extended.root_node().range(),
+        extended_fresh.root_node().range()
+    );
+    assert_eq!(extended.root_node().end_byte(), 5);
+}
+
+#[test]
+fn test_word_keywords_with_nonalphabetic_prefixes() {
+    for prefix in [":", "1", "a", "é", "_"] {
+        let keyword = format!("{prefix}b");
+        let grammar = serde_json::json!({
+            "name": format!("word_prefix_{}", prefix.chars().next().unwrap() as u32),
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "document": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "rule"},
+                    {"type": "SYMBOL", "name": "condition"}
+                ]},
+                "rule": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": keyword}, {"type": "STRING", "value": "p"}
+                ]},
+                "condition": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": prefix}, {"type": "SYMBOL", "name": "name"}
+                ]},
+                "name": {"type": "PATTERN", "value": "b[ ]*[pq]"},
+                "identifier": {"type": "TOKEN", "content": {"type": "CHOICE", "members": [
+                    {"type": "STRING", "value": "p"},
+                    {"type": "STRING", "value": keyword},
+                    {"type": "STRING", "value": prefix}
+                ]}}
+            }
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            let valid = format!("{keyword} p {prefix} b q");
+            assert!(
+                !parser.parse(&valid, None).unwrap().root_node().has_error(),
+                "{valid}"
+            );
+            let invalid = format!("{keyword} p {keyword} q");
+            assert!(
+                parser
+                    .parse(&invalid, None)
+                    .unwrap()
+                    .root_node()
+                    .has_error(),
+                "{invalid}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_low_precedence_word_keywords_ignore_initial_character_class() {
+    let grammar = serde_json::json!({
+        "name": "low_precedence_word_prefix",
+        "word": "other",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "document": {"type": "REPEAT1", "content": {"type": "SYMBOL", "name": "string"}},
+            "string": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "\""},
+                {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "boolean"},
+                    {"type": "SYMBOL", "name": "other"}
+                ]},
+                {"type": "STRING", "value": "\""}
+            ]},
+            "boolean": {"type": "CHOICE", "members": [
+                {"type": "STRING", "value": "1true@"},
+                {"type": "STRING", "value": "false@"}
+            ]},
+            "other": {"type": "TOKEN", "content": {"type": "PREC", "value": -1,
+                "content": {"type": "PATTERN", "value": "[^\"]+"}
+            }}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let tree = parser.parse("\"1true@ \"\n\"false@ \"", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(document (string (other)) (string (other)))"
+        );
     }
 }

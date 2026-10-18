@@ -1,5 +1,16 @@
 
 static inline uint16_t ts_keyword_next(uint16_t state, uint32_t character) {
+#ifdef TS_KEYWORD_UNICODE_SKIP_COUNT
+  if (character >= 128) {
+    for (uint32_t i = 0; i < TS_KEYWORD_UNICODE_SKIP_COUNT; i++) {
+      TSKeywordUnicodeSkip transition = ts_keyword_unicode_skips[i];
+      if (transition.state == state && character >= transition.first && character <= transition.last) {
+        return transition.next;
+      }
+    }
+    return UINT16_MAX;
+  }
+#endif
   const TSKeywordState *row = &ts_keyword_states[state];
   uint32_t low = row->index, high = ts_keyword_states[state + 1].index;
   while (low < high) {
@@ -37,7 +48,9 @@ static uint32_t ts_keyword_lookup(const char *text, uint32_t length) {
   uint16_t state = first & TS_KEYWORD_STATE_MASK;
   for (uint32_t i = 1; i < length; i++) {
     if (ts_keyword_states[state].accept) prefix = TS_KEYWORD_PREFIX;
-    uint16_t next = ts_keyword_next(state, (uint8_t)text[i]);
+    uint8_t byte = (uint8_t)text[i];
+    if (byte >= 128) return prefix;
+    uint16_t next = ts_keyword_next(state, byte);
     if (next == UINT16_MAX) return prefix;
     state = next & TS_KEYWORD_STATE_MASK;
   }

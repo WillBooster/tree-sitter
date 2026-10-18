@@ -360,8 +360,21 @@ static void ts_lexer__advance(TSLexer *_self, bool skip) {
   ts_lexer__do_advance(self, skip);
 }
 
-// Mark that a token match has completed. This can be called multiple
-// times if a longer match is found later.
+static void ts_lexer__get_position(const TSLexer *_self, TSLexerPosition *position) {
+  const Lexer *self = (const Lexer *)_self;
+  *position = (TSLexerPosition) {
+    self->current_position.bytes,
+    self->current_position.extent.row,
+    self->current_position.extent.column,
+  };
+}
+
+static void ts_lexer__mark_start(TSLexer *_self, const TSLexerPosition *position) {
+  Lexer *self = (Lexer *)_self;
+  self->marked_start_position = (Length) {position->bytes, {position->row, position->column}};
+  self->token_start_position = self->marked_start_position;
+}
+
 static void ts_lexer__mark_end(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
   if (!ts_lexer__eof(&self->data)) {
@@ -454,6 +467,8 @@ void ts_lexer_init(Lexer *self) {
       // library.
       .advance = ts_lexer__advance,
       .mark_end = ts_lexer__mark_end,
+      .get_position = ts_lexer__get_position,
+      .mark_start = ts_lexer__mark_start,
       .get_column = ts_lexer__get_column,
       .is_at_included_range_start = ts_lexer__is_at_included_range_start,
       .eof = ts_lexer__eof,
@@ -502,6 +517,7 @@ void ts_lexer_reset(Lexer *self, Length position) {
 void ts_lexer_start(Lexer *self) {
   self->token_start_position = self->current_position;
   self->token_end_position = LENGTH_UNDEFINED;
+  self->marked_start_position = LENGTH_UNDEFINED;
   self->data.result_symbol = 0;
   self->did_get_column = false;
   if (!ts_lexer__eof(&self->data)) {
@@ -517,6 +533,9 @@ void ts_lexer_start(Lexer *self) {
 }
 
 void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte) {
+  if (!length_is_undefined(self->marked_start_position)) {
+    self->token_start_position = self->marked_start_position;
+  }
   if (length_is_undefined(self->token_end_position)) {
     ts_lexer__mark_end(&self->data);
   }
