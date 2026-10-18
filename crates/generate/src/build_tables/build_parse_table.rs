@@ -1486,7 +1486,13 @@ impl<'a> ParseTableBuilder<'a> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .map(|symbol| {
-                let mut parents = self.repetition_parents(symbol, items, auxiliary_context, false);
+                let mut parents = self.repetition_parents(
+                    symbol,
+                    items,
+                    auxiliary_context,
+                    preceding_symbols.len(),
+                    false,
+                );
                 let positions = preceding_symbols
                     .iter()
                     .enumerate()
@@ -1503,6 +1509,7 @@ impl<'a> ParseTableBuilder<'a> {
                             &BTreeSet::new(),
                             self.auxiliary_contexts
                                 .at_position(auxiliary_context, position),
+                            preceding_symbols.len(),
                             true,
                         ),
                     );
@@ -1523,11 +1530,12 @@ impl<'a> ParseTableBuilder<'a> {
         symbol: Symbol,
         items: &BTreeSet<&ParseItem>,
         auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
         has_contextual_occurrence: bool,
     ) -> BTreeSet<Symbol> {
         let mut pending = self
-            .containing_rules(symbol, items)
-            .map(|parent| (parent, auxiliary_context, Vec::new()))
+            .containing_rules(symbol, items, auxiliary_context, path_length)
+            .map(|(parent, context)| (parent, context, Vec::new()))
             .collect::<Vec<_>>();
         if has_contextual_occurrence {
             pending.push((symbol, auxiliary_context, Vec::new()));
@@ -1570,8 +1578,8 @@ impl<'a> ParseTableBuilder<'a> {
                 );
             }
             pending.extend(
-                self.containing_rules(symbol, items)
-                    .map(|parent| (parent, context, ancestors.clone())),
+                self.containing_rules(symbol, items, auxiliary_context, path_length)
+                    .map(|(parent, context)| (parent, context, ancestors.clone())),
             );
         }
         parents
@@ -1581,7 +1589,9 @@ impl<'a> ParseTableBuilder<'a> {
         &'b self,
         symbol: Symbol,
         items: &'b BTreeSet<&ParseItem>,
-    ) -> impl Iterator<Item = Symbol> + 'b {
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+    ) -> impl Iterator<Item = (Symbol, Option<AuxiliaryContextId>)> + 'b {
         items.iter().filter_map(move |item| {
             let parent = Symbol::non_terminal(item.variable_index as usize);
             (parent != symbol
@@ -1590,7 +1600,13 @@ impl<'a> ParseTableBuilder<'a> {
                     .steps
                     .iter()
                     .any(|step| step.symbol() == symbol))
-            .then_some(parent)
+            .then(|| {
+                (
+                    parent,
+                    self.auxiliary_contexts
+                        .at_position(auxiliary_context, path_length - item.step_index as usize),
+                )
+            })
         })
     }
 
