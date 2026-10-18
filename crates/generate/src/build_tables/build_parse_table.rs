@@ -1099,6 +1099,7 @@ impl<'a> ParseTableBuilder<'a> {
                 };
                 if !entry.actions.contains(&action) {
                     entry.actions.push(action);
+                    entry.actions.rotate_right(1);
                 }
             }
 

@@ -6206,6 +6206,85 @@ fn test_grammar_that_should_hang_and_not_segfault() {
 }
 
 #[test]
+fn test_required_nonterminal_extra_preserves_line_before_error() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["l#a#\nx", "l#a#x"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), "(source_file (line (comment)) (ERROR))", "{source}");
+            assert_eq!(tree.root_node().byte_range(), 0..source.len());
+            assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..4);
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_recovers_missing_start() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "STRING", "value": "x"},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut tree = parser.parse("lx#\n", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(source_file (line (comment (MISSING \"#\"))))"
+        );
+        let comment = tree
+            .root_node()
+            .named_child(0)
+            .unwrap()
+            .named_child(0)
+            .unwrap();
+        assert!(!comment.is_extra());
+        let missing = comment.child(0).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(missing.byte_range(), 1..1);
+        tree.edit(&InputEdit {
+            start_byte: 1,
+            old_end_byte: 1,
+            new_end_byte: 2,
+            start_position: Point::new(0, 1),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 2),
+        });
+        let repaired = parser.parse("l#x#\n", Some(&tree)).unwrap();
+        let fresh = parser.parse("l#x#\n", None).unwrap();
+        assert!(!repaired.root_node().has_error());
+        assert_eq!(repaired.root_node().to_sexp(), fresh.root_node().to_sexp());
+        assert_eq!(repaired.root_node().byte_range(), 0..5);
+    }
+}
+
+#[test]
 fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
     let grammar = serde_json::json!({
         "name": "explicit_nonterminal_extra",
