@@ -1162,7 +1162,7 @@ static StackVersion ts_parser__reduce(
   int dynamic_precedence,
   uint16_t production_id,
   bool is_fragile,
-  bool end_of_non_terminal_extra
+  bool is_extra
 ) {
   uint32_t initial_version_count = ts_stack_version_count(self->stack);
 
@@ -1238,7 +1238,7 @@ static StackVersion ts_parser__reduce(
 
     TSStateId state = ts_stack_state(self->stack, slice_version);
     TSStateId next_state = ts_language_next_state(self->language, state, symbol);
-    if (end_of_non_terminal_extra) {
+    if (is_extra) {
       next_state = state;
       parent.ptr->extra = true;
     }
@@ -1350,12 +1350,14 @@ static bool ts_parser__process_candidate_recovery_actions(
         if (!action.shift.extra && !action.shift.repetition) has_shift_action = true;
         break;
       case TSParseActionTypeReduce:
+      case TSParseActionTypeReduceExtra:
         if (action.reduce.child_count > 0)
           ts_reduce_action_set_add(&self->reduce_actions, (ReduceAction) {
             .symbol = action.reduce.symbol,
             .count = action.reduce.child_count,
             .dynamic_precedence = action.reduce.dynamic_precedence,
             .production_id = action.reduce.production_id,
+            .is_extra = action.type == TSParseActionTypeReduceExtra,
           });
         break;
       default:
@@ -1432,7 +1434,7 @@ static bool ts_parser__do_all_potential_reductions(
       reduction_version = ts_parser__reduce(
         self, version, action.symbol, action.count,
         action.dynamic_precedence, action.production_id,
-        true, false
+        true, action.is_extra
       );
     }
 
@@ -1792,7 +1794,7 @@ static bool ts_parser__insert_missing_token(
       self->language, state_after_missing_symbol, ts_subtree_leaf_symbol(lookahead), &entry
     );
     if (entry.action_count == 0) continue;
-    bool has_reduce = entry.actions[0].type == TSParseActionTypeReduce;
+    bool has_reduce = ts_parse_action_is_reduce(&entry.actions[0]);
     if (has_reduce != require_reduction) continue;
 
     // In case the parser is currently outside of any included range, the lexer will
@@ -1963,14 +1965,15 @@ static bool ts_parser__advance(
           return true;
         }
 
-        case TSParseActionTypeReduce: {
+        case TSParseActionTypeReduce:
+        case TSParseActionTypeReduceExtra: {
           bool is_fragile = table_entry.action_count > 1;
-          bool end_of_non_terminal_extra = lookahead.ptr == NULL;
+          bool is_extra = action.type == TSParseActionTypeReduceExtra;
           LOG("reduce sym:%s, child_count:%u, state:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count, state);
           StackVersion reduction_version = ts_parser__reduce(
             self, version, action.reduce.symbol, action.reduce.child_count,
             action.reduce.dynamic_precedence, action.reduce.production_id,
-            is_fragile, end_of_non_terminal_extra
+            is_fragile, is_extra
           );
           did_reduce = true;
           if (reduction_version != STACK_VERSION_NONE) {

@@ -6252,7 +6252,7 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
             assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), "#inside#");
             for extra in line
                 .named_children(&mut cursor)
-                .filter(|node| node.is_extra())
+                .filter(tree_sitter::Node::is_extra)
             {
                 assert_eq!(extra.kind(), "comment");
                 assert_eq!(extra.utf8_text(source.as_bytes()).unwrap(), "#before#");

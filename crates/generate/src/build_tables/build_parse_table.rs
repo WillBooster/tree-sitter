@@ -690,6 +690,7 @@ impl<'a> ParseTableBuilder<'a> {
                         step_index: 1,
                         keys: self.item_set_builder.key_map.keys_for(prod_id),
                         has_preceding_inherited_fields: false,
+                        is_extra_root: true,
                     });
                 entry.lookaheads = self
                     .item_set_builder
@@ -887,6 +888,7 @@ impl<'a> ParseTableBuilder<'a> {
                         child_count: item.step_index as u16,
                         dynamic_precedence: item.production(self.syntax_grammar).dynamic_precedence,
                         production_id: production_id as u16,
+                        is_extra: item.is_extra_root,
                     }
                 };
 

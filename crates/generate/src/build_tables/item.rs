@@ -268,6 +268,7 @@ pub struct ParseItem<'a> {
     /// true, then the item's set of inherited fields may depend on the specific
     /// symbols of its preceding children.
     pub has_preceding_inherited_fields: bool,
+    pub is_extra_root: bool,
 }
 
 /// Interned lookahead set. An index into a [`LookaheadPool`]. Ids are canonical,
@@ -412,6 +413,7 @@ impl<'a> ParseItem<'a> {
             keys: key_map.start_keys(),
             step_index: 0,
             has_preceding_inherited_fields: false,
+            is_extra_root: false,
         }
     }
 
@@ -478,6 +480,7 @@ impl<'a> ParseItem<'a> {
             keys: self.keys,
             step_index: self.step_index + 1,
             has_preceding_inherited_fields: self.has_preceding_inherited_fields,
+            is_extra_root: self.is_extra_root,
         }
     }
 
@@ -723,6 +726,7 @@ impl fmt::Display for ParseItemSetDisplay<'_> {
 impl Hash for ParseItem<'_> {
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         hasher.write_u32(self.variable_index);
+        hasher.write_u8(u8::from(self.is_extra_root));
         hasher.write_u32(self.step_index);
 
         // The already-matched children don't play any role in the parse state for
@@ -746,7 +750,8 @@ impl Hash for ParseItem<'_> {
 impl PartialEq for ParseItem<'_> {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        if self.variable_index != other.variable_index
+        if self.is_extra_root != other.is_extra_root
+            || self.variable_index != other.variable_index
             || self.step_index != other.step_index
             || self.has_preceding_inherited_fields != other.has_preceding_inherited_fields
         {
@@ -767,6 +772,7 @@ impl Ord for ParseItem<'_> {
         self.step_index
             .cmp(&other.step_index)
             .then_with(|| self.variable_index.cmp(&other.variable_index))
+            .then_with(|| self.is_extra_root.cmp(&other.is_extra_root))
             .then_with(|| self.dot_keys().cmp.cmp(&other.dot_keys().cmp))
             .then_with(|| {
                 self.has_preceding_inherited_fields
