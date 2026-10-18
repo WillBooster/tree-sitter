@@ -172,6 +172,7 @@ impl TokenExtractor {
                     if p.is_token {
                         let cleaned = MetadataParams {
                             is_token: false,
+                            is_nonkeyword: false,
                             ..p
                         };
                         let string_name = match pool.node(rule) {
@@ -179,7 +180,11 @@ impl TokenExtractor {
                             _ => None,
                         };
                         let token_root = if cleaned == MetadataParams::default() {
-                            rule // Only a token, drop the wrapper
+                            if p.is_nonkeyword {
+                                pool.nonkeyword_token(rule)
+                            } else {
+                                rule
+                            }
                         } else {
                             id
                         };
