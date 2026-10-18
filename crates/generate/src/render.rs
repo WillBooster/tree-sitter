@@ -1470,16 +1470,11 @@ impl Generator {
         let mut mapped_transitions = vec![false; state.advance_actions.len()];
         let mut simple_transition_range_count = 0;
         for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
-            // The map compares the lookahead alone, which is also 0 at the end of the input, so a
-            // class containing NUL stays out of it. An explicit NUL stays in, as in upstream's
-            // `ADVANCE_MAP`: grammars such as Go's end a statement with '\0' to accept the end of
-            // the input. Its target must not advance on NUL again, because advancing consumes
-            // nothing at the end of the input and a cycle of such states would never return.
+            // Lookahead is also zero at EOF, so the map cannot distinguish a physical NUL.
             if action.in_main_token
                 && action.start_tags.is_empty()
                 && action.state != state_id
-                && (!chars.contains('\0')
-                    || action.explicit_nul && !advances_on_nul[action.state as usize])
+                && !chars.contains('\0')
                 && chars.ranges().all(|r| {
                     let start = *r.start() as u32;
                     let end = *r.end() as u32;
@@ -1515,6 +1510,8 @@ impl Generator {
             if mapped_transitions[index] {
                 continue;
             }
+            // Grammars such as Go's use a standalone NUL token as an EOF terminator.
+            // Advancing at EOF consumes nothing, so a NUL cycle would never return.
             if action.explicit_nul && !advances_on_nul[action.state as usize] {
                 add_whitespace!(self);
                 add!(self, "if (eof) ");
