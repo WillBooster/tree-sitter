@@ -131,23 +131,14 @@ pub fn expand_tokens(
 }
 
 fn token_properties(pool: &RulePool, root: RuleId) -> (bool, bool) {
+    let immediate = matches!(pool.node(root), Rule::Metadata { params, .. } if pool.params(params).is_main_token);
     let mut current = root;
-    let mut immediate = false;
     let mut nonkeyword = false;
     while let Rule::Metadata { params, rule } = pool.node(current) {
-        let params = pool.params(params);
-        nonkeyword |= params.is_nonkeyword;
-        immediate |= params.is_main_token;
+        nonkeyword |= pool.params(params).is_nonkeyword;
         current = rule;
     }
-    if nonkeyword {
-        (immediate, true)
-    } else {
-        (
-            matches!(pool.node(root), Rule::Metadata { params, .. } if pool.params(params).is_main_token),
-            false,
-        )
-    }
+    (immediate, nonkeyword)
 }
 
 fn build_separator(pool: &mut RulePool, separator_roots: &[RuleId]) -> RuleId {
