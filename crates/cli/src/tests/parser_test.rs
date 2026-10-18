@@ -4903,6 +4903,95 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
 }
 
 #[test]
+fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_immediate_word', word: $ => $.identifier,
+            extras: $ => [$.comment],
+            rules: {
+                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt, $.other_keyword_stmt,
+                    seq('A', choice($.raw_stmt, $.kw_stmt))),
+                ident_stmt: $ => seq($.identifier, '?'),
+                other_keyword_stmt: _ => seq('do', '?'),
+                raw_stmt: $ => seq(token.nonkeyword(prec(PRECEDENCE, 'if')), $.identifier, '?'),
+                kw_stmt: $ => seq(token(prec(1, 'iffy')), $.exclaim),
+                identifier: _ => WORD,
+                exclaim: _ => /[a-z]+!/,
+                comment: _ => '#',
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("immediate-word-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for immediate in [false, true] {
+        for precedence in [-1, 0, 2] {
+            let grammar = grammar
+                .replace("PRECEDENCE", &precedence.to_string())
+                .replace(
+                    "WORD",
+                    if immediate {
+                        "token.immediate(/[a-z]+/)"
+                    } else {
+                        "/[a-z]+/"
+                    },
+                );
+            std::fs::write(&path, grammar).unwrap();
+            let json = load_grammar_file(&path, None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for source in ["iffyname?", "#iffyname?", "A#iffyname?"] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                    assert_eq!(root.byte_range(), 0..source.len());
+                    let raw = precedence > 1
+                        || source.starts_with('A')
+                        || (immediate && source.starts_with('#'));
+                    let mut cursor = root.walk();
+                    let statement = root.named_children(&mut cursor).last().unwrap();
+                    assert_eq!(
+                        statement.kind(),
+                        if raw { "raw_stmt" } else { "ident_stmt" },
+                        "{source}"
+                    );
+                    assert_eq!(
+                        statement
+                            .named_child(0)
+                            .unwrap()
+                            .utf8_text(source.as_bytes())
+                            .unwrap(),
+                        if raw { "fyname" } else { "iffyname" }
+                    );
+                }
+                for source in std::iter::once("do?").chain((!immediate).then_some("#do?")) {
+                    let tree = parser.parse(source, None).unwrap();
+                    assert!(
+                        !tree.root_node().has_error(),
+                        "{source}: {}",
+                        tree.root_node().to_sexp()
+                    );
+                    let mut cursor = tree.walk();
+                    assert_eq!(
+                        tree.root_node()
+                            .named_children(&mut cursor)
+                            .last()
+                            .unwrap()
+                            .kind(),
+                        "other_keyword_stmt"
+                    );
+                }
+                for source in ["#name?", "#dox?"] {
+                    let tree = parser.parse(source, None).unwrap();
+                    assert_eq!(tree.root_node().has_error(), immediate);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_word_guard_preserves_lower_precedence_content() {
     let grammar = r#"{
         "name": "nonkeyword_guard_content",
@@ -4972,6 +5061,88 @@ fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
             }
         }
     }
+}
+
+#[test]
+fn test_nonkeyword_fallback_preserves_other_substituted_keywords() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'mixed_keyword_fallback', word: $ => $.identifier,
+            rules: {
+                document: $ => choice($.list1, $.list2),
+                list1: $ => seq('1', repeat1(choice(alias(token.nonkeyword('do'), $.raw), $.identifier))),
+                list2: $ => seq('2', repeat1(choice('fy', alias(token.nonkeyword(prec(PRECEDENCE, 'fy')), $.raw), seq(alias(token.nonkeyword(prec(PRECEDENCE, 'fy')), $.raw), 'x'), 'do'))),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("mixed-keyword-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for precedence in [-1, 0, 1, 2] {
+        std::fs::write(
+            &path,
+            grammar.replace("PRECEDENCE", &precedence.to_string()),
+        )
+        .unwrap();
+        let json = load_grammar_file(&path, None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            for source in ["2do", "2fydo", "2fyfy", "2 do", "2fy do", "2fyx"] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(
+                    !root.has_error(),
+                    "{precedence} {source}: {}",
+                    root.to_sexp()
+                );
+                assert_eq!(root.byte_range(), 0..source.len());
+                assert_eq!(root.named_child(0).unwrap().kind(), "list2");
+            }
+            for source in ["2dox", "2fyxy"] {
+                assert!(parser.parse(source, None).unwrap().root_node().has_error());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_reserved_named_declaration() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'reserved_nonkeyword_name', word: $ => $.identifier,
+            reserved: { kw: $ => [$.raw_if] },
+            rules: {
+                source_file: $ => seq('S', reserved('kw', alias($.raw_if, $.prefix)), $.identifier),
+                raw_if: _ => token.nonkeyword('if'),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("reserved-nonkeyword-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    std::fs::write(&path, grammar).unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        let tree = parser.parse("Sifname", None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.to_sexp(), "(source_file (prefix) (identifier))");
+        assert!(!root.has_error());
+        assert_eq!(root.byte_range(), 0..7);
+        assert_eq!(root.named_child(0).unwrap().byte_range(), 1..3);
+        assert_eq!(root.named_child(1).unwrap().byte_range(), 3..7);
+    }
+    std::fs::write(
+        &path,
+        grammar.replace("kw: $ => [$.raw_if]", "kw: _ => ['if']"),
+    )
+    .unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    assert!(generate_parser(&json).is_err());
 }
 
 #[test]
@@ -6289,6 +6460,89 @@ fn test_grammar_that_should_hang_and_not_segfault() {
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             panic!("The test thread disconnected unexpectedly")
         }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_preserves_line_before_error() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["l#a#\nx", "l#a#x"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (line (comment)) (ERROR))",
+                "{source}"
+            );
+            assert_eq!(tree.root_node().byte_range(), 0..source.len());
+            assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..4);
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_recovers_missing_start() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "STRING", "value": "x"},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut tree = parser.parse("lx#\n", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(source_file (line (comment (MISSING \"#\"))))"
+        );
+        let comment = tree
+            .root_node()
+            .named_child(0)
+            .unwrap()
+            .named_child(0)
+            .unwrap();
+        assert!(!comment.is_extra());
+        let missing = comment.child(0).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(missing.byte_range(), 1..1);
+        tree.edit(&InputEdit {
+            start_byte: 1,
+            old_end_byte: 1,
+            new_end_byte: 2,
+            start_position: Point::new(0, 1),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 2),
+        });
+        let repaired = parser.parse("l#x#\n", Some(&tree)).unwrap();
+        let fresh = parser.parse("l#x#\n", None).unwrap();
+        assert!(!repaired.root_node().has_error());
+        assert_eq!(repaired.root_node().to_sexp(), fresh.root_node().to_sexp());
+        assert_eq!(repaired.root_node().byte_range(), 0..5);
     }
 }
 

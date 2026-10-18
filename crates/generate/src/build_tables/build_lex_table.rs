@@ -181,7 +181,7 @@ pub fn build_lex_table(
                 }
             }
         }
-        let fallback_keywords = unsafe_keyword_pairs
+        let mut fallback_keywords = unsafe_keyword_pairs
             .iter()
             .filter_map(|&(keyword, other)| {
                 (lexical_grammar.variables[other.index as usize].is_nonkeyword
@@ -195,6 +195,14 @@ pub fn build_lex_table(
             .filter(|word| word.is_terminal())
             .is_some_and(has_entry);
         let preserve_fallback = !fallback_keywords.is_empty() && !accepts_word;
+        if !fallback_keywords.is_empty() {
+            for keyword in keywords.iter().filter(|keyword| has_entry(*keyword)) {
+                if !retained.contains(&keyword) {
+                    retained.push(keyword);
+                }
+                fallback_keywords.insert(keyword);
+            }
+        }
         let guard_keywords = immediate_keywords
             .iter()
             .filter(|keyword| {
@@ -298,14 +306,19 @@ pub fn build_lex_table(
             .iter()
             .filter(|symbol| !lexical_grammar.variables[symbol.index as usize].is_immediate)
             .collect::<TokenSet>();
+        let accepts_word_after_extra = accepts_word
+            && builder
+                .word_token
+                .is_some_and(|word| tokens_after_extra.contains(word));
+        let preserve_fallback_after_extra = !accepts_word_after_extra
+            && guards_after_extra
+                .iter()
+                .any(|keyword| tokens_after_extra.contains(keyword));
         let lex_state_id_after_extra = builder.add_state_for_tokens_with_word_guard(
             &tokens_after_extra,
             &guards_after_extra,
-            preserve_fallback,
-            accepts_word
-                && builder
-                    .word_token
-                    .is_some_and(|word| tokens_after_extra.contains(word)),
+            preserve_fallback_after_extra,
+            accepts_word_after_extra,
         );
         for id in parse_state_ids {
             parse_table.states[id as usize].lex_state_id = lex_state_id;
