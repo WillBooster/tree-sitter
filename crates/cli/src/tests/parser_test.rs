@@ -1977,6 +1977,43 @@ fn test_regex_extra_preserves_matching_named_token() {
 }
 
 #[test]
+fn test_completed_nodes_before_unfinished_nonterminal_extras() {
+    let languages = [
+        get_test_fixture_language("unfinished_nonterminal_extra"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("unfinished_nonterminal_extra"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let prefix = "/// documentation\n/* comment";
+        let mut source = prefix.to_string();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for suffix in ["", " */", " */ item x;", "", " */ item x;", ""] {
+            let next = format!("{prefix}{suffix}");
+            let position = |text: &str| Point::new(1, text.len() - "/// documentation\n".len());
+            tree.edit(&InputEdit {
+                start_byte: prefix.len(),
+                old_end_byte: source.len(),
+                new_end_byte: next.len(),
+                start_position: position(prefix),
+                old_end_position: position(&source),
+                new_end_position: position(&next),
+            });
+            source = next;
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            let actual = tree.root_node().to_sexp();
+            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
+            assert!(
+                actual.contains("(documentation (doc_text))"),
+                "{source}: {actual}"
+            );
+            assert_eq!(tree.root_node().has_error(), !suffix.ends_with("item x;"));
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_recovery_through_many_nonterminal_extras() {
     let language = get_test_fixture_language("recovery_extra_chain");
     let mut parser = Parser::new();
