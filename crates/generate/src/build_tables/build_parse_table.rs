@@ -1511,6 +1511,7 @@ impl<'a> ParseTableBuilder<'a> {
                 pending.extend(
                     enclosing
                         .iter()
+                        .filter(|parent| **parent != symbol)
                         .map(|parent| (*parent, Some(id), ancestors.clone())),
                 );
             }
@@ -1518,10 +1519,12 @@ impl<'a> ParseTableBuilder<'a> {
                 items
                     .iter()
                     .filter(|item| {
-                        item.production(self.syntax_grammar)
-                            .steps
-                            .iter()
-                            .any(|step| step.symbol() == symbol)
+                        Symbol::non_terminal(item.variable_index as usize) != symbol
+                            && item
+                                .production(self.syntax_grammar)
+                                .steps
+                                .iter()
+                                .any(|step| step.symbol() == symbol)
                     })
                     .map(|item| {
                         (
