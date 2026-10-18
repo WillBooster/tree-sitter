@@ -3396,6 +3396,7 @@ mod tests {
                 implicit_precedence: 0,
                 start_state: 0,
                 is_immediate: false,
+                is_nonkeyword: false,
             });
         }
         lexical_grammar
