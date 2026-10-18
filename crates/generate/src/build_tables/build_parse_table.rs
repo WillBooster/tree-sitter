@@ -401,7 +401,7 @@ pub struct ConflictError {
     pub conflicting_lookahead: String,
     pub possible_interpretations: Vec<Interpretation>,
     pub possible_resolutions: Vec<Resolution>,
-    pub generated_repetitions: Vec<String>,
+    pub generated_repetitions: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Default, Debug, Serialize, Error, Deserialize)]
@@ -484,11 +484,14 @@ impl std::fmt::Display for ConflictError {
         }
 
         if !self.generated_repetitions.is_empty() {
-            writeln!(
-                f,
-                "\nGenerated repetition rules may be shared across grammar rules; their names do not identify every rule that uses them: {}.",
-                self.generated_repetitions.join(", ")
-            )?;
+            writeln!(f, "\nGenerated repetitions used in this conflict:\n")?;
+            for (name, parents) in &self.generated_repetitions {
+                if parents.is_empty() {
+                    writeln!(f, "  {name}: generated repetition")?;
+                } else {
+                    writeln!(f, "  {name}: used by {}", parents.join(", "))?;
+                }
+            }
         }
 
         writeln!(f, "\nPossible resolutions:\n")?;
@@ -1055,15 +1058,14 @@ impl<'a> ParseTableBuilder<'a> {
                     });
             }
 
-            // Add ShiftExtra actions for the terminal extra tokens. These actions
-            // are added to every state except for those at the ends of non-terminal
-            // extras.
             for extra_token in &self.syntax_grammar.extra_symbols {
                 match extra_token.kind {
                     SymbolType::NonTerminal => {
-                        state
-                            .nonterminal_entries
-                            .insert(*extra_token, GotoAction::ShiftExtra);
+                        if !state.nonterminal_entries.contains_key(extra_token) {
+                            state
+                                .nonterminal_entries
+                                .insert(*extra_token, GotoAction::ShiftExtra);
+                        }
                     }
                     SymbolType::Terminal | SymbolType::External => {
                         self.terminal_entries.get_or_insert_with(*extra_token, || {
@@ -1299,8 +1301,11 @@ impl<'a> ParseTableBuilder<'a> {
         }
 
         let mut conflict_error = ConflictError {
-            generated_repetitions: self
-                .generated_repetition_names(preceding_symbols, &conflicting_items),
+            generated_repetitions: self.generated_repetition_owners(
+                preceding_symbols,
+                &conflicting_items,
+                auxiliary_context,
+            ),
             ..ConflictError::default()
         };
         for &symbol in preceding_symbols {
@@ -1425,11 +1430,12 @@ impl<'a> ParseTableBuilder<'a> {
         Err(conflict_error)?
     }
 
-    fn generated_repetition_names(
+    fn generated_repetition_owners(
         &self,
         preceding_symbols: &[Symbol],
         items: &BTreeSet<&ParseItem>,
-    ) -> Vec<String> {
+        auxiliary_context: Option<AuxiliaryContextId>,
+    ) -> Vec<(String, Vec<String>)> {
         preceding_symbols
             .iter()
             .copied()
@@ -1445,9 +1451,44 @@ impl<'a> ParseTableBuilder<'a> {
                 symbol.kind == SymbolType::NonTerminal
                     && self.syntax_grammar.variables[symbol.index as usize].is_auxiliary()
             })
-            .map(|symbol| self.symbol_name(symbol))
             .collect::<BTreeSet<_>>()
             .into_iter()
+            .map(|symbol| {
+                let mut parents = self
+                    .auxiliary_contexts
+                    .parents(auxiliary_context, symbol.index as usize)
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                for item in items {
+                    if !item
+                        .production(self.syntax_grammar)
+                        .steps
+                        .iter()
+                        .any(|step| step.symbol() == symbol)
+                    {
+                        continue;
+                    }
+                    let owner = Symbol::non_terminal(item.variable_index as usize);
+                    if self.syntax_grammar.variables[owner.index as usize].is_auxiliary() {
+                        parents.extend(
+                            self.auxiliary_contexts
+                                .parents(auxiliary_context, owner.index as usize)
+                                .unwrap_or_default(),
+                        );
+                    } else {
+                        parents.insert(owner);
+                    }
+                }
+                (
+                    self.symbol_name(symbol),
+                    parents
+                        .into_iter()
+                        .map(|parent| self.symbol_name(parent))
+                        .collect(),
+                )
+            })
             .collect()
     }
 

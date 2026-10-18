@@ -5743,6 +5743,61 @@ fn test_grammar_that_should_hang_and_not_segfault() {
 }
 
 #[test]
+fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
+    let grammar = serde_json::json!({
+        "name": "explicit_nonterminal_extra",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["l#inside#\n", "#before#l#inside#\n#after#"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            let mut cursor = root.walk();
+            let line = root
+                .named_children(&mut cursor)
+                .find(|node| node.kind() == "line")
+                .unwrap();
+            let comment = line.named_child(0).unwrap();
+            assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), "#inside#");
+            assert!(!comment.is_extra());
+            for child in root
+                .named_children(&mut cursor)
+                .filter(|node| node.kind() == "comment")
+            {
+                assert!(child.is_extra());
+            }
+        }
+        for source in ["l\n", "l#inside# \n"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{source:?}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
     for (external, shared) in [(false, false), (true, false), (true, true)] {
         let name = if shared {
