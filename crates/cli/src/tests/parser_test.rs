@@ -4359,8 +4359,9 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
         module.exports = grammar({
             name: 'nonkeyword_tokens',
             word: $ => $.identifier,
+            reserved: { global: _ => [], kw: _ => [token.nonkeyword('if'), token.nonkeyword(token.immediate(prec(2, 'if')))] },
             rules: {
-                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.identifier),
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.reserved_raw, $.reserved_immediate, $.identifier),
                 ordinary: $ => seq('N', 'if', $.identifier),
                 raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
                 immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
@@ -4368,6 +4369,8 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 precedence: $ => seq('P', choice(seq(alias(token.nonkeyword(prec(2, 'if')), $.prefix), $.identifier), $.identifier)),
                 wrapped: $ => seq('W', alias(token(prec(2, token.nonkeyword('if'))), $.prefix), $.identifier),
                 wrapped_immediate: $ => seq('M', alias(token(prec(2, token.nonkeyword(token.immediate('if')))), $.prefix), $.identifier),
+                reserved_raw: $ => seq('S', reserved('kw', alias(token.nonkeyword('if'), $.prefix)), $.identifier),
+                reserved_immediate: $ => seq('T', reserved('kw', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix)), $.identifier),
                 identifier: _ => /[a-z]+/,
             },
         });
@@ -4389,6 +4392,8 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             ("Pifx", "precedence"),
             ("Wifx", "wrapped"),
             ("Mifx", "wrapped_immediate"),
+            ("Sifx", "reserved_raw"),
+            ("Tifx", "reserved_immediate"),
         ] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
@@ -4410,7 +4415,7 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 );
             }
         }
-        for source in ["N ifx", "I ifx", "O ifx", "M ifx"] {
+        for source in ["N ifx", "I ifx", "O ifx", "M ifx", "T ifx"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
                 tree.root_node().has_error(),
