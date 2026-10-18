@@ -262,7 +262,6 @@ static inline bool ts_subtree_trailing_extra(Subtree self) {
     (!self.data.is_inline && self.ptr->child_count > 0 && self.ptr->trailing_extra);
 }
 
-
 // Get a subtree's children, which are allocated immediately before the
 // tree's own heap data.
 #define ts_subtree_children(self) \

@@ -1289,16 +1289,17 @@ impl Generator {
         );
         indent!(self);
 
+        let tag_count = Self::start_tag_count(&lex_table);
+        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
         add_line!(self, "START_LEXER();");
         add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
         add_line!(self, "switch (state) {{");
 
         indent!(self);
-        let advances_on_nul = Self::states_advancing_on_nul(&lex_table);
         for (i, state) in lex_table.states.into_iter().enumerate() {
             add_line!(self, "case {i}:");
             indent!(self);
-            self.add_lex_state(i as u32, state, &advances_on_nul);
+            self.add_lex_state(i as u32, state);
             dedent!(self);
         }
 
@@ -1315,12 +1316,29 @@ impl Generator {
         add_line!(self, "");
     }
 
+    fn start_tag_count(table: &LexTable) -> u32 {
+        table
+            .states
+            .iter()
+            .filter_map(|state| state.start_tag)
+            .chain(table.states.iter().flat_map(|state| {
+                state
+                    .advance_actions
+                    .iter()
+                    .map(|(_, action)| action)
+                    .chain(state.eof_action.iter())
+                    .flat_map(|action| action.start_tags.iter().map(|&(tag, _)| tag))
+            }))
+            .max()
+            .map_or(1, |tag| tag + 1)
+    }
+
     fn add_chunked_lex_function(&mut self, name: &str, lex_table: &LexTable) {
         let chunk_count = lex_table.states.len().div_ceil(LEXER_CHUNK_SIZE);
         for chunk in 0..chunk_count {
             add_line!(
                 self,
-                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *);"
+                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerPosition *);"
             );
         }
         add_line!(self, "");
@@ -1329,6 +1347,8 @@ impl Generator {
             "static bool {name}(TSLexer *lexer, TSStateId state) {{"
         );
         indent!(self);
+        let tag_count = Self::start_tag_count(lex_table);
+        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
         add_line!(self, "bool result = false;");
         add_line!(self, "for (;;) {{");
         indent!(self);
@@ -1338,7 +1358,7 @@ impl Generator {
         for chunk in 0..chunk_count {
             add_line!(
                 self,
-                "case {chunk}: status = {name}_{chunk}(lexer, &state, &result); break;"
+                "case {chunk}: status = {name}_{chunk}(lexer, &state, &result, start_tags); break;"
             );
         }
         add_line!(self, "default: return result;");
@@ -1350,73 +1370,64 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}}\n");
 
-        let advances_on_nul = Self::states_advancing_on_nul(lex_table);
         for (chunk, states) in lex_table.states.chunks(LEXER_CHUNK_SIZE).enumerate() {
-            let has_advances = states.iter().enumerate().any(|(offset, state)| {
-                let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
-                state.eof_action.is_some()
-                    || state
-                        .advance_actions
-                        .iter()
-                        .any(|(_, action)| action.state != id)
-            });
-            add_line!(
-                self,
-                "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out) {{"
-            );
-            indent!(self);
-            add_line!(self, "TSStateId state = *state_out;");
-            add_line!(self, "bool result = *result_out;");
-            if has_advances {
-                add_line!(self, "bool skip = false;");
-            }
-            add_line!(self, "UNUSED bool eof;");
-            add_line!(self, "int32_t lookahead;");
-            if has_advances {
-                add_line!(self, "goto start;");
-                add_line!(self, "next_state:");
-                add_line!(self, "lexer->advance(lexer, skip);");
-                add_line!(self, "start:");
-                add_line!(self, "skip = false;");
-            }
-            add_line!(self, "lookahead = lexer->lookahead;");
-            add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
-            add_line!(self, "switch (state) {{");
-            indent!(self);
-            for (offset, state) in states.iter().enumerate() {
-                let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
-                add_line!(self, "case {id}:");
-                indent!(self);
-                self.add_lex_state(id, state.clone(), &advances_on_nul);
-                dedent!(self);
-            }
-            add_line!(self, "default:");
-            indent!(self);
-            add_line!(self, "*state_out = state;");
-            add_line!(self, "*result_out = result;");
-            add_line!(self, "return 2;");
-            dedent!(self);
-            dedent!(self);
-            add_line!(self, "}}");
-            dedent!(self);
-            add_line!(self, "}}\n");
+            self.add_lex_chunk(name, chunk, states);
         }
     }
 
-    fn states_advancing_on_nul(lex_table: &LexTable) -> Vec<bool> {
-        lex_table
-            .states
-            .iter()
-            .map(|state| {
-                state
+    fn add_lex_chunk(&mut self, name: &str, chunk: usize, states: &[LexState]) {
+        let has_advances = states.iter().enumerate().any(|(offset, state)| {
+            let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
+            state.eof_action.is_some()
+                || state
                     .advance_actions
                     .iter()
-                    .any(|(chars, _)| chars.contains('\0'))
-            })
-            .collect()
+                    .any(|(_, action)| action.state != id)
+        });
+        add_line!(
+            self,
+            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerPosition *start_tags) {{"
+        );
+        indent!(self);
+        add_line!(self, "(void)start_tags;");
+        add_line!(self, "TSStateId state = *state_out;");
+        add_line!(self, "bool result = *result_out;");
+        if has_advances {
+            add_line!(self, "bool skip = false;");
+        }
+        add_line!(self, "UNUSED bool eof;");
+        add_line!(self, "int32_t lookahead;");
+        if has_advances {
+            add_line!(self, "goto start;");
+            add_line!(self, "next_state:");
+            add_line!(self, "lexer->advance(lexer, skip);");
+            add_line!(self, "start:");
+            add_line!(self, "skip = false;");
+        }
+        add_line!(self, "lookahead = lexer->lookahead;");
+        add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
+        add_line!(self, "switch (state) {{");
+        indent!(self);
+        for (offset, state) in states.iter().enumerate() {
+            let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
+            add_line!(self, "case {id}:");
+            indent!(self);
+            self.add_lex_state(id, state.clone());
+            dedent!(self);
+        }
+        add_line!(self, "default:");
+        indent!(self);
+        add_line!(self, "*state_out = state;");
+        add_line!(self, "*result_out = result;");
+        add_line!(self, "return 2;");
+        dedent!(self);
+        dedent!(self);
+        add_line!(self, "}}");
+        dedent!(self);
+        add_line!(self, "}}\n");
     }
 
-    fn add_lex_state(&mut self, state_id: u32, state: LexState, advances_on_nul: &[bool]) {
+    fn add_lex_state(&mut self, state_id: u32, state: LexState) {
         if state
             .advance_actions
             .iter()
@@ -1431,11 +1442,17 @@ impl Generator {
                 .iter()
                 .all(|(_, action)| action.state == state_id && action.in_main_token);
         if !defer_accept && let Some(accept_action) = state.accept_action {
+            if let Some(tag) = state.start_tag {
+                add_line!(self, "lexer->mark_start(lexer, &start_tags[{tag}]);");
+            }
             add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
         }
 
         if let Some(eof_action) = state.eof_action {
-            add_line!(self, "if (eof) ADVANCE({});", eof_action.state);
+            add_whitespace!(self);
+            add!(self, "if (eof) ");
+            self.add_advance_action(&eof_action, state_id);
+            add!(self, "\n");
         }
 
         let mut chars_copy = CharacterSet::empty();
@@ -1445,15 +1462,11 @@ impl Generator {
         let mut mapped_transitions = vec![false; state.advance_actions.len()];
         let mut simple_transition_range_count = 0;
         for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
-            // The map compares the lookahead alone, which is also 0 at the end of the input, so a
-            // class containing NUL stays out of it. An explicit NUL stays in, as in upstream's
-            // `ADVANCE_MAP`: grammars such as Go's end a statement with '\0' to accept the end of
-            // the input. Its target must not advance on NUL again, because advancing consumes
-            // nothing at the end of the input and a cycle of such states would never return.
+            // Lookahead is also zero at EOF, so the map cannot distinguish a physical NUL.
             if action.in_main_token
+                && action.start_tags.is_empty()
                 && action.state != state_id
-                && (!chars.contains('\0')
-                    || action.explicit_nul && !advances_on_nul[action.state as usize])
+                && !chars.contains('\0')
                 && chars.ranges().all(|r| {
                     let start = *r.start() as u32;
                     let end = *r.end() as u32;
@@ -1672,6 +1685,9 @@ impl Generator {
         }
 
         if defer_accept && let Some(accept_action) = state.accept_action {
+            if let Some(tag) = state.start_tag {
+                add_line!(self, "lexer->mark_start(lexer, &start_tags[{tag}]);");
+            }
             add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
         }
         add_line!(self, "END_STATE();");
@@ -1903,6 +1919,16 @@ impl Generator {
     }
 
     fn add_advance_action(&mut self, action: &AdvanceAction, state_id: u32) {
+        if !action.start_tags.is_empty() {
+            add!(self, "{{ ");
+            for &(target, source) in &action.start_tags {
+                if let Some(source) = source {
+                    add!(self, "start_tags[{target}] = start_tags[{source}]; ");
+                } else {
+                    add!(self, "lexer->get_position(lexer, &start_tags[{target}]); ");
+                }
+            }
+        }
         if action.state == state_id {
             self.uses_lex_repeat = true;
             add!(
@@ -1914,6 +1940,9 @@ impl Generator {
             add!(self, "ADVANCE({});", action.state);
         } else {
             add!(self, "SKIP({});", action.state);
+        }
+        if !action.start_tags.is_empty() {
+            add!(self, " }}");
         }
     }
 
