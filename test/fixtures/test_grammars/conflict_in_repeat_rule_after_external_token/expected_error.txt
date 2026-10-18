@@ -7,7 +7,7 @@ Possible interpretations:
   1:  _program_start  '['  (array_repeat1  identifier)  •  ']'  …
   2:  _program_start  '['  (array_type_repeat1  identifier)  •  ']'  …
 
-Generated repetitions used in this conflict:
+Repetition rules used in this conflict:
 
   array_repeat1: used by array
   array_type_repeat1: used by array_type
