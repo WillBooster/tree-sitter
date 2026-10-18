@@ -4397,6 +4397,53 @@ fn test_nonkeyword_preserves_wrapped_token_immediacy() {
 }
 
 #[test]
+fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
+    for (ordinary, nonkeyword, expected) in [
+        (
+            "token.immediate(token(prec(2, 'if')))",
+            "token.immediate(token.nonkeyword(prec(2, 'if')))",
+            "identifier",
+        ),
+        (
+            "token(prec(2, token.immediate('if')))",
+            "token.nonkeyword(prec(2, token.immediate('if')))",
+            "keyword",
+        ),
+        (
+            "token.immediate(prec(2, 'if'))",
+            "token.nonkeyword(token.immediate(prec(2, 'if')))",
+            "keyword",
+        ),
+    ] {
+        for expression in [ordinary, nonkeyword] {
+            let grammar = format!(
+                "module.exports = grammar({{ name: 'wrapped_lexical_precedence', rules: {{ source_file: $ => seq('p', choice(alias({expression}, $.keyword), $.identifier)), identifier: _ => token(prec(1, /[a-z]+/)) }} }});"
+            );
+            let temporary_root =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+            std::fs::create_dir_all(&temporary_root).unwrap();
+            let file = tempfile::Builder::new()
+                .suffix(".js")
+                .tempfile_in(temporary_root)
+                .unwrap();
+            std::fs::write(file.path(), grammar).unwrap();
+            let json = load_grammar_file(file.path(), None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                let tree = parser.parse("pif", None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{expression}: {}", root.to_sexp());
+                assert_eq!(root.end_byte(), 3);
+                assert_eq!(
+                    root.named_child(0).unwrap().kind(),
+                    expected,
+                    "{expression}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_tokens_preserve_context_and_composition() {
     let grammar = r"
         module.exports = grammar({
