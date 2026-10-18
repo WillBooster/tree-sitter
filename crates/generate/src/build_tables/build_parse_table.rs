@@ -1443,16 +1443,23 @@ impl<'a> ParseTableBuilder<'a> {
         items: &BTreeSet<&ParseItem>,
         auxiliary_context: Option<AuxiliaryContextId>,
     ) -> Vec<(String, Vec<String>)> {
-        preceding_symbols
+        let contextual_symbols = preceding_symbols
+            .iter()
+            .copied()
+            .chain(
+                items
+                    .iter()
+                    .map(|item| Symbol::non_terminal(item.variable_index as usize)),
+            )
+            .collect::<BTreeSet<_>>();
+        contextual_symbols
             .iter()
             .copied()
             .chain(items.iter().flat_map(|item| {
-                std::iter::once(Symbol::non_terminal(item.variable_index as usize)).chain(
-                    item.production(self.syntax_grammar)
-                        .steps
-                        .iter()
-                        .map(|step| step.symbol()),
-                )
+                item.production(self.syntax_grammar)
+                    .steps
+                    .iter()
+                    .map(|step| step.symbol())
             }))
             .filter(|symbol| {
                 symbol.kind == SymbolType::NonTerminal
@@ -1463,10 +1470,15 @@ impl<'a> ParseTableBuilder<'a> {
             .map(|symbol| {
                 (
                     self.symbol_name(symbol),
-                    self.repetition_parents(symbol, items, auxiliary_context)
-                        .into_iter()
-                        .map(|parent| self.symbol_name(parent))
-                        .collect(),
+                    self.repetition_parents(
+                        symbol,
+                        items,
+                        auxiliary_context,
+                        contextual_symbols.contains(&symbol),
+                    )
+                    .into_iter()
+                    .map(|parent| self.symbol_name(parent))
+                    .collect(),
                 )
             })
             .collect()
@@ -1477,20 +1489,29 @@ impl<'a> ParseTableBuilder<'a> {
         symbol: Symbol,
         items: &BTreeSet<&ParseItem>,
         auxiliary_context: Option<AuxiliaryContextId>,
+        has_contextual_occurrence: bool,
     ) -> BTreeSet<Symbol> {
-        let mut pending = vec![(symbol, auxiliary_context, Vec::new())];
+        let mut pending = self
+            .containing_rules(symbol, items)
+            .map(|parent| (parent, auxiliary_context, Vec::new()))
+            .collect::<Vec<_>>();
+        if has_contextual_occurrence {
+            pending.push((symbol, auxiliary_context, Vec::new()));
+        }
         let mut visited = BTreeSet::new();
         let mut parents = BTreeSet::new();
         while let Some((symbol, context, mut ancestors)) = pending.pop() {
             let position = (symbol, context.map(AuxiliaryContextId::index));
-            if ancestors.contains(&position) {
-                if let Some(id) = context {
-                    pending.push((
-                        symbol,
-                        self.auxiliary_contexts.contexts[id.index()].predecessor,
-                        Vec::new(),
-                    ));
-                }
+            if let Some(start) = ancestors.iter().position(|ancestor| *ancestor == position) {
+                pending.extend(ancestors[start..].iter().filter_map(|&(member, index)| {
+                    index.map(|index| {
+                        (
+                            member,
+                            self.auxiliary_contexts.contexts[index].predecessor,
+                            Vec::new(),
+                        )
+                    })
+                }));
                 continue;
             }
             if !visited.insert(position) {
@@ -1515,26 +1536,28 @@ impl<'a> ParseTableBuilder<'a> {
                 );
             }
             pending.extend(
-                items
-                    .iter()
-                    .filter(|item| {
-                        Symbol::non_terminal(item.variable_index as usize) != symbol
-                            && item
-                                .production(self.syntax_grammar)
-                                .steps
-                                .iter()
-                                .any(|step| step.symbol() == symbol)
-                    })
-                    .map(|item| {
-                        (
-                            Symbol::non_terminal(item.variable_index as usize),
-                            context,
-                            ancestors.clone(),
-                        )
-                    }),
+                self.containing_rules(symbol, items)
+                    .map(|parent| (parent, context, ancestors.clone())),
             );
         }
         parents
+    }
+
+    fn containing_rules<'b>(
+        &'b self,
+        symbol: Symbol,
+        items: &'b BTreeSet<&ParseItem>,
+    ) -> impl Iterator<Item = Symbol> + 'b {
+        items.iter().filter_map(move |item| {
+            let parent = Symbol::non_terminal(item.variable_index as usize);
+            (parent != symbol
+                && item
+                    .production(self.syntax_grammar)
+                    .steps
+                    .iter()
+                    .any(|step| step.symbol() == symbol))
+            .then_some(parent)
+        })
     }
 
     fn conflict_symbols(
