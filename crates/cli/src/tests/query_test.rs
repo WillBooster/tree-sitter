@@ -3137,6 +3137,18 @@ fn test_supertype_field_node_schema() {
         let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
         assert_eq!(node["children"], expected, "{kind}");
     }
+    for (kind, required) in [("deep_required", true), ("deep_optional", false)] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(
+            node["fields"]["value"],
+            serde_json::json!({
+                "required": required,
+                "multiple": false,
+                "types": [{"type": "name", "named": true}, {"type": "spread", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
     let aliased = entries
         .iter()
         .find(|entry| entry["type"] == "aliased")

@@ -1,8 +1,8 @@
 module.exports = grammar({
   name: 'supertype_fields',
-  supertypes: $ => [$.item, $._restricted_item],
+  supertypes: $ => [$.item, $._restricted_item, $._left, $._right, $._middle, $._inner],
   rules: {
-    source_file: $ => repeat(choice($.list, $.aliased, $.assigned, $.restricted, $.wrapped_single, $.wrapped_pair)),
+    source_file: $ => repeat(choice($.list, $.aliased, $.assigned, $.restricted, $.wrapped_single, $.wrapped_pair, $.deep_required, $.deep_optional)),
     list: $ => seq('[', optional($._items), ']'),
     _items: $ => seq($.item, repeat(seq(',', $.item))),
     item: $ => choice($.name, field('spread', $.spread)),
@@ -15,6 +15,12 @@ module.exports = grammar({
     _single: $ => $.item,
     wrapped_pair: $ => seq('pair', field('spread', $._pair), ';'),
     _pair: $ => seq($._single, $._single),
+    deep_required: $ => seq('deep', choice($._left, $._right)),
+    deep_optional: $ => seq('maybe', optional(choice($._left, $._right))),
+    _left: $ => field('value', $.name),
+    _right: $ => $._middle,
+    _middle: $ => $._inner,
+    _inner: $ => field('value', $.spread),
     name: _ => /[a-z]+/,
   },
 });

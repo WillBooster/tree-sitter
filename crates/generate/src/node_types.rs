@@ -252,6 +252,30 @@ fn compute_variable_info_fixed_point(
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
 ) -> Vec<VariableInfo> {
+    let variables_with_fields =
+        variables_with_inherited_fields(syntax_grammar, lexical_grammar, default_aliases);
+    let mut result = vec![VariableInfo::default(); syntax_grammar.variables.len()];
+    for compute_quantities in [false, true] {
+        propagate_variable_info(
+            syntax_grammar,
+            lexical_grammar,
+            default_aliases,
+            &variables_with_fields,
+            &mut result,
+            compute_quantities,
+        );
+    }
+    result
+}
+
+fn propagate_variable_info(
+    syntax_grammar: &SyntaxGrammar,
+    lexical_grammar: &LexicalGrammar,
+    default_aliases: &AliasMap,
+    variables_with_fields: &[bool],
+    result: &mut [VariableInfo],
+    compute_quantities: bool,
+) {
     let child_type_is_visible = |t: &ChildType| {
         variable_type_for_child_type(t, syntax_grammar, lexical_grammar) >= VariableType::Anonymous
     };
@@ -260,11 +284,7 @@ fn compute_variable_info_fixed_point(
         variable_type_for_child_type(t, syntax_grammar, lexical_grammar) == VariableType::Named
     };
 
-    let variables_with_fields =
-        variables_with_inherited_fields(syntax_grammar, lexical_grammar, default_aliases);
     let mut did_change = true;
-    let mut all_initialized = false;
-    let mut result = vec![VariableInfo::default(); syntax_grammar.variables.len()];
     while did_change {
         did_change = false;
 
@@ -279,7 +299,6 @@ fn compute_variable_info_fixed_point(
                 let mut production_field_quantities = FxHashMap::default();
                 let mut production_children_quantity = ChildQuantity::zero();
                 let mut production_children_without_fields_quantity = ChildQuantity::zero();
-                let mut production_has_uninitialized_invisible_children = false;
 
                 variable_info.has_multi_step_production |= production.steps.len() > 1;
 
@@ -364,18 +383,9 @@ fn compute_variable_info_fixed_point(
                             );
                         }
                     }
-
-                    // Note whether or not this production contains children whose summaries
-                    // have not yet been computed.
-                    if child_symbol.index as usize >= i && !all_initialized {
-                        production_has_uninitialized_invisible_children = true;
-                    }
                 }
 
-                // If this production's children all have had their summaries initialized,
-                // then expand the quantity information with all of the possibilities introduced
-                // by this production.
-                if !production_has_uninitialized_invisible_children {
+                if compute_quantities {
                     did_change |= variable_info
                         .children
                         .quantity
@@ -399,11 +409,7 @@ fn compute_variable_info_fixed_point(
 
             result[i] = variable_info;
         }
-
-        all_initialized = true;
     }
-
-    result
 }
 
 fn variables_with_inherited_fields(
