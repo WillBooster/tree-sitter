@@ -309,6 +309,13 @@ pub(super) fn extract_tokens(
                         .resolve(extractor.lexical[sym.index as usize].name)
                         .to_string(),
                 ))
+            } else if sym.is_external() {
+                let name = interned.external_tokens[sym.index as usize]
+                    .0
+                    .ok_or(ExtractTokensError::NonSymbolExternalToken)?;
+                Err(ExtractTokensError::SupertypeTerminal(
+                    g.pool.resolve(name).to_string(),
+                ))
             } else {
                 Ok(sym)
             }
