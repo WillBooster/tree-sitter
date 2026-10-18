@@ -1937,11 +1937,14 @@ fn test_deeply_nested_node_searches_do_not_overflow_stack() {
     let root = tree.root_node();
     let expression = root.named_child(0).unwrap();
     let mut descendant = expression;
+    let mut parent = root;
     while let Some(child) = descendant.named_child(0) {
+        parent = descendant;
         descendant = child;
     }
     let terminator = root.child(root.child_count() - 1).unwrap();
 
+    assert_eq!(descendant.parent(), Some(parent));
     assert_eq!(root.child_with_descendant(descendant), Some(expression));
     assert_eq!(terminator.kind(), "!");
     assert_eq!(terminator.prev_sibling(), Some(expression));
