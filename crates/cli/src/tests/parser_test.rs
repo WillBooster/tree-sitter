@@ -4354,6 +4354,706 @@ fn test_keyword_boundary_with_negative_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_preserves_wrapped_token_immediacy() {
+    for (expression, allows_space) in [
+        ("token(token.immediate('if'))", false),
+        ("token(prec(2, token.immediate('if')))", true),
+        ("token(token(prec(2, token.immediate('if'))))", true),
+        ("token.immediate(prec(2, 'if'))", false),
+    ] {
+        for nonkeyword in [false, true] {
+            let expression = if nonkeyword {
+                format!("token.nonkeyword({expression})")
+            } else {
+                expression.to_string()
+            };
+            let grammar = format!(
+                "module.exports = grammar({{ name: 'wrapped_token_immediacy', rules: {{ source_file: _ => seq('p', {expression}, 'x') }} }});"
+            );
+            let temporary_root =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+            std::fs::create_dir_all(&temporary_root).unwrap();
+            let file = tempfile::Builder::new()
+                .suffix(".js")
+                .tempfile_in(temporary_root)
+                .unwrap();
+            std::fs::write(file.path(), grammar).unwrap();
+            let json = load_grammar_file(file.path(), None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for (source, valid) in [("pifx", true), ("p ifx", allows_space)] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert_eq!(
+                        !root.has_error(),
+                        valid,
+                        "{expression}: {source:?}: {}",
+                        root.to_sexp()
+                    );
+                    assert_eq!(root.end_byte(), source.len());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_preserves_other_keyword_boundaries() {
+    let long_keyword = format!("iffy{}", "z".repeat(4200));
+    let long_input = format!("{long_keyword}name");
+    for (raw, keyword, raw_input) in [
+        ("do", "if", "doname"),
+        ("if", "if", "ifname"),
+        ("if", "iffy", "iffyname"),
+        ("if", long_keyword.as_str(), long_input.as_str()),
+    ] {
+        let (keyword_expression, keyword_definition) = if keyword == long_keyword {
+            (
+                "$.long_keyword".to_owned(),
+                format!("long_keyword: _ => '{keyword}',"),
+            )
+        } else {
+            (format!("'{keyword}'"), String::new())
+        };
+        let grammar = format!(
+            r"module.exports = grammar({{
+            name: 'nonkeyword_shared_state', word: $ => $.identifier, extras: _ => [/[\s\u2003]/],
+            rules: {{ source_file: $ => choice($.ordinary, $.raw),
+                ordinary: $ => seq({keyword_expression}, $.identifier),
+                {keyword_definition}
+                raw: $ => seq(token.nonkeyword('{raw}'), $.identifier),
+                identifier: _ => /[a-zé]+/ }}
+        }});"
+        );
+        let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        std::fs::create_dir_all(&temporary_root).unwrap();
+        let file = tempfile::Builder::new()
+            .suffix(".js")
+            .tempfile_in(temporary_root)
+            .unwrap();
+        std::fs::write(file.path(), grammar).unwrap();
+        let json = load_grammar_file(file.path(), None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            for prefix in ["", " ", "\u{2003}"] {
+                if raw == "do" {
+                    let source = format!("{prefix}ifname");
+                    let tree = parser.parse(&source, None).unwrap();
+                    assert!(
+                        tree.root_node().has_error(),
+                        "{source}: {}",
+                        tree.root_node().to_sexp()
+                    );
+                }
+                for (source, kind) in [
+                    (format!("{prefix}{keyword} name"), "ordinary"),
+                    (format!("{prefix}{raw_input}"), "raw"),
+                ] {
+                    for encoding in ["utf8", "utf16le", "utf16be"] {
+                        let (tree, start, end) = match encoding {
+                            "utf16le" => (
+                                parser
+                                    .parse_utf16_le(
+                                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                                        None,
+                                    )
+                                    .unwrap(),
+                                prefix.encode_utf16().count() * 2,
+                                source.encode_utf16().count() * 2,
+                            ),
+                            "utf16be" => (
+                                parser
+                                    .parse_utf16_be(
+                                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                                        None,
+                                    )
+                                    .unwrap(),
+                                prefix.encode_utf16().count() * 2,
+                                source.encode_utf16().count() * 2,
+                            ),
+                            _ => (
+                                parser.parse(&source, None).unwrap(),
+                                prefix.len(),
+                                source.len(),
+                            ),
+                        };
+                        let root = tree.root_node();
+                        assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                        assert_eq!(root.end_byte(), end);
+                        let statement = root.named_child(0).unwrap();
+                        assert_eq!(statement.kind(), kind, "{source}");
+                        let length = if kind == "raw" {
+                            raw.len()
+                        } else {
+                            keyword.len()
+                        } * if encoding == "utf8" { 1 } else { 2 };
+                        assert_eq!(
+                            statement.child(0).unwrap().byte_range(),
+                            start..start + length
+                        );
+                    }
+                }
+            }
+            if raw == "if" && keyword == "iffy" {
+                for (source, split, raw_end) in [("if@@fyname", 2, 2), ("i@@ffyname", 1, 4)] {
+                    parser
+                        .set_included_ranges(&[
+                            Range {
+                                start_byte: 0,
+                                end_byte: split,
+                                start_point: Point::new(0, 0),
+                                end_point: Point::new(0, split),
+                            },
+                            Range {
+                                start_byte: split + 2,
+                                end_byte: source.len(),
+                                start_point: Point::new(0, split + 2),
+                                end_point: Point::new(0, source.len()),
+                            },
+                        ])
+                        .unwrap();
+                    let tree = parser.parse(source, None).unwrap();
+                    assert!(
+                        !tree.root_node().has_error(),
+                        "{}",
+                        tree.root_node().to_sexp()
+                    );
+                    let statement = tree.root_node().named_child(0).unwrap();
+                    assert_eq!(statement.kind(), "raw");
+                    assert_eq!(statement.child(0).unwrap().byte_range(), 0..raw_end);
+                }
+                parser.set_included_ranges(&[]).unwrap();
+                let mut tree = parser.parse("iffy name", None).unwrap();
+                tree.edit(&InputEdit {
+                    start_byte: 4,
+                    old_end_byte: 5,
+                    new_end_byte: 4,
+                    start_position: Point::new(0, 4),
+                    old_end_position: Point::new(0, 5),
+                    new_end_position: Point::new(0, 4),
+                });
+                let edited = parser.parse("iffyname", Some(&tree)).unwrap();
+                let fresh = parser.parse("iffyname", None).unwrap();
+                assert_eq!(edited.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(edited.root_node().named_child(0).unwrap().kind(), "raw");
+                assert_eq!(
+                    edited
+                        .root_node()
+                        .named_child(0)
+                        .unwrap()
+                        .child(0)
+                        .unwrap()
+                        .byte_range(),
+                    0..2
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_fallback_bounds_streamed_lookahead() {
+    let grammar = serde_json::json!({
+        "name": "bounded_nonkeyword_lookahead",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "if"}},
+                {"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "fy"}},
+                {"type": "STRING", "value": "iffy"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let repetitions = 512;
+    let source = "iffy".repeat(repetitions);
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut reads = 0;
+        let tree = parser
+            .parse_with_options(
+                &mut |byte, _| {
+                    reads += 1;
+                    &source.as_bytes()[byte..(byte + 1).min(source.len())]
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.byte_range(), 0..source.len());
+        assert_eq!(
+            root.child_count(),
+            u32::try_from(repetitions * 2 - 1).unwrap()
+        );
+        assert_eq!(
+            root.child(0).unwrap().utf8_text(source.as_bytes()).unwrap(),
+            "if"
+        );
+        assert_eq!(
+            root.child(1).unwrap().utf8_text(source.as_bytes()).unwrap(),
+            "fy"
+        );
+        assert_eq!(
+            root.child(root.child_count() - 1)
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap(),
+            "iffy"
+        );
+        assert!(
+            reads < source.len() * 16,
+            "{reads} reads for {} bytes",
+            source.len()
+        );
+    }
+}
+
+#[test]
+fn test_nonkeyword_fallback_respects_lexical_precedence() {
+    for (raw_precedence, keyword_precedence, expected) in
+        [(2, 1, "raw"), (1, 2, "ordinary"), (0, 0, "ordinary")]
+    {
+        let grammar = format!(
+            r"module.exports = grammar({{
+            name: 'nonkeyword_fallback_precedence', word: $ => $.identifier,
+            rules: {{ source_file: $ => choice($.ordinary, $.raw, $.raw_long),
+                ordinary: $ => seq(token(prec({keyword_precedence}, 'iffy')), '!'),
+                raw: $ => seq(token.nonkeyword(prec({raw_precedence}, 'if')), $.identifier, '!'),
+                raw_long: $ => seq(token.nonkeyword(prec(-1, 'iff')), $.identifier, '!'),
+                identifier: _ => /[a-z]+/ }}
+        }});"
+        );
+        let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        std::fs::create_dir_all(&temporary_root).unwrap();
+        let file = tempfile::Builder::new()
+            .suffix(".js")
+            .tempfile_in(temporary_root)
+            .unwrap();
+        std::fs::write(file.path(), grammar).unwrap();
+        let json = load_grammar_file(file.path(), None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            for (source, branch) in [("iffy!", expected), ("iffyname!", "raw")] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(
+                    !root.has_error(),
+                    "{raw_precedence}/{keyword_precedence} {source}: {}",
+                    root.to_sexp()
+                );
+                assert_eq!(root.named_child(0).unwrap().kind(), branch);
+                assert_eq!(
+                    root.named_child(0).unwrap().child(0).unwrap().byte_range(),
+                    0..if branch == "raw" { 2 } else { 4 }
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_fallback_preserves_accepted_word_token() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_accepted_word', word: $ => $.identifier,
+            rules: {
+                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt, $.after_bang),
+                ident_stmt: $ => seq($.identifier, '?'),
+                raw_stmt: $ => seq(token.nonkeyword('if'), $.identifier, '?'),
+                kw_stmt: $ => seq(token(prec(1, 'iffy')), $.exclaim),
+                after_bang: _ => seq('!', choice(token(prec(1, 'iffy')), token.nonkeyword('if')), ';'),
+                identifier: _ => /[a-z]+/,
+                exclaim: _ => /[a-z]+!/,
+            },
+        });
+    ";
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    for immediate in [false, true] {
+        for precedence in [-1, 0, 2] {
+            let raw = if immediate {
+                format!("token.nonkeyword(token.immediate(prec({precedence}, 'if')))")
+            } else {
+                format!("token.nonkeyword(prec({precedence}, 'if'))")
+            };
+            let grammar = grammar.replace("token.nonkeyword('if')", &raw);
+            std::fs::write(file.path(), grammar).unwrap();
+            let json = load_grammar_file(file.path(), None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for (source, kind) in [
+                    (
+                        "iffyz?",
+                        if precedence > 1 {
+                            "raw_stmt"
+                        } else {
+                            "ident_stmt"
+                        },
+                    ),
+                    (
+                        "ifx?",
+                        if precedence > 1 {
+                            "raw_stmt"
+                        } else {
+                            "ident_stmt"
+                        },
+                    ),
+                    (
+                        " ifx?",
+                        if precedence > 1 && !immediate {
+                            "raw_stmt"
+                        } else {
+                            "ident_stmt"
+                        },
+                    ),
+                    ("iz?", "ident_stmt"),
+                    ("!if;", "after_bang"),
+                ] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                    assert_eq!(root.end_byte(), source.len());
+                    assert_eq!(root.named_child(0).unwrap().kind(), kind, "{source}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_immediate_word', word: $ => $.identifier,
+            extras: $ => [$.comment],
+            rules: {
+                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt, $.other_keyword_stmt,
+                    seq('A', choice($.raw_stmt, $.kw_stmt))),
+                ident_stmt: $ => seq($.identifier, '?'),
+                other_keyword_stmt: _ => seq('do', '?'),
+                raw_stmt: $ => seq(token.nonkeyword(prec(PRECEDENCE, 'if')), $.identifier, '?'),
+                kw_stmt: $ => seq(token(prec(1, 'iffy')), $.exclaim),
+                identifier: _ => WORD,
+                exclaim: _ => /[a-z]+!/,
+                comment: _ => '#',
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("immediate-word-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for immediate in [false, true] {
+        for precedence in [-1, 0, 2] {
+            let grammar = grammar
+                .replace("PRECEDENCE", &precedence.to_string())
+                .replace(
+                    "WORD",
+                    if immediate {
+                        "token.immediate(/[a-z]+/)"
+                    } else {
+                        "/[a-z]+/"
+                    },
+                );
+            std::fs::write(&path, grammar).unwrap();
+            let json = load_grammar_file(&path, None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for source in ["iffyname?", "#iffyname?", "A#iffyname?"] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                    assert_eq!(root.byte_range(), 0..source.len());
+                    let raw = precedence > 1
+                        || source.starts_with('A')
+                        || (immediate && source.starts_with('#'));
+                    let mut cursor = root.walk();
+                    let statement = root.named_children(&mut cursor).last().unwrap();
+                    assert_eq!(
+                        statement.kind(),
+                        if raw { "raw_stmt" } else { "ident_stmt" },
+                        "{source}"
+                    );
+                    assert_eq!(
+                        statement
+                            .named_child(0)
+                            .unwrap()
+                            .utf8_text(source.as_bytes())
+                            .unwrap(),
+                        if raw { "fyname" } else { "iffyname" }
+                    );
+                }
+                for source in std::iter::once("do?").chain((!immediate).then_some("#do?")) {
+                    let tree = parser.parse(source, None).unwrap();
+                    assert!(
+                        !tree.root_node().has_error(),
+                        "{source}: {}",
+                        tree.root_node().to_sexp()
+                    );
+                    let mut cursor = tree.walk();
+                    assert_eq!(
+                        tree.root_node()
+                            .named_children(&mut cursor)
+                            .last()
+                            .unwrap()
+                            .kind(),
+                        "other_keyword_stmt"
+                    );
+                }
+                for source in ["#name?", "#dox?"] {
+                    let tree = parser.parse(source, None).unwrap();
+                    assert_eq!(tree.root_node().has_error(), immediate);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_word_guard_preserves_lower_precedence_content() {
+    let grammar = r#"{
+        "name": "nonkeyword_guard_content",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [{"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}]},
+                {"type": "SEQ", "members": [{"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "do"}}, {"type": "SYMBOL", "name": "identifier"}]},
+                {"type": "REPEAT1", "content": {"type": "SYMBOL", "name": "content"}}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z/]+"},
+            "content": {"type": "TOKEN", "content": {"type": "PREC", "value": -1, "content": {"type": "PATTERN", "value": "[a-z/']+"}}}
+        }
+    }"#;
+    for mut parser in parsers_for_grammar(grammar) {
+        for source in ["/'/", "/'/''/"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert_eq!(root.to_sexp(), "(source_file (content))");
+            assert_eq!(root.named_child(0).unwrap().byte_range(), 0..source.len());
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
+    for (ordinary, nonkeyword, expected) in [
+        (
+            "token.immediate(token(prec(2, 'if')))",
+            "token.immediate(token.nonkeyword(prec(2, 'if')))",
+            "identifier",
+        ),
+        (
+            "token(prec(2, token.immediate('if')))",
+            "token.nonkeyword(prec(2, token.immediate('if')))",
+            "keyword",
+        ),
+        (
+            "token.immediate(prec(2, 'if'))",
+            "token.nonkeyword(token.immediate(prec(2, 'if')))",
+            "keyword",
+        ),
+    ] {
+        for expression in [ordinary, nonkeyword] {
+            let grammar = format!(
+                "module.exports = grammar({{ name: 'wrapped_lexical_precedence', rules: {{ source_file: $ => seq('p', choice(alias({expression}, $.keyword), $.identifier)), identifier: _ => token(prec(1, /[a-z]+/)) }} }});"
+            );
+            let temporary_root =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+            std::fs::create_dir_all(&temporary_root).unwrap();
+            let file = tempfile::Builder::new()
+                .suffix(".js")
+                .tempfile_in(temporary_root)
+                .unwrap();
+            std::fs::write(file.path(), grammar).unwrap();
+            let json = load_grammar_file(file.path(), None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                let tree = parser.parse("pif", None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{expression}: {}", root.to_sexp());
+                assert_eq!(root.end_byte(), 3);
+                assert_eq!(
+                    root.named_child(0).unwrap().kind(),
+                    expected,
+                    "{expression}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_fallback_preserves_other_substituted_keywords() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'mixed_keyword_fallback', word: $ => $.identifier,
+            rules: {
+                document: $ => choice($.list1, $.list2),
+                list1: $ => seq('1', repeat1(choice(alias(token.nonkeyword('do'), $.raw), $.identifier))),
+                list2: $ => seq('2', repeat1(choice('fy', alias(token.nonkeyword(prec(PRECEDENCE, 'fy')), $.raw), seq(alias(token.nonkeyword(prec(PRECEDENCE, 'fy')), $.raw), 'x'), 'do'))),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("mixed-keyword-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for precedence in [-1, 0, 1, 2] {
+        std::fs::write(
+            &path,
+            grammar.replace("PRECEDENCE", &precedence.to_string()),
+        )
+        .unwrap();
+        let json = load_grammar_file(&path, None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            for source in ["2do", "2fydo", "2fyfy", "2 do", "2fy do", "2fyx"] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(
+                    !root.has_error(),
+                    "{precedence} {source}: {}",
+                    root.to_sexp()
+                );
+                assert_eq!(root.byte_range(), 0..source.len());
+                assert_eq!(root.named_child(0).unwrap().kind(), "list2");
+            }
+            for source in ["2dox", "2fyxy"] {
+                assert!(parser.parse(source, None).unwrap().root_node().has_error());
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_reserved_named_declaration() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'reserved_nonkeyword_name', word: $ => $.identifier,
+            reserved: { kw: $ => [$.raw_if] },
+            rules: {
+                source_file: $ => seq('S', reserved('kw', alias($.raw_if, $.prefix)), $.identifier),
+                raw_if: _ => token.nonkeyword('if'),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("reserved-nonkeyword-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    std::fs::write(&path, grammar).unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        let tree = parser.parse("Sifname", None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.to_sexp(), "(source_file (prefix) (identifier))");
+        assert!(!root.has_error());
+        assert_eq!(root.byte_range(), 0..7);
+        assert_eq!(root.named_child(0).unwrap().byte_range(), 1..3);
+        assert_eq!(root.named_child(1).unwrap().byte_range(), 3..7);
+    }
+    std::fs::write(
+        &path,
+        grammar.replace("kw: $ => [$.raw_if]", "kw: _ => ['if']"),
+    )
+    .unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    assert!(generate_parser(&json).is_err());
+}
+
+#[test]
+fn test_nonkeyword_tokens_preserve_context_and_composition() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_tokens',
+            word: $ => $.identifier,
+            extras: _ => [/\s/, token(token.nonkeyword('!'))],
+            reserved: { global: _ => [], kw: _ => [token.nonkeyword('if'), token.nonkeyword(token.immediate(prec(2, 'if'))), token(token.nonkeyword('if')), token(token.nonkeyword(token.immediate('if'))), token(prec(2, token.nonkeyword('if')))] },
+            rules: {
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.reserved_raw, $.reserved_immediate, $.reserved_wrapped, $.reserved_wrapped_immediate, $.reserved_wrapped_precedence, $.extra, $.identifier),
+                ordinary: $ => seq('N', 'if', $.identifier),
+                raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
+                immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
+                outer_immediate: $ => seq('O', alias(token.immediate(token.nonkeyword(prec(2, 'if'))), $.prefix), $.identifier),
+                precedence: $ => seq('P', choice(seq(alias(token.nonkeyword(prec(2, 'if')), $.prefix), $.identifier), $.identifier)),
+                wrapped: $ => seq('W', alias(token(prec(2, token.nonkeyword('if'))), $.prefix), $.identifier),
+                wrapped_immediate: $ => seq('M', alias(token(prec(2, token.nonkeyword(token.immediate('if')))), $.prefix), $.identifier),
+                reserved_raw: $ => seq('S', reserved('kw', alias(token.nonkeyword('if'), $.prefix)), $.identifier),
+                reserved_immediate: $ => seq('T', reserved('kw', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix)), $.identifier),
+                reserved_wrapped: $ => seq('U', reserved('kw', alias(token(token.nonkeyword('if')), $.prefix)), $.identifier),
+                reserved_wrapped_immediate: $ => seq('V', reserved('kw', alias(token(token.nonkeyword(token.immediate('if'))), $.prefix)), $.identifier),
+                reserved_wrapped_precedence: $ => seq('Z', reserved('kw', alias(token(prec(2, token.nonkeyword('if'))), $.prefix)), $.identifier),
+                extra: _ => seq('E', token(token.nonkeyword('!')), 'x'),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    std::fs::write(file.path(), grammar).unwrap();
+    let json = load_grammar_file(file.path(), None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        for (source, kind) in [
+            ("N if x", "ordinary"),
+            ("R ifx", "raw"),
+            ("Iifx", "immediate"),
+            ("Oifx", "outer_immediate"),
+            ("Pifx", "precedence"),
+            ("Wifx", "wrapped"),
+            ("Mifx", "wrapped_immediate"),
+            ("M ifx", "wrapped_immediate"),
+            ("Sifx", "reserved_raw"),
+            ("Tifx", "reserved_immediate"),
+            ("Uifx", "reserved_wrapped"),
+            ("U ifx", "reserved_wrapped"),
+            ("Vifx", "reserved_wrapped_immediate"),
+            ("Z ifx", "reserved_wrapped_precedence"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            let statement = root.named_child(0).unwrap();
+            assert_eq!(statement.kind(), kind);
+            if kind != "ordinary" {
+                let prefix = statement.named_child(0).unwrap();
+                assert_eq!(prefix.kind(), "prefix");
+                assert_eq!(prefix.utf8_text(source.as_bytes()).unwrap(), "if");
+                assert_eq!(
+                    statement
+                        .named_child(1)
+                        .unwrap()
+                        .utf8_text(source.as_bytes())
+                        .unwrap(),
+                    "x"
+                );
+            }
+        }
+        for source in ["E!x", "!E!x!"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), "(document (extra))");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+        for source in ["N ifx", "I ifx", "O ifx", "T ifx", "V ifx", "I!ifx"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{source}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_keyword_precedence_with_word() {
     for word_precedence in [-1, 0, 1] {
         let (parser_name, parser_code) = generate_parser(

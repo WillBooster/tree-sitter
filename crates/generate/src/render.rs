@@ -1279,8 +1279,18 @@ impl Generator {
     }
 
     fn add_lex_function(&mut self, name: &str, lex_table: LexTable) {
+        let has_fallback = lex_table
+            .states
+            .iter()
+            .any(|state| state.fallback_accept.is_some() || state.restore_fallback);
+        if has_fallback {
+            add_line!(
+                self,
+                "typedef struct {{ bool valid; int32_t precedence; TSSymbol symbol; TSLexerPosition start, end; }} {name}_fallback;"
+            );
+        }
         if lex_table.states.len() > MAX_SINGLE_LEXER_STATES {
-            self.add_chunked_lex_function(name, &lex_table);
+            self.add_chunked_lex_function(name, &lex_table, has_fallback);
             return;
         }
         add_line!(
@@ -1291,6 +1301,12 @@ impl Generator {
 
         let tag_count = Self::start_tag_count(&lex_table);
         add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
+        if has_fallback {
+            add_line!(
+                self,
+                "{name}_fallback fallback_storage = {{0}}, *fallback = &fallback_storage;"
+            );
+        }
         add_line!(self, "START_LEXER();");
         add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
         add_line!(self, "switch (state) {{");
@@ -1299,7 +1315,7 @@ impl Generator {
         for (i, state) in lex_table.states.into_iter().enumerate() {
             add_line!(self, "case {i}:");
             indent!(self);
-            self.add_lex_state(i as u32, state);
+            self.add_lex_state(i as u32, &state);
             dedent!(self);
         }
 
@@ -1320,7 +1336,12 @@ impl Generator {
         table
             .states
             .iter()
-            .filter_map(|state| state.start_tag)
+            .flat_map(|state| {
+                state
+                    .start_tag
+                    .into_iter()
+                    .chain(state.fallback_accept.and_then(|(_, _, tag)| tag))
+            })
             .chain(table.states.iter().flat_map(|state| {
                 state
                     .advance_actions
@@ -1333,12 +1354,18 @@ impl Generator {
             .map_or(1, |tag| tag + 1)
     }
 
-    fn add_chunked_lex_function(&mut self, name: &str, lex_table: &LexTable) {
+    fn add_chunked_lex_function(&mut self, name: &str, lex_table: &LexTable, has_fallback: bool) {
         let chunk_count = lex_table.states.len().div_ceil(LEXER_CHUNK_SIZE);
+        let fallback_parameter = if has_fallback {
+            format!(", {name}_fallback *")
+        } else {
+            String::new()
+        };
+        let fallback_argument = if has_fallback { ", &fallback" } else { "" };
         for chunk in 0..chunk_count {
             add_line!(
                 self,
-                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerPosition *);"
+                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerPosition *{fallback_parameter});"
             );
         }
         add_line!(self, "");
@@ -1349,6 +1376,9 @@ impl Generator {
         indent!(self);
         let tag_count = Self::start_tag_count(lex_table);
         add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
+        if has_fallback {
+            add_line!(self, "{name}_fallback fallback = {{0}};");
+        }
         add_line!(self, "bool result = false;");
         add_line!(self, "for (;;) {{");
         indent!(self);
@@ -1358,7 +1388,7 @@ impl Generator {
         for chunk in 0..chunk_count {
             add_line!(
                 self,
-                "case {chunk}: status = {name}_{chunk}(lexer, &state, &result, start_tags); break;"
+                "case {chunk}: status = {name}_{chunk}(lexer, &state, &result, start_tags{fallback_argument}); break;"
             );
         }
         add_line!(self, "default: return result;");
@@ -1371,11 +1401,16 @@ impl Generator {
         add_line!(self, "}}\n");
 
         for (chunk, states) in lex_table.states.chunks(LEXER_CHUNK_SIZE).enumerate() {
-            self.add_lex_chunk(name, chunk, states);
+            self.add_lex_chunk(name, chunk, states, has_fallback);
         }
     }
 
-    fn add_lex_chunk(&mut self, name: &str, chunk: usize, states: &[LexState]) {
+    fn add_lex_chunk(&mut self, name: &str, chunk: usize, states: &[LexState], has_fallback: bool) {
+        let fallback_parameter = if has_fallback {
+            format!(", {name}_fallback *fallback")
+        } else {
+            String::new()
+        };
         let has_advances = states.iter().enumerate().any(|(offset, state)| {
             let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
             state.eof_action.is_some()
@@ -1386,10 +1421,13 @@ impl Generator {
         });
         add_line!(
             self,
-            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerPosition *start_tags) {{"
+            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerPosition *start_tags{fallback_parameter}) {{"
         );
         indent!(self);
         add_line!(self, "(void)start_tags;");
+        if has_fallback {
+            add_line!(self, "(void)fallback;");
+        }
         add_line!(self, "TSStateId state = *state_out;");
         add_line!(self, "bool result = *result_out;");
         if has_advances {
@@ -1412,7 +1450,7 @@ impl Generator {
             let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
             add_line!(self, "case {id}:");
             indent!(self);
-            self.add_lex_state(id, state.clone());
+            self.add_lex_state(id, state);
             dedent!(self);
         }
         add_line!(self, "default:");
@@ -1427,7 +1465,7 @@ impl Generator {
         add_line!(self, "}}\n");
     }
 
-    fn add_lex_state(&mut self, state_id: u32, state: LexState) {
+    fn add_lex_state(&mut self, state_id: u32, state: &LexState) {
         if state
             .advance_actions
             .iter()
@@ -1441,17 +1479,14 @@ impl Generator {
                 .advance_actions
                 .iter()
                 .all(|(_, action)| action.state == state_id && action.in_main_token);
-        if !defer_accept && let Some(accept_action) = state.accept_action {
-            if let Some(tag) = state.start_tag {
-                add_line!(self, "lexer->mark_start(lexer, &start_tags[{tag}]);");
-            }
-            add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
+        if !defer_accept {
+            self.add_lex_accept(state);
         }
 
-        if let Some(eof_action) = state.eof_action {
+        if let Some(ref eof_action) = state.eof_action {
             add_whitespace!(self);
             add!(self, "if (eof) ");
-            self.add_advance_action(&eof_action, state_id);
+            self.add_advance_action(eof_action, state_id);
             add!(self, "\n");
         }
 
@@ -1684,13 +1719,58 @@ impl Generator {
             add!(self, "\n");
         }
 
-        if defer_accept && let Some(accept_action) = state.accept_action {
+        if defer_accept {
+            self.add_lex_accept(state);
+        }
+        add_line!(self, "END_STATE();");
+    }
+
+    fn add_lex_accept(&mut self, state: &LexState) {
+        if let Some((symbol, precedence, start_tag)) = state.fallback_accept {
+            add_line!(
+                self,
+                "if (!fallback->valid || {precedence} >= fallback->precedence) {{"
+            );
+            indent!(self);
+            add_line!(self, "fallback->valid = true;");
+            add_line!(self, "fallback->precedence = {precedence};");
+            add_line!(self, "fallback->symbol = {};", self.symbol_ids[&symbol]);
+            if let Some(tag) = start_tag {
+                add_line!(self, "fallback->start = start_tags[{tag}];");
+            } else {
+                add_line!(self, "lexer->get_position(lexer, &fallback->start);");
+            }
+            add_line!(self, "lexer->mark_end(lexer);");
+            add_line!(self, "lexer->get_mark_end(lexer, &fallback->end);");
+            dedent!(self);
+            add_line!(self, "}}");
+        }
+        if state.restore_fallback {
+            add_line!(self, "result = fallback->valid;");
+            add_line!(self, "if (result) {{");
+            indent!(self);
+            add_line!(self, "lexer->result_symbol = fallback->symbol;");
+            add_line!(self, "lexer->mark_start(lexer, &fallback->start);");
+            add_line!(self, "lexer->mark_end_at(lexer, &fallback->end);");
+            dedent!(self);
+            add_line!(self, "}}");
+        } else if let Some(symbol) = state.accept_action {
+            if let Some(precedence) = state.guarded_precedence {
+                add_line!(
+                    self,
+                    "if (!fallback->valid || {precedence} >= fallback->precedence) {{"
+                );
+                indent!(self);
+            }
             if let Some(tag) = state.start_tag {
                 add_line!(self, "lexer->mark_start(lexer, &start_tags[{tag}]);");
             }
-            add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&accept_action]);
+            add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&symbol]);
+            if state.guarded_precedence.is_some() {
+                dedent!(self);
+                add_line!(self, "}}");
+            }
         }
-        add_line!(self, "END_STATE();");
     }
 
     fn add_advance_map(&mut self, transitions: &[(char, u32)]) {
