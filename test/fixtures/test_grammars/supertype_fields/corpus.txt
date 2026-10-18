@@ -1,0 +1,16 @@
+=====================================
+Fields inside ordinary and aliased supertypes
+=====================================
+
+[a] [a, ...b] alias ...c; assign ...d; restrict ...e; single ...f; pair ...g h;
+
+---
+
+(source_file
+  (list (name))
+  (list (name) spread: (spread (name)))
+  (aliased (wrapped spread: (spread (name))))
+  (assigned spread: (spread (name)))
+  (restricted spread: (spread (name)))
+  (wrapped_single spread: (spread (name)))
+  (wrapped_pair spread: (spread (name)) spread: (name)))
