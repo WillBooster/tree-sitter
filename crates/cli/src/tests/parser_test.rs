@@ -5255,3 +5255,102 @@ fn test_grammar_that_should_hang_and_not_segfault() {
         }
     }
 }
+
+#[test]
+fn test_incremental_parse_removing_trailing_empty_included_range() {
+    let grammar = serde_json::json!({
+        "name": "included_range_end_invalidation",
+        "extras": [],
+        "externals": [{"type": "SYMBOL", "name": "end_marker"}],
+        "rules": {"document": {"type": "SEQ", "members": [
+            {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[\\s\\S]"}},
+            {"type": "SYMBOL", "name": "end_marker"}
+        ]}}
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let directory = tempfile::tempdir_in(temporary_root).unwrap();
+    std::fs::write(directory.path().join("scanner.c"), r#"
+        #include "tree_sitter/parser.h"
+        void *tree_sitter_included_range_end_invalidation_external_scanner_create(void) { return NULL; }
+        void tree_sitter_included_range_end_invalidation_external_scanner_destroy(void *p) { (void)p; }
+        unsigned tree_sitter_included_range_end_invalidation_external_scanner_serialize(void *p, char *b) { (void)p; (void)b; return 0; }
+        void tree_sitter_included_range_end_invalidation_external_scanner_deserialize(void *p, const char *b, unsigned n) { (void)p; (void)b; (void)n; }
+        bool tree_sitter_included_range_end_invalidation_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+            (void)p;
+            if (!valid[0] || !lexer->eof(lexer)) return false;
+            lexer->result_symbol = 0;
+            return true;
+        }
+    "#).unwrap();
+    let language = get_test_language(&name, &code, Some(directory.path()));
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    parser
+        .set_included_ranges(&[
+            tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 2,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(1, 0),
+            },
+            tree_sitter::Range {
+                start_byte: 4,
+                end_byte: 4,
+                start_point: Point::new(1, 2),
+                end_point: Point::new(1, 2),
+            },
+        ])
+        .unwrap();
+    let mut old = parser.parse("a\n> ", None).unwrap();
+    assert_eq!(old.root_node().end_byte(), 4);
+    old.edit(&InputEdit {
+        start_byte: 1,
+        old_end_byte: 1,
+        new_end_byte: 2,
+        start_position: Point::new(0, 1),
+        old_end_position: Point::new(0, 1),
+        new_end_position: Point::new(0, 2),
+    });
+    parser
+        .set_included_ranges(&[tree_sitter::Range {
+            start_byte: 0,
+            end_byte: 3,
+            start_point: Point::new(0, 0),
+            end_point: Point::new(1, 0),
+        }])
+        .unwrap();
+    let incremental = parser.parse("a[\n> ", Some(&old)).unwrap();
+    let fresh = parser.parse("a[\n> ", None).unwrap();
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert_eq!(fresh.root_node().end_byte(), 3);
+    assert_eq!(incremental.root_node().end_byte(), 3);
+    assert_eq!(incremental.root_node().end_position(), Point::new(1, 0));
+    parser
+        .set_included_ranges(&[
+            tree_sitter::Range {
+                start_byte: 0,
+                end_byte: 3,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(1, 0),
+            },
+            tree_sitter::Range {
+                start_byte: 5,
+                end_byte: 5,
+                start_point: Point::new(1, 2),
+                end_point: Point::new(1, 2),
+            },
+        ])
+        .unwrap();
+    let extended = parser.parse("a[\n> ", Some(&fresh)).unwrap();
+    let extended_fresh = parser.parse("a[\n> ", None).unwrap();
+    assert_eq!(
+        extended.root_node().range(),
+        extended_fresh.root_node().range()
+    );
+    assert_eq!(extended.root_node().end_byte(), 5);
+}
