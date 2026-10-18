@@ -3295,6 +3295,36 @@ fn test_transparent_supertype_alias_node_schema() {
 }
 
 #[test]
+fn test_external_tokens_cannot_be_supertypes() {
+    for with_unrelated_fields in [false, true] {
+        let mut grammar = serde_json::json!({
+            "name": "external_supertype",
+            "externals": [{"type": "SYMBOL", "name": "unused"}, {"type": "SYMBOL", "name": "external"}],
+            "supertypes": ["external"],
+            "rules": {"source_file": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "a"}, {"type": "SYMBOL", "name": "external"}
+            ]}}
+        });
+        if with_unrelated_fields {
+            grammar["extras"] = serde_json::json!([{"type": "SYMBOL", "name": "comment"}]);
+            grammar["rules"]["comment"] = serde_json::json!({"type": "CHOICE", "members": [
+                {"type": "FIELD", "name": "left", "content": {"type": "STRING", "value": "x"}},
+                {"type": "FIELD", "name": "right", "content": {"type": "STRING", "value": "y"}}
+            ]});
+        }
+        let error = generate_parser(&grammar.to_string()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Terminal rule 'external' cannot be used as a supertype"),
+            "{error}"
+        );
+        grammar["supertypes"] = serde_json::json!([]);
+        assert!(generate_parser(&grammar.to_string()).is_ok());
+    }
+}
+
+#[test]
 fn test_supertype_alias_rejects_mixed_visible_uses() {
     let grammar_path = super::helpers::fixtures::fixtures_dir()
         .join("test_grammars/transparent_supertype_alias/grammar.js");
