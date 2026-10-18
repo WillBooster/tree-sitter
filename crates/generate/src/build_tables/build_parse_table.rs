@@ -62,8 +62,8 @@ struct AuxiliaryParentSetId(u32);
 /// to its predecessor: the context of the state that first led to it. Successor states
 /// share a context. Conflict resolution uses the nearest entry, including empty sets,
 /// after filtering auxiliary parents, because those entries determine expected-conflict
-/// matching. Diagnostic ownership follows enclosing repetitions and skips self-only
-/// entries to recover the source rules that introduced a repetition.
+/// matching. Diagnostic ownership follows same-context auxiliary parents and resumes
+/// in an older context when a cycle would otherwise hide a source owner.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
@@ -126,6 +126,7 @@ impl AuxiliarySymbolContexts {
     /// the path to the state whose context is `context`.
     fn parents(&self, context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
         self.find_parents(context, symbol, |_| true)
+            .map(|(_, parents)| parents)
     }
 
     fn find_parents(
@@ -133,7 +134,7 @@ impl AuxiliarySymbolContexts {
         mut context: Option<AuxiliaryContextId>,
         symbol: usize,
         accept: impl Fn(&[Symbol]) -> bool,
-    ) -> Option<&[Symbol]> {
+    ) -> Option<(AuxiliaryContextId, &[Symbol])> {
         while let Some(id) = context {
             let AuxiliaryContext {
                 predecessor,
@@ -144,7 +145,7 @@ impl AuxiliarySymbolContexts {
             if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
                 let parents = Self::parent_set(&self.parent_symbols, &self.parent_sets, parent_set);
                 if accept(parents) {
-                    return Some(parents);
+                    return Some((id, parents));
                 }
             }
             context = predecessor;
@@ -1478,24 +1479,41 @@ impl<'a> ParseTableBuilder<'a> {
         items: &BTreeSet<&ParseItem>,
         auxiliary_context: Option<AuxiliaryContextId>,
     ) -> BTreeSet<Symbol> {
-        let mut pending = vec![symbol];
+        let mut pending = vec![(symbol, auxiliary_context, Vec::new())];
         let mut visited = BTreeSet::new();
         let mut parents = BTreeSet::new();
-        while let Some(symbol) = pending.pop() {
-            if !visited.insert(symbol) {
+        while let Some((symbol, context, mut ancestors)) = pending.pop() {
+            let position = (symbol, context.map(AuxiliaryContextId::index));
+            if ancestors.contains(&position) {
+                if let Some(id) = context {
+                    pending.push((
+                        symbol,
+                        self.auxiliary_contexts.contexts[id.index()].predecessor,
+                        Vec::new(),
+                    ));
+                }
+                continue;
+            }
+            if !visited.insert(position) {
                 continue;
             }
             if !self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
                 parents.insert(symbol);
                 continue;
             }
-            pending.extend(
+            ancestors.push(position);
+            if let Some((id, enclosing)) =
                 self.auxiliary_contexts
-                    .find_parents(auxiliary_context, symbol.index as usize, |parents| {
+                    .find_parents(context, symbol.index as usize, |parents| {
                         parents.iter().any(|parent| *parent != symbol)
                     })
-                    .unwrap_or_default(),
-            );
+            {
+                pending.extend(
+                    enclosing
+                        .iter()
+                        .map(|parent| (*parent, Some(id), ancestors.clone())),
+                );
+            }
             pending.extend(
                 items
                     .iter()
@@ -1505,7 +1523,13 @@ impl<'a> ParseTableBuilder<'a> {
                             .iter()
                             .any(|step| step.symbol() == symbol)
                     })
-                    .map(|item| Symbol::non_terminal(item.variable_index as usize)),
+                    .map(|item| {
+                        (
+                            Symbol::non_terminal(item.variable_index as usize),
+                            context,
+                            ancestors.clone(),
+                        )
+                    }),
             );
         }
         parents
