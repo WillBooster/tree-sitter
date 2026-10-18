@@ -74,6 +74,7 @@ struct AuxiliarySymbolContexts {
 }
 
 struct AuxiliaryContext {
+    path_length: usize,
     predecessor: Option<AuxiliaryContextId>,
     start: u32,
     len: u32,
@@ -93,6 +94,7 @@ impl AuxiliarySymbolContexts {
     fn push(
         &mut self,
         predecessor: Option<AuxiliaryContextId>,
+        path_length: usize,
         mut uses: Vec<(usize, usize)>,
     ) -> Option<AuxiliaryContextId> {
         if uses.is_empty() {
@@ -115,6 +117,7 @@ impl AuxiliarySymbolContexts {
         }
         let id = AuxiliaryContextId::from_index(self.contexts.len());
         self.contexts.push(AuxiliaryContext {
+            path_length,
             predecessor,
             start,
             len: self.entries.len() as u32 - start,
@@ -140,6 +143,7 @@ impl AuxiliarySymbolContexts {
                 predecessor,
                 start,
                 len,
+                ..
             } = self.contexts[id.index()];
             let entries = &self.entries[start as usize..(start + len) as usize];
             if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
@@ -151,6 +155,21 @@ impl AuxiliarySymbolContexts {
             context = predecessor;
         }
         None
+    }
+
+    fn at_position(
+        &self,
+        mut context: Option<AuxiliaryContextId>,
+        position: usize,
+    ) -> Option<AuxiliaryContextId> {
+        while let Some(id) = context {
+            let entry = &self.contexts[id.index()];
+            if entry.path_length <= position {
+                break;
+            }
+            context = entry.predecessor;
+        }
+        context
     }
 
     fn intern(&mut self, parents: &[Symbol]) -> AuxiliaryParentSetId {
@@ -946,9 +965,11 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
-        let auxiliary_context = self
-            .auxiliary_contexts
-            .push(preceding_auxiliary_context, auxiliary_uses);
+        let auxiliary_context = self.auxiliary_contexts.push(
+            preceding_auxiliary_context,
+            preceding_symbols.len(),
+            auxiliary_uses,
+        );
 
         // Having computed the successor item sets for each symbol, add a new
         // parse state for each of these item sets, and add a corresponding Shift
@@ -1443,18 +1464,14 @@ impl<'a> ParseTableBuilder<'a> {
         items: &BTreeSet<&ParseItem>,
         auxiliary_context: Option<AuxiliaryContextId>,
     ) -> Vec<(String, Vec<String>)> {
-        let contextual_symbols = preceding_symbols
+        let contextual_symbols = items
             .iter()
-            .copied()
-            .chain(
-                items
-                    .iter()
-                    .map(|item| Symbol::non_terminal(item.variable_index as usize)),
-            )
+            .map(|item| Symbol::non_terminal(item.variable_index as usize))
             .collect::<BTreeSet<_>>();
-        contextual_symbols
+        preceding_symbols
             .iter()
             .copied()
+            .chain(contextual_symbols.iter().copied())
             .chain(items.iter().flat_map(|item| {
                 item.production(self.syntax_grammar)
                     .steps
@@ -1468,17 +1485,31 @@ impl<'a> ParseTableBuilder<'a> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .map(|symbol| {
+                let mut parents = self.repetition_parents(
+                    symbol,
+                    items,
+                    auxiliary_context,
+                    contextual_symbols.contains(&symbol),
+                );
+                for (position, preceding) in preceding_symbols.iter().enumerate() {
+                    if *preceding == symbol {
+                        parents.extend(
+                            self.repetition_parents(
+                                symbol,
+                                &BTreeSet::new(),
+                                self.auxiliary_contexts
+                                    .at_position(auxiliary_context, position),
+                                true,
+                            ),
+                        );
+                    }
+                }
                 (
                     self.symbol_name(symbol),
-                    self.repetition_parents(
-                        symbol,
-                        items,
-                        auxiliary_context,
-                        contextual_symbols.contains(&symbol),
-                    )
-                    .into_iter()
-                    .map(|parent| self.symbol_name(parent))
-                    .collect(),
+                    parents
+                        .into_iter()
+                        .map(|parent| self.symbol_name(parent))
+                        .collect(),
                 )
             })
             .collect()
