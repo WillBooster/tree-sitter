@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, ffi::OsStr, fs, path::Path, process::Command, str::FromStr};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use bindgen::RustTarget;
 
 use crate::{GenerateFixtures, bail_on_err};
@@ -27,6 +27,13 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
     for grammar_file in find_grammar_files(grammars_dir.to_str().unwrap()).flatten() {
         let grammar_dir = grammar_file.parent().unwrap();
         let grammar_name = grammar_dir.file_name().and_then(OsStr::to_str).unwrap();
+
+        if matches!(grammar_name, "c" | "cpp") {
+            adapt_c_preprocessor_comments(&grammar_dir.join("src/grammar.json"))?;
+        }
+        if grammar_name == "bash" {
+            adapt_bash_operators(&grammar_dir.join("src/grammar.json"))?;
+        }
 
         println!(
             "Regenerating {grammar_name} parser{}",
@@ -60,6 +67,95 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn adapt_bash_operators(path: &Path) -> Result<()> {
+    let mut grammar: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let rules = grammar["rules"]
+        .as_object_mut()
+        .context("Missing Bash rules")?;
+    for (name, rule) in rules {
+        mark_bash_raw_tokens(rule, matches!(name.as_str(), "number" | "brace_expression"));
+    }
+    let externals = grammar["externals"]
+        .as_array_mut()
+        .context("Missing Bash external tokens")?;
+    for rule in externals {
+        mark_bash_raw_tokens(rule, false);
+    }
+    fs::write(path, serde_json::to_vec_pretty(&grammar)?)?;
+    Ok(())
+}
+
+fn mark_bash_raw_tokens(rule: &mut serde_json::Value, numeric_context: bool) {
+    let kind = rule["type"].as_str();
+    if kind == Some("NONKEYWORD_TOKEN") {
+        return;
+    }
+    if (matches!(kind, Some("STRING" | "TOKEN" | "IMMEDIATE_TOKEN")) && is_bash_operator(rule))
+        || (numeric_context && matches!(kind, Some("PATTERN" | "TOKEN" | "IMMEDIATE_TOKEN")))
+    {
+        *rule = serde_json::json!({"type": "NONKEYWORD_TOKEN", "content": rule.take()});
+        return;
+    }
+    if matches!(kind, Some("TOKEN" | "IMMEDIATE_TOKEN")) {
+        return;
+    }
+    if let Some(members) = rule
+        .get_mut("members")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for member in members {
+            mark_bash_raw_tokens(member, numeric_context);
+        }
+    }
+    if let Some(content) = rule.get_mut("content") {
+        mark_bash_raw_tokens(content, numeric_context);
+    }
+}
+
+fn is_bash_operator(rule: &serde_json::Value) -> bool {
+    match rule["type"].as_str() {
+        Some("TOKEN" | "IMMEDIATE_TOKEN" | "PREC" | "PREC_LEFT" | "PREC_RIGHT") => {
+            is_bash_operator(&rule["content"])
+        }
+        Some("STRING") => rule["value"].as_str().is_some_and(|value| {
+            value
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_ascii_alphabetic() && c != '_')
+        }),
+        _ => false,
+    }
+}
+
+fn adapt_c_preprocessor_comments(path: &Path) -> Result<()> {
+    let mut grammar: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let comments = serde_json::json!({
+        "type": "REPEAT", "content": {"type": "SYMBOL", "name": "comment"}
+    });
+    for name in [
+        "preproc_include",
+        "preproc_def",
+        "preproc_function_def",
+        "preproc_call",
+    ] {
+        let members = grammar["rules"][name]["members"]
+            .as_array_mut()
+            .with_context(|| format!("Missing {name} sequence in {}", path.display()))?;
+        ensure!(
+            members
+                .last()
+                .is_some_and(|member| member["type"] == "IMMEDIATE_TOKEN"),
+            "Expected an immediate newline in {name} of {}",
+            path.display()
+        );
+        if members.len() < 2 || members[members.len() - 2] != comments {
+            members.insert(members.len() - 1, comments.clone());
+        }
+    }
+    fs::write(path, serde_json::to_vec_pretty(&grammar)?)?;
     Ok(())
 }
 

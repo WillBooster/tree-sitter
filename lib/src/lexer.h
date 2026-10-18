@@ -19,6 +19,7 @@ typedef struct {
   TSLexer data;
   Length current_position;
   Length token_start_position;
+  Length marked_start_position;
   Length token_end_position;
 
   TSRange *included_ranges;
