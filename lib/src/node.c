@@ -731,6 +731,7 @@ TSNode ts_node_named_child(TSNode self, uint32_t child_index) {
 
 TSNode ts_node_child_by_field_id(TSNode self, TSFieldId field_id) {
   typedef struct {
+    TSNode parent;
     NodeChildIterator iterator;
     const TSFieldMapEntry *field_map;
     const TSFieldMapEntry *field_map_end;
@@ -788,6 +789,7 @@ scan:
 
         else {
           array_push(&stack, ((FieldSearchFrame) {
+            .parent = self,
             .iterator = iterator,
             .field_map = field_map,
             .field_map_end = field_map_end,
@@ -834,6 +836,7 @@ scan:
 not_found:
   if (stack.size) {
     FieldSearchFrame frame = array_pop(&stack);
+    self = frame.parent;
     iterator = frame.iterator;
     field_map = frame.field_map + 1;
     field_map_end = frame.field_map_end;
