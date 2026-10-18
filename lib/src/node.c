@@ -17,6 +17,7 @@ static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
 static TSNode ts_node__first_child_without_fields(TSNode self);
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant);
+static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child, bool check_range);
 
 // TSNode - constructors
 
@@ -631,6 +632,21 @@ TSStateId ts_node_next_parse_state(TSNode self) {
 TSNode ts_node_parent(TSNode self) {
   TSNode node = ts_tree_root_node(self.tree);
   if (node.id == self.id) return ts_node__null();
+  if (ts_node_start_byte(self) == ts_node_end_byte(self)) {
+    TSTreeCursor cursor = ts_tree_cursor_new(node);
+    bool found = ts_node__goto_descendant(&cursor, self, NULL, true);
+    if (!found) {
+      // Offset-root nodes can lie outside their ancestors' unshifted ranges.
+      ts_tree_cursor_reset(&cursor, node);
+      found = ts_node__goto_descendant(&cursor, self, NULL, false);
+    }
+    TSNode parent = ts_node__null();
+    if (found && ts_tree_cursor_goto_parent(&cursor)) {
+      parent = ts_tree_cursor_current_node(&cursor);
+    }
+    ts_tree_cursor_delete(&cursor);
+    return parent;
+  }
 
   while (true) {
     TSNode next_node = ts_node__child_with_descendant_unchecked(node, self);
@@ -683,39 +699,40 @@ static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode desce
 }
 
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant) {
+  TSTreeCursor cursor = ts_tree_cursor_new(self);
+  TSNode child = ts_node__null();
+  if (!ts_node__goto_descendant(&cursor, descendant, &child, true)) {
+    child = ts_node__null();
+  }
+  ts_tree_cursor_delete(&cursor);
+  return child;
+}
+
+static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child, bool check_range) {
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
-  TSTreeCursor cursor = ts_tree_cursor_new(self);
-  if (!ts_tree_cursor_goto_first_child(&cursor)) {
-    ts_tree_cursor_delete(&cursor);
-    return ts_node__null();
-  }
+  if (!ts_tree_cursor_goto_first_child(cursor)) return false;
 
   uint32_t depth = 1;
-  TSNode child = ts_tree_cursor_current_node(&cursor);
   for (;;) {
-    TSNode node = ts_tree_cursor_current_node(&cursor);
-    if (depth == 1) child = node;
+    TSNode node = ts_tree_cursor_current_node(cursor);
+    if (child && depth == 1) *child = node;
     if (
-      ts_node_start_byte(node) <= start_byte
-      && ts_node_end_byte(node) >= end_byte
+      !check_range || (
+        ts_node_start_byte(node) <= start_byte
+        && ts_node_end_byte(node) >= end_byte
+      )
     ) {
-      if (node.id == descendant.id) {
-        ts_tree_cursor_delete(&cursor);
-        return child;
-      }
-      if (ts_tree_cursor_goto_first_child(&cursor)) {
+      if (node.id == descendant.id) return true;
+      if (ts_tree_cursor_goto_first_child(cursor)) {
         depth++;
         continue;
       }
     }
 
-    while (!ts_tree_cursor_goto_next_sibling(&cursor)) {
-      if (depth == 1) {
-        ts_tree_cursor_delete(&cursor);
-        return ts_node__null();
-      }
-      ts_tree_cursor_goto_parent(&cursor);
+    while (!ts_tree_cursor_goto_next_sibling(cursor)) {
+      if (depth == 1) return false;
+      ts_tree_cursor_goto_parent(cursor);
       depth--;
     }
   }

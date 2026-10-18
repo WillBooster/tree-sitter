@@ -58,7 +58,8 @@ pub fn build_lex_table(
         LexTable::default()
     };
 
-    let mut parse_state_ids_by_token_set = Vec::<(TokenSet, TokenSet, Vec<ParseStateId>)>::new();
+    let mut parse_state_ids_by_token_set =
+        Vec::<(TokenSet, TokenSet, bool, Vec<ParseStateId>)>::new();
     let starting_chars = token_conflict_map.starting_chars();
     let word_start_chars: CharacterSet = syntax_grammar
         .word_token
@@ -180,6 +181,16 @@ pub fn build_lex_table(
                 }
             }
         }
+        let fallback_keywords = unsafe_keyword_pairs
+            .iter()
+            .filter_map(|&(keyword, other)| {
+                (lexical_grammar.variables[other.index as usize].is_nonkeyword
+                    && has_entry(other)
+                    && retained.contains(&keyword))
+                .then_some(keyword)
+            })
+            .collect::<TokenSet>();
+        let preserve_fallback = !fallback_keywords.is_empty();
         let guard_keywords = immediate_keywords
             .iter()
             .filter(|keyword| {
@@ -187,6 +198,7 @@ pub fn build_lex_table(
                     && !retained.contains(keyword)
                     && syntax_grammar.word_token.is_some_and(Symbol::is_terminal)
             })
+            .chain(fallback_keywords.iter())
             .collect::<TokenSet>();
         let tokens: TokenSet = state
             .terminal_entries
@@ -217,7 +229,7 @@ pub fn build_lex_table(
         for entry in &mut parse_state_ids_by_token_set {
             let group_has_terminals = entry.0.iter().any(Symbol::is_terminal);
             let terminal_free = !has_terminals || !group_has_terminals;
-            if (terminal_free || entry.1 == guard_keywords)
+            if (terminal_free || (entry.1 == guard_keywords && entry.2 == preserve_fallback))
                 && (entry.0 == tokens
                     || ((terminal_free || guard_keywords.is_empty())
                         && merge_token_set(
@@ -229,15 +241,21 @@ pub fn build_lex_table(
             {
                 if !group_has_terminals {
                     entry.1 = guard_keywords.clone();
+                    entry.2 = preserve_fallback;
                 }
                 did_merge = true;
-                entry.2.push(i as u32);
+                entry.3.push(i as u32);
                 break;
             }
         }
 
         if !did_merge {
-            parse_state_ids_by_token_set.push((tokens, guard_keywords, vec![i as u32]));
+            parse_state_ids_by_token_set.push((
+                tokens,
+                guard_keywords,
+                preserve_fallback,
+                vec![i as u32],
+            ));
         }
         for &symbol in state.terminal_entries.keys() {
             entries_by_symbol[indexer.index(symbol)] = None;
@@ -249,8 +267,13 @@ pub fn build_lex_table(
         .word_token
         .filter(|token| token.is_terminal());
     builder.immediate_keywords = immediate_keywords.clone();
-    for (tokens, guard_keywords, parse_state_ids) in parse_state_ids_by_token_set {
-        let lex_state_id = builder.add_state_for_tokens_with_word_guard(&tokens, &guard_keywords);
+    for (tokens, guard_keywords, preserve_fallback, parse_state_ids) in parse_state_ids_by_token_set
+    {
+        let lex_state_id = builder.add_state_for_tokens_with_word_guard(
+            &tokens,
+            &guard_keywords,
+            preserve_fallback,
+        );
 
         let tokens_after_extra = tokens
             .iter()
@@ -263,8 +286,11 @@ pub fn build_lex_table(
             .iter()
             .filter(|symbol| !lexical_grammar.variables[symbol.index as usize].is_immediate)
             .collect::<TokenSet>();
-        let lex_state_id_after_extra =
-            builder.add_state_for_tokens_with_word_guard(&tokens_after_extra, &guards_after_extra);
+        let lex_state_id_after_extra = builder.add_state_for_tokens_with_word_guard(
+            &tokens_after_extra,
+            &guards_after_extra,
+            preserve_fallback,
+        );
         for id in parse_state_ids {
             parse_table.states[id as usize].lex_state_id = lex_state_id;
             parse_table.states[id as usize].lex_state_id_after_extra = lex_state_id_after_extra;
@@ -413,7 +439,7 @@ struct LexTableBuilder<'a> {
     str_pool: &'a StrPool,
     word_token: Option<Symbol>,
     immediate_keywords: TokenSet,
-    word_guards: Vec<TokenSet>,
+    word_guards: Vec<(TokenSet, bool)>,
     cursor: NfaCursor<'a>,
     table: LexTable,
     eof_state: Option<LexStateId>,
@@ -428,7 +454,7 @@ impl<'a> LexTableBuilder<'a> {
             str_pool,
             word_token: None,
             immediate_keywords: TokenSet::new(),
-            word_guards: vec![TokenSet::new()],
+            word_guards: vec![(TokenSet::new(), false)],
             cursor: NfaCursor::new(&lexical_grammar.nfa, vec![]),
             table: LexTable::default(),
             eof_state: None,
@@ -445,20 +471,24 @@ impl<'a> LexTableBuilder<'a> {
     }
 
     fn add_state_for_tokens(&mut self, tokens: &TokenSet) -> LexStateId {
-        self.add_state_for_tokens_with_word_guard(tokens, &TokenSet::new())
+        self.add_state_for_tokens_with_word_guard(tokens, &TokenSet::new(), false)
     }
 
     fn add_state_for_tokens_with_word_guard(
         &mut self,
         tokens: &TokenSet,
         guard_keywords: &TokenSet,
+        preserve_fallback: bool,
     ) -> LexStateId {
         let guard_id = self
             .word_guards
             .iter()
-            .position(|keywords| keywords == guard_keywords)
+            .position(|(keywords, fallback)| {
+                keywords == guard_keywords && *fallback == preserve_fallback
+            })
             .unwrap_or_else(|| {
-                self.word_guards.push(guard_keywords.clone());
+                self.word_guards
+                    .push((guard_keywords.clone(), preserve_fallback));
                 self.word_guards.len() - 1
             });
         let mut eof_valid = false;
@@ -478,10 +508,11 @@ impl<'a> LexTableBuilder<'a> {
             self.cursor
                 .reset([self.lexical_grammar.variables[word.index as usize].start_state]);
             nfa_states.extend(self.cursor.state_ids.iter().copied().filter(|&id| {
-                !matches!(
-                    self.lexical_grammar.nfa.states[id as usize],
-                    NfaState::Advance { is_sep: true, .. }
-                )
+                preserve_fallback
+                    || !matches!(
+                        self.lexical_grammar.nfa.states[id as usize],
+                        NfaState::Advance { is_sep: true, .. }
+                    )
             }));
         }
         let (state_id, is_new) = self.add_state(
@@ -557,7 +588,7 @@ impl<'a> LexTableBuilder<'a> {
         self.cursor
             .force_reset(nfa_states.iter().map(|&(id, _)| id).collect());
 
-        let selected_completion = self.select_completion(nfa_states, guard_id);
+        let selected_completion = self.select_completion(nfa_states, guard_id, false);
         let completion_tag = selected_completion.and_then(|completion| completion.start_tag);
         let completion =
             selected_completion.map(|completion| (completion.variable, completion.precedence));
@@ -565,8 +596,9 @@ impl<'a> LexTableBuilder<'a> {
         let retained_immediate_complete = guard_id != 0
             && completion.is_some_and(|(id, _)| {
                 let token = Symbol::terminal(id);
-                self.immediate_keywords.contains(token)
-                    && !self.word_guards[guard_id].contains(token)
+                (self.immediate_keywords.contains(token)
+                    || self.lexical_grammar.variables[id].is_nonkeyword)
+                    && !self.word_guards[guard_id].0.contains(token)
             });
         let (transitions, has_sep) = self.cursor.partitioned_transitions_and_any_sep();
         if eof_valid {
@@ -590,7 +622,11 @@ impl<'a> LexTableBuilder<'a> {
                 && self
                     .lexical_grammar
                     .variable_indices_for_nfa_states(&transition.states)
-                    .any(|index| self.word_guards[guard_id].contains(Symbol::terminal(index)));
+                    .any(|index| {
+                        self.word_guards[guard_id]
+                            .0
+                            .contains(Symbol::terminal(index))
+                    });
             if retained_immediate_complete && !guarded_keyword_pending {
                 let word = self.word_token.unwrap();
                 transition.states.retain(|&id| {
@@ -605,7 +641,9 @@ impl<'a> LexTableBuilder<'a> {
             }
             let preserve_word = completion.is_some_and(|(completed_id, _)| {
                 guard_id != 0
-                    && (self.word_guards[guard_id].contains(Symbol::terminal(completed_id))
+                    && (self.word_guards[guard_id]
+                        .0
+                        .contains(Symbol::terminal(completed_id))
                         || (retained_immediate_complete && guarded_keyword_pending))
                     && self.word_token.is_some_and(|word| {
                         self.lexical_grammar
@@ -657,6 +695,24 @@ impl<'a> LexTableBuilder<'a> {
             ));
         }
 
+        if self.word_guards[guard_id].1 {
+            self.table.states[state_id as usize].fallback_accept = self
+                .select_completion(nfa_states, guard_id, true)
+                .map(|candidate| {
+                    (
+                        Symbol::terminal(candidate.variable),
+                        candidate.precedence,
+                        candidate.start_tag,
+                    )
+                });
+            self.table.states[state_id as usize].restore_fallback =
+                completion.is_some_and(|(id, _)| {
+                    !self.word_guards[guard_id].0.contains(Symbol::terminal(id))
+                });
+            self.table.states[state_id as usize].guarded_precedence = completion
+                .filter(|(id, _)| self.word_guards[guard_id].0.contains(Symbol::terminal(*id)))
+                .map(|(_, precedence)| precedence);
+        }
         if let Some((complete_id, _)) = completion {
             self.table.states[state_id as usize].start_tag = completion_tag;
             self.table.states[state_id as usize].accept_action =
@@ -709,15 +765,23 @@ impl<'a> LexTableBuilder<'a> {
         &self,
         nfa_states: &[TaggedState],
         guard_id: usize,
+        fallback_only: bool,
     ) -> Option<LexCompletion> {
         let immediate_complete = guard_id != 0
-            && self
-                .cursor
-                .completions()
-                .any(|(id, _)| self.immediate_keywords.contains(Symbol::terminal(id)));
+            && self.cursor.completions().any(|(id, _)| {
+                self.immediate_keywords.contains(Symbol::terminal(id))
+                    || self.word_guards[guard_id].0.contains(Symbol::terminal(id))
+                    || self.lexical_grammar.variables[id].is_nonkeyword
+            });
         let mut completion = None;
         let mut completion_tag = None;
         for (id, prec) in self.cursor.completions() {
+            if fallback_only
+                && (self.word_guards[guard_id].0.contains(Symbol::terminal(id))
+                    || self.word_token == Some(Symbol::terminal(id)))
+            {
+                continue;
+            }
             let tag = nfa_states.iter().filter_map(|&(state, tag)| {
                 matches!(self.lexical_grammar.nfa.states[state as usize], NfaState::Accept { variable_index, .. } if variable_index == id).then_some(tag).flatten()
             }).min();
@@ -948,6 +1012,9 @@ fn minimize_lex_table(table: &mut LexTable) -> Vec<LexStateId> {
             i == 0,
             state.accept_action,
             state.start_tag,
+            state.fallback_accept,
+            state.restore_fallback,
+            state.guarded_precedence,
             state
                 .eof_action
                 .as_ref()

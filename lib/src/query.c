@@ -206,6 +206,8 @@ typedef struct {
   uint32_t id;
   uint32_t capture_list_id;
   uint32_t heap_insert_order;
+  // Deferred empty roots share a state, but still yield one result per visited node.
+  uint32_t empty_root_match_count;
   uint16_t start_depth;
   uint16_t step_index;
   uint16_t pattern_index;
@@ -3752,10 +3754,8 @@ static bool ts_query_cursor__first_in_progress_capture(
     ) {
       QueryStep *step = array_get(&self->query->steps, state->step_index);
       if (is_definite) {
-        // We're being a bit conservative here by asserting that the following step
-        // is not immediate, because this capture might end up being discarded if the
-        // following symbol in the tree isn't the required symbol for this step.
-        *is_definite = step->root_pattern_guaranteed && !step->is_immediate;
+        *is_definite = step->root_pattern_guaranteed && !step->is_immediate &&
+          !state->has_in_progress_alternatives;
       } else if (step->root_pattern_guaranteed) {
         continue;
       }
@@ -3918,7 +3918,10 @@ static void ts_query_cursor__add_state(
       if (
         prev_state->pattern_index == pattern->pattern_index &&
         prev_state->step_index == pattern->step_index
-      ) return;
+      ) {
+        if (prev_state->empty_root_match_count) prev_state->empty_root_match_count++;
+        return;
+      }
       if (prev_state->pattern_index <= pattern->pattern_index) break;
     }
     index--;
@@ -3933,6 +3936,7 @@ static void ts_query_cursor__add_state(
     .id = UINT32_MAX,
     .capture_list_id = CAPTURE_LIST_NONE,
     .heap_insert_order = UINT32_MAX,
+    .empty_root_match_count = step->depth == PATTERN_DONE_MARKER,
     .step_index = pattern->step_index,
     .pattern_index = pattern->pattern_index,
     .start_depth = start_depth,
@@ -4746,6 +4750,8 @@ static inline bool ts_query_cursor__advance(
                   state->pattern_index,
                   state->step_index
                 );
+                state->empty_root_match_count = state->empty_root_match_count && other_state->empty_root_match_count
+                  ? state->empty_root_match_count + other_state->empty_root_match_count : 0;
                 capture_list_pool_release(&self->capture_list_pool, other_state->capture_list_id);
                 array_erase(&self->states, k);
                 k--;
@@ -4765,6 +4771,8 @@ static inline bool ts_query_cursor__advance(
                   state->pattern_index,
                   state->step_index
                 );
+                other_state->empty_root_match_count = state->empty_root_match_count && other_state->empty_root_match_count
+                  ? state->empty_root_match_count + other_state->empty_root_match_count : 0;
                 capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
                 array_erase(&self->states, j);
                 j--;
@@ -4854,6 +4862,11 @@ bool ts_query_cursor_next_match(
   );
   match->captures = captures->contents;
   match->capture_count = captures->size;
+  if (state->empty_root_match_count > 1) {
+    state->empty_root_match_count--;
+    state->id = UINT32_MAX;
+    return true;
+  }
   capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
   if (self->finished_states_heap_size > 0) {
     finished_state_erase(&self->finished_states, state_index, &self->capture_list_pool);

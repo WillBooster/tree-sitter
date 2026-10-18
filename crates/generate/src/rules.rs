@@ -294,14 +294,6 @@ impl RulePool {
     }
 
     pub fn immediate_token(&mut self, content: RuleId) -> RuleId {
-        if let Rule::Metadata { params, .. } = self.node(content)
-            && self.params(params).is_nonkeyword
-        {
-            let mut p = self.params(params);
-            p.is_main_token = true;
-            self.set_params(params, p);
-            return content;
-        }
         self.metadata_with(content, |p| {
             p.is_token = true;
             p.is_main_token = true;
