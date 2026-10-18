@@ -66,6 +66,10 @@ pub fn build_lex_table(
         .filter(|token| token.is_terminal())
         .map(|w| starting_chars[w.index as usize].clone())
         .unwrap_or_default();
+    let word_is_immediate = syntax_grammar
+        .word_token
+        .filter(|token| token.is_terminal())
+        .is_some_and(|word| lexical_grammar.variables[word.index as usize].is_immediate);
     let mut continuation_cache: FxHashMap<usize, CharacterSet> = FxHashMap::default();
     let token_precedence: Vec<i32> = {
         let mut prec = vec![0i32; lexical_grammar.variables.len()];
@@ -195,7 +199,7 @@ pub fn build_lex_table(
             .filter(|word| word.is_terminal())
             .is_some_and(has_entry);
         let preserve_fallback = !fallback_keywords.is_empty() && !accepts_word;
-        if !fallback_keywords.is_empty() {
+        if !fallback_keywords.is_empty() || word_is_immediate {
             for keyword in keywords.iter().filter(|keyword| has_entry(*keyword)) {
                 if !retained.contains(&keyword) {
                     retained.push(keyword);

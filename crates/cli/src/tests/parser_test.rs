@@ -4903,6 +4903,86 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
 }
 
 #[test]
+fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
+    for immediate in [false, true] {
+        for (extra, named) in [("#", false), ("#", true), ("#!", true)] {
+            let comment = if extra == "#" {
+                serde_json::json!({"type": "TOKEN", "content": {"type": "STRING", "value": "#"}})
+            } else {
+                serde_json::json!({"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "#"}, {"type": "STRING", "value": "!"}
+                ]})
+            };
+            let grammar = serde_json::json!({
+                "name": "immediate_word_named_extra",
+                "word": "identifier",
+                "extras": [if named { serde_json::json!({"type": "SYMBOL", "name": "comment"}) } else { serde_json::json!({"type": "STRING", "value": "#"}) }],
+                "rules": {
+                    "source_file": {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "keyword_use"},
+                        {"type": "SYMBOL", "name": "identifier_use"}
+                    ]},
+                    "keyword_use": {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "do"}, {"type": "STRING", "value": "?"}
+                    ]},
+                    "identifier_use": {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": "?"}
+                    ]},
+                    "identifier": {"type": if immediate { "IMMEDIATE_TOKEN" } else { "TOKEN" },
+                        "content": {"type": "PATTERN", "value": "[a-z]+"}},
+                    "comment": comment
+                }
+            });
+            for mut parser in parsers_for_grammar(&grammar.to_string()) {
+                for (source, has_error, kind) in [
+                    ("do?".to_string(), false, "keyword_use"),
+                    (format!("{extra}do?"), false, "keyword_use"),
+                    (format!("{extra}name?"), immediate, "identifier_use"),
+                    (format!("{extra}dox?"), immediate, "identifier_use"),
+                ] {
+                    let tree = parser.parse(&source, None).unwrap();
+                    let root = tree.root_node();
+                    assert_eq!(
+                        root.has_error(),
+                        has_error,
+                        "{source:?}, immediate={immediate}: {}",
+                        root.to_sexp()
+                    );
+                    assert_eq!(root.end_byte(), source.len());
+                    if !has_error {
+                        assert_eq!(
+                            root.named_children(&mut root.walk()).last().unwrap().kind(),
+                            kind
+                        );
+                    }
+                }
+                let mut before = parser.parse("do?", None).unwrap();
+                before.edit(&InputEdit {
+                    start_byte: 0,
+                    old_end_byte: 0,
+                    new_end_byte: extra.len(),
+                    start_position: Point::new(0, 0),
+                    old_end_position: Point::new(0, 0),
+                    new_end_position: Point::new(0, extra.len()),
+                });
+                let source = format!("{extra}do?");
+                let incremental = parser.parse(&source, Some(&before)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert!(!incremental.root_node().has_error());
+                assert_eq!(
+                    incremental.root_node().to_sexp(),
+                    fresh.root_node().to_sexp()
+                );
+                assert_eq!(
+                    incremental.root_node().byte_range(),
+                    fresh.root_node().byte_range()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
     let grammar = r"
         module.exports = grammar({
