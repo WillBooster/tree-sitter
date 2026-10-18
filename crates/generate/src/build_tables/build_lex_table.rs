@@ -181,7 +181,7 @@ pub fn build_lex_table(
                 }
             }
         }
-        let fallback_keywords = unsafe_keyword_pairs
+        let mut fallback_keywords = unsafe_keyword_pairs
             .iter()
             .filter_map(|&(keyword, other)| {
                 (lexical_grammar.variables[other.index as usize].is_nonkeyword
@@ -195,6 +195,14 @@ pub fn build_lex_table(
             .filter(|word| word.is_terminal())
             .is_some_and(has_entry);
         let preserve_fallback = !fallback_keywords.is_empty() && !accepts_word;
+        if !fallback_keywords.is_empty() {
+            for keyword in keywords.iter().filter(|keyword| has_entry(*keyword)) {
+                if !retained.contains(&keyword) {
+                    retained.push(keyword);
+                }
+                fallback_keywords.insert(keyword);
+            }
+        }
         let guard_keywords = immediate_keywords
             .iter()
             .filter(|keyword| {
