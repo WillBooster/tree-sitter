@@ -666,6 +666,10 @@ static Subtree ts_parser__lex(
       internal_eof = found_token && self->lexer.data.result_symbol == ts_builtin_sym_end;
       error_mode = true;
       lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
+      if (ts_stack_after_extra(self->stack, version)) {
+        lex_mode.lex_state = lex_mode.lex_state_after_extra;
+        lex_mode.external_lex_state = lex_mode.external_lex_state_after_extra;
+      }
       ts_lexer_reset(&self->lexer, start_position);
       retry_internal = lex_mode.external_lex_state != 0 &&
         !self->lexer.data.eof(&self->lexer.data);
