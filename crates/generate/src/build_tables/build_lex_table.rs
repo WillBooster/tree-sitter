@@ -551,13 +551,6 @@ impl<'a> LexTableBuilder<'a> {
                     && !self.word_guards[guard_id].contains(token)
             });
         let (transitions, has_sep) = self.cursor.transitions_and_any_sep();
-        // Read here because the `add_state` calls below reset the cursor.
-        let explicit_nul = self
-            .cursor
-            .transition_chars()
-            .filter(|(chars, _)| chars.contains('\0'))
-            .all(|(chars, _)| chars.chars().eq(['\0']));
-
         // If EOF is a valid lookahead token, add a transition predicated on the null
         // character that leads to the empty set of NFA states.
         if eof_valid {
@@ -566,7 +559,6 @@ impl<'a> LexTableBuilder<'a> {
                 start_tags: Vec::new(),
                 state: next_state_id,
                 in_main_token: true,
-                explicit_nul: false,
             });
         }
 
@@ -611,31 +603,33 @@ impl<'a> LexTableBuilder<'a> {
                 continue;
             }
 
+            let completed_precedence = completion
+                .filter(|_| !preserve_word)
+                .map(|(_, precedence)| precedence);
             let Some(TaggedAdvance {
                 states: next_tags,
                 start_tags,
-            }) = self.advance_start_tags(
-                nfa_states,
-                &transition,
-                completion
-                    .filter(|_| !preserve_word)
-                    .map(|(_, precedence)| (precedence, completion_tag)),
-            )
+            }) = self.advance_start_tags(nfa_states, &transition, completed_precedence)
             else {
                 continue;
             };
             let (next_state_id, _) =
                 self.add_state(next_tags, eof_valid && transition.is_separator, guard_id);
-            let explicit_nul = explicit_nul
-                && transition.characters.contains('\0')
-                && start_tags.iter().any(|(_, source)| source.is_none());
+            if !eof_valid && transition.characters.contains('\0') {
+                self.add_standalone_nul_eof(
+                    state_id,
+                    nfa_states,
+                    &transition,
+                    guard_id,
+                    completed_precedence,
+                );
+            }
             self.table.states[state_id as usize].advance_actions.push((
                 transition.characters,
                 AdvanceAction {
                     start_tags,
                     state: next_state_id,
                     in_main_token: !transition.is_separator,
-                    explicit_nul,
                 },
             ));
         }
@@ -647,6 +641,47 @@ impl<'a> LexTableBuilder<'a> {
         } else if self.cursor.state_ids.is_empty() {
             self.table.states[state_id as usize].accept_action = Some(Symbol::end());
         }
+    }
+
+    fn add_standalone_nul_eof(
+        &mut self,
+        state_id: LexStateId,
+        nfa_states: &[TaggedState],
+        transition: &NfaTransition,
+        guard_id: usize,
+        completed_precedence: Option<i32>,
+    ) {
+        let unstarted = nfa_states
+            .iter()
+            .copied()
+            .filter(|&(id, tag)| {
+                tag.is_none()
+                    && matches!(
+                        &self.lexical_grammar.nfa.states[id as usize],
+                        NfaState::Advance { chars, is_sep: false, .. } if chars.chars().eq(['\0'])
+                    )
+            })
+            .collect::<Vec<_>>();
+        let Some(mut advance) =
+            self.advance_start_tags(&unstarted, transition, completed_precedence)
+        else {
+            return;
+        };
+        advance.states.retain(|&(id, _)| {
+            matches!(
+                self.lexical_grammar.nfa.states[id as usize],
+                NfaState::Accept { .. }
+            )
+        });
+        if advance.states.is_empty() {
+            return;
+        }
+        let (target, _) = self.add_state(advance.states, false, guard_id);
+        self.table.states[state_id as usize].eof_action = Some(AdvanceAction {
+            state: target,
+            in_main_token: true,
+            start_tags: advance.start_tags,
+        });
     }
 
     fn select_completion(
@@ -700,7 +735,7 @@ impl<'a> LexTableBuilder<'a> {
         &self,
         nfa_states: &[TaggedState],
         transition: &NfaTransition,
-        completion: Option<(i32, Option<u32>)>,
+        completion: Option<i32>,
     ) -> Option<TaggedAdvance> {
         let new_tag = nfa_states
             .iter()
@@ -723,12 +758,8 @@ impl<'a> LexTableBuilder<'a> {
                 } else {
                     Some(tag.unwrap_or(new_tag))
                 };
-                if let Some((complete_precedence, completion_tag)) = completion
-                    && (*precedence < complete_precedence
-                        || (*precedence == complete_precedence
-                            && tag.is_none_or(|tag| {
-                                completion_tag.is_some_and(|completed| tag > completed)
-                            })))
+                if let Some(complete_precedence) = completion
+                    && *precedence < complete_precedence
                 {
                     continue;
                 }
@@ -870,7 +901,6 @@ fn coalesce_lex_transitions(table: &mut LexTable) -> bool {
             let key = (
                 action.state,
                 action.in_main_token,
-                action.explicit_nul,
                 action.start_tags.clone(),
             );
             if let Some(&index) = action_indices.get(&key) {
@@ -897,7 +927,10 @@ fn minimize_lex_table(table: &mut LexTable) -> Vec<LexStateId> {
             i == 0,
             state.accept_action,
             state.start_tag,
-            state.eof_action.is_some(),
+            state
+                .eof_action
+                .as_ref()
+                .map(|action| (action.in_main_token, action.start_tags.clone())),
             state
                 .advance_actions
                 .iter()
@@ -905,7 +938,6 @@ fn minimize_lex_table(table: &mut LexTable) -> Vec<LexStateId> {
                     (
                         characters.clone(),
                         action.in_main_token,
-                        action.explicit_nul,
                         action.start_tags.clone(),
                     )
                 })

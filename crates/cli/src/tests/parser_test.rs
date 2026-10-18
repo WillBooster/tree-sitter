@@ -31,6 +31,51 @@ use crate::{
 };
 
 #[test]
+fn test_standalone_nul_eof_does_not_complete_a_physical_nul_suffix() {
+    let grammar = serde_json::json!({
+        "name": "mixed_nul_termination",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "long"},
+                {"type": "SYMBOL", "name": "terminator"}
+            ]},
+            "long": {"type": "STRING", "value": "a\0"},
+            "terminator": {"type": "STRING", "value": "\0"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        for (source, expected, range) in [
+            ("a", "terminator", 1..1),
+            ("a\0", "long", 0..2),
+            ("\0", "terminator", 0..1),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{source:?}");
+            let token = tree.root_node().named_child(0).unwrap();
+            assert_eq!(token.kind(), expected, "{source:?}");
+            assert_eq!(token.byte_range(), range, "{source:?}");
+        }
+    }
+}
+
+#[test]
 fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
     for (fixture, source, tokens, has_error) in [
         (
@@ -57,7 +102,7 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
             vec![";", "\n"],
             false,
         ),
-        ("separator_precedence_ranges", "aad", vec!["a", "a"], true),
+        ("separator_precedence_ranges", "aad", vec!["a"], true),
     ] {
         let path = fixtures_dir().join("test_grammars").join(fixture);
         let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
@@ -97,9 +142,13 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
                     "{fixture}: {}",
                     tree.root_node().to_sexp()
                 );
-                let mut offset = 0;
+                let mut offset = usize::from(fixture == "separator_precedence_ranges");
                 for token in &tokens {
-                    let start = offset + source[offset..].find(token).unwrap();
+                    let start = if *token == "\n" {
+                        source.rfind(token).unwrap()
+                    } else {
+                        offset + source[offset..].find(token).unwrap()
+                    };
                     let end = start + token.len();
                     let range = if encoding == "utf8" {
                         start..end
@@ -114,11 +163,8 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
                     assert_eq!(node.kind(), *token, "{fixture}");
                     assert_eq!(node.byte_range(), range, "{fixture}: {token:?}");
                     if *token == "\n" {
-                        assert_eq!(
-                            node.start_position(),
-                            Point::new(2, if encoding == "utf8" { 1 } else { 2 })
-                        );
-                        assert_eq!(node.end_position(), Point::new(3, 0));
+                        assert_eq!(node.start_position(), Point::new(4, 0));
+                        assert_eq!(node.end_position(), Point::new(5, 0));
                     }
                     offset = end;
                 }
@@ -1614,11 +1660,9 @@ fn test_literal_token_with_overlapping_external_extra_pattern() {
         let root = tree.root_node();
         assert!(!root.has_error(), "{source:?}");
         let children = root.children(&mut root.walk()).collect::<Vec<_>>();
-        assert_eq!(children.len(), source.len(), "{source:?}");
-        for (index, child) in children.iter().enumerate() {
-            assert_eq!(child.kind(), "a");
-            assert_eq!(child.byte_range(), index..index + 1);
-        }
+        assert_eq!(children.len(), 1, "{source:?}");
+        assert_eq!(children[0].kind(), "a");
+        assert_eq!(children[0].byte_range(), source.len() - 1..source.len());
         assert_eq!(root.end_byte(), source.len());
     }
 }

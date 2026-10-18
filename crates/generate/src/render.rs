@@ -1289,11 +1289,10 @@ impl Generator {
         add_line!(self, "switch (state) {{");
 
         indent!(self);
-        let advances_on_nul = Self::states_advancing_on_nul(&lex_table);
         for (i, state) in lex_table.states.into_iter().enumerate() {
             add_line!(self, "case {i}:");
             indent!(self);
-            self.add_lex_state(i as u32, state, &advances_on_nul);
+            self.add_lex_state(i as u32, state);
             dedent!(self);
         }
 
@@ -1319,7 +1318,9 @@ impl Generator {
                 state
                     .advance_actions
                     .iter()
-                    .flat_map(|(_, action)| action.start_tags.iter().map(|&(tag, _)| tag))
+                    .map(|(_, action)| action)
+                    .chain(state.eof_action.iter())
+                    .flat_map(|action| action.start_tags.iter().map(|&(tag, _)| tag))
             }))
             .max()
             .map_or(1, |tag| tag + 1)
@@ -1362,19 +1363,12 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}}\n");
 
-        let advances_on_nul = Self::states_advancing_on_nul(lex_table);
         for (chunk, states) in lex_table.states.chunks(LEXER_CHUNK_SIZE).enumerate() {
-            self.add_lex_chunk(name, chunk, states, &advances_on_nul);
+            self.add_lex_chunk(name, chunk, states);
         }
     }
 
-    fn add_lex_chunk(
-        &mut self,
-        name: &str,
-        chunk: usize,
-        states: &[LexState],
-        advances_on_nul: &[bool],
-    ) {
+    fn add_lex_chunk(&mut self, name: &str, chunk: usize, states: &[LexState]) {
         let has_advances = states.iter().enumerate().any(|(offset, state)| {
             let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
             state.eof_action.is_some()
@@ -1410,7 +1404,7 @@ impl Generator {
             let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
             add_line!(self, "case {id}:");
             indent!(self);
-            self.add_lex_state(id, state.clone(), advances_on_nul);
+            self.add_lex_state(id, state.clone());
             dedent!(self);
         }
         add_line!(self, "default:");
@@ -1425,20 +1419,7 @@ impl Generator {
         add_line!(self, "}}\n");
     }
 
-    fn states_advancing_on_nul(lex_table: &LexTable) -> Vec<bool> {
-        lex_table
-            .states
-            .iter()
-            .map(|state| {
-                state
-                    .advance_actions
-                    .iter()
-                    .any(|(chars, _)| chars.contains('\0'))
-            })
-            .collect()
-    }
-
-    fn add_lex_state(&mut self, state_id: u32, state: LexState, advances_on_nul: &[bool]) {
+    fn add_lex_state(&mut self, state_id: u32, state: LexState) {
         if state
             .advance_actions
             .iter()
@@ -1460,7 +1441,10 @@ impl Generator {
         }
 
         if let Some(eof_action) = state.eof_action {
-            add_line!(self, "if (eof) ADVANCE({});", eof_action.state);
+            add_whitespace!(self);
+            add!(self, "if (eof) ");
+            self.add_advance_action(&eof_action, state_id);
+            add!(self, "\n");
         }
 
         let mut chars_copy = CharacterSet::empty();
@@ -1509,14 +1493,6 @@ impl Generator {
         for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
             if mapped_transitions[index] {
                 continue;
-            }
-            // Grammars such as Go's use a standalone NUL token as an EOF terminator.
-            // Advancing at EOF consumes nothing, so a NUL cycle would never return.
-            if action.explicit_nul && !advances_on_nul[action.state as usize] {
-                add_whitespace!(self);
-                add!(self, "if (eof) ");
-                self.add_advance_action(action, state_id);
-                add!(self, "\n");
             }
             add_whitespace!(self);
 
