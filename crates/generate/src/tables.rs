@@ -385,6 +385,9 @@ pub struct AdvanceAction {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LexState {
+    pub fallback_accept: Option<(Symbol, i32, Option<u32>)>,
+    pub restore_fallback: bool,
+    pub guarded_precedence: Option<i32>,
     pub start_tag: Option<u32>,
     pub accept_action: Option<Symbol>,
     pub eof_action: Option<AdvanceAction>,
