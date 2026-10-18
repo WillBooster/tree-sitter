@@ -62,6 +62,7 @@ pub struct LexicalVariable {
     pub implicit_precedence: i32,
     pub start_state: u32,
     pub is_immediate: bool,
+    pub is_nonkeyword: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -4354,6 +4354,71 @@ fn test_keyword_boundary_with_negative_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_tokens_preserve_context_and_composition() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_tokens',
+            word: $ => $.identifier,
+            rules: {
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.identifier),
+                ordinary: $ => seq('N', 'if', $.identifier),
+                raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
+                immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
+                outer_immediate: $ => seq('O', alias(token.immediate(token.nonkeyword(prec(2, 'if'))), $.prefix), $.identifier),
+                precedence: $ => seq('P', choice(seq(alias(token.nonkeyword(prec(2, 'if')), $.prefix), $.identifier), $.identifier)),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    std::fs::write(file.path(), grammar).unwrap();
+    let json = load_grammar_file(file.path(), None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        for (source, kind) in [
+            ("N if x", "ordinary"),
+            ("R ifx", "raw"),
+            ("Iifx", "immediate"),
+            ("Oifx", "outer_immediate"),
+            ("Pifx", "precedence"),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            let statement = root.named_child(0).unwrap();
+            assert_eq!(statement.kind(), kind);
+            if kind != "ordinary" {
+                let prefix = statement.named_child(0).unwrap();
+                assert_eq!(prefix.kind(), "prefix");
+                assert_eq!(prefix.utf8_text(source.as_bytes()).unwrap(), "if");
+                assert_eq!(
+                    statement
+                        .named_child(1)
+                        .unwrap()
+                        .utf8_text(source.as_bytes())
+                        .unwrap(),
+                    "x"
+                );
+            }
+        }
+        for source in ["N ifx", "I ifx", "O ifx"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{source}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_keyword_precedence_with_word() {
     for word_precedence in [-1, 0, 1] {
         let (parser_name, parser_code) = generate_parser(

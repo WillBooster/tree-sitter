@@ -452,6 +452,9 @@ fn identify_keywords(
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
+            if variable.is_nonkeyword {
+                return None;
+            }
             cursor.reset([variable.start_state]);
             let is_candidate = all_chars_are_alphabetical(&cursor)
                 && token_conflict_map.does_match_same_string(i, word_token.index as usize)
