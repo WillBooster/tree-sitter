@@ -780,10 +780,19 @@ recur:
         return child;
       }
 
-      // If the field refers to a hidden node with visible children,
-      // return the first visible child.
-      else if (ts_node_child_count(child) > 0 ) {
-        return ts_node_child(child, 0);
+      else if (ts_node_child_count(child) > 0) {
+        TSTreeCursor cursor = ts_tree_cursor_new(self);
+        TSNode result = ts_node__null();
+        if (ts_tree_cursor_goto_first_child(&cursor)) {
+          do {
+            if (ts_tree_cursor_current_field_id(&cursor) == field_id) {
+              result = ts_tree_cursor_current_node(&cursor);
+              break;
+            }
+          } while (ts_tree_cursor_goto_next_sibling(&cursor));
+        }
+        ts_tree_cursor_delete(&cursor);
+        return result;
       }
 
       // Otherwise, continue searching subsequent children.

@@ -1928,3 +1928,67 @@ fn parse_json_example() -> Tree {
     parser.set_language(&get_language("json")).unwrap();
     parser.parse(JSON_EXAMPLE, None).unwrap()
 }
+
+#[test]
+fn test_hidden_node_fields_respect_inner_shadowing() {
+    use serde_json::json;
+
+    for (case, tail, source, expected_outer) in [
+        ("shadow", None, "a", None),
+        (
+            "remaining",
+            Some(json!({"type":"SYMBOL", "name":"word"})),
+            "ab",
+            Some("b"),
+        ),
+        (
+            "shadowed_tail",
+            Some(
+                json!({"type":"FIELD", "name":"other", "content":{"type":"SYMBOL", "name":"word"}}),
+            ),
+            "ab",
+            None,
+        ),
+    ] {
+        let mut members = vec![
+            json!({"type":"FIELD", "name":"inner", "content":{"type":"SYMBOL", "name":"word"}}),
+        ];
+        members.extend(tail);
+        let grammar = json!({
+            "name": format!("hidden_fields_{case}"),
+            "rules": {
+                "root": {"type":"FIELD", "name":"outer", "content":{"type":"SYMBOL", "name":"_hidden"}},
+                "_hidden": {"type":"SYMBOL", "name":"_nested"},
+                "_nested": {"type":"SEQ", "members":members},
+                "word": {"type":"PATTERN", "value":"[a-z]"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.field_name_for_child(0), Some("inner"));
+        assert_eq!(
+            root.child_by_field_name("inner")
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap(),
+            "a"
+        );
+        let outer = root.child_by_field_name("outer");
+        assert_eq!(
+            outer.map(|node| node.utf8_text(source.as_bytes()).unwrap()),
+            expected_outer,
+            "{case}"
+        );
+        let mut cursor = root.walk();
+        assert_eq!(
+            root.children_by_field_name("outer", &mut cursor).next(),
+            outer,
+            "{case}"
+        );
+    }
+}
