@@ -170,24 +170,11 @@ impl TokenExtractor {
                 Rule::Metadata { params, rule } => {
                     let p = pool.params(params);
                     if p.is_token {
-                        let cleaned = MetadataParams {
-                            is_token: false,
-                            is_nonkeyword: false,
-                            ..p
-                        };
                         let string_name = match pool.node(rule) {
                             Rule::String(s) => Some(s),
                             _ => None,
                         };
-                        let token_root = if cleaned == MetadataParams::default() {
-                            if p.is_nonkeyword {
-                                pool.nonkeyword_token(rule)
-                            } else {
-                                rule
-                            }
-                        } else {
-                            id
-                        };
+                        let token_root = Self::lexical_root(pool, id);
                         let i = self.extract_token(
                             pool,
                             token_root,
@@ -213,13 +200,34 @@ impl TokenExtractor {
         Ok(())
     }
 
-    fn find(&self, pool: &RulePool, root: RuleId) -> Option<u32> {
+    fn find(&self, pool: &mut RulePool, root: RuleId) -> Option<u32> {
+        let root = Self::lexical_root(pool, root);
         self.memo.get(&pool.subtree_hash(root)).and_then(|cands| {
             cands
                 .iter()
                 .copied()
                 .find(|&i| pool.subtree_eq(self.lexical[i as usize].root, root))
         })
+    }
+
+    fn lexical_root(pool: &mut RulePool, root: RuleId) -> RuleId {
+        let Rule::Metadata { params, rule } = pool.node(root) else {
+            return root;
+        };
+        let params = pool.params(params);
+        let cleaned = MetadataParams {
+            is_token: false,
+            is_nonkeyword: false,
+            ..params
+        };
+        if !params.is_token || cleaned != MetadataParams::default() {
+            return root;
+        }
+        if params.is_nonkeyword {
+            pool.nonkeyword_token(rule)
+        } else {
+            rule
+        }
     }
 }
 
@@ -335,7 +343,7 @@ pub(super) fn extract_tokens(
     for &root in &g.extra_roots {
         if let Some(s) = g.pool.node(root).symbol() {
             extra_symbols.push(replace_symbol(s));
-        } else if let Some(i) = extractor.find(&g.pool, root) {
+        } else if let Some(i) = extractor.find(&mut g.pool, root) {
             let symbol = Symbol::terminal(i as usize);
             if matches!(g.pool.node(root), Rule::Pattern(..))
                 && extractor.lexical[i as usize].kind == VariableType::Auxiliary
@@ -411,7 +419,7 @@ pub(super) fn extract_tokens(
         for &root in &set.roots {
             if let Some(s) = g.pool.node(root).symbol() {
                 symbols.push(replace_symbol(s));
-            } else if let Some(i) = extractor.find(&g.pool, root) {
+            } else if let Some(i) = extractor.find(&mut g.pool, root) {
                 symbols.push(Symbol::terminal(i as usize));
             } else {
                 let inner = match g.pool.node(root) {
