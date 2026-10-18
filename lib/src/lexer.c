@@ -384,6 +384,20 @@ static void ts_lexer__mark_start(TSLexer *_self, const TSLexerPosition *position
   self->token_start_position = self->marked_start_position;
 }
 
+static void ts_lexer__mark_end_at(TSLexer *_self, const TSLexerPosition *position) {
+  Lexer *self = (Lexer *)_self;
+  self->token_end_position = (Length) {position->bytes, {position->row, position->column}};
+}
+
+static void ts_lexer__get_mark_end(const TSLexer *_self, TSLexerPosition *position) {
+  const Lexer *self = (const Lexer *)_self;
+  *position = (TSLexerPosition) {
+    self->token_end_position.bytes,
+    self->token_end_position.extent.row,
+    self->token_end_position.extent.column,
+  };
+}
+
 static void ts_lexer__mark_end(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
   if (!ts_lexer__eof(&self->data)) {
@@ -487,6 +501,8 @@ void ts_lexer_init(Lexer *self) {
       .mark_end = ts_lexer__mark_end,
       .get_position = ts_lexer__get_position,
       .mark_start = ts_lexer__mark_start,
+      .mark_end_at = ts_lexer__mark_end_at,
+      .get_mark_end = ts_lexer__get_mark_end,
       .get_column = ts_lexer__get_column,
       .get_display_column = ts_lexer__get_display_column,
       .is_at_included_range_start = ts_lexer__is_at_included_range_start,

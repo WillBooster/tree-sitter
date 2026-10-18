@@ -89,10 +89,7 @@ pub fn expand_tokens(
                 pool.resolve(variable.name).to_string(),
             ))?;
         }
-        let is_immediate_token = match pool.node(variable.root) {
-            Rule::Metadata { params, .. } => pool.params(params).is_main_token,
-            _ => false,
-        };
+        let (is_immediate_token, is_nonkeyword) = token_properties(pool, variable.root);
 
         builder.is_sep = false;
         builder.nfa.states.push(NfaState::Accept {
@@ -123,6 +120,7 @@ pub fn expand_tokens(
             implicit_precedence: get_implicit_precedence(pool, variable.root),
             start_state: builder.nfa.last_state_id(),
             is_immediate: is_immediate_token,
+            is_nonkeyword,
         });
     }
 
@@ -130,6 +128,17 @@ pub fn expand_tokens(
         nfa: builder.nfa,
         variables,
     })
+}
+
+fn token_properties(pool: &RulePool, root: RuleId) -> (bool, bool) {
+    let immediate = matches!(pool.node(root), Rule::Metadata { params, .. } if pool.params(params).is_main_token);
+    let mut current = root;
+    let mut nonkeyword = false;
+    while let Rule::Metadata { params, rule } = pool.node(current) {
+        nonkeyword |= pool.params(params).is_nonkeyword;
+        current = rule;
+    }
+    (immediate, nonkeyword)
 }
 
 fn build_separator(pool: &mut RulePool, separator_roots: &[RuleId]) -> RuleId {
