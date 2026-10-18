@@ -190,7 +190,11 @@ pub fn build_lex_table(
                 .then_some(keyword)
             })
             .collect::<TokenSet>();
-        let preserve_fallback = !fallback_keywords.is_empty();
+        let preserve_fallback = !fallback_keywords.is_empty()
+            && !syntax_grammar
+                .word_token
+                .filter(|word| word.is_terminal())
+                .is_some_and(has_entry);
         let guard_keywords = immediate_keywords
             .iter()
             .filter(|keyword| {

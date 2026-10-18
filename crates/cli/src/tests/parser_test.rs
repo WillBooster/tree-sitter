@@ -4686,6 +4686,58 @@ fn test_nonkeyword_fallback_respects_lexical_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_fallback_preserves_accepted_word_token() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_accepted_word', word: $ => $.identifier,
+            rules: {
+                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt, $.after_bang),
+                ident_stmt: $ => seq($.identifier, '?'),
+                raw_stmt: $ => seq(token.nonkeyword('if'), $.identifier, '?'),
+                kw_stmt: $ => seq(token(prec(1, 'iffy')), $.exclaim),
+                after_bang: _ => seq('!', choice(token(prec(1, 'iffy')), token.nonkeyword('if')), ';'),
+                identifier: _ => /[a-z]+/,
+                exclaim: _ => /[a-z]+!/,
+            },
+        });
+    ";
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    for precedence in [-1, 0, 2] {
+        let grammar = grammar.replace(
+            "token.nonkeyword('if')",
+            &format!("token.nonkeyword(prec({precedence}, 'if'))"),
+        );
+        std::fs::write(file.path(), grammar).unwrap();
+        let json = load_grammar_file(file.path(), None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            for (source, kind) in [
+                (
+                    "iffyz?",
+                    if precedence > 1 {
+                        "raw_stmt"
+                    } else {
+                        "ident_stmt"
+                    },
+                ),
+                ("iz?", "ident_stmt"),
+                ("!if;", "after_bang"),
+            ] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                assert_eq!(root.end_byte(), source.len());
+                assert_eq!(root.named_child(0).unwrap().kind(), kind, "{source}");
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_word_guard_preserves_lower_precedence_content() {
     let grammar = r#"{
         "name": "nonkeyword_guard_content",
