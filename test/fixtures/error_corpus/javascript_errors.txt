@@ -201,9 +201,11 @@ y.
 ---
 
 (program
-  (ERROR
+  (expression_statement
     (call_expression
       (identifier)
       (comment)
       (arguments (ternary_expression (identifier) (identifier) (identifier))))
-    (ERROR (comment) (identifier))))
+    (ERROR))
+  (comment)
+  (ERROR (identifier)))
