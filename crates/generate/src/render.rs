@@ -207,9 +207,11 @@ impl Generator {
                 && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
                 && keyword_lex_table.states.iter().all(|state| {
                     state.eof_action.is_none()
-                        && state.advance_actions.iter().all(|(set, _)| {
-                            set.ranges()
-                                .all(|range| *range.start() > '\0' && range.end().is_ascii())
+                        && state.advance_actions.iter().all(|(set, action)| {
+                            set.ranges().all(|range| {
+                                *range.start() > '\0'
+                                    && (!action.in_main_token || range.end().is_ascii())
+                            })
                         })
                 })
             {
@@ -361,22 +363,28 @@ impl Generator {
         indent!(self);
         let mut transitions = Vec::new();
         let mut rows = Vec::new();
-        for state in &table.states {
+        let mut unicode_skips = Vec::new();
+        for (state_index, state) in table.states.iter().enumerate() {
             let index = transitions.len();
-            let mut ranges = state
-                .advance_actions
-                .iter()
-                .flat_map(|(set, action)| {
-                    let destination = action.state
-                        | if action.in_main_token {
-                            0
-                        } else {
-                            KEYWORD_SKIP_FLAG as u32
-                        };
-                    set.ranges()
-                        .map(move |range| (*range.start() as u8, *range.end() as u8, destination))
-                })
-                .collect::<Vec<_>>();
+            let mut ranges = Vec::new();
+            for (set, action) in &state.advance_actions {
+                let destination = action.state
+                    | if action.in_main_token {
+                        0
+                    } else {
+                        KEYWORD_SKIP_FLAG as u32
+                    };
+                for range in set.ranges() {
+                    let first = *range.start() as u32;
+                    let last = *range.end() as u32;
+                    if first < 128 {
+                        ranges.push((first as u8, last.min(127) as u8, destination));
+                    }
+                    if last >= 128 {
+                        unicode_skips.push((state_index, first.max(128), last, destination));
+                    }
+                }
+            }
             ranges.sort_unstable();
             rows.push((index, state.accept_action));
             transitions.extend(ranges);
@@ -391,6 +399,7 @@ impl Generator {
         }
         dedent!(self);
         add_line!(self, "}};");
+        self.add_keyword_unicode_skips(&unicode_skips);
         add_line!(
             self,
             "static const uint16_t ts_keyword_first_byte[256] = {{"
@@ -432,6 +441,31 @@ impl Generator {
         add_line!(self, "}};");
         self.buffer
             .push_str(include_str!("templates/keyword_table.h"));
+    }
+
+    fn add_keyword_unicode_skips(&mut self, unicode_skips: &[(usize, u32, u32, u32)]) {
+        if unicode_skips.is_empty() {
+            return;
+        }
+        add_line!(
+            self,
+            "#define TS_KEYWORD_UNICODE_SKIP_COUNT {}u",
+            unicode_skips.len()
+        );
+        add_line!(
+            self,
+            "typedef struct {{ uint32_t first, last; uint16_t state, next; }} TSKeywordUnicodeSkip;"
+        );
+        add_line!(
+            self,
+            "static const TSKeywordUnicodeSkip ts_keyword_unicode_skips[] = {{"
+        );
+        indent!(self);
+        for (state, first, last, next) in unicode_skips {
+            add_line!(self, "{{ {first}, {last}, {state}, {next} }},");
+        }
+        dedent!(self);
+        add_line!(self, "}};");
     }
 
     fn add_lexer_helpers(&mut self) {
