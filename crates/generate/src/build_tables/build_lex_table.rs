@@ -550,7 +550,7 @@ impl<'a> LexTableBuilder<'a> {
                 self.immediate_keywords.contains(token)
                     && !self.word_guards[guard_id].contains(token)
             });
-        let (transitions, has_sep) = self.cursor.transitions_and_any_sep();
+        let (transitions, has_sep) = self.cursor.partitioned_transitions_and_any_sep();
         // If EOF is a valid lookahead token, add a transition predicated on the null
         // character that leads to the empty set of NFA states.
         if eof_valid {

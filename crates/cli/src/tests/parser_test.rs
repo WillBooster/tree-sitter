@@ -31,6 +31,51 @@ use crate::{
 };
 
 #[test]
+fn test_lexer_character_partitions_preserve_token_start_tags() {
+    let grammar = serde_json::json!({
+        "name": "partitioned_token_starts",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "preferred"},
+                {"type": "SYMBOL", "name": "alternative"}
+            ]},
+            "preferred": {"type": "PATTERN", "value": "[bc]"},
+            "alternative": {"type": "PATTERN", "value": "ab|c"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        for (source, expected, range) in [
+            ("c", "preferred", 0..1),
+            ("ac", "preferred", 1..2),
+            ("ab", "alternative", 0..2),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{source:?}");
+            let token = tree.root_node().named_child(0).unwrap();
+            assert_eq!(token.kind(), expected, "{source:?}");
+            assert_eq!(token.byte_range(), range, "{source:?}");
+        }
+    }
+}
+
+#[test]
 fn test_lexer_minimization_preserves_distinct_eof_tokens() {
     let grammar = serde_json::json!({
         "name": "distinct_eof_tokens",
