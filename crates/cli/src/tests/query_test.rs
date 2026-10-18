@@ -7322,6 +7322,39 @@ fn test_query_max_start_depth_uses_visible_pattern_roots() {
 }
 
 #[test]
+fn test_query_max_start_depth_with_mixed_root_patterns() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "[true]";
+    let tree = parser.parse(source, None).unwrap();
+    for (symbol, depth) in [("array", 0), ("true", 1)] {
+        for root_capture in ["", " @root"] {
+            let wildcard = format!("(_ ({symbol}) @child){root_capture}");
+            let ordinary = format!("({symbol}) @ordinary");
+            for (pattern, expected_index) in [
+                (format!("{wildcard}\n{ordinary}"), 0),
+                (format!("{ordinary}\n{wildcard}"), 1),
+            ] {
+                let query = Query::new(&language, &pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_max_start_depth(Some(depth));
+                let matches = collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(
+                    matches.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+                    vec![expected_index],
+                    "{pattern}, depth={depth}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_query_error_does_not_oob() {
     let language = get_language("javascript");
 
@@ -8899,6 +8932,115 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     vec![(0, vec![])],
                 );
             }
+        }
+
+        let mut mixed_cases = vec![("1 a", 2, 1, 1), ("a 1", 3, 0, 0)];
+        if name == "repeat" {
+            mixed_cases.extend([
+                ("1 2 a", 2, 2, 1),
+                ("1 a 2", 3, 1, 1),
+                ("1 a b", 3, 2, 1),
+                ("1 a 2 b", 3, 3, 2),
+            ]);
+        }
+        allocations::record(|| {
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            for (source, empty_count, captured_bodies, captureless_bodies) in mixed_cases {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(!tree.root_node().has_error());
+                for (pattern, body_count) in [
+                    ("((number) (word))?", captureless_bodies),
+                    ("((number) @n (word) @w)?", captured_bodies),
+                ] {
+                    let query = Query::new(&language, pattern).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(
+                        matches.len(),
+                        empty_count + body_count,
+                        "{name}: {pattern}, {source}"
+                    );
+                    if pattern.contains('@') {
+                        assert_eq!(
+                            matches
+                                .iter()
+                                .filter(|(_, captures)| captures.is_empty())
+                                .count(),
+                            empty_count,
+                            "{name}: {pattern}, {source}",
+                        );
+                        let body = Query::new(&language, "((number) @n (word) @w)").unwrap();
+                        let mut body_cursor = QueryCursor::new();
+                        let expected = collect_matches(
+                            body_cursor.matches(&body, tree.root_node(), source.as_bytes()),
+                            &body,
+                            source,
+                        );
+                        assert_eq!(
+                            matches
+                                .into_iter()
+                                .filter(|(_, captures)| !captures.is_empty())
+                                .collect::<Vec<_>>(),
+                            expected,
+                            "{name}: {pattern}, {source}",
+                        );
+                    }
+                }
+            }
+        });
+
+        if name == "repeat" {
+            allocations::record(|| {
+                let mut parser = Parser::new();
+                parser.set_language(&language).unwrap();
+                for (source, pattern, body, empty_count) in [
+                    (
+                        "1 2 a",
+                        "((number) @n . (word) @w)?",
+                        "((number) @n . (word) @w)",
+                        3,
+                    ),
+                    ("1 a b", "((number)* @n)", "((number)+ @n)", 3),
+                    ("1 a 2 b", "((number)* @n)", "((number)+ @n)", 3),
+                    ("1 a", "(_ (number) @n)?", "(_ (number) @n)", 2),
+                ] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let query = Query::new(&language, pattern).unwrap();
+                    let body = Query::new(&language, body).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let mut body_cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(
+                        matches
+                            .iter()
+                            .filter(|(_, captures)| captures.is_empty())
+                            .count(),
+                        empty_count,
+                        "{pattern}: {source}"
+                    );
+                    assert_eq!(
+                        matches
+                            .into_iter()
+                            .filter(|(_, captures)| !captures.is_empty())
+                            .collect::<Vec<_>>(),
+                        collect_matches(
+                            body_cursor.matches(&body, tree.root_node(), source.as_bytes()),
+                            &body,
+                            source
+                        ),
+                        "{pattern}: {source}"
+                    );
+                }
+            });
         }
 
         for source in if name == "repeat" {
