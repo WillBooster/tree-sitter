@@ -127,7 +127,7 @@ impl CompilationProcess {
                 .env("TS_TEST_COMPILER_READY", root.join("compiler-ready"));
         }
         command
-            .args(["parse", "-p", ".", "input.txt"])
+            .args(["parse", "input.txt"])
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         #[cfg(unix)]
