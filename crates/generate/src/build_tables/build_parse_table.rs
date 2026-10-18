@@ -401,7 +401,7 @@ pub struct ConflictError {
     pub conflicting_lookahead: String,
     pub possible_interpretations: Vec<Interpretation>,
     pub possible_resolutions: Vec<Resolution>,
-    pub generated_repetitions: Vec<(String, Vec<String>)>,
+    pub repetition_rules: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Default, Debug, Serialize, Error, Deserialize)]
@@ -483,11 +483,11 @@ impl std::fmt::Display for ConflictError {
             writeln!(f)?;
         }
 
-        if !self.generated_repetitions.is_empty() {
-            writeln!(f, "\nGenerated repetitions used in this conflict:\n")?;
-            for (name, parents) in &self.generated_repetitions {
+        if !self.repetition_rules.is_empty() {
+            writeln!(f, "\nRepetition rules used in this conflict:\n")?;
+            for (name, parents) in &self.repetition_rules {
                 if parents.is_empty() {
-                    writeln!(f, "  {name}: generated repetition")?;
+                    writeln!(f, "  {name}: repetition rule")?;
                 } else {
                     writeln!(f, "  {name}: used by {}", parents.join(", "))?;
                 }
@@ -1301,7 +1301,7 @@ impl<'a> ParseTableBuilder<'a> {
         }
 
         let mut conflict_error = ConflictError {
-            generated_repetitions: self.generated_repetition_owners(
+            repetition_rules: self.repetition_owners(
                 preceding_symbols,
                 &conflicting_items,
                 auxiliary_context,
@@ -1430,7 +1430,7 @@ impl<'a> ParseTableBuilder<'a> {
         Err(conflict_error)?
     }
 
-    fn generated_repetition_owners(
+    fn repetition_owners(
         &self,
         preceding_symbols: &[Symbol],
         items: &BTreeSet<&ParseItem>,

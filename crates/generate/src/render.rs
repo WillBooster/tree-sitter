@@ -465,10 +465,10 @@ impl Generator {
             else {
                 return false;
             };
-            cursor.state_ids.iter().any(|&separator_state| {
-                matches!(&nfa.states[separator_state as usize],
-                    NfaState::Advance { chars: separators, is_sep: true, .. }
-                        if chars.does_intersect(separators))
+            table.states.iter().any(|state| {
+                state.advance_actions.iter().any(|(separators, action)| {
+                    !action.in_main_token && chars.does_intersect(separators)
+                })
             })
         })
     }
