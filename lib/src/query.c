@@ -4228,7 +4228,8 @@ static inline bool ts_query_cursor__advance(
           break;
         default:
           if (ts_tree_cursor_goto_parent(&self->cursor)) {
-            self->depth--;
+            if (self->on_visible_node) self->depth--;
+            self->on_visible_node = true;
           } else {
             LOG("halt at root\n");
             self->halted = true;
