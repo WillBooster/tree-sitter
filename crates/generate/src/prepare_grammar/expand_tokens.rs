@@ -123,6 +123,7 @@ pub fn expand_tokens(
             implicit_precedence: get_implicit_precedence(pool, variable.root),
             start_state: builder.nfa.last_state_id(),
             is_immediate: is_immediate_token,
+            is_nonkeyword: matches!(pool.node(variable.root), Rule::Metadata { params, .. } if pool.params(params).is_nonkeyword),
         });
     }
 

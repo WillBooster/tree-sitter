@@ -27,6 +27,7 @@ export type AliasRule = { type: 'ALIAS'; named: boolean; content: Rule; value: s
 export type BlankRule = { type: 'BLANK' };
 export type ChoiceRule = { type: 'CHOICE'; members: Rule[] };
 export type FieldRule = { type: 'FIELD'; name: string; content: Rule };
+export type NonkeywordTokenRule = { type: 'NONKEYWORD_TOKEN'; content: Rule };
 export type ImmediateTokenRule = { type: 'IMMEDIATE_TOKEN'; content: Rule };
 export type PatternRule = { type: 'PATTERN'; value: string; flags?: string };
 export type PrecedenceValue = string | number;
@@ -50,6 +51,7 @@ export type Rule =
   | ChoiceRule
   | FieldRule
   | ImmediateTokenRule
+  | NonkeywordTokenRule
   | PatternRule
   | PrecDynamicRule
   | PrecLeftRule
@@ -408,6 +410,9 @@ export interface DSL {
      * @param rule rule to represent as an immediate token
      */
     immediate(this: void, rule: RuleOrLiteral): ImmediateTokenRule;
+
+    /** Matches a token directly, without extracting it as a keyword of the grammar's word token. */
+    nonkeyword(this: void, rule: RuleOrLiteral): NonkeywordTokenRule;
   };
 
   /**

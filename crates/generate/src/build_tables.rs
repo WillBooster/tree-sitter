@@ -451,6 +451,9 @@ fn identify_keywords(
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
+            if variable.is_nonkeyword {
+                return None;
+            }
             let is_candidate = token_conflict_map
                 .does_match_same_string(i, word_token.index as usize)
                 && !token_conflict_map.does_match_different_string(i, word_token.index as usize);

@@ -33,6 +33,8 @@ grammar artifacts together.
 
 Completed-token keyword lookup shares a table with the keyword lexer. It requires ASCII transitions, including skipped separators. Grammars with Unicode separators retain branch-based keyword lexing and can still benefit from compact parse tables and profiles.
 
+Use `token.nonkeyword(rule)` when a token must match directly instead of being extracted as a keyword of the grammar's `word` token. For example, `seq(token.nonkeyword('if'), $.identifier)` can split `ifname` into `if` and `name`; an ordinary `'if'` remains subject to whole-word recognition. This is a lexical choice for that token, including when it appears in a reserved-word set. It does not change the grammar's other keywords. Wrap the result in `alias` to rename its node, use `token.nonkeyword(prec(2, 'if'))` to assign lexical precedence, and combine it with `token.immediate` in either order to prohibit preceding extras. JSON grammars use `{"type":"NONKEYWORD_TOKEN","content":...}`.
+
 To record parse-action and lexer-entry frequencies, generate an unprofiled parser first. From the grammar directory:
 
 ```sh
