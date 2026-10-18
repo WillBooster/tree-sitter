@@ -8,6 +8,48 @@ use crate::{
 };
 
 #[test]
+fn test_changed_ranges_cover_external_descendant_boundaries() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("haskell")).unwrap();
+    let source = "\na = do\n  a\n  . a\n";
+    let mut old_tree = parser.parse(source, None).unwrap();
+    let old_do = old_tree
+        .root_node()
+        .named_descendant_for_byte_range(5, 11)
+        .unwrap();
+    assert_eq!((old_do.kind(), old_do.byte_range()), ("do", 5..14));
+    old_tree.edit(&InputEdit {
+        start_byte: source.len(),
+        old_end_byte: source.len(),
+        new_end_byte: source.len() + 2,
+        start_position: Point::new(4, 0),
+        old_end_position: Point::new(4, 0),
+        new_end_position: Point::new(4, 2),
+    });
+    let new_tree = parser
+        .parse(format!("{source}fN"), Some(&old_tree))
+        .unwrap();
+    assert!(!old_tree.root_node().has_error());
+    assert!(!new_tree.root_node().has_error());
+    let new_do = new_tree
+        .root_node()
+        .named_descendant_for_byte_range(5, 11)
+        .unwrap();
+    assert_eq!((new_do.kind(), new_do.byte_range()), ("do", 5..11));
+    let ranges: Vec<_> = old_tree.changed_ranges(&new_tree).collect();
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range.start_byte <= 11 && range.end_byte >= 14)
+    );
+    assert!(
+        ranges
+            .iter()
+            .any(|range| range.start_byte <= source.len() && range.end_byte >= source.len() + 2)
+    );
+}
+
+#[test]
 fn test_print_dot_graph_for_deep_tree() {
     std::thread::Builder::new()
         .stack_size(256 * 1024)
