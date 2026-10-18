@@ -625,6 +625,9 @@ impl<'a> LexTableBuilder<'a> {
             completion
         };
 
+        let shadow_word_complete = self.word_guards[guard_id].1
+            && !self.word_guards[guard_id].2
+            && completion.is_some_and(|(id, _)| self.word_token == Some(Symbol::terminal(id)));
         let retained_immediate_complete = guard_id != 0
             && completion.is_some_and(|(id, _)| {
                 let token = Symbol::terminal(id);
@@ -660,7 +663,7 @@ impl<'a> LexTableBuilder<'a> {
                             .0
                             .contains(Symbol::terminal(index))
                     });
-            if retained_immediate_complete && !guarded_keyword_pending {
+            if (retained_immediate_complete || shadow_word_complete) && !guarded_keyword_pending {
                 let word = self.word_token.unwrap();
                 transition.states.retain(|&id| {
                     !self
