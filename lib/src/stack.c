@@ -756,6 +756,8 @@ typedef struct {
   unsigned max_depth;
 } SummarizeStackSession;
 
+static bool subtree_has_completed_prefix(Subtree subtree);
+
 forceinline StackAction summarize_stack_callback(void *payload, const StackIterator *iterator) {
   SummarizeStackSession *session = payload;
   TSStateId state = iterator->node->state;
@@ -770,7 +772,7 @@ forceinline StackAction summarize_stack_callback(void *payload, const StackItera
   for (unsigned i = 0; i < iterator->node->link_count; i++) {
     StackLink link = iterator->node->links[i];
     if (link.subtree.ptr && link.node->state == 1 &&
-        ts_subtree_child_count(link.subtree) > 0 && ts_subtree_error_cost(link.subtree) == 0) {
+        subtree_has_completed_prefix(link.subtree)) {
       has_root_subtree = true;
     }
   }
@@ -781,6 +783,15 @@ forceinline StackAction summarize_stack_callback(void *payload, const StackItera
     .has_root_subtree = has_root_subtree,
   }));
   return StackActionNone;
+}
+
+static bool subtree_has_completed_prefix(Subtree subtree) {
+  while (ts_subtree_child_count(subtree) > 0) {
+    if (ts_subtree_error_cost(subtree) == 0) return true;
+    if (ts_subtree_visible(subtree)) return false;
+    subtree = ts_subtree_children(subtree)[0];
+  }
+  return false;
 }
 
 void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_depth) {

@@ -737,6 +737,53 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
 }
 
 #[test]
+fn test_recovery_preserves_prefixes_in_statement_lists() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for prefix in ["function f() {}", "const a = 1;"] {
+            let before_edit = format!("{prefix}\nnumber<B;\nclass E");
+            let mut source =
+                format!("{before_edit} implements A {{}}\nconst sentinel = 1;").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            for remove in [true, false, true, false] {
+                let edit = Edit {
+                    position: before_edit.len(),
+                    deleted_length: if remove { " implements A".len() } else { 0 },
+                    inserted_text: if remove {
+                        Vec::new()
+                    } else {
+                        b" implements A".to_vec()
+                    },
+                };
+                perform_edit(&mut tree, &mut source, &edit).unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                let root = tree.root_node();
+                let mut cursor = root.walk();
+                let declarations = root
+                    .named_children(&mut cursor)
+                    .filter(|node| {
+                        matches!(node.kind(), "function_declaration" | "lexical_declaration")
+                    })
+                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    declarations,
+                    [(prefix, false), ("const sentinel = 1;", false)],
+                    "{}",
+                    root.to_sexp()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_recovery_lexer_preserves_keyword_tokens() {
     for precedence in [0, 1] {
         let grammar =
