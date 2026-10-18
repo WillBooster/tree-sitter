@@ -1,0 +1,6 @@
+==================
+Higher precedence tokens
+==================
+aaa
+---
+(program)

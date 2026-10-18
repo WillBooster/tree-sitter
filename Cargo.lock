@@ -2160,6 +2160,7 @@ dependencies = [
  "ctrlc",
  "dialoguer",
  "encoding_rs",
+ "etcetera",
  "glob",
  "heck",
  "html-escape",
