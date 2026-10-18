@@ -7746,3 +7746,49 @@ fn test_last_child_anchor_looks_past_hidden_node() {
         assert_query_matches(&language, &query, source, &[(0, vec![("last", "int y;")])]);
     });
 }
+
+#[test]
+fn test_query_max_start_depth_after_disabling_other_patterns() {
+    let language = get_language("json");
+    let source = r#"{"":[]}"#;
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let patterns = ["(_ (array) @child)", "(number) @number"];
+    for disabled in [0, 1] {
+        let pattern = if disabled == 0 {
+            format!("{}\n{}", patterns[1], patterns[0])
+        } else {
+            patterns.join("\n")
+        };
+        let mut query = Query::new(&language, &pattern).unwrap();
+        query.disable_pattern(disabled);
+        let mut cursor = QueryCursor::new();
+        cursor.set_max_start_depth(Some(2));
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![(1 - disabled, vec![("child", "[]")])]
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![("child", "[]")]
+        );
+        query.disable_pattern(1 - disabled);
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            []
+        );
+    }
+}
