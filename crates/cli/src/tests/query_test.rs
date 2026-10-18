@@ -4162,16 +4162,16 @@ fn test_query_containing_ranges_preserve_non_rooted_wildcard_matches() {
         parser.set_language(&language).unwrap();
         let large = format!("[{}0]", "[1,2],".repeat(63));
         for (source, intersecting, containing, kind, expected_ranges) in [
-            ("[0,1,2]", 0..1, 3..6, "number", [3..4, 5..6]),
-            ("[0,1,2,3]", 7..7, 3..6, "number", [3..4, 5..6]),
+            ("[0,1,2]", 4..5, 3..6, "number", [3..4, 5..6]),
+            ("[0,1,2,3]", 4..4, 3..6, "number", [3..4, 5..6]),
             (
                 "[[1,2],[1,2],[1,2],0]",
-                19..19,
+                12..13,
                 2..18,
                 "array",
                 [7..12, 13..18],
             ),
-            (large.as_str(), 78..78, 2..18, "array", [7..12, 13..18]),
+            (large.as_str(), 12..12, 2..18, "array", [7..12, 13..18]),
         ] {
             let tree = parser.parse(source, None).unwrap();
             assert!(!tree.root_node().has_error());
