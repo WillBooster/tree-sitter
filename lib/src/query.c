@@ -3747,10 +3747,8 @@ static bool ts_query_cursor__first_in_progress_capture(
     ) {
       QueryStep *step = array_get(&self->query->steps, state->step_index);
       if (is_definite) {
-        // We're being a bit conservative here by asserting that the following step
-        // is not immediate, because this capture might end up being discarded if the
-        // following symbol in the tree isn't the required symbol for this step.
-        *is_definite = step->root_pattern_guaranteed && !step->is_immediate;
+        *is_definite = step->root_pattern_guaranteed && !step->is_immediate &&
+          !state->has_in_progress_alternatives;
       } else if (step->root_pattern_guaranteed) {
         continue;
       }

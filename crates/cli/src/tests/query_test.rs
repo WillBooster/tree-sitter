@@ -6796,7 +6796,6 @@ fn test_query_quantified_captures() {
             pattern: r"
                 ((comment) ?+ @comment)
             ",
-            // This should be identical to the `*` quantifier.
             captures: &[
                 ("comment", "// foo"),
                 ("comment", "// bar"),
@@ -7684,6 +7683,48 @@ fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
             }
         }
     });
+}
+
+#[test]
+fn test_wildcard_alternatives_do_not_publish_duplicate_captures() {
+    let language = get_language("json");
+    let source = r#"[{},[[true,"bb","x y"],"a",[[],"bb",1,"a"]],""]"#;
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    let query = Query::new(&language, "(array . (array) @a2 [(_)* (_ (string) @c3)])").unwrap();
+    let mut cursor = QueryCursor::new();
+    let matches = collect_matches(
+        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+        &query,
+        source,
+    );
+    assert_eq!(matches.len(), 3);
+    let mut captures_cursor = QueryCursor::new();
+    let captures = collect_captures(
+        captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+        &query,
+        source,
+    );
+    assert_eq!(
+        captures,
+        vec![
+            ("a2", r#"[true,"bb","x y"]"#),
+            ("a2", r#"[true,"bb","x y"]"#),
+            ("a2", "[]"),
+            ("c3", r#""bb""#),
+            ("c3", r#""a""#),
+        ]
+    );
+    let mut match_captures: Vec<_> = matches
+        .into_iter()
+        .flat_map(|(_, captures)| captures)
+        .collect();
+    let mut captures = captures;
+    match_captures.sort_unstable();
+    captures.sort_unstable();
+    assert_eq!(captures, match_captures);
 }
 
 #[test]
