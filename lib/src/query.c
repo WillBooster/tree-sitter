@@ -4445,8 +4445,8 @@ static inline bool ts_query_cursor__advance(
           PatternEntry *pattern = array_get(&self->query->pattern_map, i);
 
           QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-          uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
           do {
+            uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
             if (
