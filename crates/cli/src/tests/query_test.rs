@@ -5360,7 +5360,7 @@ fn test_query_captured_wildcard_parents_preserve_capture_order() {
         };
         expected.sort_by_key(key);
         actual.sort_by_key(key);
-        assert!(!expected.is_empty());
+        assert_ne!(expected, [], "{pattern}");
         assert_eq!(actual, expected, "{pattern}");
     }
 }
