@@ -8464,20 +8464,46 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
             }
         }
 
+        for (pattern, count) in [("(number)", 2), ("((number)?)", 3), ("((number)*)", 2)] {
+            let query = Query::new(&language, pattern).unwrap();
+            let mut cursor = QueryCursor::new();
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source
+                ),
+                vec![(0, vec![]); count],
+                "{name}: {pattern}",
+            );
+        }
+
         if name == "repeat" {
             let source = "1 ".repeat(1000);
             let tree = parser.parse(&source, None).unwrap();
-            let query = Query::new(&language, "((number)? @number)").unwrap();
-            let mut cursor = QueryCursor::new();
-            cursor.set_byte_range(source.len() - 1..source.len() + 1);
-            assert_eq!(
-                collect_matches(
-                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
-                    &query,
-                    &source
-                ),
-                vec![(0, vec![])],
-            );
+            for pattern in ["((number)?)", "((number)? @number)"] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source
+                    )
+                    .len(),
+                    1001,
+                    "{pattern}",
+                );
+                cursor.set_byte_range(source.len() - 1..source.len() + 1);
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source
+                    ),
+                    vec![(0, vec![])],
+                );
+            }
         }
 
         let mut query = Query::new(&language, "((number)? @number)").unwrap();
