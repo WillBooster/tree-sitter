@@ -1127,7 +1127,7 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
 #[test]
 fn test_keyword_lookup_with_overlapping_unicode_word_prefixes() {
     let keyword = format!("keyword_{}", "x".repeat(80));
-    let grammar = serde_json::json!({
+    let mut grammar = serde_json::json!({
         "name": "keyword_unicode_word_prefix",
         "word": "identifier",
         "extras": [{"type": "PATTERN", "value": "[\\u200e ]"}],
@@ -1139,39 +1139,47 @@ fn test_keyword_lookup_with_overlapping_unicode_word_prefixes() {
             "identifier": {"type": "PATTERN", "value": "[\\u200e ]*[a-z_]+"}
         }
     });
-    for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        for prefix in ["\u{200e}", " \u{200e}"] {
-            for suffix in ["", " x"] {
-                let source = format!("{prefix}{keyword}{suffix}");
-                let contiguous = parser.parse(&source, None).unwrap();
-                let streamed = parser
-                    .parse_with_options(
-                        &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
-                        None,
-                        None,
-                    )
-                    .unwrap();
-                let utf16 = parser
-                    .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
-                    .unwrap();
-                for tree in [&contiguous, &streamed, &utf16] {
-                    assert!(!tree.root_node().has_error());
-                    assert_eq!(tree.root_node().child(0).unwrap().kind(), keyword);
+    for immediate in [false, true] {
+        if immediate {
+            grammar["rules"]["identifier"] = serde_json::json!({
+                "type": "IMMEDIATE_TOKEN",
+                "content": grammar["rules"]["identifier"].clone(),
+            });
+        }
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            for prefix in ["\u{200e}", " \u{200e}"] {
+                for suffix in ["", " x"] {
+                    let source = format!("{prefix}{keyword}{suffix}");
+                    let contiguous = parser.parse(&source, None).unwrap();
+                    let streamed = parser
+                        .parse_with_options(
+                            &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                    let utf16 = parser
+                        .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+                        .unwrap();
+                    for tree in [&contiguous, &streamed, &utf16] {
+                        assert!(!tree.root_node().has_error());
+                        assert_eq!(tree.root_node().child(0).unwrap().kind(), keyword);
+                        assert_eq!(
+                            tree.root_node().child_count(),
+                            if suffix.is_empty() { 1 } else { 2 }
+                        );
+                    }
                     assert_eq!(
-                        tree.root_node().child_count(),
-                        if suffix.is_empty() { 1 } else { 2 }
+                        contiguous.root_node().to_sexp(),
+                        streamed.root_node().to_sexp()
                     );
+                    assert_eq!(
+                        contiguous.root_node().to_sexp(),
+                        utf16.root_node().to_sexp()
+                    );
+                    assert_eq!(contiguous.root_node().end_byte(), source.len());
+                    assert_eq!(streamed.root_node().end_byte(), source.len());
                 }
-                assert_eq!(
-                    contiguous.root_node().to_sexp(),
-                    streamed.root_node().to_sexp()
-                );
-                assert_eq!(
-                    contiguous.root_node().to_sexp(),
-                    utf16.root_node().to_sexp()
-                );
-                assert_eq!(contiguous.root_node().end_byte(), source.len());
-                assert_eq!(streamed.root_node().end_byte(), source.len());
             }
         }
     }
