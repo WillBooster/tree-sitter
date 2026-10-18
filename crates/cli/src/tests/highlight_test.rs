@@ -703,6 +703,145 @@ fn test_decode_utf8_lossy() {
     assert_eq!(parts, vec!["hello", "\u{fffd}", "\u{fffd}"]);
 }
 
+#[test]
+fn test_highlighting_combined_injections_in_source_order() {
+    let language = get_language("javascript");
+    let source = "'first'; 'second';";
+    let patterns = [
+        r#"((string_fragment) @injection.content
+            (#eq? @injection.content "first")
+            (#set! injection.language "fragment")
+            (#set! injection.combined))"#,
+        r#"((string_fragment) @injection.content
+            (#eq? @injection.content "second")
+            (#set! injection.language "fragment")
+            (#set! injection.combined))"#,
+    ];
+    let mut fragment = HighlightConfiguration::new(
+        language.clone(),
+        "fragment",
+        "(identifier) @variable",
+        "",
+        "",
+    )
+    .unwrap();
+    fragment.configure(&["string", "variable"]);
+    let outer = HighlightConfiguration::new(
+        language.clone(),
+        "outer",
+        "",
+        r#"((program) @injection.content
+            (#set! injection.language "combined")
+            (#set! injection.include-children))"#,
+        "",
+    )
+    .unwrap();
+    for order in [[0, 1], [1, 0]] {
+        let injections = format!("{}\n{}", patterns[order[0]], patterns[order[1]]);
+        let mut combined = HighlightConfiguration::new(
+            language.clone(),
+            "combined",
+            "(string_fragment) @string",
+            &injections,
+            "",
+        )
+        .unwrap();
+        combined.configure(&["string", "variable"]);
+        for config in [&combined, &outer] {
+            let mut highlighter = Highlighter::new();
+            let events = highlighter
+                .highlight(config, source.as_bytes(), None, None, |name| match name {
+                    "fragment" => Some(&fragment),
+                    "combined" => Some(&combined),
+                    _ => None,
+                })
+                .unwrap();
+            let mut active = Vec::new();
+            let mut highlighted = Vec::new();
+            let mut offset = 0;
+            for event in events {
+                match event.unwrap() {
+                    HighlightEvent::HighlightStart(highlight) => active.push(highlight),
+                    HighlightEvent::HighlightEnd => {
+                        active.pop().unwrap();
+                    }
+                    HighlightEvent::Source { start, end } => {
+                        assert_eq!(start, offset);
+                        assert!(start < end);
+                        offset = end;
+                        if !active.is_empty() {
+                            highlighted.push((&source[start..end], active.clone()));
+                        }
+                    }
+                }
+            }
+            assert_eq!(offset, source.len());
+            assert_eq!(active, []);
+            assert_eq!(
+                highlighted,
+                vec![
+                    ("first", vec![Highlight(1)]),
+                    ("second", vec![Highlight(1)]),
+                ],
+                "pattern order {order:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_highlighting_combined_injections_with_equal_ranges() {
+    let language = get_language("javascript");
+    let mut first =
+        HighlightConfiguration::new(language.clone(), "first", "(identifier) @first", "", "")
+            .unwrap();
+    first.configure(&["first", "second"]);
+    let mut second =
+        HighlightConfiguration::new(language.clone(), "second", "(identifier) @second", "", "")
+            .unwrap();
+    second.configure(&["first", "second"]);
+    let config = HighlightConfiguration::new(
+        language,
+        "combined",
+        "",
+        r#"
+        ((string_fragment) @injection.content
+            (#set! injection.language "first")
+            (#set! injection.combined))
+        ((string_fragment) @injection.content
+            (#set! injection.language "second")
+            (#set! injection.combined))
+        "#,
+        "",
+    )
+    .unwrap();
+    let mut highlighter = Highlighter::new();
+    let events = highlighter
+        .highlight(&config, b"'value'", None, None, |name| match name {
+            "first" => Some(&first),
+            "second" => Some(&second),
+            _ => None,
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                HighlightEvent::Source { start: 0, end: 1 },
+                HighlightEvent::HighlightStart(Highlight(0)),
+                HighlightEvent::HighlightStart(Highlight(1)),
+                HighlightEvent::Source { start: 1, end: 6 },
+                HighlightEvent::HighlightEnd,
+                HighlightEvent::HighlightEnd,
+                HighlightEvent::Source { start: 6, end: 7 },
+            ]
+        ),
+        "{events:?}"
+    );
+}
+
 fn c_string(s: &str) -> CString {
     CString::new(s.as_bytes().to_vec()).unwrap()
 }
