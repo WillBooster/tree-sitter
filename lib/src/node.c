@@ -633,13 +633,15 @@ TSNode ts_node_parent(TSNode self) {
   TSNode node = ts_tree_root_node(self.tree);
   if (node.id == self.id) return ts_node__null();
   if (ts_node_start_byte(self) == ts_node_end_byte(self)) {
-    // Parent lookup starts at the unshifted root even for nodes obtained with an offset.
     TSTreeCursor cursor = ts_tree_cursor_new(node);
+    bool found = ts_node__goto_descendant(&cursor, self, NULL, true);
+    if (!found) {
+      // Offset-root nodes can lie outside their ancestors' unshifted ranges.
+      ts_tree_cursor_reset(&cursor, node);
+      found = ts_node__goto_descendant(&cursor, self, NULL, false);
+    }
     TSNode parent = ts_node__null();
-    if (
-      ts_node__goto_descendant(&cursor, self, NULL, false)
-      && ts_tree_cursor_goto_parent(&cursor)
-    ) {
+    if (found && ts_tree_cursor_goto_parent(&cursor)) {
       parent = ts_tree_cursor_current_node(&cursor);
     }
     ts_tree_cursor_delete(&cursor);
