@@ -1,0 +1,10 @@
+==================
+Newline token after separators
+==================
+
+
+;
+
+
+---
+(program)

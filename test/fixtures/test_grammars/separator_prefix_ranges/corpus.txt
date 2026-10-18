@@ -1,0 +1,6 @@
+==================
+Leading separators
+==================
+   error make {}
+---
+(program (error_statement (record)))

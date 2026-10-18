@@ -44,6 +44,8 @@ uint32_t ts_stack_halted_version_count(Stack *self);
 TSStateId ts_stack_state(const Stack *self, StackVersion version);
 
 // Get the last external token associated with a given version of the stack.
+bool ts_stack_after_extra(const Stack *, StackVersion);
+
 Subtree ts_stack_last_external_token(const Stack *self, StackVersion version);
 
 // Set the last external token associated with a given version of the stack.
