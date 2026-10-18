@@ -4644,6 +4644,64 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
 }
 
 #[test]
+fn test_nonkeyword_fallback_bounds_streamed_lookahead() {
+    let grammar = serde_json::json!({
+        "name": "bounded_nonkeyword_lookahead",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "if"}},
+                {"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "fy"}},
+                {"type": "STRING", "value": "iffy"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let repetitions = 512;
+    let source = "iffy".repeat(repetitions);
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut reads = 0;
+        let tree = parser
+            .parse_with_options(
+                &mut |byte, _| {
+                    reads += 1;
+                    &source.as_bytes()[byte..(byte + 1).min(source.len())]
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.byte_range(), 0..source.len());
+        assert_eq!(
+            root.child_count(),
+            u32::try_from(repetitions * 2 - 1).unwrap()
+        );
+        assert_eq!(
+            root.child(0).unwrap().utf8_text(source.as_bytes()).unwrap(),
+            "if"
+        );
+        assert_eq!(
+            root.child(1).unwrap().utf8_text(source.as_bytes()).unwrap(),
+            "fy"
+        );
+        assert_eq!(
+            root.child(root.child_count() - 1)
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap(),
+            "iffy"
+        );
+        assert!(
+            reads < source.len() * 16,
+            "{reads} reads for {} bytes",
+            source.len()
+        );
+    }
+}
+
+#[test]
 fn test_nonkeyword_fallback_respects_lexical_precedence() {
     for (raw_precedence, keyword_precedence, expected) in
         [(2, 1, "raw"), (1, 2, "ordinary"), (0, 0, "ordinary")]
@@ -6200,11 +6258,20 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 assert_eq!(extra.utf8_text(source.as_bytes()).unwrap(), "#before#");
             }
             assert!(!comment.is_extra());
-            for child in root
+            let extras = root
                 .named_children(&mut cursor)
                 .filter(|node| node.kind() == "comment")
-            {
+                .collect::<Vec<_>>();
+            let expected = if source.starts_with('#') {
+                vec![(0..8, "#before#"), (18..25, "#after#")]
+            } else {
+                vec![]
+            };
+            assert_eq!(extras.len(), expected.len());
+            for (child, (range, text)) in extras.iter().zip(expected) {
                 assert!(child.is_extra());
+                assert_eq!(child.byte_range(), range);
+                assert_eq!(child.utf8_text(source.as_bytes()).unwrap(), text);
             }
         }
         let mut source = "l#inside#\n".to_string();
