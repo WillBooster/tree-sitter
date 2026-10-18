@@ -193,6 +193,14 @@ function token(value) {
   };
 }
 
+token.nonkeyword = function (value) {
+  checkArguments(arguments, arguments.length, token.nonkeyword, 'token.nonkeyword', '', 'literal');
+  return {
+    type: "NONKEYWORD_TOKEN",
+    content: normalize(value)
+  };
+}
+
 token.immediate = function (value) {
   checkArguments(arguments, arguments.length, token.immediate, 'token.immediate', '', 'literal');
   return {
