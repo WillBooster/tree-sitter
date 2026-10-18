@@ -4583,6 +4583,31 @@ fn test_nonkeyword_fallback_respects_lexical_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_word_guard_preserves_lower_precedence_content() {
+    let grammar = r#"{
+        "name": "nonkeyword_guard_content",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [{"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}]},
+                {"type": "SEQ", "members": [{"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "do"}}, {"type": "SYMBOL", "name": "identifier"}]},
+                {"type": "REPEAT1", "content": {"type": "SYMBOL", "name": "content"}}
+            ]},
+            "identifier": {"type": "PATTERN", "value": "[a-z/]+"},
+            "content": {"type": "TOKEN", "content": {"type": "PREC", "value": -1, "content": {"type": "PATTERN", "value": "[a-z/']+"}}}
+        }
+    }"#;
+    for mut parser in parsers_for_grammar(grammar) {
+        for source in ["/'/", "/'/''/"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert_eq!(root.to_sexp(), "(source_file (content))");
+            assert_eq!(root.named_child(0).unwrap().byte_range(), 0..source.len());
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
     for (ordinary, nonkeyword, expected) in [
         (
