@@ -50,7 +50,7 @@ fn test_identifier_only_grammar_compiles_without_c_warnings() {
     std::fs::write(path.join("parser.c"), code).unwrap();
     std::fs::write(
         path.join("strict_parser.c"),
-        "#if defined(_MSC_VER)\n#pragma warning(error: 4102)\n#else\n#pragma GCC diagnostic error \"-Wunused-label\"\n#endif\n#include \"parser.c\"\n",
+        "#if defined(_MSC_VER)\n#pragma warning(error: 4100 4102)\n#else\n#pragma GCC diagnostic error \"-Wunused-label\"\n#endif\n#include \"parser.c\"\n",
     )
     .unwrap();
     std::fs::write(

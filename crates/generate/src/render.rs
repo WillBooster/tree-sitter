@@ -1323,7 +1323,7 @@ impl Generator {
         {
             add_line!(
                 self,
-                "static bool {name}(UNUSED TSLexer *lexer, UNUSED TSStateId state) {{ return false; }}"
+                "static bool {name}(TSLexer *lexer, TSStateId state) {{ (void)lexer; (void)state; return false; }}"
             );
             add_line!(self, "");
             return;
