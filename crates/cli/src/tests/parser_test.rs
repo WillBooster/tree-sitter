@@ -5255,3 +5255,199 @@ fn test_grammar_that_should_hang_and_not_segfault() {
         }
     }
 }
+
+#[test]
+fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
+    for (external, shared) in [(false, false), (true, false), (true, true)] {
+        let name = if shared {
+            "immediate_shared_external"
+        } else if external {
+            "immediate_external"
+        } else {
+            "immediate_internal"
+        };
+        let grammar = format!(
+            r#"
+            module.exports = grammar({{
+                name: '{name}',
+                externals: $ => {externals},
+                extras: $ => [/\s/, $.comment],
+                rules: {{
+                    source_file: $ => repeat(choice($.strict, $.mixed)),
+                    strict: _ => seq('b', token.immediate('"s"')),
+                    mixed: $ => seq('a', choice(
+                        alias(token.immediate('xx'), $.immediate),
+                        alias(token(/x+/), $.regular),
+                    )),
+                    {comment}
+                }},
+            }});
+        "#,
+            externals = if shared {
+                "[$.comment, token.immediate('xx'), token(/x+/)]"
+            } else if external {
+                "[$.comment]"
+            } else {
+                "[]"
+            },
+            comment = if external {
+                ""
+            } else {
+                "comment: _ => seq('#', repeat(/[a-z]/), '#'),"
+            }
+        );
+        let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        std::fs::create_dir_all(&temporary_root).unwrap();
+        let directory = tempfile::tempdir_in(temporary_root).unwrap();
+        let grammar_path = directory.path().join("grammar.js");
+        std::fs::write(&grammar_path, grammar).unwrap();
+        if external {
+            std::fs::write(directory.path().join("scanner.c"), r#"
+                #include "tree_sitter/parser.h"
+                void *tree_sitter_LANG_external_scanner_create(void) { return NULL; }
+                void tree_sitter_LANG_external_scanner_destroy(void *p) { (void)p; }
+                unsigned tree_sitter_LANG_external_scanner_serialize(void *p, char *b) { (void)p; (void)b; return 0; }
+                void tree_sitter_LANG_external_scanner_deserialize(void *p, const char *b, unsigned n) { (void)p; (void)b; (void)n; }
+                bool tree_sitter_LANG_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+                    (void)p;
+                    SHARED_SCAN
+                    if (!valid[0] || lexer->lookahead != '#') return false;
+                    lexer->advance(lexer, false);
+                    while (lexer->lookahead && lexer->lookahead != '#') lexer->advance(lexer, false);
+                    if (lexer->lookahead != '#') return false;
+                    lexer->advance(lexer, false);
+                    lexer->result_symbol = 0;
+                    return true;
+                }
+            "#.replace("LANG", name).replace("SHARED_SCAN", if shared {
+                r"
+                    if (lexer->lookahead == 'x' && (valid[1] || valid[2])) {
+                        unsigned count = 0;
+                        do { lexer->advance(lexer, false); count++; } while (lexer->lookahead == 'x');
+                        if (valid[1] && count == 2) lexer->result_symbol = 1;
+                        else if (valid[2]) lexer->result_symbol = 2;
+                        else return false;
+                        return true;
+                    }
+                "
+            } else { "" })).unwrap();
+        }
+        let json = tree_sitter_generate::load_grammar_file(&grammar_path, None).unwrap();
+        let (name, code) = generate_parser(&json).unwrap();
+        let languages = [
+            get_test_language(&name, &code, Some(directory.path())),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm_with_scanner(
+                &name,
+                &code,
+                Some(directory.path()),
+            ),
+        ];
+        for language in languages {
+            let mut parser = Parser::new();
+            #[cfg(feature = "wasm")]
+            if language.is_wasm() {
+                parser
+                    .set_wasm_store(
+                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                    )
+                    .unwrap();
+            }
+            parser.set_language(&language).unwrap();
+            let valid = parser.parse("b\"s\"", None).unwrap();
+            assert!(!valid.root_node().has_error());
+            let invalid = parser.parse("b#comment#\"s\"", None).unwrap();
+            assert!(invalid.root_node().has_error());
+            let before = "axx";
+            let after = "a#comment#xx";
+            let mut old_tree = parser.parse(before, None).unwrap();
+            assert_eq!(
+                old_tree.root_node().to_sexp(),
+                "(source_file (mixed (immediate)))"
+            );
+            old_tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 1,
+                new_end_byte: 10,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 1),
+                new_end_position: Point::new(0, 10),
+            });
+            let mut updated = parser.parse(after, Some(&old_tree)).unwrap();
+            let fresh = parser.parse(after, None).unwrap();
+            assert_eq!(
+                updated.root_node().to_sexp(),
+                "(source_file (mixed (comment) (regular)))"
+            );
+            assert_eq!(updated.root_node().to_sexp(), fresh.root_node().to_sexp());
+            updated.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 10,
+                new_end_byte: 1,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 10),
+                new_end_position: Point::new(0, 1),
+            });
+            let restored = parser.parse(before, Some(&updated)).unwrap();
+            assert_eq!(
+                restored.root_node().to_sexp(),
+                "(source_file (mixed (immediate)))"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_immediate_string_content_precedes_nonterminal_extras() {
+    let grammar = r#"
+        module.exports = grammar({
+            name: 'immediate_string_content',
+            extras: $ => [/\s+/, $.comment],
+            rules: {
+                document: $ => repeat($.string),
+                string: $ => seq('"', repeat(alias(token.immediate(/[^"\\]+/), $.content)), token.immediate('"')),
+                comment: _ => seq('/*', repeat(choice(/[^*]+/, '*')), '*/'),
+            },
+        });
+    "#;
+    let temporary_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&temporary_root).unwrap();
+    let file = tempfile::Builder::new()
+        .suffix(".js")
+        .tempfile_in(temporary_root)
+        .unwrap();
+    std::fs::write(file.path(), grammar).unwrap();
+    let json = load_grammar_file(file.path(), None).unwrap();
+    let (name, code) = generate_parser(&json).unwrap();
+    let languages = [
+        get_test_language(&name, &code, None),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        for source in ["\"/*\"", "\"a/*b\"", "/*outside*/\"/*\""] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
+            let string = root
+                .named_child((root.named_child_count() - 1) as u32)
+                .unwrap();
+            assert_eq!(string.kind(), "string");
+            assert_eq!(string.child_count(), 3);
+            let content = string.child(1).unwrap();
+            let expected = if source == "\"a/*b\"" { "a/*b" } else { "/*" };
+            assert_eq!(content.utf8_text(source.as_bytes()).unwrap(), expected);
+            assert!(!content.is_extra());
+        }
+    }
+}

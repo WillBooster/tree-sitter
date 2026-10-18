@@ -41,6 +41,7 @@ typedef struct {
   bool visible;
   bool named;
   bool supertype;
+  bool immediate;
 } TSSymbolMetadata;
 
 typedef struct TSLexer TSLexer;
@@ -82,7 +83,9 @@ typedef union {
 
 typedef struct {
   uint16_t lex_state;
+  uint16_t lex_state_after_extra;
   uint16_t external_lex_state;
+  uint16_t external_lex_state_after_extra;
   uint16_t reserved_word_set_id;
 } TSLexerMode;
 

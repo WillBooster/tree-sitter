@@ -252,8 +252,22 @@ pub fn build_lex_table(
     for (tokens, guard_keywords, parse_state_ids) in parse_state_ids_by_token_set {
         let lex_state_id = builder.add_state_for_tokens_with_word_guard(&tokens, &guard_keywords);
 
+        let tokens_after_extra = tokens
+            .iter()
+            .filter(|symbol| {
+                !symbol.is_terminal()
+                    || !lexical_grammar.variables[symbol.index as usize].is_immediate
+            })
+            .collect::<TokenSet>();
+        let guards_after_extra = guard_keywords
+            .iter()
+            .filter(|symbol| !lexical_grammar.variables[symbol.index as usize].is_immediate)
+            .collect::<TokenSet>();
+        let lex_state_id_after_extra =
+            builder.add_state_for_tokens_with_word_guard(&tokens_after_extra, &guards_after_extra);
         for id in parse_state_ids {
             parse_table.states[id as usize].lex_state_id = lex_state_id;
+            parse_table.states[id as usize].lex_state_id_after_extra = lex_state_id_after_extra;
         }
     }
 
@@ -262,6 +276,7 @@ pub fn build_lex_table(
         let state_map = minimize_lex_table(&mut main_lex_table);
         for state in &mut parse_table.states {
             state.lex_state_id = state_map[state.lex_state_id as usize];
+            state.lex_state_id_after_extra = state_map[state.lex_state_id_after_extra as usize];
         }
         if !coalesce_lex_transitions(&mut main_lex_table) {
             break;
@@ -387,6 +402,7 @@ struct LexTableBuilder<'a> {
     word_guards: Vec<TokenSet>,
     cursor: NfaCursor<'a>,
     table: LexTable,
+    eof_state: Option<LexStateId>,
     state_queue: VecDeque<QueueEntry>,
     state_ids_by_nfa_state_set: FxHashMap<(Vec<u32>, bool, usize), LexStateId>,
 }
@@ -401,6 +417,7 @@ impl<'a> LexTableBuilder<'a> {
             word_guards: vec![TokenSet::new()],
             cursor: NfaCursor::new(&lexical_grammar.nfa, vec![]),
             table: LexTable::default(),
+            eof_state: None,
             state_queue: VecDeque::new(),
             state_ids_by_nfa_state_set: FxHashMap::default(),
         }
@@ -408,6 +425,7 @@ impl<'a> LexTableBuilder<'a> {
 
     fn reset(&mut self) {
         self.table = LexTable::default();
+        self.eof_state = None;
         self.state_queue.clear();
         self.state_ids_by_nfa_state_set.clear();
     }
@@ -521,7 +539,6 @@ impl<'a> LexTableBuilder<'a> {
     ) {
         self.cursor.force_reset(nfa_states);
 
-        // The EOF state is represented as an empty list of NFA states.
         let immediate_complete = guard_id != 0
             && self
                 .cursor
@@ -562,10 +579,15 @@ impl<'a> LexTableBuilder<'a> {
             .filter(|(chars, _)| chars.contains('\0'))
             .all(|(chars, _)| chars.chars().eq(['\0']));
 
-        // If EOF is a valid lookahead token, add a transition predicated on the null
-        // character that leads to the empty set of NFA states.
         if eof_valid {
-            let (next_state_id, _) = self.add_state(Vec::new(), false, guard_id);
+            let next_state_id = *self.eof_state.get_or_insert_with(|| {
+                let id = self.table.states.len() as LexStateId;
+                self.table.states.push(LexState {
+                    accept_action: Some(Symbol::end()),
+                    ..LexState::default()
+                });
+                id
+            });
             self.table.states[state_id as usize].eof_action = Some(AdvanceAction {
                 state: next_state_id,
                 in_main_token: true,
@@ -630,8 +652,6 @@ impl<'a> LexTableBuilder<'a> {
         if let Some((complete_id, _)) = completion {
             self.table.states[state_id as usize].accept_action =
                 Some(Symbol::terminal(complete_id));
-        } else if self.cursor.state_ids.is_empty() {
-            self.table.states[state_id as usize].accept_action = Some(Symbol::end());
         }
     }
 }
@@ -869,5 +889,6 @@ fn sort_states(table: &mut LexTable, parse_table: &mut ParseTable) {
     // Update the parse table's lex state references
     for state in &mut parse_table.states {
         state.lex_state_id = new_ids_by_old_id[state.lex_state_id as usize];
+        state.lex_state_id_after_extra = new_ids_by_old_id[state.lex_state_id_after_extra as usize];
     }
 }
