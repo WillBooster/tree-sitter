@@ -577,17 +577,15 @@ impl<'a> NfaCursor<'a> {
         Self::group_transitions(self.raw_transitions())
     }
 
-    /// Like [`transitions()`](Self::transitions) but also returns whether any raw NFA transition
-    /// is a separator. This is computed in the same pass, avoiding a second
-    /// iteration over `state_ids` for callers that need both.
     #[must_use]
-    pub fn transitions_and_any_sep(&self) -> (Vec<NfaTransition>, bool) {
+    pub fn partitioned_transitions_and_any_sep(&self) -> (Vec<NfaTransition>, bool) {
         let mut any_sep = false;
-        let result =
-            Self::group_transitions(self.raw_transitions().map(|(chars, is_sep, prec, state)| {
+        let result = Self::partition_transitions(self.raw_transitions().map(
+            |(chars, is_sep, prec, state)| {
                 any_sep |= is_sep;
                 (chars, is_sep, prec, state)
-            }));
+            },
+        ));
         (result, any_sep)
     }
 
@@ -610,6 +608,31 @@ impl<'a> NfaCursor<'a> {
     fn group_transitions<'b>(
         iter: impl Iterator<Item = (&'b CharacterSet, bool, i32, u32)>,
     ) -> Vec<NfaTransition> {
+        let mut result = Self::partition_transitions(iter);
+        let mut i = 0;
+        while i < result.len() {
+            for j in 0..i {
+                if result[j].states == result[i].states
+                    && result[j].is_separator == result[i].is_separator
+                    && result[j].precedence == result[i].precedence
+                {
+                    let characters = std::mem::take(&mut result[j].characters);
+                    result[j].characters = characters.add(&result[i].characters);
+                    result.swap_remove(i);
+                    i -= 1;
+                    break;
+                }
+            }
+            i += 1;
+        }
+
+        result.sort_unstable_by(|a, b| a.characters.cmp(&b.characters));
+        result
+    }
+
+    fn partition_transitions<'b>(
+        iter: impl Iterator<Item = (&'b CharacterSet, bool, i32, u32)>,
+    ) -> Vec<NfaTransition> {
         let mut result = Vec::<NfaTransition>::new();
         // Reuse a single CharacterSet buffer across iterations to avoid one
         // malloc per raw transition. `assign` refills it in-place; `mem::take`
@@ -630,33 +653,35 @@ impl<'a> NfaCursor<'a> {
                     break;
                 }
                 let intersection = result[i].characters.remove_intersection(&mut chars);
-                if !intersection.is_empty() {
-                    let chars_is_empty = result[i].characters.is_empty();
-                    let mut intersection_states = if chars_is_empty {
-                        std::mem::take(&mut result[i].states)
-                    } else {
-                        result[i].states.clone()
-                    };
-                    if let Err(j) = intersection_states.binary_search(&state) {
-                        intersection_states.insert(j, state);
-                    }
-                    let intersection_transition = NfaTransition {
-                        characters: intersection,
-                        is_separator: result[i].is_separator && is_sep,
-                        precedence: max(result[i].precedence, prec),
-                        states: intersection_states,
-                    };
-                    if chars_is_empty {
-                        result[i] = intersection_transition;
-                    } else {
-                        // Push to the tail instead of inserting at i (which
-                        // would be O(n)).  After remove_intersection, the new
-                        // `chars` (C') and `intersection` (I = A∩C) are
-                        // disjoint, so when the loop later reaches I at the
-                        // tail, remove_intersection(I, C'') will be a no-op.
-                        // The final sort makes mid-loop ordering irrelevant.
-                        result.push(intersection_transition);
-                    }
+                if intersection.is_empty() {
+                    i += 1;
+                    continue;
+                }
+                let chars_is_empty = result[i].characters.is_empty();
+                let mut intersection_states = if chars_is_empty {
+                    std::mem::take(&mut result[i].states)
+                } else {
+                    result[i].states.clone()
+                };
+                if let Err(j) = intersection_states.binary_search(&state) {
+                    intersection_states.insert(j, state);
+                }
+                let intersection_transition = NfaTransition {
+                    characters: intersection,
+                    is_separator: result[i].is_separator && is_sep,
+                    precedence: max(result[i].precedence, prec),
+                    states: intersection_states,
+                };
+                if chars_is_empty {
+                    result[i] = intersection_transition;
+                } else {
+                    // Push to the tail instead of inserting at i (which
+                    // would be O(n)).  After remove_intersection, the new
+                    // `chars` (C') and `intersection` (I = A∩C) are
+                    // disjoint, so when the loop later reaches I at the
+                    // tail, remove_intersection(I, C'') will be a no-op.
+                    // The final sort makes mid-loop ordering irrelevant.
+                    result.push(intersection_transition);
                 }
                 i += 1;
             }
@@ -668,23 +693,6 @@ impl<'a> NfaCursor<'a> {
                     is_separator: is_sep,
                 });
             }
-        }
-
-        let mut i = 0;
-        while i < result.len() {
-            for j in 0..i {
-                if result[j].states == result[i].states
-                    && result[j].is_separator == result[i].is_separator
-                    && result[j].precedence == result[i].precedence
-                {
-                    let characters = std::mem::take(&mut result[j].characters);
-                    result[j].characters = characters.add(&result[i].characters);
-                    result.swap_remove(i);
-                    i -= 1;
-                    break;
-                }
-            }
-            i += 1;
         }
 
         result.sort_unstable_by(|a, b| a.characters.cmp(&b.characters));

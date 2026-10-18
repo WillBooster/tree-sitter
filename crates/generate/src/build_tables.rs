@@ -172,7 +172,7 @@ pub fn build_tables(
         &immediate_keywords,
         str_pool,
     );
-    populate_external_lex_states(&mut parse_table, syntax_grammar);
+    populate_external_lex_states(&mut parse_table, syntax_grammar, lexical_grammar);
     mark_fragile_tokens(&mut parse_table, &token_conflict_map);
     parse_table
         .action_lists
@@ -369,7 +369,11 @@ fn populate_used_symbols(
     }
 }
 
-fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &SyntaxGrammar) {
+fn populate_external_lex_states(
+    parse_table: &mut ParseTable,
+    syntax_grammar: &SyntaxGrammar,
+    lexical_grammar: &LexicalGrammar,
+) {
     let mut external_tokens_by_corresponding_internal_token = FxHashMap::default();
     for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
         if let Some(symbol) = external_token.corresponding_internal_token {
@@ -394,14 +398,28 @@ fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &S
             }
         }
 
-        parse_table.states[i].external_lex_state_id = parse_table
-            .external_lex_states
-            .iter()
-            .position(|tokens| *tokens == external_tokens)
-            .unwrap_or_else(|| {
-                parse_table.external_lex_states.push(external_tokens);
-                parse_table.external_lex_states.len() - 1
-            }) as u32;
+        let mut tokens_after_extra = TokenSet::new();
+        for token in external_tokens.iter() {
+            let internal =
+                syntax_grammar.external_tokens[token.index as usize].corresponding_internal_token;
+            if internal
+                .is_none_or(|symbol| !lexical_grammar.variables[symbol.index as usize].is_immediate)
+            {
+                tokens_after_extra.insert(token);
+            }
+        }
+        let [regular, after_extra] = [external_tokens, tokens_after_extra].map(|tokens| {
+            parse_table
+                .external_lex_states
+                .iter()
+                .position(|state| *state == tokens)
+                .unwrap_or_else(|| {
+                    parse_table.external_lex_states.push(tokens);
+                    parse_table.external_lex_states.len() - 1
+                }) as u32
+        });
+        parse_table.states[i].external_lex_state_id = regular;
+        parse_table.states[i].external_lex_state_id_after_extra = after_extra;
     }
 }
 

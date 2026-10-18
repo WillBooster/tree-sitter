@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, ffi::OsStr, fs, path::Path, process::Command, str::FromStr};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use bindgen::RustTarget;
 
 use crate::{GenerateFixtures, bail_on_err};
@@ -27,6 +27,10 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
     for grammar_file in find_grammar_files(grammars_dir.to_str().unwrap()).flatten() {
         let grammar_dir = grammar_file.parent().unwrap();
         let grammar_name = grammar_dir.file_name().and_then(OsStr::to_str).unwrap();
+
+        if matches!(grammar_name, "c" | "cpp") {
+            adapt_c_preprocessor_comments(&grammar_dir.join("src/grammar.json"))?;
+        }
 
         println!(
             "Regenerating {grammar_name} parser{}",
@@ -60,6 +64,35 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn adapt_c_preprocessor_comments(path: &Path) -> Result<()> {
+    let mut grammar: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let comments = serde_json::json!({
+        "type": "REPEAT", "content": {"type": "SYMBOL", "name": "comment"}
+    });
+    for name in [
+        "preproc_include",
+        "preproc_def",
+        "preproc_function_def",
+        "preproc_call",
+    ] {
+        let members = grammar["rules"][name]["members"]
+            .as_array_mut()
+            .with_context(|| format!("Missing {name} sequence in {}", path.display()))?;
+        ensure!(
+            members
+                .last()
+                .is_some_and(|member| member["type"] == "IMMEDIATE_TOKEN"),
+            "Expected an immediate newline in {name} of {}",
+            path.display()
+        );
+        if members.len() < 2 || members[members.len() - 2] != comments {
+            members.insert(members.len() - 1, comments.clone());
+        }
+    }
+    fs::write(path, serde_json::to_vec_pretty(&grammar)?)?;
     Ok(())
 }
 
