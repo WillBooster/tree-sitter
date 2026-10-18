@@ -418,7 +418,21 @@ pub(super) fn extract_tokens(
         let mut symbols = Vec::with_capacity(set.roots.len());
         for &root in &set.roots {
             if let Some(s) = g.pool.node(root).symbol() {
-                symbols.push(replace_symbol(s));
+                let mut symbol = replace_symbol(s);
+                if symbol.is_non_terminal() {
+                    let variable = &g.variables[symbol.index as usize];
+                    symbol = g
+                        .pool
+                        .node(variable.root)
+                        .symbol()
+                        .filter(|symbol| symbol.is_terminal())
+                        .ok_or_else(|| {
+                            ExtractTokensError::NonTokenReservedWord(
+                                g.pool.resolve(variable.name).to_string(),
+                            )
+                        })?;
+                }
+                symbols.push(symbol);
             } else if let Some(i) = extractor.find(&mut g.pool, root) {
                 symbols.push(Symbol::terminal(i as usize));
             } else {

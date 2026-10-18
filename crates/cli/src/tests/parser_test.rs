@@ -31,6 +31,51 @@ use crate::{
 };
 
 #[test]
+fn test_reserved_named_tokens_shared_with_inline_rules() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'reserved_shared_token',
+            word: $ => $.identifier,
+            reserved: { words: $ => [$.keyword] },
+            rules: {
+                source_file: $ => seq(reserved('words', TOKEN('if')), $.identifier),
+                keyword: _ => TOKEN('if'),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("reserved-shared-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for wrapper in ["token", "token.immediate", "token.nonkeyword"] {
+        std::fs::write(&path, grammar.replace("TOKEN", wrapper)).unwrap();
+        let json = load_grammar_file(&path, None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            let source = "if name";
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{wrapper}: {}", root.to_sexp());
+            assert_eq!(root.to_sexp(), "(source_file (identifier))");
+            assert_eq!(root.byte_range(), 0..source.len());
+            assert_eq!(root.named_child(0).unwrap().byte_range(), 3..7);
+        }
+    }
+    let invalid = grammar.replace("TOKEN", "token").replace(
+        "keyword: _ => token('if')",
+        "keyword: _ => seq('if', 'then')",
+    );
+    std::fs::write(&path, invalid).unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    let error = generate_parser(&json).unwrap_err().to_string();
+    assert!(
+        error.contains("Reserved word 'keyword' must be a token"),
+        "{error}"
+    );
+}
+
+#[test]
 fn test_identifier_only_grammar_compiles_without_c_warnings() {
     let grammar = serde_json::json!({
         "name": "identifier_without_keywords",
