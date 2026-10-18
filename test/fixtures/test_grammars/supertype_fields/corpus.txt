@@ -8,9 +8,9 @@ Fields inside ordinary and aliased supertypes
 
 (source_file
   (list (name))
-  (list (name) (spread (name)))
-  (aliased (wrapped (spread (name))))
-  (assigned (spread (name)))
-  (restricted (spread (name)))
-  (wrapped_single (spread (name)))
-  (wrapped_pair (spread (name)) (name)))
+  (list (name) spread: (spread (name)))
+  (aliased (wrapped spread: (spread (name))))
+  (assigned spread: (spread (name)))
+  (restricted spread: (spread (name)))
+  (wrapped_single spread: (spread (name)))
+  (wrapped_pair spread: (spread (name)) spread: (name)))
