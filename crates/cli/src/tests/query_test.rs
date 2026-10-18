@@ -7548,3 +7548,86 @@ fn test_last_child_anchor_looks_past_hidden_node() {
         assert_query_matches(&language, &query, source, &[(0, vec![("last", "int y;")])]);
     });
 }
+
+#[test]
+fn test_query_recovery_steps_require_actual_error_or_missing_nodes() {
+    let language = get_language("c");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "int x = 1;";
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    for pattern in [
+        "(init_declarator (ERROR)) @parent",
+        "(init_declarator (MISSING)) @parent",
+        "(init_declarator (MISSING identifier)) @parent",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            [],
+            "{pattern}"
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            [],
+            "{pattern}"
+        );
+    }
+    let source = "int x = ;";
+    let tree = parser.parse(source, None).unwrap();
+    for pattern in [
+        "(init_declarator (MISSING)) @parent",
+        "(init_declarator (MISSING identifier)) @parent",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![(0, vec![("parent", "x =")])]
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![("parent", "x =")]
+        );
+    }
+    let language = get_language("json");
+    parser.set_language(&language).unwrap();
+    let source = ":";
+    let tree = parser.parse(source, None).unwrap();
+    let query = Query::new(&language, "(document (ERROR)) @parent").unwrap();
+    let mut cursor = QueryCursor::new();
+    assert_eq!(
+        collect_matches(
+            cursor.matches(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source
+        ),
+        vec![(0, vec![("parent", ":")])]
+    );
+    assert_eq!(
+        collect_captures(
+            cursor.captures(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source
+        ),
+        vec![("parent", ":")]
+    );
+}
