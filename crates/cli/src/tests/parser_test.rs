@@ -6183,11 +6183,20 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
             let comment = line.named_child(0).unwrap();
             assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), "#inside#");
             assert!(!comment.is_extra());
-            for child in root
+            let extras = root
                 .named_children(&mut cursor)
                 .filter(|node| node.kind() == "comment")
-            {
+                .collect::<Vec<_>>();
+            let expected = if source.starts_with('#') {
+                vec![(0..8, "#before#"), (18..25, "#after#")]
+            } else {
+                vec![]
+            };
+            assert_eq!(extras.len(), expected.len());
+            for (child, (range, text)) in extras.iter().zip(expected) {
                 assert!(child.is_extra());
+                assert_eq!(child.byte_range(), range);
+                assert_eq!(child.utf8_text(source.as_bytes()).unwrap(), text);
             }
         }
         for source in ["l\n", "l#inside# \n"] {
