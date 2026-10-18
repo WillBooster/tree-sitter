@@ -260,6 +260,8 @@ fn compute_variable_info_fixed_point(
         variable_type_for_child_type(t, syntax_grammar, lexical_grammar) == VariableType::Named
     };
 
+    let variables_with_fields =
+        variables_with_inherited_fields(syntax_grammar, lexical_grammar, default_aliases);
     let mut did_change = true;
     let mut all_initialized = false;
     let mut result = vec![VariableInfo::default(); syntax_grammar.variables.len()];
@@ -287,6 +289,14 @@ fn compute_variable_info_fixed_point(
 
                     let child_is_hidden = !child_type_is_visible(&child_type)
                         && !syntax_grammar.supertype_symbols.contains(&child_symbol);
+                    let child_is_transparent_supertype =
+                        syntax_grammar.supertype_symbols.contains(&child_symbol)
+                            && (matches!(child_type, ChildType::Normal(_))
+                                || syntax_grammar
+                                    .supertype_alias(child_symbol, default_aliases)
+                                    .is_some());
+                    let expand_unfielded_children = child_is_transparent_supertype
+                        && variables_with_fields[child_symbol.index as usize];
 
                     // Maintain the set of all child types for this variable, and the quantity of
                     // visible children in this production.
@@ -320,7 +330,7 @@ fn compute_variable_info_fixed_point(
                         }
                     }
                     // Maintain the set of named children without fields within this variable.
-                    else if child_type_is_named(&child_type) {
+                    else if child_type_is_named(&child_type) && !expand_unfielded_children {
                         production_children_without_fields_quantity.append(ChildQuantity::one());
                         did_change |= extend_sorted(
                             &mut variable_info.children_without_fields.types,
@@ -338,18 +348,21 @@ fn compute_variable_info_fixed_point(
                             &mut production_children_quantity,
                             &mut production_children_without_fields_quantity,
                         );
-                    } else if syntax_grammar.supertype_symbols.contains(&child_symbol)
-                        && (matches!(child_type, ChildType::Normal(_))
-                            || syntax_grammar
-                                .supertype_alias(child_symbol, default_aliases)
-                                .is_some())
-                    {
+                    } else if child_is_transparent_supertype {
                         did_change |= inherit_hidden_child_fields(
                             &result[child_symbol.index as usize],
                             step.field(),
                             &mut variable_info,
                             &mut production_field_quantities,
                         );
+                        if expand_unfielded_children {
+                            did_change |= inherit_unfielded_children(
+                                &result[child_symbol.index as usize],
+                                step.field(),
+                                &mut variable_info,
+                                &mut production_children_without_fields_quantity,
+                            );
+                        }
                     }
 
                     // Note whether or not this production contains children whose summaries
@@ -393,9 +406,55 @@ fn compute_variable_info_fixed_point(
     result
 }
 
-/// Propagate fields, children, and children-without-fields from a hidden
-/// child variable into the parent variable info. This returns whether
-/// anything changed.
+fn variables_with_inherited_fields(
+    syntax_grammar: &SyntaxGrammar,
+    lexical_grammar: &LexicalGrammar,
+    default_aliases: &AliasMap,
+) -> Vec<bool> {
+    let mut has_fields: Vec<_> = (0..syntax_grammar.variables.len())
+        .map(|i| {
+            syntax_grammar.variable_prod_ids(i).any(|id| {
+                syntax_grammar
+                    .production(id)
+                    .steps
+                    .iter()
+                    .any(|step| step.field().is_some())
+            })
+        })
+        .collect();
+    loop {
+        let mut changed = false;
+        for i in 0..has_fields.len() {
+            if has_fields[i] {
+                continue;
+            }
+            let inherits_fields = syntax_grammar.variable_prod_ids(i).any(|id| {
+                syntax_grammar.production(id).steps.iter().any(|step| {
+                    let symbol = step.symbol();
+                    if !symbol.is_non_terminal() || !has_fields[symbol.index as usize] {
+                        return false;
+                    }
+                    let child_type = step.child_type(default_aliases);
+                    variable_type_for_child_type(&child_type, syntax_grammar, lexical_grammar)
+                        < VariableType::Anonymous
+                        || (syntax_grammar.supertype_symbols.contains(&symbol)
+                            && (matches!(child_type, ChildType::Normal(_))
+                                || syntax_grammar
+                                    .supertype_alias(symbol, default_aliases)
+                                    .is_some()))
+                })
+            });
+            if inherits_fields {
+                has_fields[i] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return has_fields;
+        }
+    }
+}
+
 fn inherit_hidden_child_info(
     child_variable_info: &VariableInfo,
     outer_field: Option<StrId>,
@@ -420,21 +479,31 @@ fn inherit_hidden_child_info(
         &child_variable_info.children.types,
     );
 
-    // If a hidden child can have named children without fields, then the parent
-    // node can appear to have those same children.
-    if outer_field.is_none() {
-        let grandchildren_info = &child_variable_info.children_without_fields;
-        if !grandchildren_info.types.is_empty() {
-            production_children_without_fields_quantity
-                .append(child_variable_info.children_without_fields.quantity);
-            did_change |= extend_sorted(
-                &mut variable_info.children_without_fields.types,
-                &child_variable_info.children_without_fields.types,
-            );
-        }
-    }
+    did_change |= inherit_unfielded_children(
+        child_variable_info,
+        outer_field,
+        variable_info,
+        production_children_without_fields_quantity,
+    );
 
     did_change
+}
+
+fn inherit_unfielded_children(
+    child_variable_info: &VariableInfo,
+    outer_field: Option<StrId>,
+    variable_info: &mut VariableInfo,
+    production_children_without_fields_quantity: &mut ChildQuantity,
+) -> bool {
+    let children = &child_variable_info.children_without_fields;
+    if outer_field.is_some() || children.types.is_empty() {
+        return false;
+    }
+    production_children_without_fields_quantity.append(children.quantity);
+    extend_sorted(
+        &mut variable_info.children_without_fields.types,
+        &children.types,
+    )
 }
 
 fn inherit_hidden_child_fields(
