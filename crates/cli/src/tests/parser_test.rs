@@ -4440,6 +4440,49 @@ fn test_keyword_boundary_with_negative_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_preserves_wrapped_token_immediacy() {
+    for (expression, allows_space) in [
+        ("token(token.immediate('if'))", false),
+        ("token(prec(2, token.immediate('if')))", true),
+        ("token(token(prec(2, token.immediate('if'))))", true),
+        ("token.immediate(prec(2, 'if'))", false),
+    ] {
+        for nonkeyword in [false, true] {
+            let expression = if nonkeyword {
+                format!("token.nonkeyword({expression})")
+            } else {
+                expression.to_string()
+            };
+            let grammar = format!(
+                "module.exports = grammar({{ name: 'wrapped_token_immediacy', rules: {{ source_file: _ => seq('p', {expression}, 'x') }} }});"
+            );
+            let temporary_root =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+            std::fs::create_dir_all(&temporary_root).unwrap();
+            let file = tempfile::Builder::new()
+                .suffix(".js")
+                .tempfile_in(temporary_root)
+                .unwrap();
+            std::fs::write(file.path(), grammar).unwrap();
+            let json = load_grammar_file(file.path(), None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for (source, valid) in [("pifx", true), ("p ifx", allows_space)] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert_eq!(
+                        !root.has_error(),
+                        valid,
+                        "{expression}: {source:?}: {}",
+                        root.to_sexp()
+                    );
+                    assert_eq!(root.end_byte(), source.len());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_tokens_preserve_context_and_composition() {
     let grammar = r"
         module.exports = grammar({
@@ -4478,6 +4521,7 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             ("Pifx", "precedence"),
             ("Wifx", "wrapped"),
             ("Mifx", "wrapped_immediate"),
+            ("M ifx", "wrapped_immediate"),
             ("Sifx", "reserved_raw"),
             ("Tifx", "reserved_immediate"),
         ] {
@@ -4501,7 +4545,7 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 );
             }
         }
-        for source in ["N ifx", "I ifx", "O ifx", "M ifx", "T ifx"] {
+        for source in ["N ifx", "I ifx", "O ifx", "T ifx"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
                 tree.root_node().has_error(),
