@@ -3163,7 +3163,7 @@ fn test_hidden_child_requiredness_in_node_schema() {
     let directory = tempfile::tempdir_in(scratch).unwrap();
     std::fs::write(
         directory.path().join("grammar.js"),
-        r#"
+        r"
         module.exports = grammar({
             name: 'hidden_child_cardinality',
             rules: {
@@ -3176,7 +3176,7 @@ fn test_hidden_child_requiredness_in_node_schema() {
                 other: _ => 'o',
             },
         });
-    "#,
+    ",
     )
     .unwrap();
     tree_sitter_generate::generate_parser_in_directory(
