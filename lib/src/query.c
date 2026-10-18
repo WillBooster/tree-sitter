@@ -4458,8 +4458,16 @@ static inline bool ts_query_cursor__advance(
           // that the node has a parent, and capture the parent node if necessary.
           if (state->needs_parent) {
             TSNode parent = ts_tree_cursor_parent_node(&self->cursor);
-            if (ts_node_is_null(parent)) {
-              LOG("  missing parent node\n");
+            if (
+              ts_node_is_null(parent) ||
+              !range_within(&(TSRange) {
+                .start_byte = ts_node_start_byte(parent),
+                .end_byte = ts_node_end_byte(parent),
+                .start_point = ts_node_start_point(parent),
+                .end_point = ts_node_end_point(parent),
+              }, &self->containing_range)
+            ) {
+              LOG("  missing or out-of-range parent node\n");
               state->dead = true;
             } else {
               state->needs_parent = false;

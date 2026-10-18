@@ -7666,3 +7666,59 @@ fn test_query_containing_range_end_preserves_intersecting_range_boundary() {
         assert!(matches.next().is_none());
     }
 }
+
+#[test]
+fn test_containing_ranges_validate_skipped_wildcard_parents() {
+    let language = get_language("c");
+    let source = "int broken = ;";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let declaration = tree.root_node().named_child(0).unwrap();
+    let parent = declaration.child_by_field_name("declarator").unwrap();
+    let missing = parent.child_by_field_name("value").unwrap();
+    assert!(missing.is_missing());
+    for pattern in [
+        "(_ (MISSING identifier) @child) @parent",
+        "(_ (MISSING identifier) @child)",
+        "(init_declarator (MISSING identifier) @child) @parent",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        for points in [false, true] {
+            let mut cursor = QueryCursor::new();
+            if points {
+                cursor.set_containing_point_range(missing.start_position()..missing.end_position());
+            } else {
+                cursor.set_containing_byte_range(missing.byte_range());
+            }
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                ),
+                []
+            );
+            assert_eq!(
+                collect_captures(
+                    cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                ),
+                []
+            );
+            if points {
+                cursor.set_containing_point_range(parent.start_position()..parent.end_position());
+            } else {
+                cursor.set_containing_byte_range(parent.byte_range());
+            }
+            let results = collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(results.len(), 1, "{pattern}");
+            assert_eq!(results[0].1.last(), Some(&("child", "")));
+        }
+    }
+}
