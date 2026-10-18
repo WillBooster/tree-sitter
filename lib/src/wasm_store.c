@@ -190,6 +190,8 @@ typedef struct {
   int32_t log;
   int32_t get_position;
   int32_t mark_start;
+  int32_t mark_end_at;
+  int32_t get_mark_end;
 } LexerInWasmMemory;
 
 // Linear memory layout:
@@ -368,11 +370,18 @@ static wasm_trap_t *callback__lexer_mark_end(
   return NULL;
 }
 
+typedef enum {
+  LexerPositionCurrent,
+  LexerPositionMarkStart,
+  LexerPositionMarkEnd,
+  LexerPositionGetMarkEnd,
+} LexerPositionOperation;
+
 static wasm_trap_t *callback__lexer_position(
   void *env,
   wasmtime_caller_t *caller,
   wasmtime_val_raw_t *args,
-  bool mark_start
+  LexerPositionOperation operation
 ) {
   TSWasmStore *store = env;
   wasmtime_context_t *context = wasmtime_caller_context(caller);
@@ -384,11 +393,19 @@ static wasm_trap_t *callback__lexer_position(
   }
   uint8_t *memory = wasmtime_memory_data(context, &store->memory);
   TSLexerPosition position;
-  if (mark_start) {
+  if (operation == LexerPositionMarkStart || operation == LexerPositionMarkEnd) {
     memcpy(&position, memory + address, sizeof(position));
-    store->current_lexer->mark_start(store->current_lexer, &position);
+    if (operation == LexerPositionMarkStart) {
+      store->current_lexer->mark_start(store->current_lexer, &position);
+    } else {
+      store->current_lexer->mark_end_at(store->current_lexer, &position);
+    }
   } else {
-    store->current_lexer->get_position(store->current_lexer, &position);
+    if (operation == LexerPositionCurrent) {
+      store->current_lexer->get_position(store->current_lexer, &position);
+    } else {
+      store->current_lexer->get_mark_end(store->current_lexer, &position);
+    }
     memcpy(memory + address, &position, sizeof(position));
   }
   return NULL;
@@ -400,7 +417,7 @@ static wasm_trap_t *callback__lexer_get_position(
   wasmtime_val_raw_t *args,
   size_t len
 ) {
-  return callback__lexer_position(env, caller, args, false);
+  return callback__lexer_position(env, caller, args, LexerPositionCurrent);
 }
 
 static wasm_trap_t *callback__lexer_mark_start(
@@ -409,7 +426,25 @@ static wasm_trap_t *callback__lexer_mark_start(
   wasmtime_val_raw_t *args,
   size_t len
 ) {
-  return callback__lexer_position(env, caller, args, true);
+  return callback__lexer_position(env, caller, args, LexerPositionMarkStart);
+}
+
+static wasm_trap_t *callback__lexer_mark_end_at(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return callback__lexer_position(env, caller, args, LexerPositionMarkEnd);
+}
+
+static wasm_trap_t *callback__lexer_get_mark_end(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return callback__lexer_position(env, caller, args, LexerPositionGetMarkEnd);
 }
 
 static wasm_trap_t *callback__lexer_get_column(
@@ -799,6 +834,16 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
     {
       &lexer.mark_start,
       callback__lexer_mark_start,
+      wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.mark_end_at,
+      callback__lexer_mark_end_at,
+      wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.get_mark_end,
+      callback__lexer_get_mark_end,
       wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
     },
     {
