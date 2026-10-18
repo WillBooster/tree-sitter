@@ -2931,16 +2931,6 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         )
         .unwrap();
 
-        // Most of the document will fail to parse, resulting in a
-        // large number of tokens that are *direct* children of an
-        // ERROR node.
-        //
-        // These children should still match, unless they are part
-        // of a "non-rooted" pattern, in which there are multiple
-        // top-level sibling nodes. Those patterns should not match
-        // directly inside of an error node, because the contents of
-        // an error node are not syntactically well-structured, so we
-        // would get many spurious matches.
         let source = "
             fn a() {}
 
@@ -2959,14 +2949,26 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(source, None).unwrap();
         let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        while let Some(found) = matches.next() {
+            if found.pattern_index == 0 {
+                let captures = found.captures();
+                let parent = captures[0].node.parent().unwrap();
+                assert_eq!(parent, captures[1].node.parent().unwrap());
+                assert_ne!(parent.kind(), "ERROR");
+            }
+        }
         let matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
         assert_eq!(
             collect_matches(matches, &query, source),
             &[
                 (0, vec![("open", "{"), ("close", "}")]),
+                (0, vec![("open", "{"), ("close", "}")]),
                 (1, vec![("comment", "// comment 1")]),
                 (1, vec![("comment", "/* comment 2 */")]),
                 (1, vec![("comment", "// comment 3")]),
+                (0, vec![("open", "{"), ("close", "}")]),
+                (0, vec![("open", "{"), ("close", "}")]),
             ],
         );
     });
