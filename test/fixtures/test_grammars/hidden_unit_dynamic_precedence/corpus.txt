@@ -1,0 +1,13 @@
+===============================
+Positive hidden unit precedence wins
+===============================
+x!
+---
+(source_file (preferred))
+
+===============================
+Negative hidden unit precedence offsets child precedence
+===============================
+y!
+---
+(source_file (fallback))

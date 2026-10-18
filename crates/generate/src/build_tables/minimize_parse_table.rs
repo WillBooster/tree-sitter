@@ -654,6 +654,7 @@ impl Minimizer<'_> {
                         ParseAction::Reduce {
                             child_count: 1,
                             production_id: 0,
+                            dynamic_precedence: 0,
                             symbol,
                             ..
                         } if !self.simple_aliases.contains_key(symbol)
