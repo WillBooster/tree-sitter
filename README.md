@@ -33,6 +33,10 @@ grammar artifacts together.
 
 Completed-token keyword lookup shares a compact ASCII table with the keyword lexer. Unicode whitespace extras retain this lookup path through separate skip transitions. Keywords containing non-ASCII characters use branch-based keyword lexing.
 
+Keyword extraction applies to matching tokens regardless of their initial character, including digits and punctuation. If the declared `word` token includes punctuation that should instead separate raw operators or numbers, mark those lexical rules with `token.nonkeyword`. The core-owned Bash fixture adapter does this for operators and numeric expressions, preserving lexical precedence, immediate rules, and matching anonymous external declarations. The grammar's alphabetic keywords keep whole-word recognition.
+
+Use `token.nonkeyword(rule)` when a token must match directly instead of being extracted as a keyword of the grammar's `word` token. For example, `seq(token.nonkeyword('if'), $.identifier)` can split `ifname` into `if` and `name`; an ordinary `'if'` remains subject to whole-word recognition. This is a lexical choice for that token, including when it appears in a reserved-word set. It does not change the grammar's other keywords. Wrap the result in `alias` to rename its node, use `token.nonkeyword(prec(2, 'if'))` to assign lexical precedence, and combine it with `token.immediate` in either order to prohibit preceding extras. JSON grammars use `{"type":"NONKEYWORD_TOKEN","content":...}`.
+
 To record parse-action and lexer-entry frequencies, generate an unprofiled parser first. From the grammar directory:
 
 ```sh
