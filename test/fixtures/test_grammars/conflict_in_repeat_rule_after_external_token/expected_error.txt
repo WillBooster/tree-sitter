@@ -7,6 +7,11 @@ Possible interpretations:
   1:  _program_start  '['  (array_repeat1  identifier)  •  ']'  …
   2:  _program_start  '['  (array_type_repeat1  identifier)  •  ']'  …
 
+Repetition rules used in this conflict:
+
+  array_repeat1: used by array
+  array_type_repeat1: used by array_type
+
 Possible resolutions:
 
   1:  Specify a higher precedence in `array_repeat1` than in the other rules.
