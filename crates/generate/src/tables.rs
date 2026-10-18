@@ -376,15 +376,14 @@ pub struct ParseTable {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AdvanceAction {
+    pub start_tags: Vec<(u32, Option<u32>)>,
     pub state: LexStateId,
     pub in_main_token: bool,
-    /// Whether the transition's characters include NUL only because the grammar matches NUL
-    /// alone there (a literal `'\0'`), not as a member of a wider character class.
-    pub explicit_nul: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LexState {
+    pub start_tag: Option<u32>,
     pub accept_action: Option<Symbol>,
     pub eof_action: Option<AdvanceAction>,
     pub advance_actions: Vec<(CharacterSet, AdvanceAction)>,

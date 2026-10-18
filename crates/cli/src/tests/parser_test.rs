@@ -31,6 +31,216 @@ use crate::{
 };
 
 #[test]
+fn test_lexer_character_partitions_preserve_token_start_tags() {
+    let grammar = serde_json::json!({
+        "name": "partitioned_token_starts",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "preferred"},
+                {"type": "SYMBOL", "name": "alternative"}
+            ]},
+            "preferred": {"type": "PATTERN", "value": "[bc]"},
+            "alternative": {"type": "PATTERN", "value": "ab|c"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected, range) in [
+            ("c", "preferred", 0..1),
+            ("ac", "preferred", 1..2),
+            ("ab", "alternative", 0..2),
+        ] {
+            assert_first_named_token(&mut parser, source, expected, range);
+        }
+    }
+}
+
+#[test]
+fn test_lexer_minimization_preserves_distinct_eof_tokens() {
+    let grammar = serde_json::json!({
+        "name": "distinct_eof_tokens",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "x"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "long"},
+                        {"type": "SYMBOL", "name": "ta"}
+                    ]}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "y"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "long"},
+                        {"type": "SYMBOL", "name": "tb"}
+                    ]}
+                ]}
+            ]},
+            "long": {"type": "STRING", "value": "a\0"},
+            "ta": {"type": "PATTERN", "value": r"\x00"},
+            "tb": {"type": "STRING", "value": "\0"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected, range) in [
+            ("xa", "ta", 2..2),
+            ("ya", "tb", 2..2),
+            ("xa\0", "long", 1..3),
+            ("ya\0", "long", 1..3),
+        ] {
+            assert_first_named_token(&mut parser, source, expected, range);
+        }
+    }
+}
+
+#[test]
+fn test_standalone_nul_eof_does_not_complete_a_physical_nul_suffix() {
+    let grammar = serde_json::json!({
+        "name": "mixed_nul_termination",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "long"},
+                {"type": "SYMBOL", "name": "terminator"}
+            ]},
+            "long": {"type": "STRING", "value": "a\0"},
+            "terminator": {"type": "STRING", "value": "\0"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected, range) in [
+            ("a", "terminator", 1..1),
+            ("a\0", "long", 0..2),
+            ("\0", "terminator", 0..1),
+        ] {
+            assert_first_named_token(&mut parser, source, expected, range);
+        }
+    }
+}
+
+#[test]
+fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
+    for (fixture, source, tokens, has_error) in [
+        (
+            "separator_prefix_ranges",
+            "   error make {}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_prefix_ranges",
+            "\t\nerror\tmake\n{}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_prefix_ranges",
+            "\u{2003}error make {}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_newline_ranges",
+            "\n\n;\n\n\n",
+            vec![";", "\n"],
+            false,
+        ),
+        ("separator_precedence_ranges", "aad", vec!["a"], true),
+    ] {
+        let path = fixtures_dir().join("test_grammars").join(fixture);
+        let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
+        for mut parser in parsers_for_grammar(&grammar) {
+            for encoding in ["utf8", "utf16le", "utf16be"] {
+                let tree = match encoding {
+                    "utf16le" => parser.parse_utf16_le(
+                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    "utf16be" => parser.parse_utf16_be(
+                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    _ => parser.parse(source, None),
+                }
+                .unwrap();
+                assert_eq!(
+                    tree.root_node().has_error(),
+                    has_error,
+                    "{fixture}: {}",
+                    tree.root_node().to_sexp()
+                );
+                let mut offset = usize::from(fixture == "separator_precedence_ranges");
+                for token in &tokens {
+                    let start = if *token == "\n" {
+                        source.rfind(token).unwrap()
+                    } else {
+                        offset + source[offset..].find(token).unwrap()
+                    };
+                    let end = start + token.len();
+                    let range = if encoding == "utf8" {
+                        start..end
+                    } else {
+                        source[..start].encode_utf16().count() * 2
+                            ..source[..end].encode_utf16().count() * 2
+                    };
+                    let node = tree
+                        .root_node()
+                        .descendant_for_byte_range(range.start, range.end)
+                        .unwrap();
+                    assert_eq!(node.kind(), *token, "{fixture}");
+                    assert_eq!(node.byte_range(), range, "{fixture}: {token:?}");
+                    if *token == "\n" {
+                        assert_eq!(node.start_position(), Point::new(4, 0));
+                        assert_eq!(node.end_position(), Point::new(5, 0));
+                    }
+                    offset = end;
+                }
+            }
+        }
+    }
+}
+
+fn parsers_for_grammar(grammar: &str) -> impl Iterator<Item = Parser> {
+    let (name, code) = generate_parser(grammar).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    languages.into_iter().map(|language| {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        parser
+    })
+}
+
+fn assert_first_named_token(
+    parser: &mut Parser,
+    source: &str,
+    expected: &str,
+    range: std::ops::Range<usize>,
+) {
+    let tree = parser.parse(source, None).unwrap();
+    assert!(
+        !tree.root_node().has_error(),
+        "{source:?}: {}",
+        tree.root_node().to_sexp()
+    );
+    let token = tree.root_node().named_child(0).unwrap();
+    assert_eq!(token.kind(), expected, "{source:?}");
+    assert_eq!(token.byte_range(), range, "{source:?}");
+}
+
+#[test]
 fn test_partial_reduction_precedence_is_independent_of_rule_order() {
     let orders = [
         ["lower", "unrelated", "preferred"],
@@ -1519,6 +1729,7 @@ fn test_literal_token_with_overlapping_external_extra_pattern() {
         let children = root.children(&mut root.walk()).collect::<Vec<_>>();
         assert_eq!(children.len(), 1, "{source:?}");
         assert_eq!(children[0].kind(), "a");
+        assert_eq!(children[0].byte_range(), source.len() - 1..source.len());
         assert_eq!(root.end_byte(), source.len());
     }
 }
