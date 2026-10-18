@@ -7608,7 +7608,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                let mut expected = vec![(0, vec![]); if nullable { 3 } else { 0 }];
+                let mut expected = vec![(0, vec![]); if nullable { 1 } else { 0 }];
                 if pattern.contains('*') || pattern.contains('+') {
                     expected.push((0, vec![("number", "3"), ("number", "4")]));
                 }
@@ -7626,20 +7626,20 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                assert_eq!(matches, vec![(0, vec![])], "{name}: {pattern}");
+                assert_eq!(matches, [], "{name}: {pattern}");
                 cursor.set_byte_range(2..3);
                 let matches = collect_matches(
                     cursor.matches(&query, root.child(1).unwrap(), source.as_bytes()),
                     &query,
                     source,
                 );
-                assert_eq!(matches.len(), 2, "{name}: {pattern}");
+                assert_eq!(matches.len(), 1, "{name}: {pattern}");
                 assert_eq!(
                     matches
                         .iter()
                         .filter(|(_, captures)| captures.is_empty())
                         .count(),
-                    1
+                    0
                 );
                 assert_eq!(
                     matches
@@ -7663,7 +7663,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                         .iter()
                         .filter(|(_, captures)| captures.is_empty())
                         .count(),
-                    3
+                    1
                 );
                 assert_eq!(
                     matches
@@ -7679,8 +7679,24 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                assert_eq!(matches, []);
+                assert_eq!(matches, vec![(0, vec![])]);
             }
+        }
+
+        if name == "repeat" {
+            let source = "1 ".repeat(1000);
+            let tree = parser.parse(&source, None).unwrap();
+            let query = Query::new(&language, "((number)? @number)").unwrap();
+            let mut cursor = QueryCursor::new();
+            cursor.set_byte_range(source.len() - 1..source.len() + 1);
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    &source
+                ),
+                vec![(0, vec![])],
+            );
         }
 
         let mut query = Query::new(&language, "((number)? @number)").unwrap();
@@ -7691,7 +7707,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
             &query,
             source,
         );
-        assert_eq!(matches, vec![(0, vec![]); 2]);
+        assert_eq!(matches, []);
         query.disable_pattern(0);
         assert_eq!(
             collect_matches(

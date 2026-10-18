@@ -338,7 +338,6 @@ struct TSQueryCursor {
   bool ascending;
   bool halted;
   bool did_exceed_match_limit;
-  bool has_empty_root;
 };
 
 static const TSQueryError PARENT_DONE = -1;
@@ -3622,17 +3621,6 @@ void ts_query_cursor_exec(
   self->operation_count = 0;
   self->query_options = NULL;
   self->query_state = (TSQueryCursorState) {0};
-  self->has_empty_root = false;
-  if (query) {
-    for (unsigned i = 0; i < query->pattern_map.size; i++) {
-      PatternEntry *entry = array_get(&query->pattern_map, i);
-      if (array_get(&query->steps, entry->step_index)->symbol != WILDCARD_SYMBOL) break;
-      if (array_get(&query->steps, entry->step_index)->depth == PATTERN_DONE_MARKER) {
-        self->has_empty_root = true;
-        break;
-      }
-    }
-  }
 }
 
 void ts_query_cursor_exec_with_options(
@@ -3894,7 +3882,7 @@ static void ts_query_cursor__add_state(
   const PatternEntry *pattern
 ) {
   QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-  uint32_t start_depth = self->depth - step->depth;
+  uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
 
   // Keep the states array in ascending order of start_depth and pattern_index,
   // so that it can be processed more efficiently elsewhere. Usually, there is
@@ -4060,8 +4048,7 @@ static QueryState *ts_query_cursor__copy_state(
 
 static inline bool ts_query_cursor__should_descend(
   TSQueryCursor *self,
-  bool node_intersects_range,
-  bool parent_intersects_range
+  bool node_intersects_range
 ) {
 
   if (node_intersects_range && self->depth < self->max_start_depth) {
@@ -4096,7 +4083,6 @@ static inline bool ts_query_cursor__should_descend(
     // of this type of repetition node.
     Subtree subtree = ts_tree_cursor_current_subtree(&self->cursor);
     if (ts_subtree_is_repetition(subtree)) {
-      if (self->has_empty_root && parent_intersects_range) return true;
       bool exists;
       uint32_t index;
       array_search_sorted_by(
@@ -4242,7 +4228,8 @@ static inline bool ts_query_cursor__advance(
           break;
         default:
           if (ts_tree_cursor_goto_parent(&self->cursor)) {
-            self->depth--;
+            if (self->on_visible_node) self->depth--;
+            self->on_visible_node = true;
           } else {
             LOG("halt at root\n");
             self->halted = true;
@@ -4318,9 +4305,9 @@ static inline bool ts_query_cursor__advance(
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
             QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-            uint32_t start_depth = self->depth - step->depth;
+            uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
             if (
-              (pattern->is_rooted ?
+              (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
                 (parent_intersects_range && !parent_is_error)) &&
               (!step->field || field_id == step->field) &&
@@ -4338,7 +4325,7 @@ static inline bool ts_query_cursor__advance(
           PatternEntry *pattern = array_get(&self->query->pattern_map, i);
 
           QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-          uint32_t start_depth = self->depth - step->depth;
+          uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
           do {
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
@@ -4787,7 +4774,7 @@ static inline bool ts_query_cursor__advance(
         }
       }
 
-      if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_intersects_range, parent_intersects_range)) {
+      if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_intersects_range)) {
         switch (ts_tree_cursor_goto_first_child_internal(&self->cursor)) {
           case TreeCursorStepVisible:
             self->depth++;
