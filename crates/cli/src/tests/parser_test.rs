@@ -31,6 +31,69 @@ use crate::{
 };
 
 #[test]
+fn test_lexer_minimization_preserves_distinct_eof_tokens() {
+    let grammar = serde_json::json!({
+        "name": "distinct_eof_tokens",
+        "extras": [{"type": "STRING", "value": "a"}],
+        "rules": {
+            "program": {"type": "CHOICE", "members": [
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "x"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "long"},
+                        {"type": "SYMBOL", "name": "ta"}
+                    ]}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "y"},
+                    {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "long"},
+                        {"type": "SYMBOL", "name": "tb"}
+                    ]}
+                ]}
+            ]},
+            "long": {"type": "STRING", "value": "a\0"},
+            "ta": {"type": "PATTERN", "value": r"\x00"},
+            "tb": {"type": "STRING", "value": "\0"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        for (source, expected, range) in [
+            ("xa", "ta", 2..2),
+            ("ya", "tb", 2..2),
+            ("xa\0", "long", 1..3),
+            ("ya\0", "long", 1..3),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{source:?}: {}",
+                tree.root_node().to_sexp()
+            );
+            let token = tree.root_node().named_child(0).unwrap();
+            assert_eq!(token.kind(), expected, "{source:?}");
+            assert_eq!(token.byte_range(), range, "{source:?}");
+        }
+    }
+}
+
+#[test]
 fn test_standalone_nul_eof_does_not_complete_a_physical_nul_suffix() {
     let grammar = serde_json::json!({
         "name": "mixed_nul_termination",

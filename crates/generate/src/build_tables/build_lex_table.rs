@@ -1004,9 +1004,8 @@ impl SplitCriterion<LexState> for LexStateSplit {
         lex_states_differ(left, right, group_ids_by_state_id)
     }
 
-    /// The states of a group have the same advance actions apart from the states they lead
-    /// to, so states that don't need to be split lead to the same groups. Every kept state
-    /// leads to the same groups as the first one, and `state` was just found to as well.
+    /// Initial groups share transition shapes, and refinement compares every destination,
+    /// including EOF. Matching the representative therefore matches every kept state.
     fn compatible_with_all(
         &mut self,
         _state: &LexState,
@@ -1024,10 +1023,18 @@ fn lex_states_differ(
 ) -> bool {
     left.advance_actions
         .iter()
-        .zip(right.advance_actions.iter())
+        .map(|(_, action)| action)
+        .chain(left.eof_action.iter())
+        .zip(
+            right
+                .advance_actions
+                .iter()
+                .map(|(_, action)| action)
+                .chain(right.eof_action.iter()),
+        )
         .any(|(left, right)| {
-            group_ids_by_state_id[left.1.state as usize]
-                != group_ids_by_state_id[right.1.state as usize]
+            group_ids_by_state_id[left.state as usize]
+                != group_ids_by_state_id[right.state as usize]
         })
 }
 
