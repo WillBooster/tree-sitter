@@ -1283,7 +1283,7 @@ impl Generator {
         indent!(self);
 
         let tag_count = Self::start_tag_count(&lex_table);
-        add_line!(self, "TSLexerPosition start_tags[{tag_count}];");
+        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
         add_line!(self, "START_LEXER();");
         add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
         add_line!(self, "switch (state) {{");
@@ -1341,7 +1341,7 @@ impl Generator {
         );
         indent!(self);
         let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "TSLexerPosition start_tags[{tag_count}];");
+        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
         add_line!(self, "bool result = false;");
         add_line!(self, "for (;;) {{");
         indent!(self);
@@ -1382,6 +1382,7 @@ impl Generator {
             "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerPosition *start_tags) {{"
         );
         indent!(self);
+        add_line!(self, "(void)start_tags;");
         add_line!(self, "TSStateId state = *state_out;");
         add_line!(self, "bool result = *result_out;");
         if has_advances {

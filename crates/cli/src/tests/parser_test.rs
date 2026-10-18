@@ -44,33 +44,13 @@ fn test_lexer_character_partitions_preserve_token_start_tags() {
             "alternative": {"type": "PATTERN", "value": "ab|c"}
         }
     });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    let languages = [
-        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_language_wasm(&name, &code),
-    ];
-    for language in languages {
-        let mut parser = Parser::new();
-        #[cfg(feature = "wasm")]
-        if language.is_wasm() {
-            parser
-                .set_wasm_store(
-                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
-                )
-                .unwrap();
-        }
-        parser.set_language(&language).unwrap();
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
         for (source, expected, range) in [
             ("c", "preferred", 0..1),
             ("ac", "preferred", 1..2),
             ("ab", "alternative", 0..2),
         ] {
-            let tree = parser.parse(source, None).unwrap();
-            assert!(!tree.root_node().has_error(), "{source:?}");
-            let token = tree.root_node().named_child(0).unwrap();
-            assert_eq!(token.kind(), expected, "{source:?}");
-            assert_eq!(token.byte_range(), range, "{source:?}");
+            assert_first_named_token(&mut parser, source, expected, range);
         }
     }
 }
@@ -102,38 +82,14 @@ fn test_lexer_minimization_preserves_distinct_eof_tokens() {
             "tb": {"type": "STRING", "value": "\0"}
         }
     });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    let languages = [
-        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_language_wasm(&name, &code),
-    ];
-    for language in languages {
-        let mut parser = Parser::new();
-        #[cfg(feature = "wasm")]
-        if language.is_wasm() {
-            parser
-                .set_wasm_store(
-                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
-                )
-                .unwrap();
-        }
-        parser.set_language(&language).unwrap();
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
         for (source, expected, range) in [
             ("xa", "ta", 2..2),
             ("ya", "tb", 2..2),
             ("xa\0", "long", 1..3),
             ("ya\0", "long", 1..3),
         ] {
-            let tree = parser.parse(source, None).unwrap();
-            assert!(
-                !tree.root_node().has_error(),
-                "{source:?}: {}",
-                tree.root_node().to_sexp()
-            );
-            let token = tree.root_node().named_child(0).unwrap();
-            assert_eq!(token.kind(), expected, "{source:?}");
-            assert_eq!(token.byte_range(), range, "{source:?}");
+            assert_first_named_token(&mut parser, source, expected, range);
         }
     }
 }
@@ -152,33 +108,13 @@ fn test_standalone_nul_eof_does_not_complete_a_physical_nul_suffix() {
             "terminator": {"type": "STRING", "value": "\0"}
         }
     });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    let languages = [
-        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_language_wasm(&name, &code),
-    ];
-    for language in languages {
-        let mut parser = Parser::new();
-        #[cfg(feature = "wasm")]
-        if language.is_wasm() {
-            parser
-                .set_wasm_store(
-                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
-                )
-                .unwrap();
-        }
-        parser.set_language(&language).unwrap();
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
         for (source, expected, range) in [
             ("a", "terminator", 1..1),
             ("a\0", "long", 0..2),
             ("\0", "terminator", 0..1),
         ] {
-            let tree = parser.parse(source, None).unwrap();
-            assert!(!tree.root_node().has_error(), "{source:?}");
-            let token = tree.root_node().named_child(0).unwrap();
-            assert_eq!(token.kind(), expected, "{source:?}");
-            assert_eq!(token.byte_range(), range, "{source:?}");
+            assert_first_named_token(&mut parser, source, expected, range);
         }
     }
 }
@@ -214,23 +150,7 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
     ] {
         let path = fixtures_dir().join("test_grammars").join(fixture);
         let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
-        let (name, code) = generate_parser(&grammar).unwrap();
-        let languages = [
-            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
-            #[cfg(feature = "wasm")]
-            super::helpers::fixtures::get_test_language_wasm(&name, &code),
-        ];
-        for language in languages {
-            let mut parser = Parser::new();
-            #[cfg(feature = "wasm")]
-            if language.is_wasm() {
-                parser
-                    .set_wasm_store(
-                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
-                    )
-                    .unwrap();
-            }
-            parser.set_language(&language).unwrap();
+        for mut parser in parsers_for_grammar(&grammar) {
             for encoding in ["utf8", "utf16le", "utf16be"] {
                 let tree = match encoding {
                     "utf16le" => parser.parse_utf16_le(
@@ -279,6 +199,45 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
             }
         }
     }
+}
+
+fn parsers_for_grammar(grammar: &str) -> impl Iterator<Item = Parser> {
+    let (name, code) = generate_parser(grammar).unwrap();
+    let languages = [
+        get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm(&name, &code),
+    ];
+    languages.into_iter().map(|language| {
+        let mut parser = Parser::new();
+        #[cfg(feature = "wasm")]
+        if language.is_wasm() {
+            parser
+                .set_wasm_store(
+                    tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                )
+                .unwrap();
+        }
+        parser.set_language(&language).unwrap();
+        parser
+    })
+}
+
+fn assert_first_named_token(
+    parser: &mut Parser,
+    source: &str,
+    expected: &str,
+    range: std::ops::Range<usize>,
+) {
+    let tree = parser.parse(source, None).unwrap();
+    assert!(
+        !tree.root_node().has_error(),
+        "{source:?}: {}",
+        tree.root_node().to_sexp()
+    );
+    let token = tree.root_node().named_child(0).unwrap();
+    assert_eq!(token.kind(), expected, "{source:?}");
+    assert_eq!(token.byte_range(), range, "{source:?}");
 }
 
 #[test]
