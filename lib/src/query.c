@@ -4736,11 +4736,14 @@ static inline bool ts_query_cursor__advance(
               &left_contains_right,
               &right_contains_left
             );
+            bool same_step = state->step_index == other_state->step_index;
+            bool is_done = array_get(&self->query->steps, state->step_index)->depth == PATTERN_DONE_MARKER;
             if (left_contains_right) {
               if (
-                state->step_index == other_state->step_index &&
-                (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
-                (other_state->seeking_first_named_child || !state->seeking_first_named_child)
+                same_step && (is_done || (
+                  (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
+                  (other_state->seeking_first_named_child || !state->seeking_first_named_child)
+                ))
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
@@ -4756,9 +4759,10 @@ static inline bool ts_query_cursor__advance(
             }
             if (right_contains_left) {
               if (
-                state->step_index == other_state->step_index &&
-                (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
-                (state->seeking_first_named_child || !other_state->seeking_first_named_child)
+                same_step && (is_done || (
+                  (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
+                  (state->seeking_first_named_child || !other_state->seeking_first_named_child)
+                ))
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
