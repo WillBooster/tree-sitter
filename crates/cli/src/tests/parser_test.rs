@@ -4550,6 +4550,64 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
 }
 
 #[test]
+fn test_nonkeyword_fallback_bounds_streamed_lookahead() {
+    let grammar = serde_json::json!({
+        "name": "bounded_nonkeyword_lookahead",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "if"}},
+                {"type": "NONKEYWORD_TOKEN", "content": {"type": "STRING", "value": "fy"}},
+                {"type": "STRING", "value": "iffy"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let repetitions = 512;
+    let source = "iffy".repeat(repetitions);
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut reads = 0;
+        let tree = parser
+            .parse_with_options(
+                &mut |byte, _| {
+                    reads += 1;
+                    &source.as_bytes()[byte..(byte + 1).min(source.len())]
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.byte_range(), 0..source.len());
+        assert_eq!(
+            root.child_count(),
+            u32::try_from(repetitions * 2 - 1).unwrap()
+        );
+        assert_eq!(
+            root.child(0).unwrap().utf8_text(source.as_bytes()).unwrap(),
+            "if"
+        );
+        assert_eq!(
+            root.child(1).unwrap().utf8_text(source.as_bytes()).unwrap(),
+            "fy"
+        );
+        assert_eq!(
+            root.child(root.child_count() - 1)
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap(),
+            "iffy"
+        );
+        assert!(
+            reads < source.len() * 16,
+            "{reads} reads for {} bytes",
+            source.len()
+        );
+    }
+}
+
+#[test]
 fn test_nonkeyword_fallback_respects_lexical_precedence() {
     for (raw_precedence, keyword_precedence, expected) in
         [(2, 1, "raw"), (1, 2, "ordinary"), (0, 0, "ordinary")]
