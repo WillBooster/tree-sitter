@@ -4613,31 +4613,51 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
         .suffix(".js")
         .tempfile_in(temporary_root)
         .unwrap();
-    for precedence in [-1, 0, 2] {
-        let grammar = grammar.replace(
-            "token.nonkeyword('if')",
-            &format!("token.nonkeyword(prec({precedence}, 'if'))"),
-        );
-        std::fs::write(file.path(), grammar).unwrap();
-        let json = load_grammar_file(file.path(), None).unwrap();
-        for mut parser in parsers_for_grammar(&json) {
-            for (source, kind) in [
-                (
-                    "iffyz?",
-                    if precedence > 1 {
-                        "raw_stmt"
-                    } else {
-                        "ident_stmt"
-                    },
-                ),
-                ("iz?", "ident_stmt"),
-                ("!if;", "after_bang"),
-            ] {
-                let tree = parser.parse(source, None).unwrap();
-                let root = tree.root_node();
-                assert!(!root.has_error(), "{source}: {}", root.to_sexp());
-                assert_eq!(root.end_byte(), source.len());
-                assert_eq!(root.named_child(0).unwrap().kind(), kind, "{source}");
+    for immediate in [false, true] {
+        for precedence in [-1, 0, 2] {
+            let raw = if immediate {
+                format!("token.nonkeyword(token.immediate(prec({precedence}, 'if')))")
+            } else {
+                format!("token.nonkeyword(prec({precedence}, 'if'))")
+            };
+            let grammar = grammar.replace("token.nonkeyword('if')", &raw);
+            std::fs::write(file.path(), grammar).unwrap();
+            let json = load_grammar_file(file.path(), None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for (source, kind) in [
+                    (
+                        "iffyz?",
+                        if precedence > 1 {
+                            "raw_stmt"
+                        } else {
+                            "ident_stmt"
+                        },
+                    ),
+                    (
+                        "ifx?",
+                        if precedence > 1 {
+                            "raw_stmt"
+                        } else {
+                            "ident_stmt"
+                        },
+                    ),
+                    (
+                        " ifx?",
+                        if precedence > 1 && !immediate {
+                            "raw_stmt"
+                        } else {
+                            "ident_stmt"
+                        },
+                    ),
+                    ("iz?", "ident_stmt"),
+                    ("!if;", "after_bang"),
+                ] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                    assert_eq!(root.end_byte(), source.len());
+                    assert_eq!(root.named_child(0).unwrap().kind(), kind, "{source}");
+                }
             }
         }
     }
