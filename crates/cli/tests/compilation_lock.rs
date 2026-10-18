@@ -144,7 +144,7 @@ impl CompilationProcess {
         }
         #[cfg(unix)]
         let status = Command::new("/bin/kill")
-            .args(["-KILL", &format!("-{}", self.0.id())])
+            .args(["-KILL", "--", &format!("-{}", self.0.id())])
             .status();
         #[cfg(windows)]
         let status = Command::new("taskkill")
