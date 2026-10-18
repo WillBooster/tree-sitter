@@ -124,7 +124,16 @@ impl AuxiliarySymbolContexts {
 
     /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
     /// the path to the state whose context is `context`.
-    fn parents(&self, mut context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+    fn parents(&self, context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+        self.find_parents(context, symbol, |_| true)
+    }
+
+    fn find_parents(
+        &self,
+        mut context: Option<AuxiliaryContextId>,
+        symbol: usize,
+        accept: impl Fn(&[Symbol]) -> bool,
+    ) -> Option<&[Symbol]> {
         while let Some(id) = context {
             let AuxiliaryContext {
                 predecessor,
@@ -133,11 +142,10 @@ impl AuxiliarySymbolContexts {
             } = self.contexts[id.index()];
             let entries = &self.entries[start as usize..(start + len) as usize];
             if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
-                return Some(Self::parent_set(
-                    &self.parent_symbols,
-                    &self.parent_sets,
-                    parent_set,
-                ));
+                let parents = Self::parent_set(&self.parent_symbols, &self.parent_sets, parent_set);
+                if accept(parents) {
+                    return Some(parents);
+                }
             }
             context = predecessor;
         }
@@ -401,6 +409,7 @@ pub struct ConflictError {
     pub conflicting_lookahead: String,
     pub possible_interpretations: Vec<Interpretation>,
     pub possible_resolutions: Vec<Resolution>,
+    pub repetition_rules: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Default, Debug, Serialize, Error, Deserialize)]
@@ -480,6 +489,17 @@ impl std::fmt::Display for ConflictError {
                 write!(f, "{prec_suffix}")?;
             }
             writeln!(f)?;
+        }
+
+        if !self.repetition_rules.is_empty() {
+            writeln!(f, "\nRepetition rules used in this conflict:\n")?;
+            for (name, parents) in &self.repetition_rules {
+                if parents.is_empty() {
+                    writeln!(f, "  {name}: repetition rule")?;
+                } else {
+                    writeln!(f, "  {name}: used by {}", parents.join(", "))?;
+                }
+            }
         }
 
         writeln!(f, "\nPossible resolutions:\n")?;
@@ -1046,15 +1066,14 @@ impl<'a> ParseTableBuilder<'a> {
                     });
             }
 
-            // Add ShiftExtra actions for the terminal extra tokens. These actions
-            // are added to every state except for those at the ends of non-terminal
-            // extras.
             for extra_token in &self.syntax_grammar.extra_symbols {
                 match extra_token.kind {
                     SymbolType::NonTerminal => {
-                        state
-                            .nonterminal_entries
-                            .insert(*extra_token, GotoAction::ShiftExtra);
+                        if !state.nonterminal_entries.contains_key(extra_token) {
+                            state
+                                .nonterminal_entries
+                                .insert(*extra_token, GotoAction::ShiftExtra);
+                        }
                     }
                     SymbolType::Terminal | SymbolType::External => {
                         self.terminal_entries.get_or_insert_with(*extra_token, || {
@@ -1289,7 +1308,14 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
-        let mut conflict_error = ConflictError::default();
+        let mut conflict_error = ConflictError {
+            repetition_rules: self.repetition_owners(
+                preceding_symbols,
+                &conflicting_items,
+                auxiliary_context,
+            ),
+            ..ConflictError::default()
+        };
         for &symbol in preceding_symbols {
             conflict_error
                 .symbol_sequence
@@ -1410,6 +1436,72 @@ impl<'a> ParseTableBuilder<'a> {
         self.actual_conflicts.insert(actual_conflict);
 
         Err(conflict_error)?
+    }
+
+    fn repetition_owners(
+        &self,
+        preceding_symbols: &[Symbol],
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+    ) -> Vec<(String, Vec<String>)> {
+        preceding_symbols
+            .iter()
+            .copied()
+            .chain(items.iter().flat_map(|item| {
+                std::iter::once(Symbol::non_terminal(item.variable_index as usize)).chain(
+                    item.production(self.syntax_grammar)
+                        .steps
+                        .iter()
+                        .map(|step| step.symbol()),
+                )
+            }))
+            .filter(|symbol| {
+                symbol.kind == SymbolType::NonTerminal
+                    && self.syntax_grammar.variables[symbol.index as usize].is_auxiliary()
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|symbol| {
+                let mut parents = self
+                    .auxiliary_contexts
+                    .find_parents(auxiliary_context, symbol.index as usize, |parents| {
+                        !parents.is_empty()
+                    })
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>();
+                for item in items {
+                    if !item
+                        .production(self.syntax_grammar)
+                        .steps
+                        .iter()
+                        .any(|step| step.symbol() == symbol)
+                    {
+                        continue;
+                    }
+                    let owner = Symbol::non_terminal(item.variable_index as usize);
+                    if self.syntax_grammar.variables[owner.index as usize].is_auxiliary() {
+                        parents.extend(
+                            self.auxiliary_contexts
+                                .find_parents(auxiliary_context, owner.index as usize, |parents| {
+                                    !parents.is_empty()
+                                })
+                                .unwrap_or_default(),
+                        );
+                    } else {
+                        parents.insert(owner);
+                    }
+                }
+                (
+                    self.symbol_name(symbol),
+                    parents
+                        .into_iter()
+                        .map(|parent| self.symbol_name(parent))
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     fn conflict_symbols(

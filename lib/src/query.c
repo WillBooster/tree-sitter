@@ -310,6 +310,7 @@ struct TSQuery {
   Array(TSSymbol) repeat_symbols_with_rootless_patterns;
   const TSLanguage *language;
   uint16_t wildcard_root_pattern_count;
+  bool has_skipped_root;
 };
 
 /*
@@ -1312,6 +1313,9 @@ static inline void ts_query__pattern_map_insert(
   }
 
   array_insert(&self->pattern_map, index, new_entry);
+  if (array_get(&self->steps, new_entry.step_index)->depth == 1) {
+    self->has_skipped_root = true;
+  }
 }
 
 // Walk the subgraph for this non-terminal, tracking all of the possible
@@ -1666,7 +1670,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (!pattern->is_rooted) {
       QueryStep *step = array_get(&self->steps, pattern->step_index);
-      if (step->symbol != WILDCARD_SYMBOL) {
+      if (step->depth != PATTERN_DONE_MARKER) {
         array_push(&non_rooted_pattern_start_steps, i);
       }
     }
@@ -1697,10 +1701,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
-      }
+      next_step->root_pattern_guaranteed = !is_wildcard && step->symbol != ts_builtin_sym_error;
+      next_step->parent_pattern_guaranteed = !is_wildcard && step->symbol != ts_builtin_sym_error;
       has_children = true;
     }
 
@@ -1800,14 +1802,18 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
               );
               if (exists) {
                 AnalysisSubgraph *subgraph = array_get(&subgraphs, subgraph_index);
-                if (subgraph->nodes.size == 0 || array_back(&subgraph->nodes)->state != state) {
-                  array_push(&subgraph->nodes, ((AnalysisSubgraphNode) {
-                    .state = state,
-                    .production_id = action->reduce.production_id,
-                    .child_index = action->reduce.child_count,
-                    .done = true,
-                  }));
-                }
+                AnalysisSubgraphNode node = {
+                  .state = state,
+                  .production_id = action->reduce.production_id,
+                  .child_index = action->reduce.child_count,
+                  .done = true,
+                };
+                unsigned node_index, node_exists;
+                array_search_sorted_with(
+                  &subgraph->nodes, analysis_subgraph_node__compare, &node,
+                  &node_index, &node_exists
+                );
+                if (!node_exists) array_insert(&subgraph->nodes, node_index, node);
               }
             }
           } else if (action->type == TSParseActionTypeShift && !action->shift.extra) {
@@ -2049,7 +2055,6 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     }
   }
 
-  // Mark as indefinite any step with captures that are used in predicates.
   Array(uint16_t) predicate_capture_ids = array_new();
   for (unsigned i = 0; i < self->patterns.size; i++) {
     QueryPattern *pattern = array_get(&self->patterns, i);
@@ -2068,13 +2073,16 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       }
     }
 
-    // Find all of the steps that have these captures.
     for (
       unsigned start = pattern->steps.offset,
       end = start + pattern->steps.length,
       j = start; j < end; j++
     ) {
       QueryStep *step = array_get(&self->steps, j);
+      if (step->is_missing || step->symbol == ts_builtin_sym_error) {
+        step->root_pattern_guaranteed = false;
+        step->parent_pattern_guaranteed = false;
+      }
       for (unsigned k = 0; k < MAX_STEP_CAPTURE_COUNT; k++) {
         uint16_t capture_id = step->capture_ids[k];
         if (capture_id == NONE) break;
@@ -3187,11 +3195,10 @@ TSQuery *ts_query_new(
         continue;
       }
 
-      // If a pattern has a wildcard at its root, but it has a non-wildcard child,
-      // then optimize the matching process by skipping matching the wildcard.
-      // Later, during the matching process, the query cursor will check that
-      // there is a parent node, and capture it if necessary.
-      if (step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field) {
+      if (
+        step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field &&
+        step->capture_ids[0] == NONE
+      ) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
         if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
           if (step->alternative_index != NONE) {
@@ -3332,6 +3339,7 @@ TSQuery *ts_query_copy(const TSQuery *self) {
     .predicate_values = symbol_table_new(),
     .language = ts_language_copy(self->language),
     .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
+    .has_skipped_root = self->has_skipped_root,
   };
 
   array_assign(&copy->steps, &self->steps);
@@ -3503,6 +3511,7 @@ void ts_query_disable_pattern(
 ) {
   // Remove the given pattern from the pattern map. Its steps will still
   // be in the `steps` array, but they will never be read.
+  self->has_skipped_root = false;
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (pattern->pattern_index == pattern_index) {
@@ -3511,6 +3520,8 @@ void ts_query_disable_pattern(
       }
       array_erase(&self->pattern_map, i);
       i--;
+    } else if (array_get(&self->steps, pattern->step_index)->depth == 1) {
+      self->has_skipped_root = true;
     }
   }
 }
@@ -3747,10 +3758,8 @@ static bool ts_query_cursor__first_in_progress_capture(
     ) {
       QueryStep *step = array_get(&self->query->steps, state->step_index);
       if (is_definite) {
-        // We're being a bit conservative here by asserting that the following step
-        // is not immediate, because this capture might end up being discarded if the
-        // following symbol in the tree isn't the required symbol for this step.
-        *is_definite = step->root_pattern_guaranteed && !step->is_immediate;
+        *is_definite = step->root_pattern_guaranteed && !step->is_immediate &&
+          !state->has_in_progress_alternatives;
       } else if (step->root_pattern_guaranteed) {
         continue;
       }
@@ -3882,7 +3891,7 @@ static void ts_query_cursor__add_state(
   const PatternEntry *pattern
 ) {
   QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-  uint32_t start_depth = self->depth - step->depth;
+  uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
 
   // Keep the states array in ascending order of start_depth and pattern_index,
   // so that it can be processed more efficiently elsewhere. Usually, there is
@@ -4051,7 +4060,11 @@ static inline bool ts_query_cursor__should_descend(
   bool node_intersects_range
 ) {
 
-  if (node_intersects_range && self->depth < self->max_start_depth) {
+  bool depth_allows_children = self->depth < self->max_start_depth || (
+    self->depth == self->max_start_depth && self->query->has_skipped_root
+  );
+
+  if (node_intersects_range && depth_allows_children) {
     return true;
   }
 
@@ -4068,7 +4081,7 @@ static inline bool ts_query_cursor__should_descend(
     }
   }
 
-  if (self->depth >= self->max_start_depth) {
+  if (!depth_allows_children) {
     return false;
   }
 
@@ -4242,13 +4255,13 @@ static inline bool ts_query_cursor__advance(
       TSNode node = ts_tree_cursor_current_node(&self->cursor);
       TSNode parent_node = ts_tree_cursor_parent_node(&self->cursor);
 
+      TSNode range_parent = ts_node_is_null(parent_node) ? node : parent_node;
       bool parent_intersects_range =
-        ts_node_is_null(parent_node) ||
         range_intersects(&(TSRange) {
-          .start_point = ts_node_start_point(parent_node),
-          .end_point = ts_node_end_point(parent_node),
-          .start_byte = ts_node_start_byte(parent_node),
-          .end_byte = ts_node_end_byte(parent_node),
+          .start_point = ts_node_start_point(range_parent),
+          .end_point = ts_node_end_point(range_parent),
+          .start_byte = ts_node_start_byte(range_parent),
+          .end_byte = ts_node_end_byte(range_parent),
         }, &self->included_range);
       TSRange node_range = (TSRange) {
         .start_point = ts_node_start_point(node),
@@ -4310,11 +4323,12 @@ static inline bool ts_query_cursor__advance(
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
             QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-            uint32_t start_depth = self->depth - step->depth;
+            uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
             if (
-              (pattern->is_rooted ?
+              (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
                 (parent_intersects_range && !parent_is_error)) &&
+              (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
               (start_depth <= self->max_start_depth)
@@ -4330,7 +4344,7 @@ static inline bool ts_query_cursor__advance(
           PatternEntry *pattern = array_get(&self->query->pattern_map, i);
 
           QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-          uint32_t start_depth = self->depth - step->depth;
+          uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
           do {
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
@@ -4722,11 +4736,14 @@ static inline bool ts_query_cursor__advance(
               &left_contains_right,
               &right_contains_left
             );
+            bool same_step = state->step_index == other_state->step_index;
+            bool is_done = array_get(&self->query->steps, state->step_index)->depth == PATTERN_DONE_MARKER;
             if (left_contains_right) {
               if (
-                state->step_index == other_state->step_index &&
-                (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
-                (other_state->seeking_first_named_child || !state->seeking_first_named_child)
+                same_step && (is_done || (
+                  (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
+                  (other_state->seeking_first_named_child || !state->seeking_first_named_child)
+                ))
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
@@ -4742,9 +4759,10 @@ static inline bool ts_query_cursor__advance(
             }
             if (right_contains_left) {
               if (
-                state->step_index == other_state->step_index &&
-                (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
-                (state->seeking_first_named_child || !other_state->seeking_first_named_child)
+                same_step && (is_done || (
+                  (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
+                  (state->seeking_first_named_child || !other_state->seeking_first_named_child)
+                ))
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
