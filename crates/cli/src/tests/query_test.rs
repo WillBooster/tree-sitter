@@ -6427,8 +6427,6 @@ fn test_query_quantified_captures() {
             // This should be identical to the `*` quantifier.
             captures: &[
                 ("comment", "// foo"),
-                ("comment", "// foo"),
-                ("comment", "// foo"),
                 ("comment", "// bar"),
                 ("comment", "// baz"),
             ],
@@ -6449,6 +6447,11 @@ fn test_query_quantified_captures() {
             let matches = cursor.captures(&query, tree.root_node(), row.code.as_bytes());
 
             assert_eq!(collect_captures(matches, &query, row.code), row.captures);
+            if row.pattern.contains("?+") {
+                let query = Query::new(&row.language, &row.pattern.replace("?+", "*")).unwrap();
+                let matches = cursor.captures(&query, tree.root_node(), row.code.as_bytes());
+                assert_eq!(collect_captures(matches, &query, row.code), row.captures);
+            }
         }
     });
 }

@@ -4310,6 +4310,7 @@ static inline bool ts_query_cursor__advance(
               (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
                 (parent_intersects_range && !parent_is_error)) &&
+              (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
               (start_depth <= self->max_start_depth)
