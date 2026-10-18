@@ -129,6 +129,7 @@ typedef struct {
   bool is_missing : 1;
   bool is_keyword : 1;
   bool first_leaf_is_keyword : 1;
+  bool trailing_extra : 1;
 
   union {
     // Non-terminal subtrees (`child_count > 0`)
@@ -254,6 +255,11 @@ static inline uint32_t ts_subtree_lookahead_bytes(Subtree self) { return SUBTREE
 // number of children.
 static inline size_t ts_subtree_alloc_size(uint32_t child_count) {
   return child_count * sizeof(Subtree) + sizeof(SubtreeHeapData);
+}
+
+static inline bool ts_subtree_trailing_extra(Subtree self) {
+  return ts_subtree_extra(self) ||
+    (!self.data.is_inline && self.ptr->child_count > 0 && self.ptr->trailing_extra);
 }
 
 // Get a subtree's children, which are allocated immediately before the

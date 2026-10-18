@@ -801,8 +801,19 @@ scan:
         return child;
       }
 
-      else if (ts_node_child_count(child) > 0 ) {
-        TSNode result = ts_node_child(child, 0);
+      else if (ts_node_child_count(child) > 0) {
+        TSTreeCursor cursor = ts_tree_cursor_new(self);
+        TSNode result = ts_node__null();
+        if (ts_tree_cursor_goto_first_child(&cursor)) {
+          do {
+            if (ts_tree_cursor_current_field_id(&cursor) == field_id) {
+              result = ts_tree_cursor_current_node(&cursor);
+              break;
+            }
+          } while (ts_tree_cursor_goto_next_sibling(&cursor));
+        }
+        ts_tree_cursor_delete(&cursor);
+        if (ts_node_is_null(result)) goto not_found;
         array_delete(&stack);
         return result;
       }

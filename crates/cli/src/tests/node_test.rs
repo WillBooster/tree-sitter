@@ -1954,10 +1954,20 @@ fn test_deeply_nested_field_search_does_not_overflow_stack() {
             "name": "deeply_nested_fields",
             "rules": {
                 "document": {"type": "SYMBOL", "name": "_nested"},
+                "_shadowed": {
+                    "type": "FIELD",
+                    "name": "inner",
+                    "content": {"type": "STRING", "value": "s"}
+                },
                 "_nested": {
                     "type": "CHOICE",
                     "members": [
                         {"type": "STRING", "value": "y"},
+                        {
+                            "type": "FIELD",
+                            "name": "target",
+                            "content": {"type": "SYMBOL", "name": "_shadowed"}
+                        },
                         {
                             "type": "FIELD",
                             "name": "target",
@@ -1986,7 +1996,11 @@ fn test_deeply_nested_field_search_does_not_overflow_stack() {
     let depth = 100_000;
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    for (leaf, expected_offset, expected_text) in [("x", depth, "x"), ("y", depth + 2, "z")] {
+    for (leaf, expected_offset, expected_text) in [
+        ("x", depth, "x"),
+        ("y", depth + 2, "z"),
+        ("s", depth + 2, "z"),
+    ] {
         let source = "(".repeat(depth) + leaf + &")z".repeat(depth);
         let tree = parser.parse(source.as_bytes(), None).unwrap();
         assert!(!tree.root_node().has_error());
@@ -2037,4 +2051,68 @@ fn collapse_deeply_nested_tree(tree: &mut Tree, depth: usize) {
         old_end_position: Point::new(0, old_end_byte),
         new_end_position: Point::new(0, 0),
     });
+}
+
+#[test]
+fn test_hidden_node_fields_respect_inner_shadowing() {
+    use serde_json::json;
+
+    for (case, tail, source, expected_outer) in [
+        ("shadow", None, "a", None),
+        (
+            "remaining",
+            Some(json!({"type":"SYMBOL", "name":"word"})),
+            "ab",
+            Some("b"),
+        ),
+        (
+            "shadowed_tail",
+            Some(
+                json!({"type":"FIELD", "name":"other", "content":{"type":"SYMBOL", "name":"word"}}),
+            ),
+            "ab",
+            None,
+        ),
+    ] {
+        let mut members = vec![
+            json!({"type":"FIELD", "name":"inner", "content":{"type":"SYMBOL", "name":"word"}}),
+        ];
+        members.extend(tail);
+        let grammar = json!({
+            "name": format!("hidden_fields_{case}"),
+            "rules": {
+                "root": {"type":"FIELD", "name":"outer", "content":{"type":"SYMBOL", "name":"_hidden"}},
+                "_hidden": {"type":"SYMBOL", "name":"_nested"},
+                "_nested": {"type":"SEQ", "members":members},
+                "word": {"type":"PATTERN", "value":"[a-z]"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.field_name_for_child(0), Some("inner"));
+        assert_eq!(
+            root.child_by_field_name("inner")
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap(),
+            "a"
+        );
+        let outer = root.child_by_field_name("outer");
+        assert_eq!(
+            outer.map(|node| node.utf8_text(source.as_bytes()).unwrap()),
+            expected_outer,
+            "{case}"
+        );
+        let mut cursor = root.walk();
+        assert_eq!(
+            root.children_by_field_name("outer", &mut cursor).next(),
+            outer,
+            "{case}"
+        );
+    }
 }

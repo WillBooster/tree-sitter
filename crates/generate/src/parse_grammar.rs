@@ -73,6 +73,9 @@ enum RuleJSON {
     TOKEN {
         content: Box<Self>,
     },
+    NONKEYWORD_TOKEN {
+        content: Box<Self>,
+    },
     IMMEDIATE_TOKEN {
         content: Box<Self>,
     },
@@ -424,6 +427,10 @@ impl RulePool {
             RuleJSON::TOKEN { content } => {
                 let content = self.parse_rule(*content, true, diagnostics)?;
                 Ok(self.token(content))
+            }
+            RuleJSON::NONKEYWORD_TOKEN { content } => {
+                let content = self.parse_rule(*content, true, diagnostics)?;
+                Ok(self.nonkeyword_token(content))
             }
             RuleJSON::IMMEDIATE_TOKEN { content } => {
                 let content = self.parse_rule(*content, true, diagnostics)?;
