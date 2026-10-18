@@ -401,6 +401,7 @@ pub struct ConflictError {
     pub conflicting_lookahead: String,
     pub possible_interpretations: Vec<Interpretation>,
     pub possible_resolutions: Vec<Resolution>,
+    pub generated_repetitions: Vec<String>,
 }
 
 #[derive(Default, Debug, Serialize, Error, Deserialize)]
@@ -480,6 +481,14 @@ impl std::fmt::Display for ConflictError {
                 write!(f, "{prec_suffix}")?;
             }
             writeln!(f)?;
+        }
+
+        if !self.generated_repetitions.is_empty() {
+            writeln!(
+                f,
+                "\nGenerated repetition rules may be shared across grammar rules; their names do not identify every rule that uses them: {}.",
+                self.generated_repetitions.join(", ")
+            )?;
         }
 
         writeln!(f, "\nPossible resolutions:\n")?;
@@ -1282,7 +1291,11 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
-        let mut conflict_error = ConflictError::default();
+        let mut conflict_error = ConflictError {
+            generated_repetitions: self
+                .generated_repetition_names(preceding_symbols, &conflicting_items),
+            ..ConflictError::default()
+        };
         for &symbol in preceding_symbols {
             conflict_error
                 .symbol_sequence
@@ -1403,6 +1416,32 @@ impl<'a> ParseTableBuilder<'a> {
         self.actual_conflicts.insert(actual_conflict);
 
         Err(conflict_error)?
+    }
+
+    fn generated_repetition_names(
+        &self,
+        preceding_symbols: &[Symbol],
+        items: &BTreeSet<&ParseItem>,
+    ) -> Vec<String> {
+        preceding_symbols
+            .iter()
+            .copied()
+            .chain(items.iter().flat_map(|item| {
+                std::iter::once(Symbol::non_terminal(item.variable_index as usize)).chain(
+                    item.production(self.syntax_grammar)
+                        .steps
+                        .iter()
+                        .map(|step| step.symbol()),
+                )
+            }))
+            .filter(|symbol| {
+                symbol.kind == SymbolType::NonTerminal
+                    && self.syntax_grammar.variables[symbol.index as usize].is_auxiliary()
+            })
+            .map(|symbol| self.symbol_name(symbol))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     fn conflict_symbols(
