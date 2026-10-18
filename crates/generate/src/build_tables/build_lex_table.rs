@@ -497,7 +497,7 @@ impl<'a> LexTableBuilder<'a> {
             guard_id,
         }) = self.state_queue.pop_front()
         {
-            self.populate_state(state_id, nfa_states, eof_valid, guard_id);
+            self.populate_state(state_id, &nfa_states, eof_valid, guard_id);
         }
         state_id
     }
@@ -532,14 +532,14 @@ impl<'a> LexTableBuilder<'a> {
     fn populate_state(
         &mut self,
         state_id: LexStateId,
-        nfa_states: Vec<TaggedState>,
+        nfa_states: &[TaggedState],
         eof_valid: bool,
         guard_id: usize,
     ) {
         self.cursor
             .force_reset(nfa_states.iter().map(|&(id, _)| id).collect());
 
-        let selected_completion = self.select_completion(&nfa_states, guard_id);
+        let selected_completion = self.select_completion(nfa_states, guard_id);
         let completion_tag = selected_completion.and_then(|completion| completion.start_tag);
         let completion =
             selected_completion.map(|completion| (completion.variable, completion.precedence));
@@ -615,7 +615,7 @@ impl<'a> LexTableBuilder<'a> {
                 states: next_tags,
                 start_tags,
             }) = self.advance_start_tags(
-                &nfa_states,
+                nfa_states,
                 &transition,
                 completion
                     .filter(|_| !preserve_word)
