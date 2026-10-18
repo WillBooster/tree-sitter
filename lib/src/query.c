@@ -203,6 +203,7 @@ typedef struct {
  *    it is clear that there can be no other alternative match with more captures.
  */
 typedef struct {
+  TSRange matched_range;
   uint32_t id;
   uint32_t capture_list_id;
   uint32_t heap_insert_order;
@@ -612,14 +613,6 @@ static void finished_state_erase(
   } else {
     finished_state_sift_down(states, index, pool);
   }
-}
-
-static void ts_query_cursor__push_finished_state(
-  TSQueryCursor *self,
-  QueryState *state
-) {
-  state->heap_insert_order = self->next_finished_state_id++;
-  array_push(&self->finished_states, *state);
 }
 
 static void ts_query_cursor__heapify_finished_states(TSQueryCursor *self) {
@@ -3939,6 +3932,7 @@ static void ts_query_cursor__add_state(
     pattern->step_index
   );
   array_insert(&self->states, index, ((QueryState) {
+    .matched_range = {.start_byte = UINT32_MAX},
     .id = UINT32_MAX,
     .capture_list_id = CAPTURE_LIST_NONE,
     .heap_insert_order = UINT32_MAX,
@@ -4144,6 +4138,20 @@ bool range_within(const TSRange *a, const TSRange *b) {
   );
 }
 
+static bool ts_query_cursor__push_finished_state(
+  TSQueryCursor *self,
+  QueryState *state
+) {
+  if (state->matched_range.start_byte != UINT32_MAX &&
+      !range_intersects(&state->matched_range, &self->included_range)) {
+    capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
+    return false;
+  }
+  state->heap_insert_order = self->next_finished_state_id++;
+  array_push(&self->finished_states, *state);
+  return true;
+}
+
 // Walk the tree, processing patterns until at least one pattern finishes,
 // If one or more patterns finish, return `true` and store their states in the
 // `finished_states` array. Multiple patterns can finish on the same node. If
@@ -4199,8 +4207,7 @@ static inline bool ts_query_cursor__advance(
             (state->start_depth > self->depth || self->depth == 0)
           ) {
             LOG("  finish pattern %u\n", state->pattern_index);
-            ts_query_cursor__push_finished_state(self, state);
-            did_match = true;
+            did_match |= ts_query_cursor__push_finished_state(self, state);
             deleted_count++;
           }
 
@@ -4490,6 +4497,16 @@ static inline bool ts_query_cursor__advance(
             } else {
               state->needs_parent = false;
             }
+          }
+
+          if (step->depth == 0 || (step->depth == 1 && state->matched_range.start_byte == UINT32_MAX)) {
+            TSNode matched_node = step->depth == 0 ? node : parent_node;
+            if (state->matched_range.start_byte == UINT32_MAX) {
+              state->matched_range.start_byte = ts_node_start_byte(matched_node);
+              state->matched_range.start_point = ts_node_start_point(matched_node);
+            }
+            state->matched_range.end_byte = ts_node_end_byte(matched_node);
+            state->matched_range.end_point = ts_node_end_point(matched_node);
           }
 
           // If the current node is captured in this pattern, add it to the capture list.
@@ -4785,9 +4802,8 @@ static inline bool ts_query_cursor__advance(
                 LOG("  defer finishing pattern %u\n", state->pattern_index);
               } else {
                 LOG("  finish pattern %u\n", state->pattern_index);
-                ts_query_cursor__push_finished_state(self, state);
+                did_match |= ts_query_cursor__push_finished_state(self, state);
                 array_erase(&self->states, (uint32_t)(state - self->states.contents));
-                did_match = true;
                 j--;
               }
             }

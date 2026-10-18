@@ -3788,6 +3788,67 @@ fn test_query_matches_with_non_rooted_patterns_outside_cursor_range() {
 }
 
 #[test]
+fn test_query_matches_require_actual_roots_to_intersect_interior_ranges() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1, 2]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        for node in [root, root.named_child(0).unwrap()] {
+            for pattern in ["(number)+ @n", "(number)+", "[(number) (string)] @n"] {
+                let query = Query::new(&language, pattern).unwrap();
+                for points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    if points {
+                        cursor.set_point_range(Point::new(0, 3)..Point::new(0, 4));
+                    } else {
+                        cursor.set_byte_range(3..4);
+                    }
+                    assert!(
+                        cursor
+                            .matches(&query, node, source.as_bytes())
+                            .next()
+                            .is_none(),
+                        "{pattern}, points={points}, root={}",
+                        node.kind()
+                    );
+                }
+            }
+            for (pattern, expected) in [
+                (
+                    "((number) @left (number) @right)",
+                    vec![(0, vec![("left", "1"), ("right", "2")])],
+                ),
+                ("((number) (number))", vec![(0, vec![])]),
+                ("((number) @left (number)?)", vec![(0, vec![("left", "1")])]),
+                (
+                    "((number)? (number) @right)",
+                    vec![(0, vec![("right", "2")])],
+                ),
+                (
+                    "((number) (number) @right)",
+                    vec![(0, vec![("right", "2")])],
+                ),
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_byte_range(3..4);
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, node, source.as_bytes()),
+                        &query,
+                        source
+                    ),
+                    expected
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range() {
     allocations::record(|| {
         let language = get_language("json");
@@ -4162,16 +4223,16 @@ fn test_query_containing_ranges_preserve_non_rooted_wildcard_matches() {
         parser.set_language(&language).unwrap();
         let large = format!("[{}0]", "[1,2],".repeat(63));
         for (source, intersecting, containing, kind, expected_ranges) in [
-            ("[0,1,2]", 0..1, 3..6, "number", [3..4, 5..6]),
-            ("[0,1,2,3]", 7..7, 3..6, "number", [3..4, 5..6]),
+            ("[0,1,2]", 4..5, 3..6, "number", [3..4, 5..6]),
+            ("[0,1,2,3]", 4..4, 3..6, "number", [3..4, 5..6]),
             (
                 "[[1,2],[1,2],[1,2],0]",
-                19..19,
+                12..13,
                 2..18,
                 "array",
                 [7..12, 13..18],
             ),
-            (large.as_str(), 78..78, 2..18, "array", [7..12, 13..18]),
+            (large.as_str(), 12..12, 2..18, "array", [7..12, 13..18]),
         ] {
             let tree = parser.parse(source, None).unwrap();
             assert!(!tree.root_node().has_error());
@@ -8684,10 +8745,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                let mut expected = vec![(0, vec![]); usize::from(nullable)];
-                if pattern.contains('*') || pattern.contains('+') {
-                    expected.push((0, vec![("number", "3"), ("number", "4")]));
-                }
+                let expected = vec![(0, vec![]); usize::from(nullable)];
                 assert_eq!(
                     matches, expected,
                     "{name}: {pattern}, use_points={use_points}"
