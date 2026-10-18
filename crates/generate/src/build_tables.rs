@@ -26,7 +26,7 @@ use self::{
 use crate::{
     Diagnostic, OptLevel,
     grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar},
-    nfa::{CharacterSet, NfaCursor},
+    nfa::CharacterSet,
     node_types::VariableInfo,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::StrPool,
@@ -172,7 +172,7 @@ pub fn build_tables(
         &immediate_keywords,
         str_pool,
     );
-    populate_external_lex_states(&mut parse_table, syntax_grammar);
+    populate_external_lex_states(&mut parse_table, syntax_grammar, lexical_grammar);
     mark_fragile_tokens(&mut parse_table, &token_conflict_map);
     parse_table
         .action_lists
@@ -369,7 +369,11 @@ fn populate_used_symbols(
     }
 }
 
-fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &SyntaxGrammar) {
+fn populate_external_lex_states(
+    parse_table: &mut ParseTable,
+    syntax_grammar: &SyntaxGrammar,
+    lexical_grammar: &LexicalGrammar,
+) {
     let mut external_tokens_by_corresponding_internal_token = FxHashMap::default();
     for (i, external_token) in syntax_grammar.external_tokens.iter().enumerate() {
         if let Some(symbol) = external_token.corresponding_internal_token {
@@ -394,14 +398,28 @@ fn populate_external_lex_states(parse_table: &mut ParseTable, syntax_grammar: &S
             }
         }
 
-        parse_table.states[i].external_lex_state_id = parse_table
-            .external_lex_states
-            .iter()
-            .position(|tokens| *tokens == external_tokens)
-            .unwrap_or_else(|| {
-                parse_table.external_lex_states.push(external_tokens);
-                parse_table.external_lex_states.len() - 1
-            }) as u32;
+        let mut tokens_after_extra = TokenSet::new();
+        for token in external_tokens.iter() {
+            let internal =
+                syntax_grammar.external_tokens[token.index as usize].corresponding_internal_token;
+            if internal
+                .is_none_or(|symbol| !lexical_grammar.variables[symbol.index as usize].is_immediate)
+            {
+                tokens_after_extra.insert(token);
+            }
+        }
+        let [regular, after_extra] = [external_tokens, tokens_after_extra].map(|tokens| {
+            parse_table
+                .external_lex_states
+                .iter()
+                .position(|state| *state == tokens)
+                .unwrap_or_else(|| {
+                    parse_table.external_lex_states.push(tokens);
+                    parse_table.external_lex_states.len() - 1
+                }) as u32
+        });
+        parse_table.states[i].external_lex_state_id = regular;
+        parse_table.states[i].external_lex_state_id_after_extra = after_extra;
     }
 }
 
@@ -425,7 +443,6 @@ fn identify_keywords(
         Some(_) => unreachable!(),
     };
     let mut unsafe_pairs: Vec<(Symbol, Symbol)> = Vec::new();
-    let mut cursor = NfaCursor::new(&lexical_grammar.nfa, Vec::new());
     let mut guard_demoted = TokenSet::new();
     let mut immediate_keywords = TokenSet::new();
 
@@ -434,9 +451,8 @@ fn identify_keywords(
         .iter()
         .enumerate()
         .filter_map(|(i, variable)| {
-            cursor.reset([variable.start_state]);
-            let is_candidate = all_chars_are_alphabetical(&cursor)
-                && token_conflict_map.does_match_same_string(i, word_token.index as usize)
+            let is_candidate = token_conflict_map
+                .does_match_same_string(i, word_token.index as usize)
                 && !token_conflict_map.does_match_different_string(i, word_token.index as usize);
             if !is_candidate {
                 return None;
@@ -669,14 +685,4 @@ fn report_state_info<'a>(
             );
         }
     }
-}
-
-fn all_chars_are_alphabetical(cursor: &NfaCursor) -> bool {
-    cursor.transition_chars().all(|(chars, is_sep)| {
-        if is_sep {
-            true
-        } else {
-            chars.chars().all(|c| c.is_alphabetic() || c == '_')
-        }
-    })
 }

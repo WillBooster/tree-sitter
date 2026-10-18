@@ -3087,6 +3087,162 @@ fn test_query_matches_with_anonymous_tokens() {
 }
 
 #[test]
+fn test_supertype_field_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    let grammar =
+        super::helpers::fixtures::fixtures_dir().join("test_grammars/supertype_fields/grammar.js");
+    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = schema.as_array().unwrap();
+    for (kind, required, multiple, field_type) in [
+        ("list", false, true, "spread"),
+        ("assigned", true, false, "item"),
+        ("restricted", true, false, "spread"),
+        ("wrapped_single", true, false, "item"),
+        ("wrapped_pair", true, true, "item"),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        let field = &node["fields"]["spread"];
+        assert_eq!(field["required"], required, "{kind}");
+        assert_eq!(field["multiple"], multiple, "{kind}");
+        assert_eq!(
+            field["types"],
+            serde_json::json!([{"type": field_type, "named": true}]),
+            "{kind}",
+        );
+    }
+    for (kind, expected) in [
+        (
+            "list",
+            serde_json::json!({"multiple":true,"required":false,"types":[{"type":"name","named":true}]}),
+        ),
+        ("restricted", serde_json::Value::Null),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(node["children"], expected, "{kind}");
+    }
+    for (kind, required) in [("deep_required", true), ("deep_optional", false)] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(
+            node["fields"]["value"],
+            serde_json::json!({
+                "required": required,
+                "multiple": false,
+                "types": [{"type": "name", "named": true}, {"type": "spread", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+    let aliased = entries
+        .iter()
+        .find(|entry| entry["type"] == "aliased")
+        .unwrap();
+    assert!(aliased["fields"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn test_hidden_child_requiredness_in_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    std::fs::write(
+        directory.path().join("grammar.js"),
+        r"
+        module.exports = grammar({
+            name: 'hidden_child_cardinality',
+            rules: {
+                source_file: $ => choice($.required_children, $.optional_children),
+                required_children: $ => seq('required', $._statements, 'end'),
+                optional_children: $ => seq('optional', optional($._statements), 'end'),
+                _statements: $ => repeat1(seq($._statement, ';')),
+                _statement: $ => choice($.command, $.other),
+                command: _ => 'c',
+                other: _ => 'o',
+            },
+        });
+    ",
+    )
+    .unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    for (kind, required) in [("required_children", true), ("optional_children", false)] {
+        let node = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == kind)
+            .unwrap();
+        assert_eq!(
+            node["children"],
+            serde_json::json!({
+                "required": required, "multiple": true,
+                "types": [{"type": "command", "named": true}, {"type": "other", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn test_query_fields_inside_supertypes() {
+    let language = get_test_fixture_language("supertype_fields");
+    let source = "[a] [a, ...b] alias ...c; assign ...d; restrict ...e;";
+    let query = Query::new(
+        &language,
+        r"
+        (list !spread) @plain
+        (list spread: (spread) @spread)
+        (aliased !spread) @aliased
+        (assigned spread: (item) @assigned)
+        (restricted spread: (spread) @restricted)
+        (restricted !spread) @unexpected
+        ",
+    )
+    .unwrap();
+    assert_query_matches(
+        &language,
+        &query,
+        source,
+        &[
+            (0, vec![("plain", "[a]")]),
+            (1, vec![("spread", "...b")]),
+            (2, vec![("aliased", "alias ...c;")]),
+            (3, vec![("assigned", "...d")]),
+            (4, vec![("restricted", "...e")]),
+        ],
+    );
+}
+
+#[test]
 fn test_transparent_supertype_alias_node_schema() {
     for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
         let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
@@ -7547,6 +7703,180 @@ fn test_last_child_anchor_looks_past_hidden_node() {
 
         assert_query_matches(&language, &query, source, &[(0, vec![("last", "int y;")])]);
     });
+}
+
+#[test]
+fn test_query_containing_ranges_include_missing_nodes_at_end() {
+    let language = get_language("c");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for source in ["int broken = ;", "\nint broken = ;"] {
+        let tree = parser.parse(source, None).unwrap();
+        let declaration = tree.root_node().named_child(0).unwrap();
+        let declarator = declaration.child_by_field_name("declarator").unwrap();
+        let identifier = declarator.child_by_field_name("declarator").unwrap();
+        let missing = declarator.child_by_field_name("value").unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(
+            missing.byte_range(),
+            missing.start_byte()..missing.start_byte()
+        );
+        let offset = declaration.start_byte();
+        let row = declaration.start_position().row;
+
+        for points in [false, true] {
+            for end in [
+                missing.start_byte() - 1,
+                missing.start_byte(),
+                missing.start_byte() + 1,
+            ] {
+                for disabled in [false, true] {
+                    let mut query = Query::new(&language, "(_) @node").unwrap();
+                    if disabled {
+                        query.disable_capture("node");
+                    }
+                    let mut cursor = QueryCursor::new();
+                    cursor.set_max_start_depth(Some(5));
+                    if points {
+                        cursor.set_containing_point_range(
+                            Point::new(row, 2)..Point::new(row, end - offset),
+                        );
+                    } else {
+                        cursor.set_containing_byte_range(offset + 2..end);
+                    }
+                    let expected: Vec<_> = [declarator, identifier, missing]
+                        .into_iter()
+                        .filter(|node| node.end_byte() <= end)
+                        .collect();
+                    let mut matches = cursor.matches(&query, declaration, source.as_bytes());
+                    let mut actual = Vec::new();
+                    let mut count = 0;
+                    while let Some(found) = matches.next() {
+                        count += 1;
+                        if disabled {
+                            assert!(found.captures().is_empty());
+                        } else {
+                            assert_eq!(found.captures().len(), 1);
+                            actual.push(found.captures()[0].node);
+                        }
+                    }
+                    assert_eq!(
+                        count,
+                        expected.len(),
+                        "source={source:?} points={points} end={end} disabled={disabled}"
+                    );
+                    if !disabled {
+                        assert_eq!(
+                            actual, expected,
+                            "source={source:?} points={points} end={end}"
+                        );
+                    }
+                    drop(matches);
+                    let mut captures = cursor.captures(&query, declaration, source.as_bytes());
+                    let mut actual = Vec::new();
+                    while let Some((found, index)) = captures.next() {
+                        actual.push(found.captures()[*index].node);
+                    }
+                    assert_eq!(actual, if disabled { Vec::new() } else { expected });
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_query_containing_range_end_preserves_intersecting_range_boundary() {
+    let language = get_language("c");
+    let source = "int broken = ;";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let declaration = tree.root_node().named_child(0).unwrap();
+    let declarator = declaration.child_by_field_name("declarator").unwrap();
+    let identifier = declarator.child_by_field_name("declarator").unwrap();
+    let missing = declarator.child_by_field_name("value").unwrap();
+    let query = Query::new(&language, "(_) @node").unwrap();
+    for points in [false, true] {
+        let mut cursor = QueryCursor::new();
+        if points {
+            cursor.set_containing_point_range(missing.start_position()..missing.end_position());
+        } else {
+            cursor.set_containing_byte_range(missing.byte_range());
+        }
+        let mut matches = cursor.matches(&query, declaration, source.as_bytes());
+        assert_eq!(matches.next().unwrap().captures()[0].node, missing);
+        assert!(matches.next().is_none());
+        drop(matches);
+
+        if points {
+            cursor.set_containing_point_range(Point::new(0, 2)..missing.end_position());
+            cursor.set_point_range(Point::new(0, 2)..missing.end_position());
+        } else {
+            cursor.set_containing_byte_range(2..missing.end_byte());
+            cursor.set_byte_range(2..missing.end_byte());
+        }
+        let mut matches = cursor.matches(&query, declaration, source.as_bytes());
+        for expected in [declarator, identifier] {
+            assert_eq!(matches.next().unwrap().captures()[0].node, expected);
+        }
+        assert!(matches.next().is_none());
+    }
+}
+
+#[test]
+fn test_containing_ranges_validate_skipped_wildcard_parents() {
+    let language = get_language("c");
+    let source = "int broken = ;";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let declaration = tree.root_node().named_child(0).unwrap();
+    let parent = declaration.child_by_field_name("declarator").unwrap();
+    let missing = parent.child_by_field_name("value").unwrap();
+    assert!(missing.is_missing());
+    for pattern in [
+        "(_ (MISSING identifier) @child) @parent",
+        "(_ (MISSING identifier) @child)",
+        "(init_declarator (MISSING identifier) @child) @parent",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        for points in [false, true] {
+            let mut cursor = QueryCursor::new();
+            if points {
+                cursor.set_containing_point_range(missing.start_position()..missing.end_position());
+            } else {
+                cursor.set_containing_byte_range(missing.byte_range());
+            }
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                ),
+                []
+            );
+            assert_eq!(
+                collect_captures(
+                    cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                ),
+                []
+            );
+            if points {
+                cursor.set_containing_point_range(parent.start_position()..parent.end_position());
+            } else {
+                cursor.set_containing_byte_range(parent.byte_range());
+            }
+            let results = collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(results.len(), 1, "{pattern}");
+            assert_eq!(results[0].1.last(), Some(&("child", "")));
+        }
+    }
 }
 
 #[test]
