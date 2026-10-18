@@ -593,6 +593,18 @@ impl<'a> LexTableBuilder<'a> {
         let completion =
             selected_completion.map(|completion| (completion.variable, completion.precedence));
 
+        let fallback_completion = self.word_guards[guard_id]
+            .1
+            .then(|| self.select_completion(nfa_states, guard_id, true))
+            .flatten();
+        let transition_completion = if self.word_guards[guard_id].1
+            && completion.is_some_and(|(id, _)| self.word_token == Some(Symbol::terminal(id)))
+        {
+            fallback_completion.map(|candidate| (candidate.variable, candidate.precedence))
+        } else {
+            completion
+        };
+
         let retained_immediate_complete = guard_id != 0
             && completion.is_some_and(|(id, _)| {
                 let token = Symbol::terminal(id);
@@ -651,7 +663,7 @@ impl<'a> LexTableBuilder<'a> {
                             .any(|index| index == word.index as usize)
                     })
             });
-            if let Some((completed_id, completed_precedence)) = completion
+            if let Some((completed_id, completed_precedence)) = transition_completion
                 && !preserve_word
                 && !TokenConflictMap::prefer_transition(
                     self.lexical_grammar,
@@ -664,7 +676,7 @@ impl<'a> LexTableBuilder<'a> {
                 continue;
             }
 
-            let completed_precedence = completion
+            let completed_precedence = transition_completion
                 .filter(|_| !preserve_word)
                 .map(|(_, precedence)| precedence);
             let Some(TaggedAdvance {
@@ -696,9 +708,8 @@ impl<'a> LexTableBuilder<'a> {
         }
 
         if self.word_guards[guard_id].1 {
-            self.table.states[state_id as usize].fallback_accept = self
-                .select_completion(nfa_states, guard_id, true)
-                .map(|candidate| {
+            self.table.states[state_id as usize].fallback_accept =
+                fallback_completion.map(|candidate| {
                     (
                         Symbol::terminal(candidate.variable),
                         candidate.precedence,
