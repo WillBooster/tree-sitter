@@ -1055,14 +1055,28 @@ impl<'a> ParseTableBuilder<'a> {
         // Add actions for the start tokens of each non-terminal extra rule.
         else if allows_extras {
             for (terminal, state_id) in &self.non_terminal_extra_states {
-                self.terminal_entries
-                    .get_or_insert_with(*terminal, || ParseTableEntry {
-                        reusable: true,
-                        actions: ActionList::One(ParseAction::Shift {
-                            state: *state_id,
-                            is_repetition: false,
-                        }),
-                    });
+                let starts_required_extra = item_set.entries.iter().any(|entry| {
+                    let item = &entry.item;
+                    item.step_index == 0
+                        && self
+                            .syntax_grammar
+                            .extra_symbols
+                            .contains(&Symbol::non_terminal(item.variable_index as usize))
+                        && item.production(self.syntax_grammar).first_symbol() == Some(*terminal)
+                });
+                if self.terminal_entries.contains(*terminal) && !starts_required_extra {
+                    continue;
+                }
+                let entry = self
+                    .terminal_entries
+                    .get_or_insert_with(*terminal, ParseTableEntry::new);
+                let action = ParseAction::Shift {
+                    state: *state_id,
+                    is_repetition: false,
+                };
+                if !entry.actions.contains(&action) {
+                    entry.actions.push(action);
+                }
             }
 
             for extra_token in &self.syntax_grammar.extra_symbols {

@@ -6170,7 +6170,13 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        for source in ["l#inside#\n", "#before#l#inside#\n#after#"] {
+        for (source, preceding_comments) in [
+            ("l#inside#\n", 0),
+            ("#before#l#inside#\n#after#", 0),
+            ("l#before##inside#\n", 1),
+            ("l#before# #inside#\n", 1),
+            ("l#before##before##inside#\n", 2),
+        ] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
@@ -6180,8 +6186,19 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 .named_children(&mut cursor)
                 .find(|node| node.kind() == "line")
                 .unwrap();
-            let comment = line.named_child(0).unwrap();
+            assert_eq!(line.named_child_count(), preceding_comments + 1);
+            let comment = line
+                .named_children(&mut cursor)
+                .find(|node| !node.is_extra())
+                .unwrap();
             assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), "#inside#");
+            for extra in line
+                .named_children(&mut cursor)
+                .filter(|node| node.is_extra())
+            {
+                assert_eq!(extra.kind(), "comment");
+                assert_eq!(extra.utf8_text(source.as_bytes()).unwrap(), "#before#");
+            }
             assert!(!comment.is_extra());
             for child in root
                 .named_children(&mut cursor)
@@ -6189,6 +6206,43 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
             {
                 assert!(child.is_extra());
             }
+        }
+        let mut source = "l#inside#\n".to_string();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in ["#before#", "", "#before# #before#", ""] {
+            let end = source.find("#inside#").unwrap();
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: end,
+                new_end_byte: 1 + replacement.len(),
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, end),
+                new_end_position: Point::new(0, 1 + replacement.len()),
+            });
+            source.replace_range(1..end, replacement);
+            let incremental = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!fresh.root_node().has_error(), "{source:?}");
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            for tree in [&incremental, &fresh] {
+                let line = tree.root_node().named_child(0).unwrap();
+                let mut cursor = line.walk();
+                let required = line
+                    .named_children(&mut cursor)
+                    .filter(|node| !node.is_extra())
+                    .collect::<Vec<_>>();
+                assert_eq!(required.len(), 1);
+                assert_eq!(
+                    required[0].utf8_text(source.as_bytes()).unwrap(),
+                    "#inside#"
+                );
+                assert_eq!(required[0].start_byte(), 1 + replacement.len());
+                assert_eq!(tree.root_node().end_byte(), source.len());
+            }
+            tree = incremental;
         }
         for source in ["l\n", "l#inside# \n"] {
             let tree = parser.parse(source, None).unwrap();

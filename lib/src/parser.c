@@ -1238,7 +1238,8 @@ static StackVersion ts_parser__reduce(
 
     TSStateId state = ts_stack_state(self->stack, slice_version);
     TSStateId next_state = ts_language_next_state(self->language, state, symbol);
-    if (end_of_non_terminal_extra && next_state == state) {
+    if (end_of_non_terminal_extra) {
+      next_state = state;
       parent.ptr->extra = true;
     }
     if (is_fragile || pop.size > 1 || initial_version_count > 1) {
@@ -1927,11 +1928,6 @@ static bool ts_parser__advance(
       return false;
     }
 
-    // Process each parse action for the current lookahead token in
-    // the current state. If there are multiple actions, then this is
-    // an ambiguous state. REDUCE actions always create a new stack
-    // version, whereas SHIFT actions update the existing stack version
-    // and terminate this loop.
     bool did_reduce = false;
     StackVersion last_reduction_version = STACK_VERSION_NONE;
     for (uint32_t i = 0; i < table_entry.action_count; i++) {
@@ -1949,12 +1945,20 @@ static bool ts_parser__advance(
             LOG("shift state:%u, from_state:%u", next_state, state);
           }
 
+          bool fork = i + 1 < table_entry.action_count;
+          StackVersion shift_version = fork
+            ? ts_stack_copy_version(self->stack, version)
+            : version;
           if (ts_subtree_child_count(lookahead) > 0) {
             ts_parser__breakdown_lookahead(self, &lookahead, state, &self->reusable_node);
-            next_state = ts_language_next_state(self->language, state, ts_subtree_symbol(lookahead));
+            if (ts_subtree_child_count(lookahead) > 0) {
+              next_state = ts_language_next_state(self->language, state, ts_subtree_symbol(lookahead));
+            }
           }
 
-          ts_parser__shift(self, version, next_state, lookahead, action.shift.extra);
+          if (fork) ts_subtree_retain(lookahead);
+          ts_parser__shift(self, shift_version, next_state, lookahead, action.shift.extra);
+          if (fork) break;
           if (did_reuse) reusable_node_advance(&self->reusable_node);
           return true;
         }
