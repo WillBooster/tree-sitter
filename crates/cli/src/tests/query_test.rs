@@ -6427,8 +6427,6 @@ fn test_query_quantified_captures() {
             // This should be identical to the `*` quantifier.
             captures: &[
                 ("comment", "// foo"),
-                ("comment", "// foo"),
-                ("comment", "// foo"),
                 ("comment", "// bar"),
                 ("comment", "// baz"),
             ],
@@ -7624,4 +7622,37 @@ fn test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent() 
             }
         }
     });
+}
+
+#[test]
+fn test_quantified_captures_are_not_repeated_by_interleaved_patterns() {
+    let language = get_language("c");
+    let source = "void main(void) { foo = bar(); foo = baz(); }";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    for pattern in [
+        "(expression_statement)+ @statement",
+        "(call_expression) @call (expression_statement)+ @statement",
+        "(expression_statement)+ @statement (call_expression) @call",
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        let mut cursor = QueryCursor::new();
+        let captures = collect_captures(
+            cursor.captures(&query, tree.root_node(), source.as_bytes()),
+            &query,
+            source,
+        );
+        let expected = if pattern.contains("@call") {
+            vec![
+                ("statement", "foo = bar();"),
+                ("call", "bar()"),
+                ("statement", "foo = baz();"),
+                ("call", "baz()"),
+            ]
+        } else {
+            vec![("statement", "foo = bar();"), ("statement", "foo = baz();")]
+        };
+        assert_eq!(captures, expected, "{pattern}");
+    }
 }
