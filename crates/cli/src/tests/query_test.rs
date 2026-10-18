@@ -3087,6 +3087,162 @@ fn test_query_matches_with_anonymous_tokens() {
 }
 
 #[test]
+fn test_supertype_field_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    let grammar =
+        super::helpers::fixtures::fixtures_dir().join("test_grammars/supertype_fields/grammar.js");
+    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = schema.as_array().unwrap();
+    for (kind, required, multiple, field_type) in [
+        ("list", false, true, "spread"),
+        ("assigned", true, false, "item"),
+        ("restricted", true, false, "spread"),
+        ("wrapped_single", true, false, "item"),
+        ("wrapped_pair", true, true, "item"),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        let field = &node["fields"]["spread"];
+        assert_eq!(field["required"], required, "{kind}");
+        assert_eq!(field["multiple"], multiple, "{kind}");
+        assert_eq!(
+            field["types"],
+            serde_json::json!([{"type": field_type, "named": true}]),
+            "{kind}",
+        );
+    }
+    for (kind, expected) in [
+        (
+            "list",
+            serde_json::json!({"multiple":true,"required":false,"types":[{"type":"name","named":true}]}),
+        ),
+        ("restricted", serde_json::Value::Null),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(node["children"], expected, "{kind}");
+    }
+    for (kind, required) in [("deep_required", true), ("deep_optional", false)] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(
+            node["fields"]["value"],
+            serde_json::json!({
+                "required": required,
+                "multiple": false,
+                "types": [{"type": "name", "named": true}, {"type": "spread", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+    let aliased = entries
+        .iter()
+        .find(|entry| entry["type"] == "aliased")
+        .unwrap();
+    assert!(aliased["fields"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn test_hidden_child_requiredness_in_node_schema() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    std::fs::write(
+        directory.path().join("grammar.js"),
+        r"
+        module.exports = grammar({
+            name: 'hidden_child_cardinality',
+            rules: {
+                source_file: $ => choice($.required_children, $.optional_children),
+                required_children: $ => seq('required', $._statements, 'end'),
+                optional_children: $ => seq('optional', optional($._statements), 'end'),
+                _statements: $ => repeat1(seq($._statement, ';')),
+                _statement: $ => choice($.command, $.other),
+                command: _ => 'c',
+                other: _ => 'o',
+            },
+        });
+    ",
+    )
+    .unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    for (kind, required) in [("required_children", true), ("optional_children", false)] {
+        let node = schema
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["type"] == kind)
+            .unwrap();
+        assert_eq!(
+            node["children"],
+            serde_json::json!({
+                "required": required, "multiple": true,
+                "types": [{"type": "command", "named": true}, {"type": "other", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn test_query_fields_inside_supertypes() {
+    let language = get_test_fixture_language("supertype_fields");
+    let source = "[a] [a, ...b] alias ...c; assign ...d; restrict ...e;";
+    let query = Query::new(
+        &language,
+        r"
+        (list !spread) @plain
+        (list spread: (spread) @spread)
+        (aliased !spread) @aliased
+        (assigned spread: (item) @assigned)
+        (restricted spread: (spread) @restricted)
+        (restricted !spread) @unexpected
+        ",
+    )
+    .unwrap();
+    assert_query_matches(
+        &language,
+        &query,
+        source,
+        &[
+            (0, vec![("plain", "[a]")]),
+            (1, vec![("spread", "...b")]),
+            (2, vec![("aliased", "alias ...c;")]),
+            (3, vec![("assigned", "...d")]),
+            (4, vec![("restricted", "...e")]),
+        ],
+    );
+}
+
+#[test]
 fn test_transparent_supertype_alias_node_schema() {
     for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
         let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
@@ -3521,6 +3677,121 @@ fn test_query_cursor_next_capture_with_point_range() {
 }
 
 #[test]
+fn test_query_matches_with_non_rooted_patterns_outside_cursor_range() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1, 2]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+
+        for pattern in [
+            "(_) @node",
+            "(_)+ @node",
+            "(_)+",
+            "(_)* @node",
+            "(_)? @node",
+            "(_ (ERROR)? @child) @parent",
+            "((_) @first (_)? @second)",
+            "(document)+ @node",
+            "(document)+",
+            "(document)* @node",
+            "(document)? @node",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            for range in [20..30, source.len()..source.len() + 1] {
+                let mut cursor = QueryCursor::new();
+                cursor.set_byte_range(range.clone());
+                assert!(
+                    cursor
+                        .matches(&query, root, source.as_bytes())
+                        .next()
+                        .is_none(),
+                    "pattern {pattern:?}, byte range {range:?}",
+                );
+            }
+            for range in [
+                Point::new(2, 0)..Point::new(3, 0),
+                Point::new(0, source.len())..Point::new(0, source.len() + 1),
+            ] {
+                let mut cursor = QueryCursor::new();
+                cursor.set_point_range(range.clone());
+                assert!(
+                    cursor
+                        .matches(&query, root, source.as_bytes())
+                        .next()
+                        .is_none(),
+                    "pattern {pattern:?}, point range {range:?}",
+                );
+            }
+        }
+
+        let number = root.named_child(0).unwrap().named_child(1).unwrap();
+        assert_eq!(number.kind(), "number");
+        let query = Query::new(&language, "(number)+ @node").unwrap();
+        for range in [0..1, 20..30] {
+            let mut cursor = QueryCursor::new();
+            cursor.set_byte_range(range);
+            assert!(
+                cursor
+                    .matches(&query, number, source.as_bytes())
+                    .next()
+                    .is_none()
+            );
+        }
+        for range in [
+            Point::new(0, 0)..Point::new(0, 1),
+            Point::new(2, 0)..Point::new(3, 0),
+        ] {
+            let mut cursor = QueryCursor::new();
+            cursor.set_point_range(range);
+            assert!(
+                cursor
+                    .matches(&query, number, source.as_bytes())
+                    .next()
+                    .is_none()
+            );
+        }
+    });
+}
+
+#[test]
+fn test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1,\n 2]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+
+        for (pattern, expected) in [
+            (
+                "((number) @left (number) @right)",
+                vec![(0, vec![("left", "1"), ("right", "2")])],
+            ),
+            ("(document)+ @node", vec![(0, vec![("node", source)])]),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            assert!(!query.is_pattern_rooted(0));
+            let mut cursor = QueryCursor::new();
+            let matches = cursor
+                .set_byte_range(2..5)
+                .matches(&query, root, source.as_bytes());
+            assert_eq!(collect_matches(matches, &query, source), expected);
+            cursor.set_byte_range(0..source.len());
+            let matches = cursor
+                .set_point_range(Point::new(0, 2)..Point::new(1, 1))
+                .matches(&query, root, source.as_bytes());
+            assert_eq!(collect_matches(matches, &query, source), expected);
+        }
+    });
+}
+
+#[test]
 fn test_query_matches_with_unrooted_patterns_intersecting_byte_range() {
     allocations::record(|| {
         let language = get_language("rust");
@@ -3849,6 +4120,77 @@ fn test_query_matches_contained_within_range() {
                 source.as_bytes(),
             );
             assert_eq!(collect_matches(matches, &query, &source), &expected_matches);
+        }
+    });
+}
+
+#[test]
+fn test_query_containing_ranges_preserve_non_rooted_wildcard_matches() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let large = format!("[{}0]", "[1,2],".repeat(63));
+        for (source, intersecting, containing, kind, expected_ranges) in [
+            ("[0,1,2]", 0..1, 3..6, "number", [3..4, 5..6]),
+            ("[0,1,2,3]", 7..7, 3..6, "number", [3..4, 5..6]),
+            (
+                "[[1,2],[1,2],[1,2],0]",
+                19..19,
+                2..18,
+                "array",
+                [7..12, 13..18],
+            ),
+            (large.as_str(), 78..78, 2..18, "array", [7..12, 13..18]),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let concrete = format!("(({kind}) @left . ({kind}) @right)");
+            for pattern in [concrete.as_str(), "((_) @left . (_) @right)"] {
+                let query = Query::new(&language, pattern).unwrap();
+                assert!(!query.is_pattern_rooted(0));
+                for points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    if points {
+                        cursor
+                            .set_point_range(
+                                Point::new(0, intersecting.start)..Point::new(0, intersecting.end),
+                            )
+                            .set_containing_point_range(
+                                Point::new(0, containing.start)..Point::new(0, containing.end),
+                            );
+                    } else {
+                        cursor
+                            .set_byte_range(intersecting.clone())
+                            .set_containing_byte_range(containing.clone());
+                    }
+                    let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+                    let mut actual = Vec::new();
+                    while let Some(found) = matches.next() {
+                        actual.push(
+                            found
+                                .captures()
+                                .iter()
+                                .map(|capture| {
+                                    (
+                                        query.capture_names()[capture.index as usize],
+                                        capture.node.byte_range(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                    assert_eq!(
+                        actual,
+                        vec![vec![
+                            ("left", expected_ranges[0].clone()),
+                            ("right", expected_ranges[1].clone()),
+                        ]],
+                        "pattern {pattern:?}, source {source:?}, intersecting {intersecting:?}, containing {containing:?}, points {points}",
+                    );
+                }
+                assert!(query.is_pattern_non_local(0));
+            }
         }
     });
 }
@@ -7237,6 +7579,128 @@ function foo() {
         source_code,
         &[(0, vec![("part", "function foo() {\n    \"bar\"\n}")])],
     );
+}
+
+#[test]
+fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for (pattern, negative_source, positive_source) in [
+            (
+                r"(pair (string) @key . (_ (array)))",
+                r#"{"": [1]}"#,
+                r#"{"": [[]]}"#,
+            ),
+            (
+                r"(pair key: (string) @key value: (_ (array)))",
+                r#"{"": [1]}"#,
+                r#"{"": [[]]}"#,
+            ),
+            (
+                r"(pair (string) @key . (_ (_ (array))))",
+                r#"{"": [[]]}"#,
+                r#"{"": [[[]]]}"#,
+            ),
+            (
+                r"(pair (string) @key . (array (array)))",
+                r#"{"": [1]}"#,
+                r#"{"": [[]]}"#,
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            for source in [
+                r#"{"":true}"#,
+                r#"{"":[]}"#,
+                negative_source,
+                positive_source,
+            ] {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(!tree.root_node().has_error());
+                let expected_captures = if source == positive_source {
+                    vec![("key", "\"\"")]
+                } else {
+                    vec![]
+                };
+                let expected_matches = if source == positive_source {
+                    vec![(0, expected_captures.clone())]
+                } else {
+                    vec![]
+                };
+
+                let mut matches_cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        matches_cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    ),
+                    expected_matches,
+                    "matches for {pattern} on {source}",
+                );
+
+                let mut captures_cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_captures(
+                        captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    ),
+                    expected_captures,
+                    "captures for {pattern} on {source}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn test_query_wildcard_child_guarantees_preserve_concrete_descendants() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let cases: &[(&str, &[(&str, bool)])] = &[
+            (
+                r"(pair (string) @key . (_ (array)))",
+                &[
+                    ("(pair", false),
+                    ("(string", false),
+                    ("(_", false),
+                    ("(array", false),
+                ],
+            ),
+            (
+                r"(pair (string) @key . (_ (_ (array))))",
+                &[
+                    ("(string", false),
+                    ("(_ (_", false),
+                    ("(_ (array", false),
+                    ("(array", false),
+                ],
+            ),
+            (
+                r#"(pair (string) @key . (_ (array "[" "]")))"#,
+                &[
+                    ("(string", false),
+                    ("(_", false),
+                    ("(array", false),
+                    ("\"[\"", true),
+                    ("\"]\"", true),
+                ],
+            ),
+        ];
+        for (pattern, expected_steps) in cases {
+            let query = Query::new(&language, pattern).unwrap();
+            for (step, expected) in *expected_steps {
+                assert_eq!(
+                    query.is_pattern_guaranteed_at_step(pattern.find(step).unwrap()),
+                    *expected,
+                    "guarantee for {step} in {pattern}",
+                );
+            }
+        }
+    });
 }
 
 #[test]

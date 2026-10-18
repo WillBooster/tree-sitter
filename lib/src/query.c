@@ -1666,7 +1666,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (!pattern->is_rooted) {
       QueryStep *step = array_get(&self->steps, pattern->step_index);
-      if (step->symbol != WILDCARD_SYMBOL) {
+      if (step->depth != PATTERN_DONE_MARKER) {
         array_push(&non_rooted_pattern_start_steps, i);
       }
     }
@@ -1697,10 +1697,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
-      }
+      next_step->root_pattern_guaranteed = !is_wildcard;
+      next_step->parent_pattern_guaranteed = !is_wildcard;
       has_children = true;
     }
 
@@ -4242,13 +4240,13 @@ static inline bool ts_query_cursor__advance(
       TSNode node = ts_tree_cursor_current_node(&self->cursor);
       TSNode parent_node = ts_tree_cursor_parent_node(&self->cursor);
 
+      TSNode range_parent = ts_node_is_null(parent_node) ? node : parent_node;
       bool parent_intersects_range =
-        ts_node_is_null(parent_node) ||
         range_intersects(&(TSRange) {
-          .start_point = ts_node_start_point(parent_node),
-          .end_point = ts_node_end_point(parent_node),
-          .start_byte = ts_node_start_byte(parent_node),
-          .end_byte = ts_node_end_byte(parent_node),
+          .start_point = ts_node_start_point(range_parent),
+          .end_point = ts_node_end_point(range_parent),
+          .start_byte = ts_node_start_byte(range_parent),
+          .end_byte = ts_node_end_byte(range_parent),
         }, &self->included_range);
       TSRange node_range = (TSRange) {
         .start_point = ts_node_start_point(node),
