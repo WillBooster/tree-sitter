@@ -8569,6 +8569,15 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
             source,
         );
         assert_eq!(matches, []);
+        cursor.set_containing_byte_range(0..source.len());
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, root, source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![(0, vec![])]
+        );
         query.disable_pattern(0);
         assert_eq!(
             collect_matches(
