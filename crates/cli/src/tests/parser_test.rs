@@ -4822,9 +4822,10 @@ fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
             name: 'nonkeyword_immediate_word', word: $ => $.identifier,
             extras: $ => [$.comment],
             rules: {
-                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt,
+                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt, $.other_keyword_stmt,
                     seq('A', choice($.raw_stmt, $.kw_stmt))),
                 ident_stmt: $ => seq($.identifier, '?'),
+                other_keyword_stmt: _ => seq('do', '?'),
                 raw_stmt: $ => seq(token.nonkeyword(prec(PRECEDENCE, 'if')), $.identifier, '?'),
                 kw_stmt: $ => seq(token(prec(1, 'iffy')), $.exclaim),
                 identifier: _ => WORD,
@@ -4877,8 +4878,27 @@ fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
                         if raw { "fyname" } else { "iffyname" }
                     );
                 }
-                let tree = parser.parse("#name?", None).unwrap();
-                assert_eq!(tree.root_node().has_error(), immediate);
+                for source in std::iter::once("do?").chain((!immediate).then_some("#do?")) {
+                    let tree = parser.parse(source, None).unwrap();
+                    assert!(
+                        !tree.root_node().has_error(),
+                        "{source}: {}",
+                        tree.root_node().to_sexp()
+                    );
+                    let mut cursor = tree.walk();
+                    assert_eq!(
+                        tree.root_node()
+                            .named_children(&mut cursor)
+                            .last()
+                            .unwrap()
+                            .kind(),
+                        "other_keyword_stmt"
+                    );
+                }
+                for source in ["#name?", "#dox?"] {
+                    let tree = parser.parse(source, None).unwrap();
+                    assert_eq!(tree.root_node().has_error(), immediate);
+                }
             }
         }
     }
@@ -4951,6 +4971,50 @@ fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
                     expected,
                     "{expression}"
                 );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nonkeyword_fallback_preserves_other_substituted_keywords() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'mixed_keyword_fallback', word: $ => $.identifier,
+            rules: {
+                document: $ => choice($.list1, $.list2),
+                list1: $ => seq('1', repeat1(choice(alias(token.nonkeyword('do'), $.raw), $.identifier))),
+                list2: $ => seq('2', repeat1(choice('fy', alias(token.nonkeyword(prec(PRECEDENCE, 'fy')), $.raw), seq(alias(token.nonkeyword(prec(PRECEDENCE, 'fy')), $.raw), 'x'), 'do'))),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("mixed-keyword-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for precedence in [-1, 0, 1, 2] {
+        std::fs::write(
+            &path,
+            grammar.replace("PRECEDENCE", &precedence.to_string()),
+        )
+        .unwrap();
+        let json = load_grammar_file(&path, None).unwrap();
+        for mut parser in parsers_for_grammar(&json) {
+            for source in ["2do", "2fydo", "2fyfy", "2 do", "2fy do", "2fyx"] {
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(
+                    !root.has_error(),
+                    "{precedence} {source}: {}",
+                    root.to_sexp()
+                );
+                assert_eq!(root.byte_range(), 0..source.len());
+                assert_eq!(root.named_child(0).unwrap().kind(), "list2");
+            }
+            for source in ["2dox", "2fyxy"] {
+                assert!(parser.parse(source, None).unwrap().root_node().has_error());
             }
         }
     }
