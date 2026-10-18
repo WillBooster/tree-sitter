@@ -518,7 +518,6 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 
 #[test]
 fn test_missing_token_recovery_preserves_following_declarations() {
-    let alias_with_error = ("type_alias_declaration", true);
     let (alias, export) = (
         ("type_alias_declaration", false),
         ("export_statement", false),
@@ -526,7 +525,14 @@ fn test_missing_token_recovery_preserves_following_declarations() {
     let for_in = ("for_in_statement", false);
     let exports = [export; 14];
     let after_invalid_export = [
-        &[export, export, ("expression_statement", true)][..],
+        &[
+            export,
+            export,
+            ("ERROR", true),
+            ("expression_statement", false),
+            ("ERROR", true),
+            ("empty_statement", false),
+        ][..],
         &exports,
     ]
     .concat();
@@ -534,7 +540,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         (
             "typescript/typescript",
             "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[alias_with_error, export, alias][..],
+            &[("labeled_statement", true), export, alias][..],
         ),
         (
             "typescript/typescript",
@@ -554,6 +560,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
             "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
             &[
                 ("ERROR", true),
+                ("expression_statement", false),
                 for_in,
                 for_in,
                 for_in,
@@ -682,7 +689,7 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
             let mut tree = parser.parse(&source, None).unwrap();
             assert!(!tree.root_node().has_error());
             let mut previous_length = 4;
-            for ending in [";", "> {}", ";", "> {}"] {
+            for ending in [";", "> {}", "", "> {}", " {}", "> {}"] {
                 let edit = Edit {
                     position: prefix.len(),
                     deleted_length: previous_length,
@@ -692,7 +699,7 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
                 tree = parser.parse(&source, Some(&tree)).unwrap();
                 let fresh = parser.parse(&source, None).unwrap();
                 assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-                assert_eq!(tree.root_node().has_error(), ending == ";");
+                assert_eq!(tree.root_node().has_error(), ending != "> {}");
                 let root = tree.root_node();
                 let mut cursor = root.walk();
                 let declarations = root

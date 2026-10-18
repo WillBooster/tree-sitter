@@ -296,8 +296,8 @@ static ErrorComparison ts_parser__compare_versions(
   return ErrorComparisonNone;
 }
 
-// An unincorporated recovery can resume inside a construct the input never closes. Its lower
-// error cost must not displace an earlier recovery that already resumed parsing valid code.
+// A recovery can resume inside a construct the input never closes. Until it reaches the
+// root state, its lower error cost must not discard another resumed parse.
 // Descendants of the same recovery still compete normally, including by dynamic precedence.
 static ErrorComparison ts_parser__compare_ranked_versions(
   TSParser *self,
@@ -308,6 +308,10 @@ static ErrorComparison ts_parser__compare_ranked_versions(
   bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
   bool has_unconfirmed_recovery = lower.unconfirmed_recovery &&
     lower.unconfirmed_recovery != higher.unconfirmed_recovery;
+  if (comparison == ErrorComparisonTakeLeft && higher.unconfirmed_recovery &&
+      higher.unconfirmed_recovery != lower.unconfirmed_recovery && !lower.is_in_error) {
+    return ErrorComparisonPreferLeft;
+  }
   if (displaces_higher && (lower.is_unconfirmed || has_unconfirmed_recovery) && !higher.is_in_error) {
     return ErrorComparisonNone;
   }
@@ -354,6 +358,7 @@ static bool ts_parser__better_version_exists(
         !ts_stack_is_active(self->stack, i) ||
         ts_stack_position(self->stack, i).bytes < position.bytes) continue;
     ErrorStatus status_i = ts_parser__version_status(self, i);
+    if (status_i.is_unconfirmed || status_i.unconfirmed_recovery) continue;
     switch (ts_parser__compare_versions(self, status, status_i)) {
       case ErrorComparisonTakeRight:
         return true;
@@ -1289,7 +1294,8 @@ static void ts_parser__confirm_incorporated_recovery(
     if (ts_subtree_missing(child)) {
       ts_stack_set_unconfirmed_missing_token(self->stack, version, false);
     }
-    if (normal_reduction && ts_subtree_is_error(child)) {
+    // A recovered expression can reduce while its enclosing block remains unfinished.
+    if (normal_reduction && ts_stack_state(self->stack, version) == 1 && ts_subtree_error_cost(child) > 0) {
       ts_stack_set_unconfirmed_recovery(self->stack, version, false);
     }
   }
@@ -1559,8 +1565,12 @@ static void ts_parser__recover(
       symbol != self->language->keyword_capture_token ? 2 : 1;
     for (unsigned recovery_pass = 0; recovery_pass < recovery_pass_count && !did_recover; recovery_pass++) {
       TSSymbol recovery_symbol = recovery_pass == 0 ? symbol : self->language->keyword_capture_token;
-      for (unsigned i = 0; i < summary->size; i++) {
+      StackSummaryEntry recovery_entries[2];
+      unsigned recovery_entry_count = 0;
+      bool reached_prefix = false;
+      for (unsigned i = 0; i < summary->size && !reached_prefix; i++) {
         StackSummaryEntry entry = *array_get(summary, i);
+        reached_prefix = entry.has_completed_prefix;
 
         if (entry.state == ERROR_STATE) continue;
         if (entry.position.bytes == position.bytes) continue;
@@ -1593,12 +1603,17 @@ static void ts_parser__recover(
             !ts_language_is_reserved_word(self->language, entry.state, symbol)
           ))
         ) {
-          if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
-            did_recover = true;
-            LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
-            LOG_STACK();
-            break;
-          }
+          entry.depth = depth;
+          recovery_entries[recovery_entry_count == 0 ? 0 : 1] = entry;
+          if (recovery_entry_count < 2) recovery_entry_count++;
+        }
+      }
+      for (unsigned i = 0; i < recovery_entry_count; i++) {
+        StackSummaryEntry entry = recovery_entries[i];
+        if (ts_parser__recover_to_state(self, version, entry.depth, entry.state)) {
+          did_recover = true;
+          LOG("recover_to_previous state:%u, depth:%u", entry.state, entry.depth);
+          LOG_STACK();
         }
       }
     }

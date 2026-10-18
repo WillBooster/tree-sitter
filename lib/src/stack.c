@@ -766,10 +766,20 @@ forceinline StackAction summarize_stack_callback(void *payload, const StackItera
     if (entry.depth < depth) break;
     if (entry.depth == depth && entry.state == state) return StackActionNone;
   }
+  // A completed root-level prefix must not become part of a later recovery error.
+  bool has_completed_prefix = false;
+  for (unsigned i = 0; i < iterator->node->link_count; i++) {
+    StackLink link = iterator->node->links[i];
+    if (link.subtree.ptr && link.node->state == 1 &&
+        ts_subtree_child_count(link.subtree) > 0 && ts_subtree_error_cost(link.subtree) == 0) {
+      has_completed_prefix = true;
+    }
+  }
   array_push(session->summary, ((StackSummaryEntry) {
     .position = iterator->node->position,
     .depth = depth,
     .state = state,
+    .has_completed_prefix = has_completed_prefix,
   }));
   return StackActionNone;
 }

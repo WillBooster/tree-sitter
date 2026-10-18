@@ -24,6 +24,7 @@ typedef struct {
   Length position;
   unsigned depth;
   TSStateId state;
+  bool has_completed_prefix;
 } StackSummaryEntry;
 typedef Array(StackSummaryEntry) StackSummary;
 
