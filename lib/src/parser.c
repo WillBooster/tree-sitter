@@ -495,11 +495,15 @@ static bool ts_parser__external_scanner_scan(
 
 static bool ts_parser__can_reuse_first_leaf(
   TSParser *self,
+  StackVersion version,
   TSStateId state,
   Subtree tree,
   TableEntry *table_entry
 ) {
   TSSymbol leaf_symbol = ts_subtree_leaf_symbol(tree);
+  if (ts_stack_after_extra(self->stack, version) && self->language->symbol_metadata[leaf_symbol].immediate) {
+    return false;
+  }
   TSStateId leaf_state = ts_subtree_leaf_parse_state(tree);
   if (
     leaf_state != state &&
@@ -509,6 +513,12 @@ static bool ts_parser__can_reuse_first_leaf(
 
   TSLexerMode current_lex_mode = ts_language_lex_mode_for_state(self->language, state);
   TSLexerMode leaf_lex_mode = ts_language_lex_mode_for_state(self->language, leaf_state);
+  if (
+    !ts_stack_after_extra(self->stack, version) &&
+    !self->language->symbol_metadata[leaf_symbol].immediate &&
+    (current_lex_mode.lex_state != current_lex_mode.lex_state_after_extra ||
+     current_lex_mode.external_lex_state != current_lex_mode.external_lex_state_after_extra)
+  ) return false;
 
   // At the end of a non-terminal extra node, the lexer normally returns
   // NULL, which indicates that the parser should look for a reduce action
@@ -541,6 +551,11 @@ static Subtree ts_parser__lex(
   if (lex_mode.lex_state == (uint16_t)-1) {
     LOG("no_lookahead_after_non_terminal_extra");
     return NULL_SUBTREE;
+  }
+
+  if (ts_stack_after_extra(self->stack, version)) {
+    lex_mode.lex_state = lex_mode.lex_state_after_extra;
+    lex_mode.external_lex_state = lex_mode.external_lex_state_after_extra;
   }
 
   const Length start_position = ts_stack_position(self->stack, version);
@@ -790,6 +805,9 @@ static Subtree ts_parser__lex(
         }
       }
 
+      if (candidate && ts_stack_after_extra(self->stack, version) && self->language->symbol_metadata[candidate].immediate) {
+        candidate = 0;
+      }
       is_keyword_exact = candidate != 0;
       if (candidate) {
         bool keyword_is_valid =
@@ -882,6 +900,7 @@ static bool ts_parser__eof_token_is_usable(
 
 static Subtree ts_parser__get_cached_token(
   TSParser *self,
+  StackVersion version,
   TSStateId state,
   size_t position,
   Subtree last_external_token,
@@ -893,7 +912,7 @@ static Subtree ts_parser__get_cached_token(
     ts_subtree_external_scanner_state_eq(cache->last_external_token, last_external_token)
   ) {
     ts_language_table_entry(self->language, state, ts_subtree_symbol(cache->token), table_entry);
-    if (ts_parser__can_reuse_first_leaf(self, state, cache->token, table_entry)) {
+    if (ts_parser__can_reuse_first_leaf(self, version, state, cache->token, table_entry)) {
       ts_subtree_retain(cache->token);
       return cache->token;
     }
@@ -1011,7 +1030,7 @@ static Subtree ts_parser__reuse_node(
       ts_subtree_parse_state(result) != *state &&
       reusable_node_descend(&self->reusable_node)
     ) continue;
-    if (!ts_parser__can_reuse_first_leaf(self, *state, result, table_entry)) {
+    if (!ts_parser__can_reuse_first_leaf(self, version, *state, result, table_entry)) {
       LOG(
         "cant_reuse_node symbol:%s, first_leaf_symbol:%s",
         TREE_NAME(result),
@@ -1872,7 +1891,7 @@ static bool ts_parser__advance(
   if (!lookahead.ptr) {
     did_reuse = false;
     lookahead = ts_parser__get_cached_token(
-      self, state, position, last_external_token, &table_entry
+      self, version, state, position, last_external_token, &table_entry
     );
   }
 
