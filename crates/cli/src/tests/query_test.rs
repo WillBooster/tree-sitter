@@ -5725,13 +5725,8 @@ fn test_query_alternative_predicate_prefix() {
         )
         .unwrap();
         let source = r#"
-            DEFUN ("identity", Fidentity, Sidentity, 1, 1, 0,
-                   doc: /* Return the argument unchanged.  */
-                   attributes: const)
-              (Lisp_Object arg)
-            {
-              return arg;
-            }
+            DEFUN("identity", Fidentity, Sidentity, 1, 1, 0);
+            OTHER("ignored");
         "#;
         assert_query_matches(
             &language,
