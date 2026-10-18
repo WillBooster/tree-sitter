@@ -4360,12 +4360,14 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             name: 'nonkeyword_tokens',
             word: $ => $.identifier,
             rules: {
-                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.identifier),
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.identifier),
                 ordinary: $ => seq('N', 'if', $.identifier),
                 raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
                 immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
                 outer_immediate: $ => seq('O', alias(token.immediate(token.nonkeyword(prec(2, 'if'))), $.prefix), $.identifier),
                 precedence: $ => seq('P', choice(seq(alias(token.nonkeyword(prec(2, 'if')), $.prefix), $.identifier), $.identifier)),
+                wrapped: $ => seq('W', alias(token(prec(2, token.nonkeyword('if'))), $.prefix), $.identifier),
+                wrapped_immediate: $ => seq('M', alias(token(prec(2, token.nonkeyword(token.immediate('if')))), $.prefix), $.identifier),
                 identifier: _ => /[a-z]+/,
             },
         });
@@ -4385,6 +4387,8 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             ("Iifx", "immediate"),
             ("Oifx", "outer_immediate"),
             ("Pifx", "precedence"),
+            ("Wifx", "wrapped"),
+            ("Mifx", "wrapped_immediate"),
         ] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
@@ -4406,7 +4410,7 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 );
             }
         }
-        for source in ["N ifx", "I ifx", "O ifx"] {
+        for source in ["N ifx", "I ifx", "O ifx", "M ifx"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
                 tree.root_node().has_error(),
