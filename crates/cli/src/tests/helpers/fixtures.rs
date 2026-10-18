@@ -123,10 +123,19 @@ pub fn get_test_language(name: &str, parser_code: &str, path: Option<&Path>) -> 
 
 #[cfg(feature = "wasm")]
 pub fn get_test_language_wasm(name: &str, parser_code: &str) -> Language {
+    get_test_language_wasm_with_scanner(name, parser_code, None)
+}
+
+#[cfg(feature = "wasm")]
+pub fn get_test_language_wasm_with_scanner(
+    name: &str,
+    parser_code: &str,
+    path: Option<&Path>,
+) -> Language {
     get_test_language_internal(
         name,
         parser_code,
-        None,
+        path,
         tree_sitter::PARSER_HEADER,
         true,
         None,
