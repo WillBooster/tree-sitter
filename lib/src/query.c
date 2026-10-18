@@ -1698,8 +1698,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
         step->contains_captures = true;
       }
       if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
+        next_step->root_pattern_guaranteed = step->symbol != ts_builtin_sym_error;
+        next_step->parent_pattern_guaranteed = step->symbol != ts_builtin_sym_error;
       }
       has_children = true;
     }
