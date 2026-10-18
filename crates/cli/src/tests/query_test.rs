@@ -7997,6 +7997,48 @@ function foo() {
 }
 
 #[test]
+fn test_query_guarantees_account_for_later_matching_siblings() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for value in [r#""a""#, "1", "true", "null", "[1,2]", "{}"] {
+            let source = format!(r#"{{"k":{value}}}"#);
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for pattern in [
+                "(pair (string) @key (_))",
+                "(pair (_) @key (_))",
+                "(pair (string) @key . (_))",
+                "(pair key: (string) @key value: (_))",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let expected = vec![("key", "\"k\"")];
+                let mut cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source,
+                    ),
+                    vec![(0, expected.clone())],
+                    "matches for {pattern} on {source}",
+                );
+                assert_eq!(
+                    collect_captures(
+                        cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source,
+                    ),
+                    expected,
+                    "captures for {pattern} on {source}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
     allocations::record(|| {
         let language = get_language("json");

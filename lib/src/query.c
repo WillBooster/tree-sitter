@@ -250,6 +250,7 @@ typedef struct {
   uint16_t depth;
   uint16_t step_index;
   TSSymbol root_symbol;
+  bool skipped_match;
 } AnalysisState;
 
 typedef Array(AnalysisState *) AnalysisStateSet;
@@ -258,6 +259,7 @@ typedef struct {
   AnalysisStateSet states;
   AnalysisStateSet next_states;
   AnalysisStateSet deeper_states;
+  AnalysisStateSet skipped_states;
   AnalysisStateSet state_pool;
   Array(uint16_t) final_step_indices;
   Array(TSSymbol) finished_parent_symbols;
@@ -1096,7 +1098,7 @@ static inline int analysis_state__compare(
   if ((*self)->depth < (*other)->depth) return 1;
   if ((*self)->step_index < (*other)->step_index) return -1;
   if ((*self)->step_index > (*other)->step_index) return 1;
-  return 0;
+  return (int)(*self)->skipped_match - (int)(*other)->skipped_match;
 }
 
 static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
@@ -1139,7 +1141,7 @@ static inline AnalysisState *analysis_state_pool__clone_or_reuse(
 //
 // The caller retains ownership of the passed-in memory. However, the clone that is created by this
 // function will be managed by the state set.
-static inline void analysis_state_set__insert_sorted(
+static inline bool analysis_state_set__insert_sorted(
   AnalysisStateSet *self,
   AnalysisStateSet *pool,
   AnalysisState *borrowed_item
@@ -1150,6 +1152,7 @@ static inline void analysis_state_set__insert_sorted(
     AnalysisState *new_item = analysis_state_pool__clone_or_reuse(pool, borrowed_item);
     array_insert(self, index, new_item);
   }
+  return !exists;
 }
 
 // Inserts a clone of the passed-in item at the end position of this list.
@@ -1193,6 +1196,7 @@ static inline QueryAnalysis query_analysis__new(void) {
     .states = array_new(),
     .next_states = array_new(),
     .deeper_states = array_new(),
+    .skipped_states = array_new(),
     .state_pool = array_new(),
     .final_step_indices = array_new(),
     .finished_parent_symbols = array_new(),
@@ -1204,6 +1208,7 @@ static inline void query_analysis__delete(QueryAnalysis *self) {
   analysis_state_set__delete(&self->states);
   analysis_state_set__delete(&self->next_states);
   analysis_state_set__delete(&self->deeper_states);
+  analysis_state_set__delete(&self->skipped_states);
   analysis_state_set__delete(&self->state_pool);
   array_delete(&self->final_step_indices);
   array_delete(&self->finished_parent_symbols);
@@ -1325,6 +1330,7 @@ static void ts_query__perform_analysis(
   QueryStepIndexArray transition_steps = array_new();
   array_clear(&analysis->final_step_indices);
   array_clear(&analysis->finished_parent_symbols);
+  analysis_state_set__clear(&analysis->skipped_states, &analysis->state_pool);
 
   for (unsigned iteration = 0;; iteration++) {
     if (iteration == MAX_ANALYSIS_ITERATION_COUNT) {
@@ -1563,6 +1569,14 @@ static void ts_query__perform_analysis(
           // over any descendant steps of the current child.
           const QueryStep *next_step = step;
           if (does_match) {
+            if (next_state.depth > 0) {
+              AnalysisState skipped = next_state;
+              skipped.skipped_match = true;
+              if (analysis_state_set__insert_sorted(&analysis->skipped_states, &analysis->state_pool, &skipped)) {
+                analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &skipped);
+              }
+            }
+            next_state.skipped_match = false;
             for (;;) {
               next_state.step_index++;
               next_step = array_get(&self->steps, next_state.step_index);
@@ -1604,7 +1618,9 @@ static void ts_query__perform_analysis(
               if (did_finish_pattern) {
                 array_insert_sorted_by(&analysis->finished_parent_symbols, , state->root_symbol);
               } else if (next_state.depth == 0) {
-                array_insert_sorted_by(&analysis->final_step_indices, , next_state.step_index);
+                if (!next_state.skipped_match) {
+                  array_insert_sorted_by(&analysis->final_step_indices, , next_state.step_index);
+                }
               } else {
                 analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &next_state);
               }
