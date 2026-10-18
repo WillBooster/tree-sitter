@@ -5366,6 +5366,63 @@ fn test_query_captured_wildcard_parents_preserve_capture_order() {
 }
 
 #[test]
+fn test_query_captured_wildcard_roots_preserve_distinct_matches() {
+    let language = get_language("json");
+    let source = "[1,2,3,[4,5]]";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+
+    for (child, expected) in [
+        (
+            "(number)",
+            vec![
+                (0, vec![("parent", source)]),
+                (0, vec![("parent", "[4,5]")]),
+            ],
+        ),
+        (
+            "(number) @child",
+            vec![
+                (0, vec![("parent", source), ("child", "1")]),
+                (0, vec![("parent", source), ("child", "2")]),
+                (0, vec![("parent", source), ("child", "3")]),
+                (0, vec![("parent", "[4,5]"), ("child", "4")]),
+                (0, vec![("parent", "[4,5]"), ("child", "5")]),
+            ],
+        ),
+    ] {
+        for root in ["_", "array"] {
+            let pattern = format!("({root} {child}) @parent");
+            let query = Query::new(&language, &pattern).unwrap();
+            let mut cursor = QueryCursor::new();
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source
+                ),
+                expected,
+                "{pattern}",
+            );
+            let mut expected_captures = expected
+                .iter()
+                .flat_map(|(_, captures)| captures.iter().copied())
+                .collect::<Vec<_>>();
+            let mut actual_captures = collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            expected_captures.sort_unstable();
+            actual_captures.sort_unstable();
+            assert_eq!(actual_captures, expected_captures, "{pattern}");
+        }
+    }
+}
+
+#[test]
 fn test_query_captures_ordered_by_both_start_and_end_positions() {
     allocations::record(|| {
         let language = get_language("javascript");
