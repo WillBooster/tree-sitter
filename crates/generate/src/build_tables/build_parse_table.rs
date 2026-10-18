@@ -1485,24 +1485,26 @@ impl<'a> ParseTableBuilder<'a> {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .map(|symbol| {
-                let mut parents = self.repetition_parents(
-                    symbol,
-                    items,
-                    auxiliary_context,
-                    contextual_symbols.contains(&symbol),
-                );
-                for (position, preceding) in preceding_symbols.iter().enumerate() {
-                    if *preceding == symbol {
-                        parents.extend(
-                            self.repetition_parents(
-                                symbol,
-                                &BTreeSet::new(),
-                                self.auxiliary_contexts
-                                    .at_position(auxiliary_context, position),
-                                true,
-                            ),
-                        );
-                    }
+                let mut parents = self.repetition_parents(symbol, items, auxiliary_context, false);
+                let positions = preceding_symbols
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, preceding)| (*preceding == symbol).then_some(position))
+                    .chain(items.iter().filter_map(|item| {
+                        (item.variable_index == symbol.index)
+                            .then_some(preceding_symbols.len() - item.step_index as usize)
+                    }))
+                    .collect::<BTreeSet<_>>();
+                for position in positions {
+                    parents.extend(
+                        self.repetition_parents(
+                            symbol,
+                            &BTreeSet::new(),
+                            self.auxiliary_contexts
+                                .at_position(auxiliary_context, position),
+                            true,
+                        ),
+                    );
                 }
                 (
                     self.symbol_name(symbol),
