@@ -776,7 +776,7 @@ fn test_highlighting_combined_injections_in_source_order() {
                 }
             }
             assert_eq!(offset, source.len());
-            assert!(active.is_empty());
+            assert_eq!(active, []);
             assert_eq!(
                 highlighted,
                 vec![
@@ -787,6 +787,59 @@ fn test_highlighting_combined_injections_in_source_order() {
             );
         }
     }
+}
+
+#[test]
+fn test_highlighting_combined_injections_with_equal_ranges() {
+    let language = get_language("javascript");
+    let mut first =
+        HighlightConfiguration::new(language.clone(), "first", "(identifier) @first", "", "")
+            .unwrap();
+    first.configure(&["first", "second"]);
+    let mut second =
+        HighlightConfiguration::new(language.clone(), "second", "(identifier) @second", "", "")
+            .unwrap();
+    second.configure(&["first", "second"]);
+    let config = HighlightConfiguration::new(
+        language,
+        "combined",
+        "",
+        r#"
+        ((string_fragment) @injection.content
+            (#set! injection.language "first")
+            (#set! injection.combined))
+        ((string_fragment) @injection.content
+            (#set! injection.language "second")
+            (#set! injection.combined))
+        "#,
+        "",
+    )
+    .unwrap();
+    let mut highlighter = Highlighter::new();
+    let events = highlighter
+        .highlight(&config, b"'value'", None, None, |name| match name {
+            "first" => Some(&first),
+            "second" => Some(&second),
+            _ => None,
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        matches!(
+            events.as_slice(),
+            [
+                HighlightEvent::Source { start: 0, end: 1 },
+                HighlightEvent::HighlightStart(Highlight(0)),
+                HighlightEvent::HighlightStart(Highlight(1)),
+                HighlightEvent::Source { start: 1, end: 6 },
+                HighlightEvent::HighlightEnd,
+                HighlightEvent::HighlightEnd,
+                HighlightEvent::Source { start: 6, end: 7 },
+            ]
+        ),
+        "{events:?}"
+    );
 }
 
 fn c_string(s: &str) -> CString {

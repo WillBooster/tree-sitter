@@ -329,7 +329,7 @@ impl Highlighter {
             next_event: None,
             last_highlight_range: None,
         };
-        for layer in layers {
+        for layer in layers.into_iter().rev() {
             result.layers.insert(0, layer);
             result.sort_layers();
         }
