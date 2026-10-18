@@ -347,7 +347,9 @@ pub struct ParseState {
     pub nonterminal_entries: NonterminalEntries,
     pub reserved_words: TokenSet,
     pub lex_state_id: LexStateId,
+    pub lex_state_id_after_extra: LexStateId,
     pub external_lex_state_id: LexStateId,
+    pub external_lex_state_id_after_extra: LexStateId,
     pub core_id: u32,
     pub has_eof_gated_reduce: bool,
 }

@@ -338,6 +338,8 @@ impl Generator {
         for state in &mut self.parse_table.states {
             if state.lex_state_id != u32::MAX {
                 state.lex_state_id = lex_inverse[state.lex_state_id as usize];
+                state.lex_state_id_after_extra =
+                    lex_inverse[state.lex_state_id_after_extra as usize];
             }
         }
         Ok(())
@@ -977,6 +979,11 @@ impl Generator {
                         add_line!(self, ".named = false,");
                     }
                 }
+            }
+            if symbol.is_terminal()
+                && self.lexical_grammar.variables[symbol.index as usize].is_immediate
+            {
+                add_line!(self, ".immediate = true,");
             }
             dedent!(self);
             add_line!(self, "}},");
@@ -1955,13 +1962,19 @@ impl Generator {
             if state.is_end_of_non_terminal_extra() {
                 add!(self, "(TSStateId)(-1),");
             } else {
-                add!(self, ".lex_state = {}", state.lex_state_id);
+                add!(
+                    self,
+                    ".lex_state = {}, .lex_state_after_extra = {}",
+                    state.lex_state_id,
+                    state.lex_state_id_after_extra
+                );
 
                 if state.external_lex_state_id > 0 {
                     add!(
                         self,
-                        ", .external_lex_state = {}",
-                        state.external_lex_state_id
+                        ", .external_lex_state = {}, .external_lex_state_after_extra = {}",
+                        state.external_lex_state_id,
+                        state.external_lex_state_id_after_extra
                     );
                 }
 
@@ -1979,31 +1992,33 @@ impl Generator {
     }
 
     fn add_shared_lex_modes(&mut self) -> bool {
-        let mut modes = IndexMap::<(u32, u32, usize), usize, FxBuildHasher>::default();
+        let mut modes = IndexMap::<(u32, u32, u32, u32, usize), usize, FxBuildHasher>::default();
         let mut ids = Vec::new();
         for (id, state) in self.parse_table.states.iter().enumerate() {
             let mode = if state.is_end_of_non_terminal_extra() {
-                (u32::from(u16::MAX), 0, 0)
+                (u32::from(u16::MAX), u32::from(u16::MAX), 0, 0, 0)
             } else {
                 (
                     state.lex_state_id,
+                    state.lex_state_id_after_extra,
                     state.external_lex_state_id,
+                    state.external_lex_state_id_after_extra,
                     self.reserved_word_set_ids_by_parse_state[id],
                 )
             };
             let next = modes.len();
             ids.push(*modes.entry(mode).or_insert(next));
         }
-        if modes.len() * 6 + ids.len() * 2 >= ids.len() * 6 {
+        if modes.len() * 10 + ids.len() * 2 >= ids.len() * 10 {
             return false;
         }
         self.lex_mode_count = modes.len();
         add_line!(self, "static const TSLexerMode ts_lex_modes[] = {{");
         indent!(self);
-        for (&(lex, external, reserved), &id) in &modes {
+        for (&(lex, after_extra, external, external_after_extra, reserved), &id) in &modes {
             add_line!(
                 self,
-                "[{id}] = {{.lex_state = {lex}, .external_lex_state = {external}, .reserved_word_set_id = {reserved}}},"
+                "[{id}] = {{.lex_state = {lex}, .lex_state_after_extra = {after_extra}, .external_lex_state = {external}, .external_lex_state_after_extra = {external_after_extra}, .reserved_word_set_id = {reserved}}},"
             );
         }
         dedent!(self);
