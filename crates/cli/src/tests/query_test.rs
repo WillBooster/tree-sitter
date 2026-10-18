@@ -8048,20 +8048,23 @@ fn test_last_child_anchor_looks_past_hidden_node() {
 
 #[test]
 fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
-    let number = serde_json::json!({"type": "SYMBOL", "name": "number"});
+    let item = serde_json::json!({"type": "CHOICE", "members": [
+        {"type": "SYMBOL", "name": "number"},
+        {"type": "SYMBOL", "name": "word"}
+    ]});
     let documents = [
         (
             "fixed",
-            serde_json::json!({"type": "SEQ", "members": [number, number]}),
+            serde_json::json!({"type": "SEQ", "members": [item, item]}),
         ),
         (
             "optional",
-            serde_json::json!({"type": "SEQ", "members": [number,
-            {"type": "CHOICE", "members": [number, {"type": "BLANK"}]}]}),
+            serde_json::json!({"type": "SEQ", "members": [item,
+            {"type": "CHOICE", "members": [item, {"type": "BLANK"}]}]}),
         ),
         (
             "repeat",
-            serde_json::json!({"type": "REPEAT1", "content": number}),
+            serde_json::json!({"type": "REPEAT1", "content": item}),
         ),
     ];
     let source = "3\n4\n";
@@ -8070,7 +8073,8 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
             "name": format!("nullable_root_{name}"),
             "rules": {
                 "document": document,
-                "number": {"type": "PATTERN", "value": "[0-9]+"}
+                "number": {"type": "PATTERN", "value": "[0-9]+"},
+                "word": {"type": "PATTERN", "value": "[a-z]+"}
             },
             "extras": [{"type": "PATTERN", "value": "\\s"}]
         });
@@ -8219,6 +8223,54 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     ),
                     vec![(0, vec![])],
                 );
+            }
+        }
+
+        for source in if name == "repeat" {
+            ["a b c d e", "1 2 3 4 5"]
+        } else {
+            ["a b", "1 2"]
+        } {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error());
+            for pattern in ["((number) (word))?", "((number) @n (word) @w)?"] {
+                let query = Query::new(&language, pattern).unwrap();
+                for use_points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    assert_eq!(
+                        collect_matches(
+                            cursor.matches(&query, root, source.as_bytes()),
+                            &query,
+                            source
+                        ),
+                        vec![(0, vec![]); root.named_child_count() + 1],
+                        "{name}: {pattern}, source={source:?}",
+                    );
+                    if use_points {
+                        cursor.set_point_range(Point::new(0, 2)..Point::new(0, 3));
+                    } else {
+                        cursor.set_byte_range(2..3);
+                    }
+                    assert_eq!(
+                        collect_matches(
+                            cursor.matches(&query, root, source.as_bytes()),
+                            &query,
+                            source
+                        ),
+                        vec![(0, vec![]); 2],
+                        "{name}: {pattern}, source={source:?}, use_points={use_points}",
+                    );
+                    cursor.set_max_start_depth(Some(0));
+                    assert_eq!(
+                        collect_matches(
+                            cursor.matches(&query, root, source.as_bytes()),
+                            &query,
+                            source
+                        ),
+                        vec![(0, vec![])],
+                    );
+                }
             }
         }
 
