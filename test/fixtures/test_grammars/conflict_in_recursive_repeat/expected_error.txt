@@ -1,0 +1,18 @@
+Unresolved conflict for symbol sequence:
+
+  'B'  '('  _a  •  'x'  …
+
+Possible interpretations:
+
+  1:  'B'  '('  (_a  _a  •  _a)
+  2:  'B'  '('  (_b  _a)  •  'x'  …
+
+Repetition rules used in this conflict:
+
+  _a: used by source
+  _b: used by source
+
+Possible resolutions:
+
+  1:  Specify a left or right associativity in `_b`
+  2:  Add a conflict for these rules: 
