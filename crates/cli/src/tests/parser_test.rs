@@ -1125,6 +1125,59 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
 }
 
 #[test]
+fn test_keyword_lookup_with_overlapping_unicode_word_prefixes() {
+    let keyword = format!("keyword_{}", "x".repeat(80));
+    let grammar = serde_json::json!({
+        "name": "keyword_unicode_word_prefix",
+        "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "[\\u200e ]"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "STRING", "value": keyword},
+                {"type": "SYMBOL", "name": "identifier"}
+            ]}},
+            "identifier": {"type": "PATTERN", "value": "[\\u200e ]*[a-z_]+"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for prefix in ["\u{200e}", " \u{200e}"] {
+            for suffix in ["", " x"] {
+                let source = format!("{prefix}{keyword}{suffix}");
+                let contiguous = parser.parse(&source, None).unwrap();
+                let streamed = parser
+                    .parse_with_options(
+                        &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                let utf16 = parser
+                    .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+                    .unwrap();
+                for tree in [&contiguous, &streamed, &utf16] {
+                    assert!(!tree.root_node().has_error());
+                    assert_eq!(tree.root_node().child(0).unwrap().kind(), keyword);
+                    assert_eq!(
+                        tree.root_node().child_count(),
+                        if suffix.is_empty() { 1 } else { 2 }
+                    );
+                }
+                assert_eq!(
+                    contiguous.root_node().to_sexp(),
+                    streamed.root_node().to_sexp()
+                );
+                assert_eq!(
+                    contiguous.root_node().to_sexp(),
+                    utf16.root_node().to_sexp()
+                );
+                assert_eq!(contiguous.root_node().end_byte(), source.len());
+                assert_eq!(streamed.root_node().end_byte(), source.len());
+            }
+        }
+    }
+}
+
+#[test]
 fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
     for (suffix, extras, separator) in [
         ("ascii", "\\s", " "),
@@ -4392,8 +4445,9 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
         module.exports = grammar({
             name: 'nonkeyword_tokens',
             word: $ => $.identifier,
+            reserved: { global: _ => [], kw: _ => [token.nonkeyword('if'), token.nonkeyword(token.immediate(prec(2, 'if')))] },
             rules: {
-                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.identifier),
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.reserved_raw, $.reserved_immediate, $.identifier),
                 ordinary: $ => seq('N', 'if', $.identifier),
                 raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
                 immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
@@ -4401,6 +4455,8 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 precedence: $ => seq('P', choice(seq(alias(token.nonkeyword(prec(2, 'if')), $.prefix), $.identifier), $.identifier)),
                 wrapped: $ => seq('W', alias(token(prec(2, token.nonkeyword('if'))), $.prefix), $.identifier),
                 wrapped_immediate: $ => seq('M', alias(token(prec(2, token.nonkeyword(token.immediate('if')))), $.prefix), $.identifier),
+                reserved_raw: $ => seq('S', reserved('kw', alias(token.nonkeyword('if'), $.prefix)), $.identifier),
+                reserved_immediate: $ => seq('T', reserved('kw', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix)), $.identifier),
                 identifier: _ => /[a-z]+/,
             },
         });
@@ -4422,6 +4478,8 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             ("Pifx", "precedence"),
             ("Wifx", "wrapped"),
             ("Mifx", "wrapped_immediate"),
+            ("Sifx", "reserved_raw"),
+            ("Tifx", "reserved_immediate"),
         ] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
@@ -4443,7 +4501,7 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 );
             }
         }
-        for source in ["N ifx", "I ifx", "O ifx", "M ifx"] {
+        for source in ["N ifx", "I ifx", "O ifx", "M ifx", "T ifx"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
                 tree.root_node().has_error(),
