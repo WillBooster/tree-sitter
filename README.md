@@ -22,6 +22,18 @@ Releases from v1.0.7 on carry the CLI as `tree-sitter-cli-<platform>.tar.gz` for
 `tree-sitter fuzz` on this runtime without building it. A workflow attaches the archives after a release is published,
 so the newest release lacks them for a while.
 
+## Development setup
+
+Install [mise](https://mise.jdx.dev/getting-started.html) and a C/C++ compiler. From a fresh checkout, run:
+
+```sh
+mise install
+mise exec -- bun install --frozen-lockfile
+mise exec -- bun run verify
+```
+
+Run `mise install` before activating the project environment: it installs the configured tools and trusts the repository configuration.
+
 ## Parser generation and tuning
 
 The CLI generates parsers with shared parse rows, bitmap-ranked sparse lookup, compact metadata, and language ABI
