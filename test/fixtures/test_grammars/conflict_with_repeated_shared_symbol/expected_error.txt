@@ -1,0 +1,20 @@
+Unresolved conflict for symbol sequence:
+
+  source_repeat1  'q'  'x'  •  ';'  …
+
+Possible interpretations:
+
+  1:  source_repeat1  'q'  (source_repeat1  'x')  •  ';'  …
+  2:  source_repeat1  'q'  (third_repeat1  'x'  •  ';')
+
+Repetition rules used in this conflict:
+
+  source_repeat1: used by source, second
+  third_repeat1: used by third
+
+Possible resolutions:
+
+  1:  Specify a higher precedence in `third_repeat1` than in the other rules.
+  2:  Specify a higher precedence in `source_repeat1` than in the other rules.
+  3:  Specify a left or right associativity in `source_repeat1`
+  4:  Add a conflict for these rules: `second`, `third`
