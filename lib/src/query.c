@@ -3187,11 +3187,10 @@ TSQuery *ts_query_new(
         continue;
       }
 
-      // If a pattern has a wildcard at its root, but it has a non-wildcard child,
-      // then optimize the matching process by skipping matching the wildcard.
-      // Later, during the matching process, the query cursor will check that
-      // there is a parent node, and capture it if necessary.
-      if (step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field) {
+      if (
+        step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field &&
+        step->capture_ids[0] == NONE
+      ) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
         if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
           if (step->alternative_index != NONE) {
