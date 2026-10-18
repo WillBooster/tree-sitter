@@ -31,6 +31,48 @@ use crate::{
 };
 
 #[test]
+fn test_identifier_only_grammar_compiles_without_c_warnings() {
+    let grammar = serde_json::json!({
+        "name": "identifier_without_keywords",
+        "word": "identifier",
+        "rules": {
+            "source_file": {"type": "SYMBOL", "name": "identifier"},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("empty-keywords-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path();
+    std::fs::create_dir(path.join("tree_sitter")).unwrap();
+    std::fs::write(path.join("parser.c"), code).unwrap();
+    std::fs::write(
+        path.join("strict_parser.c"),
+        "#if defined(_MSC_VER)\n#pragma warning(error: 4102)\n#else\n#pragma GCC diagnostic error \"-Wunused-label\"\n#endif\n#include \"parser.c\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        path.join("tree_sitter/parser.h"),
+        tree_sitter::PARSER_HEADER,
+    )
+    .unwrap();
+    let mut config = tree_sitter_loader::CompileConfig::new(path, None, None);
+    config.name = name;
+    config.parser_path = path.join("strict_parser.c");
+    let loader = tree_sitter_loader::Loader::with_parser_lib_path(path.to_path_buf());
+    let language = loader.load_language_at_path_with_name(config).unwrap();
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "identifier";
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
+    assert_eq!(tree.root_node().byte_range(), 0..source.len());
+}
+
+#[test]
 fn test_lexer_character_partitions_preserve_token_start_tags() {
     let grammar = serde_json::json!({
         "name": "partitioned_token_starts",
