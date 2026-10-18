@@ -408,35 +408,33 @@ static void ts_lexer__mark_end(TSLexer *_self) {
   self->token_end_position = self->current_position;
 }
 
-static uint32_t ts_lexer__get_column(TSLexer *_self) {
-  Lexer *self = (Lexer *)_self;
-
-  self->did_get_column = true;
-
-  if (!self->column_data.valid) {
-    // Record current position
-    uint32_t goal_byte = self->current_position.bytes;
-
-    // Back up to the beginning of the line
-    Length start_of_col = {
-      self->current_position.bytes - self->current_position.extent.column,
-      {self->current_position.extent.row, 0},
-    };
-    ts_lexer_goto(self, start_of_col);
-    ts_lexer__set_column_data(self, 0);
-    ts_lexer__get_chunk(self);
-
-    if (!ts_lexer__eof(_self)) {
-      ts_lexer__get_lookahead(self);
-
-      // Advance to the recorded position
-      while (self->current_position.bytes < goal_byte && !ts_lexer__eof(_self) && self->chunk) {
-        ts_lexer__do_advance(self, false);
-        if (ts_lexer__eof(_self)) break;
-      }
+static void ts_lexer__replay_columns(Lexer *self) {
+  uint32_t goal_byte = self->current_position.bytes;
+  ColumnData column_data = self->column_data;
+  Length start = {
+    goal_byte - self->current_position.extent.column,
+    {self->current_position.extent.row, 0},
+  };
+  ts_lexer_goto(self, start);
+  ts_lexer__set_column_data(self, 0);
+  self->display_column_data = (ColumnData) {
+    .value = 0,
+    .valid = self->display_tab_width != 0,
+  };
+  ts_lexer__get_chunk(self);
+  if (!ts_lexer__eof(&self->data)) {
+    ts_lexer__get_lookahead(self);
+    while (self->current_position.bytes < goal_byte && !ts_lexer__eof(&self->data) && self->chunk) {
+      ts_lexer__do_advance(self, false);
     }
   }
+  if (column_data.valid) self->column_data = column_data;
+}
 
+static uint32_t ts_lexer__get_column(TSLexer *_self) {
+  Lexer *self = (Lexer *)_self;
+  self->did_get_column = true;
+  if (!self->column_data.valid) ts_lexer__replay_columns(self);
   return self->column_data.value;
 }
 
@@ -445,23 +443,8 @@ static uint32_t ts_lexer__get_display_column(TSLexer *_self, uint32_t tab_width)
   self->did_get_column = true;
   if (!tab_width) tab_width = 1;
   if (!self->display_column_data.valid || self->display_tab_width != tab_width) {
-    uint32_t goal_byte = self->current_position.bytes;
-    ColumnData column_data = self->column_data;
-    Length start = {
-      goal_byte - self->current_position.extent.column,
-      {self->current_position.extent.row, 0},
-    };
-    ts_lexer_goto(self, start);
     self->display_tab_width = tab_width;
-    self->display_column_data = (ColumnData) {.value = 0, .valid = true};
-    ts_lexer__get_chunk(self);
-    if (!ts_lexer__eof(_self)) {
-      ts_lexer__get_lookahead(self);
-      while (self->current_position.bytes < goal_byte && !ts_lexer__eof(_self) && self->chunk) {
-        ts_lexer__do_advance(self, false);
-      }
-    }
-    self->column_data = column_data;
+    ts_lexer__replay_columns(self);
   }
   return self->display_column_data.value;
 }
