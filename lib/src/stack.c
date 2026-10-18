@@ -38,6 +38,7 @@ struct StackNode {
   int dynamic_precedence;
   uint64_t pending_generation;
   bool has_pending;
+  bool after_extra;
 };
 
 typedef struct {
@@ -184,6 +185,7 @@ static StackNode *stack_node_new(
     node->error_cost = previous_node->error_cost;
     node->dynamic_precedence = previous_node->dynamic_precedence;
     node->node_count = previous_node->node_count;
+    node->after_extra = previous_node->after_extra;
 
     if (subtree.ptr && ts_subtree_extra(subtree)) {
       node->pending_generation = previous_node->pending_generation;
@@ -191,6 +193,9 @@ static StackNode *stack_node_new(
     }
 
     if (subtree.ptr) {
+      if (ts_subtree_total_bytes(subtree) || ts_subtree_has_external_tokens(subtree) || ts_subtree_extra(subtree)) {
+        node->after_extra = ts_subtree_trailing_extra(subtree);
+      }
       node->error_cost += ts_subtree_error_cost(subtree);
       node->position = length_add(node->position, ts_subtree_total_size(subtree));
       node->node_count += stack__subtree_node_count(subtree);
@@ -219,6 +224,7 @@ static bool stack__subtree_is_equivalent(Subtree left, Subtree right) {
     ts_subtree_size(left).bytes == ts_subtree_size(right).bytes &&
     ts_subtree_child_count(left) == ts_subtree_child_count(right) &&
     ts_subtree_extra(left) == ts_subtree_extra(right) &&
+    ts_subtree_trailing_extra(left) == ts_subtree_trailing_extra(right) &&
     ts_subtree_external_scanner_state_eq(left, right)
   );
 }
@@ -251,6 +257,7 @@ static void stack_node_add_link(
     bool same_predecessor = existing_link->node == link.node;
     bool mergeable_predecessors = same_predecessor || (
       existing_link->node->state == link.node->state &&
+      existing_link->node->after_extra == link.node->after_extra &&
       existing_link->node->position.bytes == link.node->position.bytes &&
       existing_link->node->error_cost == link.node->error_cost
     );
@@ -582,6 +589,10 @@ Length ts_stack_position(const Stack *self, StackVersion version) {
   return array_get(&self->heads, version)->node->position;
 }
 
+bool ts_stack_after_extra(const Stack *self, StackVersion version) {
+  return array_get(&self->heads, version)->node->after_extra;
+}
+
 Subtree ts_stack_last_external_token(const Stack *self, StackVersion version) {
   return array_get(&self->heads, version)->last_external_token;
 }
@@ -858,6 +869,7 @@ bool ts_stack_can_merge(Stack *self, StackVersion version1, StackVersion version
     head1->status == StackStatusActive &&
     head2->status == StackStatusActive &&
     head1->node->state == head2->node->state &&
+    head1->node->after_extra == head2->node->after_extra &&
     head1->node->position.bytes == head2->node->position.bytes &&
     head1->node->error_cost == head2->node->error_cost &&
     ts_subtree_external_scanner_state_eq(head1->last_external_token, head2->last_external_token);
