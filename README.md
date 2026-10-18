@@ -75,7 +75,7 @@ Tree-sitter is a parser generator tool and an incremental parsing library. It ca
 ## External scanner columns
 
 External scanners can call `lexer->get_display_column(lexer, tab_width)` to obtain the zero-based display column,
-including tabs inside previously lexed tokens. Each Unicode scalar occupies one column; tabs advance to the next
+including tabs inside previously lexed tokens. An initial BOM is an encoding marker of width zero. Every other Unicode scalar occupies one column; tabs advance to the next
 multiple of `tab_width` (zero means one), and LF, CR, and form feed reset the column. Columns saturate at `UINT32_MAX`.
 Only included source ranges contribute. The call preserves the lexer position, lookahead, and token boundaries;
 `get_column` retains its existing scalar-column behavior.

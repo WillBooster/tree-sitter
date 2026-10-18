@@ -270,7 +270,7 @@ static void ts_lexer__advance_display_column(Lexer *self) {
       break;
     }
     default:
-      if (column < UINT32_MAX) column++;
+      if (column < UINT32_MAX && !(self->current_position.bytes == 0 && self->data.lookahead == BYTE_ORDER_MARK)) column++;
       break;
   }
   self->display_column_data.value = column;

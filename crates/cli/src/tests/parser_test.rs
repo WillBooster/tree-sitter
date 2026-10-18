@@ -5038,7 +5038,7 @@ fn test_external_scanner_display_columns() {
             "abc\t$4!",
             "\t\t%4294967295!",
             "λ😀\t#8!",
-            "\u{feff}x#2!",
+            "\u{feff}x#1!",
             "abcdef\r\t#8!",
             "abcdef\u{c}  @2!",
             "before\n\t  #10!",
@@ -5119,23 +5119,34 @@ fn test_external_scanner_display_columns_after_edits_and_range_gaps() {
             incremental.root_node().to_sexp(),
             fresh.root_node().to_sexp()
         );
-        let mut edited = b"abc #4!".to_vec();
-        let mut tree = parser.parse(&edited, None).unwrap();
-        for replacement in [b'\t', b' ', b'\t'] {
-            perform_edit(
-                &mut tree,
-                &mut edited,
-                &Edit {
-                    position: 3,
-                    deleted_length: 1,
-                    inserted_text: vec![replacement],
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&edited, Some(&tree)).unwrap();
-            let fresh = parser.parse(&edited, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            assert_eq!(tree.root_node().has_error(), replacement == b'\t');
+        for (source, position) in [
+            ("abc #4!", 3),
+            ("before\nabc #4!", 10),
+            ("f#1!\nab $3!c#7!", 7),
+        ] {
+            let mut edited = source.as_bytes().to_vec();
+            let mut tree = parser.parse(&edited, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for replacement in *b"\t \t" {
+                perform_edit(
+                    &mut tree,
+                    &mut edited,
+                    &Edit {
+                        position,
+                        deleted_length: 1,
+                        inserted_text: vec![replacement],
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&edited, Some(&tree)).unwrap();
+                let fresh = parser.parse(&edited, None).unwrap();
+                assert_eq!(
+                    tree.root_node().to_sexp(),
+                    fresh.root_node().to_sexp(),
+                    "{edited:?}"
+                );
+                assert_eq!(tree.root_node().has_error(), replacement == b'\t');
+            }
         }
         for source in ["excluded\t#8! gap\tx@9!", "excluded\t#8! gap\n\t#8!"] {
             let first_start = source.find('\t').unwrap();
