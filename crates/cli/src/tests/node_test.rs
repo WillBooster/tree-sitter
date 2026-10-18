@@ -2116,3 +2116,43 @@ fn test_hidden_node_fields_respect_inner_shadowing() {
         );
     }
 }
+
+#[test]
+fn test_field_lookup_resumes_parent_before_shadowed_candidate() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "resumed_field_parent",
+            "rules": {
+                "document": {"type": "SYMBOL", "name": "pair"},
+                "pair": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "_a"},
+                    {"type": "FIELD", "name": "target", "content": {"type": "SYMBOL", "name": "_b"}}
+                ]},
+                "_a": {"type": "CHOICE", "members": [
+                    {"type": "SEQ", "members": [{"type": "STRING", "value": "p"}, {"type": "STRING", "value": "r"}]},
+                    {"type": "SEQ", "members": [{"type": "FIELD", "name": "target", "content": {"type": "STRING", "value": "q"}}, {"type": "STRING", "value": "r"}]}
+                ]},
+                "_b": {"type": "SEQ", "members": [
+                    {"type": "FIELD", "name": "inner", "content": {"type": "STRING", "value": "m"}},
+                    {"type": "STRING", "value": "n"}
+                ]}
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, expected) in [("prmn", 3..4), ("qrmn", 0..1)] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let pair = tree.root_node().child(0).unwrap();
+        let field = pair.child_by_field_name("target");
+        assert_eq!(field.map(|node| node.byte_range()), Some(expected));
+        let mut cursor = pair.walk();
+        assert_eq!(
+            pair.children_by_field_name("target", &mut cursor).next(),
+            field
+        );
+    }
+}
