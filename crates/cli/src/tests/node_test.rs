@@ -1100,6 +1100,44 @@ fn test_root_node_with_offset() {
 }
 
 #[test]
+fn test_missing_node_parent_with_root_offset() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "offset_missing_parent",
+            "rules": {
+                "source": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "a"},
+                    {"type": "SYMBOL", "name": "_bc"},
+                    {"type": "STRING", "value": "d"},
+                    {"type": "STRING", "value": "e"},
+                    {"type": "STRING", "value": "f"}
+                ]},
+                "_bc": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "b"},
+                    {"type": "STRING", "value": "c"}
+                ]}
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse("abdef", None).unwrap();
+    for offset in [0, 5, 100] {
+        let root = tree.root_node_with_offset(offset, Point::new(1, 2));
+        let missing = root.child(2).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(missing.byte_range(), offset + 2..offset + 2);
+        for child in [missing, root.child(3).unwrap()] {
+            let parent = child.parent().unwrap();
+            assert_eq!(parent, tree.root_node());
+            assert_eq!(parent.byte_range(), 0..5);
+        }
+    }
+}
+
+#[test]
 fn test_node_is_extra() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();

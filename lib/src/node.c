@@ -17,7 +17,7 @@ static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
 static TSNode ts_node__first_child_without_fields(TSNode self);
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant);
-static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child);
+static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child, bool check_range);
 
 // TSNode - constructors
 
@@ -633,10 +633,11 @@ TSNode ts_node_parent(TSNode self) {
   TSNode node = ts_tree_root_node(self.tree);
   if (node.id == self.id) return ts_node__null();
   if (ts_node_start_byte(self) == ts_node_end_byte(self)) {
+    // Parent lookup starts at the unshifted root even for nodes obtained with an offset.
     TSTreeCursor cursor = ts_tree_cursor_new(node);
     TSNode parent = ts_node__null();
     if (
-      ts_node__goto_descendant(&cursor, self, NULL)
+      ts_node__goto_descendant(&cursor, self, NULL, false)
       && ts_tree_cursor_goto_parent(&cursor)
     ) {
       parent = ts_tree_cursor_current_node(&cursor);
@@ -698,14 +699,14 @@ static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode desce
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant) {
   TSTreeCursor cursor = ts_tree_cursor_new(self);
   TSNode child = ts_node__null();
-  if (!ts_node__goto_descendant(&cursor, descendant, &child)) {
+  if (!ts_node__goto_descendant(&cursor, descendant, &child, true)) {
     child = ts_node__null();
   }
   ts_tree_cursor_delete(&cursor);
   return child;
 }
 
-static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child) {
+static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child, bool check_range) {
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
   if (!ts_tree_cursor_goto_first_child(cursor)) return false;
@@ -715,8 +716,10 @@ static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TS
     TSNode node = ts_tree_cursor_current_node(cursor);
     if (child && depth == 1) *child = node;
     if (
-      ts_node_start_byte(node) <= start_byte
-      && ts_node_end_byte(node) >= end_byte
+      !check_range || (
+        ts_node_start_byte(node) <= start_byte
+        && ts_node_end_byte(node) >= end_byte
+      )
     ) {
       if (node.id == descendant.id) return true;
       if (ts_tree_cursor_goto_first_child(cursor)) {
