@@ -410,7 +410,6 @@ static void ts_lexer__mark_end(TSLexer *_self) {
 
 static void ts_lexer__replay_columns(Lexer *self) {
   uint32_t goal_byte = self->current_position.bytes;
-  ColumnData column_data = self->column_data;
   Length start = {
     goal_byte - self->current_position.extent.column,
     {self->current_position.extent.row, 0},
@@ -428,7 +427,6 @@ static void ts_lexer__replay_columns(Lexer *self) {
       ts_lexer__do_advance(self, false);
     }
   }
-  if (column_data.valid) self->column_data = column_data;
 }
 
 static uint32_t ts_lexer__get_column(TSLexer *_self) {
@@ -443,8 +441,10 @@ static uint32_t ts_lexer__get_display_column(TSLexer *_self, uint32_t tab_width)
   self->did_get_column = true;
   if (!tab_width) tab_width = 1;
   if (!self->display_column_data.valid || self->display_tab_width != tab_width) {
+    ColumnData column_data = self->column_data;
     self->display_tab_width = tab_width;
     ts_lexer__replay_columns(self);
+    self->column_data = column_data;
   }
   return self->display_column_data.value;
 }

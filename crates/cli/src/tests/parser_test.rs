@@ -5183,6 +5183,39 @@ fn test_external_scanner_display_columns_after_edits_and_range_gaps() {
     }
 }
 
+#[test]
+fn test_display_column_query_preserves_later_scalar_columns() {
+    for mut parser in display_column_parsers() {
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 1,
+                    end_byte: 2,
+                    start_point: Point::new(0, 1),
+                    end_point: Point::new(0, 2),
+                },
+                Range {
+                    start_byte: 3,
+                    end_byte: 7,
+                    start_point: Point::new(1, 0),
+                    end_point: Point::new(1, 4),
+                },
+            ])
+            .unwrap();
+        for source in ["a&\n  2!", "a^\n  2!"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{source:?}: {}",
+                tree.root_node().to_sexp()
+            );
+            let alignment = tree.root_node().named_child(0).unwrap();
+            assert_eq!(alignment.kind(), "alignment");
+            assert_eq!(alignment.byte_range(), 1..6);
+        }
+    }
+}
+
 fn display_column_parsers() -> impl Iterator<Item = Parser> {
     parsers_for_languages([
         get_test_fixture_language("display_column"),
