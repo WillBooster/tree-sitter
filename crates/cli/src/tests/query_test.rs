@@ -3707,6 +3707,32 @@ fn test_query_cursor_next_capture_with_point_range() {
 }
 
 #[test]
+fn test_query_wildcard_parent_with_optional_children() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, child) in [("1", Some("1")), ("true", None)] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for quantifier in ["?", "*"] {
+                let query =
+                    Query::new(&language, &format!("(_ (number){quantifier} @number)")).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_max_start_depth(Some(0));
+                let matches = collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                let captures = child.map(|text| vec![("number", text)]).unwrap_or_default();
+                assert_eq!(matches, vec![(0, captures)], "{source}: {quantifier}");
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_matches_with_non_rooted_patterns_outside_cursor_range() {
     allocations::record(|| {
         let language = get_language("json");
@@ -8316,14 +8342,23 @@ fn test_query_extra_error_parents_do_not_inherit_aliases() {
         &[(0, vec![("parent", "x=1"), ("child", "=")])],
     );
 
-    // Keep empty-match controls independent of captured-root scheduling.
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let wildcard = Query::new(&language, "(_)").unwrap();
+    let mut cursor = QueryCursor::new();
+    let expected = collect_matches(
+        cursor.matches(&wildcard, tree.root_node(), source.as_bytes()),
+        &wildcard,
+        source,
+    );
     for quantifier in ["?", "*"] {
         let query = Query::new(
             &language,
             &format!("(_ (function_definition){quantifier} @child)"),
         )
         .unwrap();
-        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 8]);
+        assert_query_matches(&language, &query, source, &expected);
     }
 }
 

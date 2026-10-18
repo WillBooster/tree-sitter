@@ -3224,7 +3224,10 @@ TSQuery *ts_query_new(
         step->capture_ids[0] == NONE
       ) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
-        if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
+        QueryStepIndexArray child_steps = query_step__initial_indices(self->steps.contents, start_step_index + 1, self->steps.size);
+        bool requires_child = array_get(&self->steps, *array_back(&child_steps))->depth == 1;
+        array_delete(&child_steps);
+        if (requires_child && second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
           if (step->alternative_index != NONE) {
             array_insert_sorted_by(&root_steps, , step->alternative_index);
           }
