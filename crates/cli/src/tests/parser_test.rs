@@ -4863,6 +4863,44 @@ fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
 }
 
 #[test]
+fn test_nonkeyword_reserved_named_declaration() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'reserved_nonkeyword_name', word: $ => $.identifier,
+            reserved: { kw: $ => [$.raw_if] },
+            rules: {
+                source_file: $ => seq('S', reserved('kw', alias($.raw_if, $.prefix)), $.identifier),
+                raw_if: _ => token.nonkeyword('if'),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("reserved-nonkeyword-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    std::fs::write(&path, grammar).unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    for mut parser in parsers_for_grammar(&json) {
+        let tree = parser.parse("Sifname", None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(root.to_sexp(), "(source_file (prefix) (identifier))");
+        assert!(!root.has_error());
+        assert_eq!(root.byte_range(), 0..7);
+        assert_eq!(root.named_child(0).unwrap().byte_range(), 1..3);
+        assert_eq!(root.named_child(1).unwrap().byte_range(), 3..7);
+    }
+    std::fs::write(
+        &path,
+        grammar.replace("kw: $ => [$.raw_if]", "kw: _ => ['if']"),
+    )
+    .unwrap();
+    let json = load_grammar_file(&path, None).unwrap();
+    assert!(generate_parser(&json).is_err());
+}
+
+#[test]
 fn test_nonkeyword_tokens_preserve_context_and_composition() {
     let grammar = r"
         module.exports = grammar({
