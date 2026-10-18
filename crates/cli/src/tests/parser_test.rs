@@ -4402,9 +4402,10 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
         module.exports = grammar({
             name: 'nonkeyword_tokens',
             word: $ => $.identifier,
-            reserved: { global: _ => [], kw: _ => [token.nonkeyword('if'), token.nonkeyword(token.immediate(prec(2, 'if')))] },
+            extras: _ => [/\s/, token(token.nonkeyword('!'))],
+            reserved: { global: _ => [], kw: _ => [token.nonkeyword('if'), token.nonkeyword(token.immediate(prec(2, 'if'))), token(token.nonkeyword('if')), token(token.nonkeyword(token.immediate('if'))), token(prec(2, token.nonkeyword('if')))] },
             rules: {
-                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.reserved_raw, $.reserved_immediate, $.identifier),
+                document: $ => choice($.ordinary, $.raw, $.immediate, $.outer_immediate, $.precedence, $.wrapped, $.wrapped_immediate, $.reserved_raw, $.reserved_immediate, $.reserved_wrapped, $.reserved_wrapped_immediate, $.reserved_wrapped_precedence, $.extra, $.identifier),
                 ordinary: $ => seq('N', 'if', $.identifier),
                 raw: $ => seq('R', alias(token.nonkeyword('if'), $.prefix), $.identifier),
                 immediate: $ => seq('I', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix), $.identifier),
@@ -4414,6 +4415,10 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 wrapped_immediate: $ => seq('M', alias(token(prec(2, token.nonkeyword(token.immediate('if')))), $.prefix), $.identifier),
                 reserved_raw: $ => seq('S', reserved('kw', alias(token.nonkeyword('if'), $.prefix)), $.identifier),
                 reserved_immediate: $ => seq('T', reserved('kw', alias(token.nonkeyword(token.immediate(prec(2, 'if'))), $.prefix)), $.identifier),
+                reserved_wrapped: $ => seq('U', reserved('kw', alias(token(token.nonkeyword('if')), $.prefix)), $.identifier),
+                reserved_wrapped_immediate: $ => seq('V', reserved('kw', alias(token(token.nonkeyword(token.immediate('if'))), $.prefix)), $.identifier),
+                reserved_wrapped_precedence: $ => seq('Z', reserved('kw', alias(token(prec(2, token.nonkeyword('if'))), $.prefix)), $.identifier),
+                extra: _ => seq('E', token(token.nonkeyword('!')), 'x'),
                 identifier: _ => /[a-z]+/,
             },
         });
@@ -4438,6 +4443,10 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             ("M ifx", "wrapped_immediate"),
             ("Sifx", "reserved_raw"),
             ("Tifx", "reserved_immediate"),
+            ("Uifx", "reserved_wrapped"),
+            ("U ifx", "reserved_wrapped"),
+            ("Vifx", "reserved_wrapped_immediate"),
+            ("Z ifx", "reserved_wrapped_precedence"),
         ] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
@@ -4459,7 +4468,12 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
                 );
             }
         }
-        for source in ["N ifx", "I ifx", "O ifx", "T ifx"] {
+        for source in ["E!x", "!E!x!"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), "(document (extra))");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+        for source in ["N ifx", "I ifx", "O ifx", "T ifx", "V ifx", "I!ifx"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
                 tree.root_node().has_error(),
