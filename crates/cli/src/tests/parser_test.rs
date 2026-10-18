@@ -60,6 +60,12 @@ fn test_reserved_named_tokens_shared_with_inline_rules() {
             assert_eq!(root.to_sexp(), "(source_file (identifier))");
             assert_eq!(root.byte_range(), 0..source.len());
             assert_eq!(root.named_child(0).unwrap().byte_range(), 3..7);
+            let reserved = parser.parse("if if", None).unwrap();
+            assert!(
+                reserved.root_node().has_error(),
+                "{wrapper}: {}",
+                reserved.root_node().to_sexp()
+            );
         }
     }
     let invalid = grammar.replace("TOKEN", "token").replace(
