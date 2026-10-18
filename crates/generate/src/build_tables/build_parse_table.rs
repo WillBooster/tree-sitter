@@ -62,13 +62,13 @@ struct AuxiliaryParentSetId(u32);
 /// to its predecessor: the context of the state that first led to it. Successor states
 /// share a context. Conflict resolution uses the nearest entry, including empty sets,
 /// after filtering auxiliary parents, because those entries determine expected-conflict
-/// matching. Diagnostic ownership follows same-context auxiliary parents and resumes
-/// in an older context when a cycle would otherwise hide a source owner.
+/// matching. Diagnostic ownership follows each parent at its item origin and resumes in an
+/// older context when a zero-step cycle would otherwise hide a source owner.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
     entries: Vec<(usize, AuxiliaryParentSetId)>,
-    parent_symbols: Vec<Symbol>,
+    parent_uses: Vec<AuxiliaryParentUse>,
     parent_sets: Vec<AuxiliaryParentSet>,
     parent_set_ids: HashTable<AuxiliaryParentSetId>,
 }
@@ -80,6 +80,12 @@ struct AuxiliaryContext {
     len: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct AuxiliaryParentUse {
+    symbol: Symbol,
+    step_index: u32,
+}
+
 #[derive(Clone, Copy)]
 struct AuxiliaryParentSet {
     start: u32,
@@ -87,15 +93,15 @@ struct AuxiliaryParentSet {
 }
 
 impl AuxiliarySymbolContexts {
-    /// Adds the context of a state whose predecessor is `predecessor`. `uses` pairs each
-    /// auxiliary symbol at a dot in the state with the rule of an item using it. Auxiliary
+    /// Adds the context of a state whose predecessor is `predecessor`. `uses` records each
+    /// auxiliary symbol at a dot, the containing rule, and its consumed steps. Auxiliary
     /// parents must remain available for diagnostic ownership, even when conflict
     /// resolution filters them out and the resulting empty set hides an earlier entry.
     fn push(
         &mut self,
         predecessor: Option<AuxiliaryContextId>,
         path_length: usize,
-        mut uses: Vec<(usize, usize)>,
+        mut uses: Vec<(usize, usize, u32)>,
     ) -> Option<AuxiliaryContextId> {
         if uses.is_empty() {
             return predecessor;
@@ -109,7 +115,10 @@ impl AuxiliarySymbolContexts {
             parents.extend(
                 group
                     .iter()
-                    .map(|&(_, parent)| Symbol::non_terminal(parent)),
+                    .map(|&(_, parent, step_index)| AuxiliaryParentUse {
+                        symbol: Symbol::non_terminal(parent),
+                        step_index,
+                    }),
             );
             let parent_set = self.intern(&parents);
             let symbol = group[0].0;
@@ -127,7 +136,11 @@ impl AuxiliarySymbolContexts {
 
     /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
     /// the path to the state whose context is `context`.
-    fn parents(&self, context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+    fn parents(
+        &self,
+        context: Option<AuxiliaryContextId>,
+        symbol: usize,
+    ) -> Option<&[AuxiliaryParentUse]> {
         self.find_parents(context, symbol, |_| true)
             .map(|(_, parents)| parents)
     }
@@ -136,8 +149,8 @@ impl AuxiliarySymbolContexts {
         &self,
         mut context: Option<AuxiliaryContextId>,
         symbol: usize,
-        accept: impl Fn(&[Symbol]) -> bool,
-    ) -> Option<(AuxiliaryContextId, &[Symbol])> {
+        accept: impl Fn(&[AuxiliaryParentUse]) -> bool,
+    ) -> Option<(AuxiliaryContextId, &[AuxiliaryParentUse])> {
         while let Some(id) = context {
             let AuxiliaryContext {
                 predecessor,
@@ -147,7 +160,7 @@ impl AuxiliarySymbolContexts {
             } = self.contexts[id.index()];
             let entries = &self.entries[start as usize..(start + len) as usize];
             if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
-                let parents = Self::parent_set(&self.parent_symbols, &self.parent_sets, parent_set);
+                let parents = Self::parent_set(&self.parent_uses, &self.parent_sets, parent_set);
                 if accept(parents) {
                     return Some((id, parents));
                 }
@@ -172,9 +185,9 @@ impl AuxiliarySymbolContexts {
         context
     }
 
-    fn intern(&mut self, parents: &[Symbol]) -> AuxiliaryParentSetId {
+    fn intern(&mut self, parents: &[AuxiliaryParentUse]) -> AuxiliaryParentSetId {
         let Self {
-            parent_symbols,
+            parent_uses,
             parent_sets,
             parent_set_ids,
             ..
@@ -182,17 +195,17 @@ impl AuxiliarySymbolContexts {
         let hash = FxBuildHasher.hash_one(parents);
         match parent_set_ids.entry(
             hash,
-            |&id| Self::parent_set(parent_symbols, parent_sets, id) == parents,
-            |&id| FxBuildHasher.hash_one(Self::parent_set(parent_symbols, parent_sets, id)),
+            |&id| Self::parent_set(parent_uses, parent_sets, id) == parents,
+            |&id| FxBuildHasher.hash_one(Self::parent_set(parent_uses, parent_sets, id)),
         ) {
             hash_table::Entry::Occupied(entry) => *entry.get(),
             hash_table::Entry::Vacant(entry) => {
                 let id = AuxiliaryParentSetId(parent_sets.len() as u32);
                 parent_sets.push(AuxiliaryParentSet {
-                    start: parent_symbols.len() as u32,
+                    start: parent_uses.len() as u32,
                     len: parents.len() as u32,
                 });
-                parent_symbols.extend_from_slice(parents);
+                parent_uses.extend_from_slice(parents);
                 entry.insert(id);
                 id
             }
@@ -200,12 +213,12 @@ impl AuxiliarySymbolContexts {
     }
 
     fn parent_set<'a>(
-        parent_symbols: &'a [Symbol],
+        parent_uses: &'a [AuxiliaryParentUse],
         parent_sets: &[AuxiliaryParentSet],
         id: AuxiliaryParentSetId,
-    ) -> &'a [Symbol] {
+    ) -> &'a [AuxiliaryParentUse] {
         let AuxiliaryParentSet { start, len } = parent_sets[id.0 as usize];
-        &parent_symbols[start as usize..(start + len) as usize]
+        &parent_uses[start as usize..(start + len) as usize]
     }
 }
 
@@ -838,7 +851,7 @@ impl<'a> ParseTableBuilder<'a> {
                     // for conflict resolution.
                     if variable.is_auxiliary() {
                         let parent = item.variable_index as usize;
-                        auxiliary_uses.push((non_terminal_index, parent));
+                        auxiliary_uses.push((non_terminal_index, parent, item.step_index));
                     }
 
                     // For most parse items, the symbols associated with the preceding children
@@ -1567,14 +1580,21 @@ impl<'a> ParseTableBuilder<'a> {
             if let Some((id, enclosing)) =
                 self.auxiliary_contexts
                     .find_parents(context, symbol.index as usize, |parents| {
-                        parents.iter().any(|parent| *parent != symbol)
+                        parents.iter().any(|parent| parent.symbol != symbol)
                     })
             {
                 pending.extend(
                     enclosing
                         .iter()
-                        .filter(|parent| **parent != symbol)
-                        .map(|parent| (*parent, Some(id), ancestors.clone())),
+                        .filter(|parent| parent.symbol != symbol)
+                        .map(|parent| {
+                            let origin = self.auxiliary_contexts.at_position(
+                                Some(id),
+                                self.auxiliary_contexts.contexts[id.index()].path_length
+                                    - parent.step_index as usize,
+                            );
+                            (parent.symbol, origin, ancestors.clone())
+                        }),
                 );
             }
             pending.extend(
@@ -1624,6 +1644,7 @@ impl<'a> ParseTableBuilder<'a> {
                         .parents(auxiliary_context, item.variable_index as usize)
                         .unwrap()
                         .iter()
+                        .map(|parent| parent.symbol)
                         .filter(|parent| {
                             !self.syntax_grammar.variables[parent.index as usize].is_auxiliary()
                         }),
