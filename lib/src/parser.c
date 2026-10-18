@@ -1547,6 +1547,8 @@ static bool ts_parser__recover_to_state(
   return previous_version != STACK_VERSION_NONE;
 }
 
+static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state);
+
 static void ts_parser__recover(
   TSParser *self,
   StackVersion version,
@@ -1570,7 +1572,7 @@ static void ts_parser__recover(
       bool reached_prefix = false;
       for (unsigned i = 0; i < summary->size && !reached_prefix; i++) {
         StackSummaryEntry entry = *array_get(summary, i);
-        reached_prefix = entry.has_completed_prefix;
+        reached_prefix = entry.has_root_subtree && ts_parser__state_finishes_root(self, entry.state);
 
         if (entry.state == ERROR_STATE) continue;
         if (entry.position.bytes == position.bytes) continue;
@@ -1734,6 +1736,23 @@ static void ts_parser__recover(
     }
   }
   self->has_error = has_error;
+}
+
+static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state) {
+  TableEntry entry;
+  ts_language_table_entry(self->language, state, ts_builtin_sym_end, &entry);
+  for (unsigned i = 0; i < entry.action_count; i++) {
+    TSParseAction action = entry.actions[i];
+    if (action.type == TSParseActionTypeAccept) return true;
+    if (action.type != TSParseActionTypeReduce || action.reduce.child_count != 1) continue;
+    TSStateId next_state = ts_language_next_state(self->language, 1, action.reduce.symbol);
+    TableEntry next_entry;
+    ts_language_table_entry(self->language, next_state, ts_builtin_sym_end, &next_entry);
+    for (unsigned j = 0; j < next_entry.action_count; j++) {
+      if (next_entry.actions[j].type == TSParseActionTypeAccept) return true;
+    }
+  }
+  return false;
 }
 
 static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state);
