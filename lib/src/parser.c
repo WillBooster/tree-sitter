@@ -123,6 +123,7 @@ typedef struct {
   int dynamic_precedence;
   bool is_in_error;
   bool is_unconfirmed;
+  uint64_t unconfirmed_recovery;
 } ErrorStatus;
 
 typedef enum {
@@ -295,11 +296,9 @@ static ErrorComparison ts_parser__compare_versions(
   return ErrorComparisonNone;
 }
 
-// Compares two stack versions, where `higher` is ranked above `lower`. A version whose fallback
-// missing token neither a reduction nor an ERROR has incorporated yet can still turn out to have
-// opened a construct that the input never closes. Until then it neither removes nor overtakes a
-// higher-ranked version that has resumed parsing, or the construct can absorb the following valid
-// code.
+// An unincorporated recovery can resume inside a construct the input never closes. Its lower
+// error cost must not displace an earlier recovery that already resumed parsing valid code.
+// Descendants of the same recovery still compete normally, including by dynamic precedence.
 static ErrorComparison ts_parser__compare_ranked_versions(
   TSParser *self,
   ErrorStatus higher,
@@ -307,7 +306,11 @@ static ErrorComparison ts_parser__compare_ranked_versions(
 ) {
   ErrorComparison comparison = ts_parser__compare_versions(self, higher, lower);
   bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
-  if (displaces_higher && lower.is_unconfirmed && !higher.is_in_error) return ErrorComparisonNone;
+  bool has_unconfirmed_recovery = lower.unconfirmed_recovery &&
+    lower.unconfirmed_recovery != higher.unconfirmed_recovery;
+  if (displaces_higher && (lower.is_unconfirmed || has_unconfirmed_recovery) && !higher.is_in_error) {
+    return ErrorComparisonNone;
+  }
   return comparison;
 }
 
@@ -324,6 +327,7 @@ static ErrorStatus ts_parser__version_status(
     .dynamic_precedence = ts_stack_dynamic_precedence(self->stack, version),
     .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE,
     .is_unconfirmed = ts_stack_has_unconfirmed_missing_token(self->stack, version),
+    .unconfirmed_recovery = ts_stack_unconfirmed_recovery(self->stack, version),
   };
 }
 
@@ -1152,7 +1156,7 @@ static void ts_parser__shift(
   }
 }
 
-static void ts_parser__clear_incorporated_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children);
+static void ts_parser__confirm_incorporated_recovery(TSParser *self, StackVersion version, const SubtreeArray *children, bool normal_reduction);
 
 static StackVersion ts_parser__reduce(
   TSParser *self,
@@ -1201,7 +1205,7 @@ static StackVersion ts_parser__reduce(
     // created and pushed.
     SubtreeArray children = slice.subtrees;
     ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
-    ts_parser__clear_incorporated_missing_token(self, slice_version, &children);
+    ts_parser__confirm_incorporated_recovery(self, slice_version, &children, true);
 
     MutableSubtree parent = ts_subtree_new_node(
       symbol, &children, production_id, self->language
@@ -1272,12 +1276,21 @@ static StackVersion ts_parser__reduce(
     : STACK_VERSION_NONE;
 }
 
-static void ts_parser__clear_incorporated_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children) {
-  if (!ts_stack_has_unconfirmed_missing_token(self->stack, version)) return;
+static void ts_parser__confirm_incorporated_recovery(
+  TSParser *self,
+  StackVersion version,
+  const SubtreeArray *children,
+  bool normal_reduction
+) {
+  if (!ts_stack_has_unconfirmed_missing_token(self->stack, version) &&
+      !ts_stack_unconfirmed_recovery(self->stack, version)) return;
   for (uint32_t i = 0; i < children->size; i++) {
-    if (ts_subtree_missing(*array_get(children, i))) {
+    Subtree child = *array_get(children, i);
+    if (ts_subtree_missing(child)) {
       ts_stack_set_unconfirmed_missing_token(self->stack, version, false);
-      return;
+    }
+    if (normal_reduction && ts_subtree_is_error(child)) {
+      ts_stack_set_unconfirmed_recovery(self->stack, version, false);
     }
   }
 }
@@ -1507,11 +1520,12 @@ static bool ts_parser__recover_to_state(
     // it would change how ambiguities in the unrelated code that follows are resolved, while the
     // changed ranges of an incremental parse assume that a subtree's content depends only on its
     // symbol, parse state, and text.
-    ts_parser__clear_incorporated_missing_token(self, slice.version, &slice.subtrees);
+    ts_parser__confirm_incorporated_recovery(self, slice.version, &slice.subtrees, false);
 
     if (slice.subtrees.size > 0) {
       Subtree error = ts_subtree_new_error_node(&slice.subtrees, true, self->language);
       ts_stack_push(self->stack, slice.version, error, false, goal_state);
+      ts_stack_set_unconfirmed_recovery(self->stack, slice.version, true);
     } else {
       array_delete(&slice.subtrees);
     }

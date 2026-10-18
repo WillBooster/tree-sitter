@@ -524,9 +524,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         ("export_statement", false),
     );
     let for_in = ("for_in_statement", false);
-    let exports = [export; 7];
-    // Recovery absorbs the seven exports right after `export[` into the erroneous statement; the
-    // seven exports after the blank line must stay separate.
+    let exports = [export; 14];
     let after_invalid_export = [
         &[export, export, ("expression_statement", true)][..],
         &exports,
@@ -541,7 +539,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         (
             "typescript/typescript",
             "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[alias_with_error, export, alias],
+            &[("labeled_statement", true), export, alias],
         ),
         (
             "typescript/typescript",
@@ -664,6 +662,71 @@ fn test_incremental_parse_restores_missing_opening_delimiter() {
     perform_edit(&mut tree, &mut source, &undo).unwrap();
     let restored = parser.parse(&source, Some(&tree)).unwrap();
     assert_eq!(restored.root_node().to_sexp(), expected);
+}
+
+#[test]
+fn test_recovery_preserves_declarations_after_incomplete_generics() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for following in [
+            "export function f() {}\nconst sentinel = 1;",
+            "function f() {}\nconst sentinel = 1;",
+            "const sentinel = 1;",
+        ] {
+            let prefix = "class C implements A, number<B";
+            let mut source = format!("{prefix}> {{}}\n{following}").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let mut previous_length = 4;
+            for ending in [";", "> {}", ";", "> {}"] {
+                let edit = Edit {
+                    position: prefix.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                };
+                perform_edit(&mut tree, &mut source, &edit).unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(tree.root_node().has_error(), ending == ";");
+                let root = tree.root_node();
+                let mut cursor = root.walk();
+                let declarations = root
+                    .named_children(&mut cursor)
+                    .filter(|node| {
+                        matches!(
+                            node.kind(),
+                            "export_statement" | "function_declaration" | "lexical_declaration"
+                        )
+                    })
+                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    declarations,
+                    following
+                        .lines()
+                        .map(|line| (line, false))
+                        .collect::<Vec<_>>(),
+                    "{}",
+                    root.to_sexp()
+                );
+                previous_length = ending.len();
+            }
+        }
+        for name in ["const", "function", "export"] {
+            let source = format!("class C implements Box<{name}> {{}}");
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
 }
 
 #[test]
