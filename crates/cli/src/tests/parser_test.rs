@@ -4500,11 +4500,20 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
         ("if", "iffy", "iffyname"),
         ("if", long_keyword.as_str(), long_input.as_str()),
     ] {
+        let (keyword_expression, keyword_definition) = if keyword == long_keyword {
+            (
+                "$.long_keyword".to_owned(),
+                format!("long_keyword: _ => '{keyword}',"),
+            )
+        } else {
+            (format!("'{keyword}'"), String::new())
+        };
         let grammar = format!(
             r"module.exports = grammar({{
             name: 'nonkeyword_shared_state', word: $ => $.identifier, extras: _ => [/[\s\u2003]/],
             rules: {{ source_file: $ => choice($.ordinary, $.raw),
-                ordinary: $ => seq('{keyword}', $.identifier),
+                ordinary: $ => seq({keyword_expression}, $.identifier),
+                {keyword_definition}
                 raw: $ => seq(token.nonkeyword('{raw}'), $.identifier),
                 identifier: _ => /[a-zé]+/ }}
         }});"
