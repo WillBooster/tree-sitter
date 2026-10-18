@@ -7322,6 +7322,39 @@ fn test_query_max_start_depth_uses_visible_pattern_roots() {
 }
 
 #[test]
+fn test_query_max_start_depth_with_mixed_root_patterns() {
+    let language = get_language("json");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "[true]";
+    let tree = parser.parse(source, None).unwrap();
+    for (symbol, depth) in [("array", 0), ("true", 1)] {
+        for root_capture in ["", " @root"] {
+            let wildcard = format!("(_ ({symbol}) @child){root_capture}");
+            let ordinary = format!("({symbol}) @ordinary");
+            for (pattern, expected_index) in [
+                (format!("{wildcard}\n{ordinary}"), 0),
+                (format!("{ordinary}\n{wildcard}"), 1),
+            ] {
+                let query = Query::new(&language, &pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_max_start_depth(Some(depth));
+                let matches = collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(
+                    matches.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+                    vec![expected_index],
+                    "{pattern}, depth={depth}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_query_error_does_not_oob() {
     let language = get_language("javascript");
 
