@@ -4470,9 +4470,6 @@ static inline bool ts_query_cursor__advance(
             }
           }
 
-          // If this pattern started with a wildcard, such that the pattern map
-          // actually points to the *second* step of the pattern, then check
-          // that the node has a parent, and capture the parent node if necessary.
           if (state->needs_parent) {
             TSNode parent = ts_tree_cursor_parent_node(&self->cursor);
             if (
@@ -4488,23 +4485,6 @@ static inline bool ts_query_cursor__advance(
               state->dead = true;
             } else {
               state->needs_parent = false;
-              QueryStep *skipped_wildcard_step = step;
-              do {
-                skipped_wildcard_step--;
-              } while (
-                skipped_wildcard_step->is_dead_end ||
-                skipped_wildcard_step->is_pass_through ||
-                skipped_wildcard_step->depth > 0
-              );
-              if (skipped_wildcard_step->capture_ids[0] != NONE) {
-                LOG("  capture wildcard parent\n");
-                ts_query_cursor__capture(
-                  self,
-                  state,
-                  skipped_wildcard_step,
-                  parent
-                );
-              }
             }
           }
 
