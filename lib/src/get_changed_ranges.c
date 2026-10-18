@@ -376,6 +376,7 @@ static IteratorComparison iterator_compare(
     ((old_state == ERROR_STATE) != (new_state == ERROR_STATE)) ||
     old_error_cost != new_error_cost ||
     old_has_external_tokens != new_has_external_tokens ||
+    (old_has_external_tokens && old_tree.ptr != new_tree.ptr) ||
     ts_subtree_has_changes(old_tree) ||
     (
       old_has_external_tokens &&
