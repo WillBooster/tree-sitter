@@ -1928,3 +1928,191 @@ fn parse_json_example() -> Tree {
     parser.set_language(&get_language("json")).unwrap();
     parser.parse(JSON_EXAMPLE, None).unwrap()
 }
+
+#[test]
+fn test_deeply_nested_node_searches_do_not_overflow_stack() {
+    let depth = 100_000;
+    let mut tree = parse_deeply_nested_tree(depth);
+    collapse_deeply_nested_tree(&mut tree, depth);
+    let root = tree.root_node();
+    let expression = root.named_child(0).unwrap();
+    let mut descendant = expression;
+    while let Some(child) = descendant.named_child(0) {
+        descendant = child;
+    }
+    let terminator = root.child(root.child_count() - 1).unwrap();
+
+    assert_eq!(root.child_with_descendant(descendant), Some(expression));
+    assert_eq!(terminator.kind(), "!");
+    assert_eq!(terminator.prev_sibling(), Some(expression));
+}
+
+#[test]
+fn test_deeply_nested_field_search_does_not_overflow_stack() {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "deeply_nested_fields",
+            "rules": {
+                "document": {"type": "SYMBOL", "name": "_nested"},
+                "_shadowed": {
+                    "type": "FIELD",
+                    "name": "inner",
+                    "content": {"type": "STRING", "value": "s"}
+                },
+                "_nested": {
+                    "type": "CHOICE",
+                    "members": [
+                        {"type": "STRING", "value": "y"},
+                        {
+                            "type": "FIELD",
+                            "name": "target",
+                            "content": {"type": "SYMBOL", "name": "_shadowed"}
+                        },
+                        {
+                            "type": "FIELD",
+                            "name": "target",
+                            "content": {"type": "STRING", "value": "x"}
+                        },
+                        {
+                            "type": "SEQ",
+                            "members": [
+                                {"type": "STRING", "value": "("},
+                                {"type": "SYMBOL", "name": "_nested"},
+                                {"type": "STRING", "value": ")"},
+                                {
+                                    "type": "FIELD",
+                                    "name": "target",
+                                    "content": {"type": "STRING", "value": "z"}
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    let depth = 100_000;
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (leaf, expected_offset, expected_text) in [
+        ("x", depth, "x"),
+        ("y", depth + 2, "z"),
+        ("s", depth + 2, "z"),
+    ] {
+        let source = "(".repeat(depth) + leaf + &")z".repeat(depth);
+        let tree = parser.parse(source.as_bytes(), None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let target = tree.root_node().child_by_field_name("target").unwrap();
+        assert_eq!(target.byte_range(), expected_offset..expected_offset + 1);
+        assert_eq!(&source[target.byte_range()], expected_text);
+    }
+}
+
+fn parse_deeply_nested_tree(depth: usize) -> Tree {
+    let (parser_name, parser_code) = generate_parser(
+        r#"{
+            "name": "deeply_nested",
+            "rules": {
+                "document": {"type": "SEQ", "members": [{"type": "SYMBOL", "name": "expression"}, {"type": "STRING", "value": "!"}]},
+                "expression": {
+                    "type": "CHOICE",
+                    "members": [
+                        {"type": "STRING", "value": "x"},
+                        {
+                            "type": "SEQ",
+                            "members": [
+                                {"type": "STRING", "value": "("},
+                                {"type": "SYMBOL", "name": "expression"},
+                                {"type": "STRING", "value": ")"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    let language = get_test_language(&parser_name, &parser_code, None);
+    let source = "(".repeat(depth) + "x" + &")".repeat(depth) + "!";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    parser.parse(source, None).unwrap()
+}
+
+fn collapse_deeply_nested_tree(tree: &mut Tree, depth: usize) {
+    let old_end_byte = depth * 2 + 2;
+    tree.edit(&InputEdit {
+        start_byte: 0,
+        old_end_byte,
+        new_end_byte: 0,
+        start_position: Point::new(0, 0),
+        old_end_position: Point::new(0, old_end_byte),
+        new_end_position: Point::new(0, 0),
+    });
+}
+
+#[test]
+fn test_hidden_node_fields_respect_inner_shadowing() {
+    use serde_json::json;
+
+    for (case, tail, source, expected_outer) in [
+        ("shadow", None, "a", None),
+        (
+            "remaining",
+            Some(json!({"type":"SYMBOL", "name":"word"})),
+            "ab",
+            Some("b"),
+        ),
+        (
+            "shadowed_tail",
+            Some(
+                json!({"type":"FIELD", "name":"other", "content":{"type":"SYMBOL", "name":"word"}}),
+            ),
+            "ab",
+            None,
+        ),
+    ] {
+        let mut members = vec![
+            json!({"type":"FIELD", "name":"inner", "content":{"type":"SYMBOL", "name":"word"}}),
+        ];
+        members.extend(tail);
+        let grammar = json!({
+            "name": format!("hidden_fields_{case}"),
+            "rules": {
+                "root": {"type":"FIELD", "name":"outer", "content":{"type":"SYMBOL", "name":"_hidden"}},
+                "_hidden": {"type":"SYMBOL", "name":"_nested"},
+                "_nested": {"type":"SEQ", "members":members},
+                "word": {"type":"PATTERN", "value":"[a-z]"}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&name, &code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.field_name_for_child(0), Some("inner"));
+        assert_eq!(
+            root.child_by_field_name("inner")
+                .unwrap()
+                .utf8_text(source.as_bytes())
+                .unwrap(),
+            "a"
+        );
+        let outer = root.child_by_field_name("outer");
+        assert_eq!(
+            outer.map(|node| node.utf8_text(source.as_bytes()).unwrap()),
+            expected_outer,
+            "{case}"
+        );
+        let mut cursor = root.walk();
+        assert_eq!(
+            root.children_by_field_name("outer", &mut cursor).next(),
+            outer,
+            "{case}"
+        );
+    }
+}
