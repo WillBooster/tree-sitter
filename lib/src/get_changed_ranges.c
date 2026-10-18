@@ -58,6 +58,9 @@ void ts_range_array_get_changed_ranges(
     const TSRange *old_range = &old_ranges[old_index];
     const TSRange *new_range = &new_ranges[new_index];
 
+    bool differs = in_old_range != in_new_range ||
+      (old_index == old_range_count) != (new_index == new_range_count);
+
     Length next_old_position;
     if (in_old_range) {
       next_old_position = (Length) {old_range->end_byte, old_range->end_point};
@@ -76,30 +79,21 @@ void ts_range_array_get_changed_ranges(
       next_new_position = LENGTH_MAX;
     }
 
-    if (next_old_position.bytes < next_new_position.bytes) {
-      if (in_old_range != in_new_range) {
-        ts_range_array_add(differences, current_position, next_old_position);
-      }
-      if (in_old_range) old_index++;
-      current_position = next_old_position;
-      in_old_range = !in_old_range;
-    } else if (next_new_position.bytes < next_old_position.bytes) {
-      if (in_old_range != in_new_range) {
-        ts_range_array_add(differences, current_position, next_new_position);
-      }
-      if (in_new_range) new_index++;
-      current_position = next_new_position;
-      in_new_range = !in_new_range;
-    } else {
-      if (in_old_range != in_new_range) {
-        ts_range_array_add(differences, current_position, next_new_position);
-      }
-      if (in_old_range) old_index++;
-      if (in_new_range) new_index++;
-      in_old_range = !in_old_range;
-      in_new_range = !in_new_range;
-      current_position = next_new_position;
+    Length next_position = next_old_position.bytes < next_new_position.bytes
+      ? next_old_position
+      : next_new_position;
+    if (differs) {
+      ts_range_array_add(differences, current_position, next_position);
     }
+    if (next_old_position.bytes <= next_new_position.bytes && old_index < old_range_count) {
+      if (in_old_range) old_index++;
+      in_old_range = !in_old_range;
+    }
+    if (next_new_position.bytes <= next_old_position.bytes && new_index < new_range_count) {
+      if (in_new_range) new_index++;
+      in_new_range = !in_new_range;
+    }
+    current_position = next_position;
   }
 }
 

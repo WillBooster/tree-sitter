@@ -221,6 +221,7 @@ Subtree ts_subtree_new_leaf(
       .is_missing = false,
       .is_keyword = is_keyword,
       .first_leaf_is_keyword = is_keyword_exact,
+      .trailing_extra = false,
       {{.first_leaf = {.symbol = 0, .parse_state = 0}}}
     };
     return (Subtree) {.ptr = data};
@@ -361,6 +362,7 @@ void ts_subtree_summarize_children(
   self.ptr->repeat_depth = 0;
   self.ptr->visible_descendant_count = 0;
   self.ptr->has_external_tokens = false;
+  self.ptr->trailing_extra = false;
   self.ptr->depends_on_column = false;
   self.ptr->has_external_scanner_state_change = false;
   self.ptr->dynamic_precedence = 0;
@@ -446,6 +448,9 @@ void ts_subtree_summarize_children(
     }
 
     if (ts_subtree_has_external_tokens(child)) self.ptr->has_external_tokens = true;
+    if (ts_subtree_total_bytes(child) || ts_subtree_has_external_tokens(child) || ts_subtree_extra(child)) {
+      self.ptr->trailing_extra = ts_subtree_trailing_extra(child);
+    }
 
     if (ts_subtree_is_error(child)) {
       self.ptr->fragile_left = self.ptr->fragile_right = true;
@@ -524,6 +529,7 @@ MutableSubtree ts_subtree_new_node(
     .fragile_right = fragile,
     .is_keyword = false,
     .first_leaf_is_keyword = false,
+    .trailing_extra = false,
     {{
       .visible_descendant_count = 0,
       .production_id = production_id,
@@ -734,6 +740,7 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         data->is_missing = result.data.is_missing;
         data->is_keyword = result.data.is_keyword;
         data->first_leaf_is_keyword = result.data.first_leaf_is_keyword;
+        data->trailing_extra = false;
         result.ptr = data;
       }
     } else {

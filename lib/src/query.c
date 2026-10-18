@@ -1670,7 +1670,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (!pattern->is_rooted) {
       QueryStep *step = array_get(&self->steps, pattern->step_index);
-      if (step->symbol != WILDCARD_SYMBOL) {
+      if (step->depth != PATTERN_DONE_MARKER) {
         array_push(&non_rooted_pattern_start_steps, i);
       }
     }
@@ -1701,10 +1701,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
-      }
+      next_step->root_pattern_guaranteed = !is_wildcard;
+      next_step->parent_pattern_guaranteed = !is_wildcard;
       has_children = true;
     }
 
@@ -3890,7 +3888,7 @@ static void ts_query_cursor__add_state(
   const PatternEntry *pattern
 ) {
   QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-  uint32_t start_depth = self->depth - step->depth;
+  uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
 
   // Keep the states array in ascending order of start_depth and pattern_index,
   // so that it can be processed more efficiently elsewhere. Usually, there is
@@ -4059,8 +4057,6 @@ static inline bool ts_query_cursor__should_descend(
   bool node_intersects_range
 ) {
 
-  // Patterns with a skipped wildcard root start matching at its children,
-  // one visible level below the allowed root depth.
   bool depth_allows_children = self->depth < self->max_start_depth || (
     self->depth == self->max_start_depth && self->query->has_skipped_root
   );
@@ -4242,7 +4238,8 @@ static inline bool ts_query_cursor__advance(
           break;
         default:
           if (ts_tree_cursor_goto_parent(&self->cursor)) {
-            self->depth--;
+            if (self->on_visible_node) self->depth--;
+            self->on_visible_node = true;
           } else {
             LOG("halt at root\n");
             self->halted = true;
@@ -4255,13 +4252,13 @@ static inline bool ts_query_cursor__advance(
       TSNode node = ts_tree_cursor_current_node(&self->cursor);
       TSNode parent_node = ts_tree_cursor_parent_node(&self->cursor);
 
+      TSNode range_parent = ts_node_is_null(parent_node) ? node : parent_node;
       bool parent_intersects_range =
-        ts_node_is_null(parent_node) ||
         range_intersects(&(TSRange) {
-          .start_point = ts_node_start_point(parent_node),
-          .end_point = ts_node_end_point(parent_node),
-          .start_byte = ts_node_start_byte(parent_node),
-          .end_byte = ts_node_end_byte(parent_node),
+          .start_point = ts_node_start_point(range_parent),
+          .end_point = ts_node_end_point(range_parent),
+          .start_byte = ts_node_start_byte(range_parent),
+          .end_byte = ts_node_end_byte(range_parent),
         }, &self->included_range);
       TSRange node_range = (TSRange) {
         .start_point = ts_node_start_point(node),
@@ -4271,8 +4268,13 @@ static inline bool ts_query_cursor__advance(
       };
       bool node_intersects_range =
         parent_intersects_range && range_intersects(&node_range, &self->included_range);
+      // Containing ranges include empty nodes at either boundary. Keep touching
+      // ancestors so their leading or trailing empty descendants remain reachable.
       bool node_intersects_containing_range =
-        range_intersects(&node_range, &self->containing_range);
+        node_range.end_byte >= self->containing_range.start_byte &&
+        node_range.start_byte <= self->containing_range.end_byte &&
+        point_gte(node_range.end_point, self->containing_range.start_point) &&
+        point_lte(node_range.start_point, self->containing_range.end_point);
       bool node_within_containing_range =
         range_within(&node_range, &self->containing_range);
 
@@ -4318,11 +4320,12 @@ static inline bool ts_query_cursor__advance(
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
             QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-            uint32_t start_depth = self->depth - step->depth;
+            uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
             if (
-              (pattern->is_rooted ?
+              (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
                 (parent_intersects_range && !parent_is_error)) &&
+              (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
               (start_depth <= self->max_start_depth)
@@ -4338,7 +4341,7 @@ static inline bool ts_query_cursor__advance(
           PatternEntry *pattern = array_get(&self->query->pattern_map, i);
 
           QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-          uint32_t start_depth = self->depth - step->depth;
+          uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
           do {
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
@@ -4467,8 +4470,16 @@ static inline bool ts_query_cursor__advance(
           // that the node has a parent, and capture the parent node if necessary.
           if (state->needs_parent) {
             TSNode parent = ts_tree_cursor_parent_node(&self->cursor);
-            if (ts_node_is_null(parent)) {
-              LOG("  missing parent node\n");
+            if (
+              ts_node_is_null(parent) ||
+              !range_within(&(TSRange) {
+                .start_byte = ts_node_start_byte(parent),
+                .end_byte = ts_node_end_byte(parent),
+                .start_point = ts_node_start_point(parent),
+                .end_point = ts_node_end_point(parent),
+              }, &self->containing_range)
+            ) {
+              LOG("  missing or out-of-range parent node\n");
               state->dead = true;
             } else {
               state->needs_parent = false;

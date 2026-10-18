@@ -747,7 +747,9 @@ impl<'a> ParseTableBuilder<'a> {
                 self.parse_table.states.push(ParseState {
                     id: state_id,
                     lex_state_id: 0,
+                    lex_state_id_after_extra: 0,
                     external_lex_state_id: 0,
+                    external_lex_state_id_after_extra: 0,
                     terminal_entries: TerminalEntries::default(),
                     nonterminal_entries: NonterminalEntries::default(),
                     reserved_words: TokenSet::default(),
@@ -989,6 +991,11 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
+        let allows_extras = self.terminal_entries.symbols.iter().any(|symbol| {
+            !symbol.is_terminal()
+                || !self.lexical_grammar.variables[symbol.index as usize].is_immediate
+        });
+
         // Add actions for the grammar's `extra` symbols.
         let state = &mut self.parse_table.states[state_id as usize];
         // Same check as `ParseState::is_end_of_non_terminal_extra` for entries not in the table yet
@@ -1027,7 +1034,7 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
         // Add actions for the start tokens of each non-terminal extra rule.
-        else {
+        else if allows_extras {
             for (terminal, state_id) in &self.non_terminal_extra_states {
                 self.terminal_entries
                     .get_or_insert_with(*terminal, || ParseTableEntry {
