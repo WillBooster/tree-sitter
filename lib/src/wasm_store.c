@@ -187,6 +187,9 @@ typedef struct {
   int32_t get_column;
   int32_t is_at_included_range_start;
   int32_t eof;
+  int32_t log;
+  int32_t get_position;
+  int32_t mark_start;
 } LexerInWasmMemory;
 
 // Linear memory layout:
@@ -363,6 +366,50 @@ static wasm_trap_t *callback__lexer_mark_end(
   TSLexer *lexer = store->current_lexer;
   lexer->mark_end(lexer);
   return NULL;
+}
+
+static wasm_trap_t *callback__lexer_position(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  bool mark_start
+) {
+  TSWasmStore *store = env;
+  wasmtime_context_t *context = wasmtime_caller_context(caller);
+  uint32_t address = args[1].i32;
+  size_t size = wasmtime_memory_data_size(context, &store->memory);
+  if (size < sizeof(TSLexerPosition) || address > size - sizeof(TSLexerPosition)) {
+    const char message[] = "Lexer position is outside Wasm memory";
+    return wasmtime_trap_new(message, sizeof(message) - 1);
+  }
+  uint8_t *memory = wasmtime_memory_data(context, &store->memory);
+  TSLexerPosition position;
+  if (mark_start) {
+    memcpy(&position, memory + address, sizeof(position));
+    store->current_lexer->mark_start(store->current_lexer, &position);
+  } else {
+    store->current_lexer->get_position(store->current_lexer, &position);
+    memcpy(memory + address, &position, sizeof(position));
+  }
+  return NULL;
+}
+
+static wasm_trap_t *callback__lexer_get_position(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return callback__lexer_position(env, caller, args, false);
+}
+
+static wasm_trap_t *callback__lexer_mark_start(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return callback__lexer_position(env, caller, args, true);
 }
 
 static wasm_trap_t *callback__lexer_get_column(
@@ -743,6 +790,16 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
       &lexer.mark_end,
       callback__lexer_mark_end,
       wasm_functype_new_1_0(wasm_valtype_new_i32())
+    },
+    {
+      &lexer.get_position,
+      callback__lexer_get_position,
+      wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.mark_start,
+      callback__lexer_mark_start,
+      wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
     },
     {
       &lexer.get_column,

@@ -31,6 +31,103 @@ use crate::{
 };
 
 #[test]
+fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
+    for (fixture, source, tokens, has_error) in [
+        (
+            "separator_prefix_ranges",
+            "   error make {}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_prefix_ranges",
+            "\t\nerror\tmake\n{}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_prefix_ranges",
+            "\u{2003}error make {}",
+            vec!["error", "make", "{", "}"],
+            false,
+        ),
+        (
+            "separator_newline_ranges",
+            "\n\n;\n\n\n",
+            vec![";", "\n"],
+            false,
+        ),
+        ("separator_precedence_ranges", "aad", vec!["a", "a"], true),
+    ] {
+        let path = fixtures_dir().join("test_grammars").join(fixture);
+        let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();
+        let (name, code) = generate_parser(&grammar).unwrap();
+        let languages = [
+            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
+            #[cfg(feature = "wasm")]
+            super::helpers::fixtures::get_test_language_wasm(&name, &code),
+        ];
+        for language in languages {
+            let mut parser = Parser::new();
+            #[cfg(feature = "wasm")]
+            if language.is_wasm() {
+                parser
+                    .set_wasm_store(
+                        tree_sitter::WasmStore::new(&super::helpers::fixtures::ENGINE).unwrap(),
+                    )
+                    .unwrap();
+            }
+            parser.set_language(&language).unwrap();
+            for encoding in ["utf8", "utf16le", "utf16be"] {
+                let tree = match encoding {
+                    "utf16le" => parser.parse_utf16_le(
+                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    "utf16be" => parser.parse_utf16_be(
+                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    _ => parser.parse(source, None),
+                }
+                .unwrap();
+                assert_eq!(
+                    tree.root_node().has_error(),
+                    has_error,
+                    "{fixture}: {}",
+                    tree.root_node().to_sexp()
+                );
+                let mut offset = 0;
+                for token in &tokens {
+                    let start = offset + source[offset..].find(token).unwrap();
+                    let end = start + token.len();
+                    let range = if encoding == "utf8" {
+                        start..end
+                    } else {
+                        source[..start].encode_utf16().count() * 2
+                            ..source[..end].encode_utf16().count() * 2
+                    };
+                    let node = tree
+                        .root_node()
+                        .descendant_for_byte_range(range.start, range.end)
+                        .unwrap();
+                    assert_eq!(node.kind(), *token, "{fixture}");
+                    assert_eq!(node.byte_range(), range, "{fixture}: {token:?}");
+                    if *token == "\n" {
+                        assert_eq!(
+                            node.start_position(),
+                            Point::new(2, if encoding == "utf8" { 1 } else { 2 })
+                        );
+                        assert_eq!(node.end_position(), Point::new(3, 0));
+                    }
+                    offset = end;
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_partial_reduction_precedence_is_independent_of_rule_order() {
     let orders = [
         ["lower", "unrelated", "preferred"],
@@ -1517,8 +1614,11 @@ fn test_literal_token_with_overlapping_external_extra_pattern() {
         let root = tree.root_node();
         assert!(!root.has_error(), "{source:?}");
         let children = root.children(&mut root.walk()).collect::<Vec<_>>();
-        assert_eq!(children.len(), 1, "{source:?}");
-        assert_eq!(children[0].kind(), "a");
+        assert_eq!(children.len(), source.len(), "{source:?}");
+        for (index, child) in children.iter().enumerate() {
+            assert_eq!(child.kind(), "a");
+            assert_eq!(child.byte_range(), index..index + 1);
+        }
         assert_eq!(root.end_byte(), source.len());
     }
 }

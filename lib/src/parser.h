@@ -45,6 +45,12 @@ typedef struct {
 
 typedef struct TSLexer TSLexer;
 
+typedef struct {
+  uint32_t bytes;
+  uint32_t row;
+  uint32_t column;
+} TSLexerPosition;
+
 struct TSLexer {
   int32_t lookahead;
   TSSymbol result_symbol;
@@ -54,6 +60,8 @@ struct TSLexer {
   bool (*is_at_included_range_start)(const TSLexer *);
   bool (*eof)(const TSLexer *);
   void (*log)(const TSLexer *, const char *, ...);
+  void (*get_position)(const TSLexer *, TSLexerPosition *);
+  void (*mark_start)(TSLexer *, const TSLexerPosition *);
 };
 
 typedef enum {
