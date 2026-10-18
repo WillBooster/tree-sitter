@@ -60,6 +60,7 @@ pub struct MetadataParams {
     pub field: Option<StrId>,
     pub is_token: bool,
     pub is_main_token: bool,
+    pub is_nonkeyword: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -277,6 +278,21 @@ impl RulePool {
         self.metadata_with(content, |p| p.is_token = true)
     }
 
+    pub fn nonkeyword_token(&mut self, content: RuleId) -> RuleId {
+        if let Rule::Metadata { params, .. } = self.node(content) {
+            let mut p = self.params(params);
+            p.is_token = true;
+            p.is_nonkeyword = true;
+            self.set_params(params, p);
+            content
+        } else {
+            self.metadata_with(content, |p| {
+                p.is_token = true;
+                p.is_nonkeyword = true;
+            })
+        }
+    }
+
     pub fn immediate_token(&mut self, content: RuleId) -> RuleId {
         self.metadata_with(content, |p| {
             p.is_token = true;
@@ -389,7 +405,7 @@ impl RulePool {
                     let p = self.params(params);
                     (p.precedence, p.associativity, p.dynamic_precedence).hash(&mut hasher);
                     p.alias.map(|a| (a.value, a.is_named)).hash(&mut hasher);
-                    (p.field, p.is_token, p.is_main_token).hash(&mut hasher);
+                    (p.field, p.is_token, p.is_main_token, p.is_nonkeyword).hash(&mut hasher);
                     stack.push(rule);
                 }
                 Rule::Reserved { rule, ctx } => {
