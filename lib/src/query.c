@@ -4238,6 +4238,7 @@ static bool ts_query_cursor__push_finished_state(
 ) {
   if (state->matched_range.start_byte != UINT32_MAX &&
       !range_intersects(&state->matched_range, &self->included_range)) {
+    array_delete(&state->root_origins);
     capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
     return false;
   }
