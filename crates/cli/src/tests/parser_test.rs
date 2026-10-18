@@ -4722,6 +4722,75 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
 }
 
 #[test]
+fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'nonkeyword_immediate_word', word: $ => $.identifier,
+            extras: $ => [$.comment],
+            rules: {
+                source_file: $ => choice($.ident_stmt, $.raw_stmt, $.kw_stmt,
+                    seq('A', choice($.raw_stmt, $.kw_stmt))),
+                ident_stmt: $ => seq($.identifier, '?'),
+                raw_stmt: $ => seq(token.nonkeyword(prec(PRECEDENCE, 'if')), $.identifier, '?'),
+                kw_stmt: $ => seq(token(prec(1, 'iffy')), $.exclaim),
+                identifier: _ => WORD,
+                exclaim: _ => /[a-z]+!/,
+                comment: _ => '#',
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("immediate-word-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for immediate in [false, true] {
+        for precedence in [-1, 0, 2] {
+            let grammar = grammar
+                .replace("PRECEDENCE", &precedence.to_string())
+                .replace(
+                    "WORD",
+                    if immediate {
+                        "token.immediate(/[a-z]+/)"
+                    } else {
+                        "/[a-z]+/"
+                    },
+                );
+            std::fs::write(&path, grammar).unwrap();
+            let json = load_grammar_file(&path, None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                for source in ["iffyname?", "#iffyname?", "A#iffyname?"] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error(), "{source}: {}", root.to_sexp());
+                    assert_eq!(root.byte_range(), 0..source.len());
+                    let raw = precedence > 1
+                        || source.starts_with('A')
+                        || (immediate && source.starts_with('#'));
+                    let mut cursor = root.walk();
+                    let statement = root.named_children(&mut cursor).last().unwrap();
+                    assert_eq!(
+                        statement.kind(),
+                        if raw { "raw_stmt" } else { "ident_stmt" },
+                        "{source}"
+                    );
+                    assert_eq!(
+                        statement
+                            .named_child(0)
+                            .unwrap()
+                            .utf8_text(source.as_bytes())
+                            .unwrap(),
+                        if raw { "fyname" } else { "iffyname" }
+                    );
+                }
+                let tree = parser.parse("#name?", None).unwrap();
+                assert_eq!(tree.root_node().has_error(), immediate);
+            }
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_word_guard_preserves_lower_precedence_content() {
     let grammar = r#"{
         "name": "nonkeyword_guard_content",
