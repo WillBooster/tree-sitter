@@ -80,7 +80,8 @@ StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version);
 unsigned ts_stack_node_count_since_error(const Stack *self, StackVersion version);
 
 // Whether the version holds a missing token that error recovery inserted although the lookahead
-// is then shifted rather than reduced, and that no reduction has incorporated yet.
+// is then shifted rather than reduced, and that neither a reduction nor an ERROR has incorporated
+// yet.
 bool ts_stack_has_unconfirmed_missing_token(const Stack *self, StackVersion version);
 
 void ts_stack_set_unconfirmed_missing_token(Stack *self, StackVersion version, bool value);

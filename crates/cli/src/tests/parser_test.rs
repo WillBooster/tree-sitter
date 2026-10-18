@@ -270,6 +270,24 @@ fn test_missing_token_recovery_preserves_following_declarations() {
 }
 
 #[test]
+fn test_missing_token_recovery_does_not_change_later_ambiguities() {
+    // Recovery from the first three lines inserts a missing token and wraps it in an ERROR.
+    let statement = "if (x.foo < 0 || bar >= 1) break;\n";
+    let source = format!(
+        "  inline C();\n  explicit inline C();\n  [[deprecated]] C();\nint a = std::get<0>(t);\n{statement}"
+    );
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("cpp")).unwrap();
+    let mut parse_last_child = |source: &str| {
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        root.named_children(&mut cursor).last().unwrap().to_sexp()
+    };
+    assert_eq!(parse_last_child(&source), parse_last_child(statement));
+}
+
+#[test]
 fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();
