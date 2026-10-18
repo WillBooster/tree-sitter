@@ -325,11 +325,14 @@ impl Highlighter {
             cancellation_flag,
             highlighter: self,
             iter_count: 0,
-            layers,
+            layers: Vec::with_capacity(layers.len()),
             next_event: None,
             last_highlight_range: None,
         };
-        result.sort_layers();
+        for layer in layers.into_iter().rev() {
+            result.layers.insert(0, layer);
+            result.sort_layers();
+        }
         Ok(result)
     }
 }
