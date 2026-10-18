@@ -60,8 +60,9 @@ struct AuxiliaryParentSetId(u32);
 ///
 /// A state's context only holds the auxiliary symbols at a dot in that state, and links
 /// to its predecessor: the context of the state that first led to it. Successor states
-/// share a context, and a lookup follows the predecessors back to the most recent state
-/// that used the symbol.
+/// share a context. Conflict resolution uses the nearest entry, including empty sets,
+/// because those entries determine expected-conflict matching. Diagnostic ownership
+/// skips empty auxiliary-only entries to recover the rules that introduced a repetition.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
