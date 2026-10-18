@@ -7611,7 +7611,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                let mut expected = vec![(0, vec![]); if nullable { 1 } else { 0 }];
+                let mut expected = vec![(0, vec![]); usize::from(nullable)];
                 if pattern.contains('*') || pattern.contains('+') {
                     expected.push((0, vec![("number", "3"), ("number", "4")]));
                 }
