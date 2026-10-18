@@ -124,7 +124,16 @@ impl AuxiliarySymbolContexts {
 
     /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
     /// the path to the state whose context is `context`.
-    fn parents(&self, mut context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+    fn parents(&self, context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+        self.find_parents(context, symbol, |_| true)
+    }
+
+    fn find_parents(
+        &self,
+        mut context: Option<AuxiliaryContextId>,
+        symbol: usize,
+        accept: impl Fn(&[Symbol]) -> bool,
+    ) -> Option<&[Symbol]> {
         while let Some(id) = context {
             let AuxiliaryContext {
                 predecessor,
@@ -133,11 +142,10 @@ impl AuxiliarySymbolContexts {
             } = self.contexts[id.index()];
             let entries = &self.entries[start as usize..(start + len) as usize];
             if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
-                return Some(Self::parent_set(
-                    &self.parent_symbols,
-                    &self.parent_sets,
-                    parent_set,
-                ));
+                let parents = Self::parent_set(&self.parent_symbols, &self.parent_sets, parent_set);
+                if accept(parents) {
+                    return Some(parents);
+                }
             }
             context = predecessor;
         }
@@ -401,7 +409,7 @@ pub struct ConflictError {
     pub conflicting_lookahead: String,
     pub possible_interpretations: Vec<Interpretation>,
     pub possible_resolutions: Vec<Resolution>,
-    pub generated_repetitions: Vec<(String, Vec<String>)>,
+    pub repetition_rules: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Default, Debug, Serialize, Error, Deserialize)]
@@ -483,11 +491,11 @@ impl std::fmt::Display for ConflictError {
             writeln!(f)?;
         }
 
-        if !self.generated_repetitions.is_empty() {
-            writeln!(f, "\nGenerated repetitions used in this conflict:\n")?;
-            for (name, parents) in &self.generated_repetitions {
+        if !self.repetition_rules.is_empty() {
+            writeln!(f, "\nRepetition rules used in this conflict:\n")?;
+            for (name, parents) in &self.repetition_rules {
                 if parents.is_empty() {
-                    writeln!(f, "  {name}: generated repetition")?;
+                    writeln!(f, "  {name}: repetition rule")?;
                 } else {
                     writeln!(f, "  {name}: used by {}", parents.join(", "))?;
                 }
@@ -1301,7 +1309,7 @@ impl<'a> ParseTableBuilder<'a> {
         }
 
         let mut conflict_error = ConflictError {
-            generated_repetitions: self.generated_repetition_owners(
+            repetition_rules: self.repetition_owners(
                 preceding_symbols,
                 &conflicting_items,
                 auxiliary_context,
@@ -1430,7 +1438,7 @@ impl<'a> ParseTableBuilder<'a> {
         Err(conflict_error)?
     }
 
-    fn generated_repetition_owners(
+    fn repetition_owners(
         &self,
         preceding_symbols: &[Symbol],
         items: &BTreeSet<&ParseItem>,
@@ -1456,7 +1464,9 @@ impl<'a> ParseTableBuilder<'a> {
             .map(|symbol| {
                 let mut parents = self
                     .auxiliary_contexts
-                    .parents(auxiliary_context, symbol.index as usize)
+                    .find_parents(auxiliary_context, symbol.index as usize, |parents| {
+                        !parents.is_empty()
+                    })
                     .unwrap_or_default()
                     .iter()
                     .copied()
@@ -1474,7 +1484,9 @@ impl<'a> ParseTableBuilder<'a> {
                     if self.syntax_grammar.variables[owner.index as usize].is_auxiliary() {
                         parents.extend(
                             self.auxiliary_contexts
-                                .parents(auxiliary_context, owner.index as usize)
+                                .find_parents(auxiliary_context, owner.index as usize, |parents| {
+                                    !parents.is_empty()
+                                })
                                 .unwrap_or_default(),
                         );
                     } else {
