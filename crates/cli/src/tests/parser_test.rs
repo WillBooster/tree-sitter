@@ -201,6 +201,104 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
     }
 }
 
+#[test]
+fn test_explicit_comments_can_precede_an_immediate_newline() {
+    let grammar = serde_json::json!({
+        "name": "explicit_comment_newline",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "comment"}},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "PATTERN", "value": "#[^#]*#"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in [
+            "l\n",
+            "l#comment#\n",
+            "l#first##second#\n",
+            "l#multi\nline#\n",
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            for comment in root.named_children(&mut root.walk()) {
+                assert_eq!(comment.kind(), "comment");
+                assert!(!comment.is_extra());
+            }
+        }
+        assert!(
+            parser
+                .parse("l#comment# \n", None)
+                .unwrap()
+                .root_node()
+                .has_error()
+        );
+    }
+}
+
+#[test]
+fn test_immediate_token_recovery_with_ambiguous_error_paths() {
+    let grammar = serde_json::json!({
+        "name": "immediate_error_recovery",
+        "extras": [{"type": "PATTERN", "value": "\\s+"}],
+        "conflicts": [["first", "second"]],
+        "rules": {
+            "source": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "first"},
+                {"type": "SYMBOL", "name": "second"},
+                {"type": "SYMBOL", "name": "immediate"}
+            ]}},
+            "first": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "x"}, {"type": "STRING", "value": ";"}
+            ]},
+            "second": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "x"}, {"type": "STRING", "value": ";"}
+            ]},
+            "immediate": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "y"},
+                {"type": "REPEAT", "content": {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "z"}}},
+                {"type": "STRING", "value": ";"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in [
+            "x @ ;",
+            "x ; @@ y z @ ; x @ x @ ;",
+            "y zz @ z; \u{1} x \u{2}",
+        ] {
+            let mut tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+            tree.edit(&InputEdit {
+                start_byte: 0,
+                old_end_byte: 0,
+                new_end_byte: 2,
+                start_position: Point::new(0, 0),
+                old_end_position: Point::new(0, 0),
+                new_end_position: Point::new(0, 2),
+            });
+            let edited_source = format!("x {source}");
+            let incremental = parser.parse(&edited_source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&edited_source, None).unwrap();
+            assert!(incremental.root_node().has_error());
+            assert_eq!(incremental.root_node().end_byte(), edited_source.len());
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+        }
+    }
+}
+
 fn parsers_for_grammar(grammar: &str) -> impl Iterator<Item = Parser> {
     let (name, code) = generate_parser(grammar).unwrap();
     let languages = [

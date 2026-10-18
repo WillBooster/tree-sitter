@@ -501,7 +501,8 @@ static bool ts_parser__can_reuse_first_leaf(
   TableEntry *table_entry
 ) {
   TSSymbol leaf_symbol = ts_subtree_leaf_symbol(tree);
-  if (ts_stack_after_extra(self->stack, version) && self->language->symbol_metadata[leaf_symbol].immediate) {
+  bool is_immediate = ts_language_symbol_metadata(self->language, leaf_symbol).immediate;
+  if (ts_stack_after_extra(self->stack, version) && is_immediate) {
     return false;
   }
   TSStateId leaf_state = ts_subtree_leaf_parse_state(tree);
@@ -515,7 +516,7 @@ static bool ts_parser__can_reuse_first_leaf(
   TSLexerMode leaf_lex_mode = ts_language_lex_mode_for_state(self->language, leaf_state);
   if (
     !ts_stack_after_extra(self->stack, version) &&
-    !self->language->symbol_metadata[leaf_symbol].immediate &&
+    !is_immediate &&
     (current_lex_mode.lex_state != current_lex_mode.lex_state_after_extra ||
      current_lex_mode.external_lex_state != current_lex_mode.external_lex_state_after_extra)
   ) return false;
@@ -805,7 +806,7 @@ static Subtree ts_parser__lex(
         }
       }
 
-      if (candidate && ts_stack_after_extra(self->stack, version) && self->language->symbol_metadata[candidate].immediate) {
+      if (candidate && ts_stack_after_extra(self->stack, version) && ts_language_symbol_metadata(self->language, candidate).immediate) {
         candidate = 0;
       }
       is_keyword_exact = candidate != 0;
