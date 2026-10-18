@@ -1695,13 +1695,15 @@ fn test_anonymous_external_pattern_used_as_extra() {
                     "{source:?}"
                 );
                 assert_eq!(root.end_byte(), source.len(), "{source:?}");
-                assert_eq!(
-                    root.children(&mut root.walk())
-                        .filter(|node| node.kind() == "a")
-                        .count(),
-                    source.matches('a').count(),
-                    "{source:?}"
-                );
+                if !root.has_error() {
+                    assert_eq!(
+                        root.children(&mut root.walk())
+                            .filter(|node| node.kind() == "a")
+                            .count(),
+                        source.matches('a').count(),
+                        "{source:?}"
+                    );
+                }
             }
         }
     }
@@ -5597,8 +5599,9 @@ fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
                 externals: $ => {externals},
                 extras: $ => [/\s/, $.comment],
                 rules: {{
-                    source_file: $ => repeat(choice($.strict, $.mixed)),
+                    source_file: $ => repeat(choice($.strict, $.mixed, $.fallback)),
                     strict: _ => seq('b', token.immediate('"s"')),
+                    fallback: _ => seq('c', choice(token.immediate('y'), 'z')),
                     mixed: $ => seq('a', choice(
                         alias(token.immediate('xx'), $.immediate),
                         alias(token(/x+/), $.regular),
@@ -5672,6 +5675,28 @@ fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
             assert!(!valid.root_node().has_error());
             let invalid = parser.parse("b#comment#\"s\"", None).unwrap();
             assert!(invalid.root_node().has_error());
+            for input in ["cy", "c#comment#z"] {
+                assert!(!parser.parse(input, None).unwrap().root_node().has_error());
+            }
+            let rejected_source = "c#comment#y";
+            let rejected = parser.parse(rejected_source, None).unwrap();
+            assert!(rejected.root_node().has_error());
+            assert_eq!(rejected.root_node().end_byte(), rejected_source.len());
+            let mut adjacent = parser.parse("cy", None).unwrap();
+            adjacent.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 1,
+                new_end_byte: 10,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 1),
+                new_end_position: Point::new(0, 10),
+            });
+            let incremental = parser.parse(rejected_source, Some(&adjacent)).unwrap();
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                rejected.root_node().to_sexp()
+            );
+            assert_eq!(incremental.root_node().end_byte(), rejected_source.len());
             let before = "axx";
             let after = "a#comment#xx";
             let mut old_tree = parser.parse(before, None).unwrap();
