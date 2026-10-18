@@ -40,31 +40,19 @@ static const TSRange DEFAULT_RANGE = {
   .end_byte = UINT32_MAX
 };
 
-/**
- * Sets the column data to the given value and marks it valid.
- * @param self The lexer state.
- * @param val The new value of the column data.
- */
 static void ts_lexer__set_column_data(Lexer *self, uint32_t val) {
   self->column_data.valid = true;
   self->column_data.value = val;
 }
 
-/**
- * Increments the value of the column data; no-op if invalid.
- * @param self The lexer state.
- */
 static void ts_lexer__increment_column_data(Lexer *self) {
   if (self->column_data.valid) {
     self->column_data.value++;
   }
 }
 
-/**
- * Marks the column data as invalid.
- * @param self The lexer state.
- */
 static void ts_lexer__invalidate_column_data(Lexer *self) {
+  self->display_column_data.valid = false;
   self->column_data.valid = false;
   self->column_data.value = 0;
 }
@@ -267,13 +255,30 @@ static void ts_lexer_goto(Lexer *self, Length position) {
   }
 }
 
-/**
- * Actually advances the lexer. Does not log anything.
- * @param self The lexer state.
- * @param skip Whether to mark the consumed codepoint as whitespace.
- */
+static void ts_lexer__advance_display_column(Lexer *self) {
+  if (!self->display_column_data.valid) return;
+  uint32_t column = self->display_column_data.value;
+  switch (self->data.lookahead) {
+    case '\n':
+    case '\r':
+    case '\f':
+      column = 0;
+      break;
+    case '\t': {
+      uint32_t increment = self->display_tab_width - column % self->display_tab_width;
+      column = increment > UINT32_MAX - column ? UINT32_MAX : column + increment;
+      break;
+    }
+    default:
+      if (column < UINT32_MAX) column++;
+      break;
+  }
+  self->display_column_data.value = column;
+}
+
 static void ts_lexer__do_advance(Lexer *self, bool skip) {
   if (self->lookahead_size) {
+    ts_lexer__advance_display_column(self);
     if (self->data.lookahead == '\n') {
       self->current_position.extent.row++;
       self->current_position.extent.column = 0;
@@ -297,6 +302,9 @@ static void ts_lexer__do_advance(Lexer *self, bool skip) {
     }
     if (self->current_included_range_index < self->included_range_count) {
       current_range++;
+      if (current_range->start_point.row != self->current_position.extent.row) {
+        self->display_column_data.value = 0;
+      }
       self->current_position = (Length) {
         current_range->start_byte,
         current_range->start_point,
@@ -348,6 +356,7 @@ static void ts_lexer__advance(TSLexer *_self, bool skip) {
   ) {
     uint8_t next_byte = (uint8_t)self->chunk[next_position - self->chunk_start];
     if (next_byte < 0x80) {
+      ts_lexer__advance_display_column(self);
       ts_lexer__increment_column_data(self);
       self->current_position.bytes++;
       self->current_position.extent.column++;
@@ -431,6 +440,32 @@ static uint32_t ts_lexer__get_column(TSLexer *_self) {
   return self->column_data.value;
 }
 
+static uint32_t ts_lexer__get_display_column(TSLexer *_self, uint32_t tab_width) {
+  Lexer *self = (Lexer *)_self;
+  self->did_get_column = true;
+  if (!tab_width) tab_width = 1;
+  if (!self->display_column_data.valid || self->display_tab_width != tab_width) {
+    uint32_t goal_byte = self->current_position.bytes;
+    ColumnData column_data = self->column_data;
+    Length start = {
+      goal_byte - self->current_position.extent.column,
+      {self->current_position.extent.row, 0},
+    };
+    ts_lexer_goto(self, start);
+    self->display_tab_width = tab_width;
+    self->display_column_data = (ColumnData) {.value = 0, .valid = true};
+    ts_lexer__get_chunk(self);
+    if (!ts_lexer__eof(_self)) {
+      ts_lexer__get_lookahead(self);
+      while (self->current_position.bytes < goal_byte && !ts_lexer__eof(_self) && self->chunk) {
+        ts_lexer__do_advance(self, false);
+      }
+    }
+    self->column_data = column_data;
+  }
+  return self->display_column_data.value;
+}
+
 // Is the lexer at a boundary between two disjoint included ranges of
 // source code? This is exposed as an API because some languages' external
 // scanners need to perform custom actions at these boundaries.
@@ -470,6 +505,7 @@ void ts_lexer_init(Lexer *self) {
       .get_position = ts_lexer__get_position,
       .mark_start = ts_lexer__mark_start,
       .get_column = ts_lexer__get_column,
+      .get_display_column = ts_lexer__get_display_column,
       .is_at_included_range_start = ts_lexer__is_at_included_range_start,
       .eof = ts_lexer__eof,
       .log = ts_lexer__log,
@@ -502,6 +538,7 @@ void ts_lexer_delete(Lexer *self) {
 
 void ts_lexer_set_input(Lexer *self, TSInput input) {
   self->input = input;
+  self->display_column_data.valid = false;
   ts_lexer__clear_chunk(self);
   ts_lexer_goto(self, self->current_position);
 }
@@ -593,6 +630,7 @@ bool ts_lexer_set_included_ranges(
   self->included_ranges = ts_realloc(self->included_ranges, size);
   memcpy(self->included_ranges, ranges, size);
   self->included_range_count = count;
+  self->display_column_data.valid = false;
   ts_lexer_goto(self, self->current_position);
   return true;
 }
