@@ -552,37 +552,34 @@ impl std::fmt::Display for Interpretation {
 
 impl std::fmt::Display for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Precedence { symbols } => {
-                write!(f, "Specify a higher precedence in ")?;
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " and ")?;
-                    }
-                    write!(f, "`{symbol}`")?;
-                }
-                write!(f, " than in the other rules.")?;
-            }
-            Self::Associativity { symbols } => {
-                write!(f, "Specify a left or right associativity in ")?;
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "`{symbol}`")?;
-                }
+        let (prefix, symbols, separator, suffix) = match self {
+            Self::Precedence { symbols } => (
+                "Specify a higher precedence in ",
+                symbols,
+                " and ",
+                " than in the other rules.",
+            ),
+            Self::Associativity { symbols } => (
+                "Specify a left or right associativity in ",
+                symbols,
+                ", ",
+                "",
+            ),
+            Self::AddConflict { symbols } if symbols.is_empty() => {
+                return write!(f, "Add an empty set `[]` to `conflicts`");
             }
             Self::AddConflict { symbols } => {
-                write!(f, "Add a conflict for these rules: ")?;
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "`{symbol}`")?;
-                }
+                ("Add a conflict for these rules: ", symbols, ", ", "")
             }
+        };
+        write!(f, "{prefix}")?;
+        for (i, symbol) in symbols.iter().enumerate() {
+            if i > 0 {
+                write!(f, "{separator}")?;
+            }
+            write!(f, "`{symbol}`")?;
         }
-        Ok(())
+        write!(f, "{suffix}")
     }
 }
 
