@@ -7626,8 +7626,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                assert!(matches.len() <= 1, "{name}: {pattern}");
-                assert!(matches.iter().all(|(_, captures)| captures.is_empty()));
+                assert_eq!(matches, vec![(0, vec![])], "{name}: {pattern}");
                 cursor.set_byte_range(2..3);
                 let matches = collect_matches(
                     cursor.matches(&query, root.child(1).unwrap(), source.as_bytes()),
