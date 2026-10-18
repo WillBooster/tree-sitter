@@ -513,11 +513,15 @@ fn identify_keywords(
                 continue;
             }
 
-            if !token_conflict_map.has_same_conflict_status(
-                token.index as usize,
-                word_token.index as usize,
-                other_index,
-            ) {
+            let nonkeyword_word_overlap = lexical_grammar.variables[other_index].is_nonkeyword
+                && token_conflict_map.does_overlap(word_token.index as usize, other_index);
+            if nonkeyword_word_overlap
+                || !token_conflict_map.has_same_conflict_status(
+                    token.index as usize,
+                    word_token.index as usize,
+                    other_index,
+                )
+            {
                 let name = str_pool.resolve(lexical_grammar.variables[token.index as usize].name);
                 let other_name = str_pool.resolve(lexical_grammar.variables[other_index].name);
                 debug!(
