@@ -9141,7 +9141,7 @@ fn test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent() 
 
 #[test]
 fn test_query_preserves_distinct_productions_sharing_a_parent_alias() {
-    let grammar = r#"
+    let grammar = r"
         module.exports = grammar({
             name: 'shared_parent_alias',
             rules: {
@@ -9155,7 +9155,7 @@ fn test_query_preserves_distinct_productions_sharing_a_parent_alias() {
                 atom: _ => /[a-z]+/,
             },
         });
-    "#;
+    ";
     let file = tempfile::NamedTempFile::with_suffix(".js").unwrap();
     std::fs::write(file.path(), grammar).unwrap();
     let grammar_json = load_grammar_file(file.path(), None).unwrap();
