@@ -3894,6 +3894,39 @@ fn test_query_ranges_preserve_uncaptured_sibling_alternatives() {
 }
 
 #[test]
+fn test_query_ranges_preserve_missing_root_at_start() {
+    let language = get_language("c");
+    let source = "int broken = ;";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let missing = tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("declarator")
+        .unwrap()
+        .child_by_field_name("value")
+        .unwrap();
+    assert!(missing.is_missing());
+    let query = Query::new(&language, "(MISSING) @missing").unwrap();
+    for points in [false, true] {
+        let mut cursor = QueryCursor::new();
+        if points {
+            let start = missing.start_position();
+            cursor.set_point_range(start..Point::new(start.row, start.column + 1));
+        } else {
+            cursor.set_byte_range(missing.start_byte()..missing.start_byte() + 1);
+        }
+        let mut matches = cursor.matches(&query, missing, source.as_bytes());
+        let result = matches.next().unwrap();
+        assert_eq!(result.captures().len(), 1);
+        assert_eq!(result.captures()[0].node, missing);
+        assert!(matches.next().is_none());
+    }
+}
+
+#[test]
 fn test_query_ranges_filter_capture_dominance_before_reporting_matches() {
     allocations::record(|| {
         let language = get_language("json");

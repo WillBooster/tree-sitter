@@ -4254,6 +4254,16 @@ bool range_within(const TSRange *a, const TSRange *b) {
   );
 }
 
+static TSRange query_state__extend_range(const QueryState *state, TSNode node) {
+  bool is_started = state->matched_range.start_byte != UINT32_MAX;
+  return (TSRange) {
+    .start_byte = is_started ? state->matched_range.start_byte : ts_node_start_byte(node),
+    .start_point = is_started ? state->matched_range.start_point : ts_node_start_point(node),
+    .end_byte = ts_node_end_byte(node),
+    .end_point = ts_node_end_point(node),
+  };
+}
+
 static bool ts_query_cursor__state_range_dominates(
   const TSQueryCursor *self,
   const QueryState *state,
@@ -4604,6 +4614,14 @@ static inline bool ts_query_cursor__advance(
             }
           }
 
+          if (node_does_match && step->depth == 0 &&
+              array_get(&self->query->steps, state->step_index + 1)->depth == PATTERN_DONE_MARKER) {
+            TSRange matched_range = query_state__extend_range(state, node);
+            if (!range_intersects(&matched_range, &self->included_range)) {
+              node_does_match = false;
+            }
+          }
+
           // Remove states immediately if it is ever clear that they cannot match.
           if (!node_does_match) {
             if (!later_sibling_can_match) {
@@ -4667,12 +4685,7 @@ static inline bool ts_query_cursor__advance(
 
           if (step->depth == 0 || (step->depth == 1 && state->matched_range.start_byte == UINT32_MAX)) {
             TSNode matched_node = step->depth == 0 ? node : parent_node;
-            if (state->matched_range.start_byte == UINT32_MAX) {
-              state->matched_range.start_byte = ts_node_start_byte(matched_node);
-              state->matched_range.start_point = ts_node_start_point(matched_node);
-            }
-            state->matched_range.end_byte = ts_node_end_byte(matched_node);
-            state->matched_range.end_point = ts_node_end_point(matched_node);
+            state->matched_range = query_state__extend_range(state, matched_node);
           }
 
           // If the current node is captured in this pattern, add it to the capture list.
