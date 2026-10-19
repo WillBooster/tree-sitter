@@ -3767,6 +3767,48 @@ fn test_query_wildcard_parent_with_optional_children() {
 }
 
 #[test]
+fn test_query_wildcard_parent_optional_children_preserve_siblings() {
+    allocations::record(|| {
+        let language = get_language("python");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, expected_captures) in [
+            ("f()", vec![]),
+            ("f();g()", vec![]),
+            ("f('x')", vec!["'x'"]),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let mut nodes = vec![tree.root_node()];
+            let mut named_count = 0;
+            while let Some(node) = nodes.pop() {
+                named_count += usize::from(node.is_named());
+                nodes.extend(node.children(&mut node.walk()));
+            }
+            for quantifier in ["?", "*"] {
+                let query =
+                    Query::new(&language, &format!("(_ (string){quantifier} @child)")).unwrap();
+                let mut cursor = QueryCursor::new();
+                let matches = collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(matches.len(), named_count, "{source}: {quantifier}");
+                assert_eq!(
+                    matches
+                        .iter()
+                        .flat_map(|(_, captures)| captures.iter().map(|(_, text)| *text))
+                        .collect::<Vec<_>>(),
+                    expected_captures,
+                    "{source}: {quantifier}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_matches_with_rooted_and_non_rooted_patterns_outside_cursor_range() {
     allocations::record(|| {
         let language = get_language("json");
