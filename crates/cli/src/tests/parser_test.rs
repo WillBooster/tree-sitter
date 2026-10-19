@@ -6792,18 +6792,25 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
             let mut fastest = Duration::MAX;
             for _ in 0..3 {
                 let started = cpu_time::ThreadTime::now();
-                let tree = parser.parse(&source, None).unwrap();
-                let elapsed = started.elapsed();
-                let root = tree.root_node();
-                assert!(!root.has_error());
-                assert_eq!(root.end_byte(), source.len());
-                assert_eq!(root.named_child_count(), count);
-                for index in 0..count {
-                    let comment = root.named_child(index as u32).unwrap();
-                    assert_eq!(comment.kind(), "comment");
-                    assert_eq!(comment.byte_range(), index * 4..index * 4 + 3);
-                }
-                fastest = fastest.min(elapsed);
+                let mut samples = 0;
+                let elapsed = loop {
+                    let tree = parser.parse(&source, None).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error());
+                    assert_eq!(root.end_byte(), source.len());
+                    assert_eq!(root.named_child_count(), count);
+                    for index in 0..count {
+                        let comment = root.named_child(index as u32).unwrap();
+                        assert_eq!(comment.kind(), "comment");
+                        assert_eq!(comment.byte_range(), index * 4..index * 4 + 3);
+                    }
+                    samples += 1;
+                    let elapsed = started.elapsed();
+                    if elapsed >= Duration::from_millis(100) {
+                        break elapsed;
+                    }
+                };
+                fastest = fastest.min(elapsed / samples);
             }
             fastest
         };
