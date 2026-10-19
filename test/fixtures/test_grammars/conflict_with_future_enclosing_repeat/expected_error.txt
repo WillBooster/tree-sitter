@@ -1,0 +1,20 @@
+Unresolved conflict for symbol sequence:
+
+  'A'  'x'  first_repeat1  'w'  •  'k'  …
+
+Possible interpretations:
+
+  1:  'A'  'x'  first_repeat1  (second  'w'  •  'k'  first_repeat2)
+  2:  'A'  (first_repeat2  'x'  first_repeat1  'w')  •  'k'  …
+
+Repetition rules used in this conflict:
+
+  first_repeat1: used by first, third
+  first_repeat2: used by first, second
+
+Possible resolutions:
+
+  1:  Specify a higher precedence in `second` than in the other rules.
+  2:  Specify a higher precedence in `first_repeat2` than in the other rules.
+  3:  Specify a left or right associativity in `first_repeat2`
+  4:  Add a conflict for these rules: `first`, `second`
