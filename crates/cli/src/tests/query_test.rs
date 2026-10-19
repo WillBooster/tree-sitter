@@ -882,6 +882,27 @@ fn test_query_errors_on_impossible_patterns() {
     let rb_lang = get_language("ruby");
 
     allocations::record(|| {
+        for kind in ["number", "identifier", "string"] {
+            Query::new(&js_lang, &format!("(binary_expression ({kind}) ({kind}))")).unwrap();
+            assert_eq!(
+                Query::new(
+                    &js_lang,
+                    &format!("(binary_expression ({kind}) ({kind}) ({kind}))")
+                )
+                .unwrap_err()
+                .kind,
+                QueryErrorKind::Structure,
+            );
+        }
+        assert_eq!(
+            Query::new(
+                &js_lang,
+                "(binary_expression left: (number) right: (number) (number))"
+            )
+            .unwrap_err()
+            .kind,
+            QueryErrorKind::Structure,
+        );
         assert_eq!(
             Query::new(
                 &js_lang,

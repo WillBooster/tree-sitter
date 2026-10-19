@@ -1109,7 +1109,7 @@ static inline int analysis_state__compare(
   if ((*self)->depth < (*other)->depth) return 1;
   if ((*self)->step_index < (*other)->step_index) return -1;
   if ((*self)->step_index > (*other)->step_index) return 1;
-  return (int)(*self)->skipped_match - (int)(*other)->skipped_match;
+  return 0;
 }
 
 static inline AnalysisStateEntry *analysis_state__top(AnalysisState *self) {
@@ -1162,6 +1162,8 @@ static inline bool analysis_state_set__insert_sorted(
   if (!exists) {
     AnalysisState *new_item = analysis_state_pool__clone_or_reuse(pool, borrowed_item);
     array_insert(self, index, new_item);
+  } else {
+    (*array_get(self, index))->skipped_match &= borrowed_item->skipped_match;
   }
   return !exists;
 }
