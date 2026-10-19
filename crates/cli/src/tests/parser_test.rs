@@ -783,6 +783,15 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
 fn test_recovery_keeps_declarations_after_restarting_an_error() {
     for (language, source, expected) in [
         (
+            "c-sharp",
+            "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
+            vec![
+                "using System.Linq;",
+                "namespace M { }",
+                "public enum F { A, B }",
+            ],
+        ),
+        (
             "javascript",
             "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
             vec!["export const k = 2;"],
