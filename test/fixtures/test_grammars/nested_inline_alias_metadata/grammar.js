@@ -3,6 +3,8 @@ export default grammar({
   word: $ => $.identifier,
   inline: $ => [$._selector_identifier, $._query_keyword, $._leaf, $._end],
   rules: {
+    // Keep the impossible EOF branch: its discarded leaf alias must not weaken
+    // the required fields and children of the real `node` schema.
     source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq(alias($._leaf, $.node), $._end, '!'))),
     node: $ => seq('(', field('value', $.identifier), ':', $.identifier, ')'),
     _leaf: () => choice('x', 'y'),

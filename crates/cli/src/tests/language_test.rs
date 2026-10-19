@@ -237,28 +237,7 @@ fn test_supertypes() {
 
 #[test]
 fn test_nested_inline_alias_metadata_matches_visible_nodes() {
-    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-    std::fs::create_dir_all(&scratch).unwrap();
-    let directory = tempfile::tempdir_in(scratch).unwrap();
-    let grammar = super::helpers::fixtures::fixtures_dir()
-        .join("test_grammars/nested_inline_alias_metadata/grammar.js");
-    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
-    tree_sitter_generate::generate_parser_in_directory(
-        directory.path(),
-        None::<std::path::PathBuf>,
-        None::<std::path::PathBuf>,
-        None,
-        None,
-        false,
-        tree_sitter_generate::OptLevel::default(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-    )
-    .unwrap();
-    let entries = schema.as_array().unwrap();
+    let entries = super::helpers::fixtures::fixture_node_types("nested_inline_alias_metadata");
     let node_entry = entries
         .iter()
         .find(|entry| entry["type"] == "node")

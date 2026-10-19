@@ -3088,28 +3088,7 @@ fn test_query_matches_with_anonymous_tokens() {
 
 #[test]
 fn test_supertype_field_node_schema() {
-    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-    std::fs::create_dir_all(&scratch).unwrap();
-    let directory = tempfile::tempdir_in(scratch).unwrap();
-    let grammar =
-        super::helpers::fixtures::fixtures_dir().join("test_grammars/supertype_fields/grammar.js");
-    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
-    tree_sitter_generate::generate_parser_in_directory(
-        directory.path(),
-        None::<std::path::PathBuf>,
-        None::<std::path::PathBuf>,
-        None,
-        None,
-        false,
-        tree_sitter_generate::OptLevel::default(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-    )
-    .unwrap();
-    let entries = schema.as_array().unwrap();
+    let entries = super::helpers::fixtures::fixture_node_types("supertype_fields");
     for (kind, required, multiple, field_type) in [
         ("list", false, true, "spread"),
         ("assigned", true, false, "item"),
@@ -3158,11 +3137,7 @@ fn test_supertype_field_node_schema() {
 
 #[test]
 fn test_hidden_child_requiredness_in_node_schema() {
-    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-    std::fs::create_dir_all(&scratch).unwrap();
-    let directory = tempfile::tempdir_in(scratch).unwrap();
-    std::fs::write(
-        directory.path().join("grammar.js"),
+    let entries = super::helpers::fixtures::generate_node_types(
         r"
         module.exports = grammar({
             name: 'hidden_child_cardinality',
@@ -3177,30 +3152,9 @@ fn test_hidden_child_requiredness_in_node_schema() {
             },
         });
     ",
-    )
-    .unwrap();
-    tree_sitter_generate::generate_parser_in_directory(
-        directory.path(),
-        None::<std::path::PathBuf>,
-        None::<std::path::PathBuf>,
-        None,
-        None,
-        false,
-        tree_sitter_generate::OptLevel::default(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-    )
-    .unwrap();
+    );
     for (kind, required) in [("required_children", true), ("optional_children", false)] {
-        let node = schema
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|node| node["type"] == kind)
-            .unwrap();
+        let node = entries.iter().find(|node| node["type"] == kind).unwrap();
         assert_eq!(
             node["children"],
             serde_json::json!({
@@ -3245,28 +3199,7 @@ fn test_query_fields_inside_supertypes() {
 #[test]
 fn test_transparent_supertype_alias_node_schema() {
     for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
-        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-        std::fs::create_dir_all(&scratch).unwrap();
-        let directory = tempfile::tempdir_in(scratch).unwrap();
-        let grammar = super::helpers::fixtures::fixtures_dir()
-            .join(format!("test_grammars/{fixture}/grammar.js"));
-        std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
-        tree_sitter_generate::generate_parser_in_directory(
-            directory.path(),
-            None::<std::path::PathBuf>,
-            None::<std::path::PathBuf>,
-            None,
-            None,
-            false,
-            tree_sitter_generate::OptLevel::default(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let schema: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-        )
-        .unwrap();
-        let entries = schema.as_array().unwrap();
+        let entries = super::helpers::fixtures::fixture_node_types(fixture);
         let expressions: Vec<_> = entries
             .iter()
             .filter(|entry| entry["type"] == "expression")
