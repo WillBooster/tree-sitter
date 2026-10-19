@@ -3990,6 +3990,8 @@ static void ts_query_cursor__sort_states_by_capture(TSQueryCursor *self) {
   }
 }
 
+static uint32_t ts_query_cursor__empty_root_state_index(TSQueryCursor *, uint32_t, const PatternEntry *);
+
 static void ts_query_cursor__add_state(
   TSQueryCursor *self,
   const PatternEntry *pattern
@@ -4017,6 +4019,10 @@ static void ts_query_cursor__add_state(
   // If there are multiple patterns like this in a query, then this loop will
   // need to execute in order to keep the states ordered by pattern_index.
   uint32_t index = self->states.size;
+  if (step->depth == PATTERN_DONE_MARKER) {
+    uint32_t empty_index = ts_query_cursor__empty_root_state_index(self, start_depth, pattern);
+    if (empty_index < self->states.size) index = empty_index + 1;
+  }
   while (index > 0) {
     QueryState *prev_state = array_get(&self->states, index - 1);
     if (prev_state->start_depth < start_depth) break;
@@ -4067,6 +4073,33 @@ static void ts_query_cursor__add_state(
     .dead = false,
     .skipped_quantifier = false,
   }));
+}
+
+static uint32_t ts_query_cursor__empty_root_state_index(
+  TSQueryCursor *self,
+  uint32_t start_depth,
+  const PatternEntry *pattern
+) {
+  uint32_t left = 0, right = self->states.size;
+  while (left < right) {
+    uint32_t middle = left + (right - left) / 2;
+    QueryState *state = array_get(&self->states, middle);
+    if (state->start_depth < start_depth ||
+        (state->start_depth == start_depth && state->pattern_index < pattern->pattern_index)) {
+      left = middle + 1;
+    } else {
+      right = middle;
+    }
+  }
+  for (uint32_t i = left; i < self->states.size; i++) {
+    QueryState *state = array_get(&self->states, i);
+    if (state->start_depth != start_depth || state->pattern_index != pattern->pattern_index ||
+        capture_list_pool_get(&self->capture_list_pool, state->capture_list_id)->size) break;
+    if (state->step_index == pattern->step_index && state->empty_root_match_count) {
+      return i;
+    }
+  }
+  return self->states.size;
 }
 
 // Acquire a capture list for this state. If there are no capture lists left in the
@@ -4493,7 +4526,7 @@ static inline bool ts_query_cursor__advance(
           } while (step->symbol == symbol);
         }
 
-        // Update all of the in-progress states with current node.
+        bool has_completed_root_origins = false;
         for (unsigned j = 0, copy_count = 0; j < self->states.size; j += 1 + copy_count) {
           QueryState *state = array_get(&self->states, j);
           QueryStep *step = array_get(&self->query->steps, state->step_index);
@@ -4671,6 +4704,9 @@ static inline bool ts_query_cursor__advance(
             QueryState *child_state = array_get(&self->states, k);
             uint16_t child_step_index = child_state->step_index;
             QueryStep *child_step = array_get(&self->query->steps, child_step_index);
+            if (child_step->depth == PATTERN_DONE_MARKER && child_state->root_origins.size) {
+              has_completed_root_origins = true;
+            }
             if (child_step->alternative_branch_index != NONE) {
               QueryState *branch = ts_query_cursor__copy_state(self, &child_state);
               if (branch) {
@@ -4792,7 +4828,7 @@ static inline bool ts_query_cursor__advance(
           }
         }
 
-        for (uint32_t j = 0; self->query->has_empty_roots && j < self->states.size; j++) {
+        for (uint32_t j = 0; has_completed_root_origins && j < self->states.size; j++) {
           QueryState *body = array_get(&self->states, j);
           if (body->dead || body->empty_root_match_count || !body->root_origins.size ||
               array_get(&self->query->steps, body->step_index)->depth != PATTERN_DONE_MARKER) continue;
@@ -4851,6 +4887,14 @@ static inline bool ts_query_cursor__advance(
               capture_list_pool_get(&self->capture_list_pool, state->capture_list_id);
             const CaptureList *other_captures =
               capture_list_pool_get(&self->capture_list_pool, other_state->capture_list_id);
+            // Completed bodies already canceled their empty origins above. Once an
+            // in-progress body defers this empty root, later captured states can only
+            // repeat that decision; captureless states sort before them.
+            if (
+              state->empty_root_match_count &&
+              state->has_in_progress_alternatives &&
+              other_captures->size > 0
+            ) break;
             if (
               state_captures->size > 0 &&
               other_captures->size > 0 &&
