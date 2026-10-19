@@ -35,6 +35,7 @@ fn test_identifier_only_grammar_compiles_without_c_warnings() {
     let grammar = serde_json::json!({
         "name": "identifier_without_keywords",
         "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
         "rules": {
             "source_file": {"type": "SYMBOL", "name": "identifier"},
             "identifier": {"type": "PATTERN", "value": "[a-z]+"}
@@ -65,14 +66,11 @@ fn test_identifier_only_grammar_compiles_without_c_warnings() {
     let language = loader.load_language_at_path_with_name(config).unwrap();
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    let source = "identifier";
+    let source = " identifier ";
     let tree = parser.parse(source, None).unwrap();
     assert!(!tree.root_node().has_error());
     assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
-    assert_eq!(
-        tree.root_node().named_child(0).unwrap().byte_range(),
-        0..source.len()
-    );
+    assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 1..11);
 }
 
 #[test]
