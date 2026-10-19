@@ -98,6 +98,7 @@ struct TSParser {
   TSWasmStore *wasm_store;
   ReduceActionSet reduce_actions;
   Subtree finished_tree;
+  SubtreeArray accepted_error_trees;
   SubtreeArray trailing_extras;
   SubtreeArray trailing_extras2;
   SubtreeArray scratch_trees;
@@ -1308,6 +1309,132 @@ static void ts_parser__confirm_incorporated_recovery(
   }
 }
 
+static bool ts_parser__same_subtree_structure(Subtree left, Subtree right, SubtreePool *pool) {
+  if (memcmp(&left, &right, sizeof(left)) == 0) return true;
+  ts_assert(pool->tree_stack.size == 0);
+  array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(left));
+  array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(right));
+  bool result = false;
+  while (pool->tree_stack.size) {
+    right = ts_subtree_from_mut(array_pop(&pool->tree_stack));
+    left = ts_subtree_from_mut(array_pop(&pool->tree_stack));
+    if (memcmp(&left, &right, sizeof(left)) == 0) continue;
+    Length left_padding = ts_subtree_padding(left), right_padding = ts_subtree_padding(right);
+    Length left_size = ts_subtree_size(left), right_size = ts_subtree_size(right);
+    uint32_t child_count = ts_subtree_child_count(left);
+    if (ts_subtree_error_cost(left) != ts_subtree_error_cost(right) ||
+        ts_subtree_missing(left) != ts_subtree_missing(right) ||
+        ts_subtree_symbol(left) != ts_subtree_symbol(right) ||
+        ts_subtree_visible(left) != ts_subtree_visible(right) ||
+        ts_subtree_named(left) != ts_subtree_named(right) ||
+        ts_subtree_extra(left) != ts_subtree_extra(right) ||
+        ts_subtree_has_changes(left) != ts_subtree_has_changes(right) ||
+        child_count != ts_subtree_child_count(right) ||
+        ts_subtree_production_id(left) != ts_subtree_production_id(right) ||
+        ts_subtree_dynamic_precedence(left) != ts_subtree_dynamic_precedence(right) ||
+        left_padding.bytes != right_padding.bytes || !point_eq(left_padding.extent, right_padding.extent) ||
+        left_size.bytes != right_size.bytes || !point_eq(left_size.extent, right_size.extent) ||
+        !ts_subtree_external_scanner_state_eq(left, right)) goto cleanup;
+    for (uint32_t i = 0; i < child_count; i++) {
+      array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(ts_subtree_children(left)[i]));
+      array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(ts_subtree_children(right)[i]));
+    }
+  }
+  result = true;
+cleanup:
+  array_clear(&pool->tree_stack);
+  return result;
+}
+
+static bool ts_parser__same_root_child(TSParser *self, const TSTreeCursor *left, const TSTreeCursor *right) {
+  TSNode a = ts_tree_cursor_current_node(left), b = ts_tree_cursor_current_node(right);
+  return ts_tree_cursor_current_field_id(left) == ts_tree_cursor_current_field_id(right) &&
+    memcmp(a.context, b.context, sizeof(a.context)) == 0 &&
+    ts_parser__same_subtree_structure(*(const Subtree *)a.id, *(const Subtree *)b.id, &self->tree_pool);
+}
+
+static void ts_parser__skip_shared_root_children(TSParser *self, TSTreeCursor cursors[2], bool valid[2]) {
+  while (valid[0] && valid[1] && ts_parser__same_root_child(self, &cursors[0], &cursors[1])) {
+    valid[0] = ts_tree_cursor_goto_next_sibling(&cursors[0]);
+    valid[1] = ts_tree_cursor_goto_next_sibling(&cursors[1]);
+  }
+}
+
+static bool ts_parser__isolates_recovery_error(TSParser *self, Subtree baseline, Subtree candidate) {
+  if (!ts_subtree_error_cost(baseline) || !ts_subtree_error_cost(candidate) ||
+      ts_subtree_symbol(baseline) != ts_subtree_symbol(candidate) ||
+      ts_subtree_symbol(baseline) == ts_builtin_sym_error ||
+      ts_subtree_dynamic_precedence(baseline) != ts_subtree_dynamic_precedence(candidate)) return false;
+
+  ts_subtree_retain(baseline);
+  ts_subtree_retain(candidate);
+  TSTree *trees[2] = {
+    ts_tree_new(baseline, self->language, self->lexer.included_ranges, self->lexer.included_range_count),
+    ts_tree_new(candidate, self->language, self->lexer.included_ranges, self->lexer.included_range_count),
+  };
+  TSNode roots[2] = {ts_tree_root_node(trees[0]), ts_tree_root_node(trees[1])};
+  TSTreeCursor cursors[2] = {ts_tree_cursor_new(roots[0]), ts_tree_cursor_new(roots[1])};
+  bool result = false;
+  if (memcmp(roots[0].context, roots[1].context, sizeof(roots[0].context)) ||
+      ts_node_child_count(roots[1]) != (uint64_t)ts_node_child_count(roots[0]) + 1 ||
+      ts_node_end_byte(roots[0]) != ts_node_end_byte(roots[1]) ||
+      !point_eq(ts_node_end_point(roots[0]), ts_node_end_point(roots[1]))) goto cleanup;
+
+  bool valid[2] = {ts_tree_cursor_goto_first_child(&cursors[0]), ts_tree_cursor_goto_first_child(&cursors[1])};
+  ts_parser__skip_shared_root_children(self, cursors, valid);
+  if (!valid[0] || !valid[1]) goto cleanup;
+  TSNode bad = ts_tree_cursor_current_node(&cursors[0]);
+  TSNode error = ts_tree_cursor_current_node(&cursors[1]);
+  if (!ts_node_is_error(error) || ts_node_is_error(bad) || !ts_node_has_error(bad) ||
+      !ts_node_is_named(bad) || ts_node_is_extra(bad) ||
+      ts_node_start_byte(bad) != ts_node_start_byte(error) ||
+      !point_eq(ts_node_start_point(bad), ts_node_start_point(error))) goto cleanup;
+  if (!ts_tree_cursor_goto_next_sibling(&cursors[1])) goto cleanup;
+  TSNode clean = ts_tree_cursor_current_node(&cursors[1]);
+  if (!ts_node_is_named(clean) || ts_node_is_extra(clean) || ts_node_has_error(clean) ||
+      ts_node_symbol(bad) != ts_node_symbol(clean) || !ts_node_named_child_count(clean) ||
+      ts_node_end_point(error).row >= ts_node_start_point(clean).row ||
+      ts_node_end_byte(error) > ts_node_start_byte(clean) ||
+      ts_node_end_byte(bad) != ts_node_end_byte(clean) ||
+      !point_eq(ts_node_end_point(bad), ts_node_end_point(clean))) goto cleanup;
+
+  valid[0] = ts_tree_cursor_goto_next_sibling(&cursors[0]);
+  valid[1] = ts_tree_cursor_goto_next_sibling(&cursors[1]);
+  ts_parser__skip_shared_root_children(self, cursors, valid);
+  result = !valid[0] && !valid[1];
+cleanup:
+  ts_tree_cursor_delete(&cursors[0]);
+  ts_tree_cursor_delete(&cursors[1]);
+  ts_tree_delete(trees[0]);
+  ts_tree_delete(trees[1]);
+  return result;
+}
+
+static void ts_parser__clear_accepted_error_trees(TSParser *self) {
+  for (uint32_t i = 0; i < self->accepted_error_trees.size; i++) {
+    ts_subtree_release(&self->tree_pool, *array_get(&self->accepted_error_trees, i));
+  }
+  array_clear(&self->accepted_error_trees);
+}
+
+static void ts_parser__select_recovery_isolation(TSParser *self) {
+  Subtree baseline = self->finished_tree;
+  Subtree selected = NULL_SUBTREE;
+  for (uint32_t i = 0; i < self->accepted_error_trees.size; i++) {
+    Subtree candidate = *array_get(&self->accepted_error_trees, i);
+    if (candidate.ptr != baseline.ptr && ts_parser__isolates_recovery_error(self, baseline, candidate) &&
+        (!selected.ptr || ts_parser__select_tree(self, selected, candidate))) {
+      selected = candidate;
+    }
+  }
+  if (selected.ptr) {
+    ts_subtree_retain(selected);
+    ts_subtree_release(&self->tree_pool, self->finished_tree);
+    self->finished_tree = selected;
+  }
+  ts_parser__clear_accepted_error_trees(self);
+}
+
 static void ts_parser__accept(
   TSParser *self,
   StackVersion version,
@@ -1344,6 +1471,10 @@ static void ts_parser__accept(
 
     ts_assert(root.ptr);
     self->accept_count++;
+    if (ts_subtree_error_cost(root) && self->accepted_error_trees.size < MAX_VERSION_COUNT) {
+      ts_subtree_retain(root);
+      array_push(&self->accepted_error_trees, root);
+    }
 
     if (self->finished_tree.ptr) {
       if (ts_parser__select_tree(self, self->finished_tree, root)) {
@@ -2410,6 +2541,7 @@ void ts_parser_delete(TSParser *self) {
   array_delete(&self->trailing_extras);
   array_delete(&self->trailing_extras2);
   array_delete(&self->scratch_trees);
+  array_delete(&self->accepted_error_trees);
   ts_free(self);
 }
 
@@ -2494,6 +2626,7 @@ void ts_parser_reset(TSParser *self) {
     ts_subtree_release(&self->tree_pool, self->finished_tree);
     self->finished_tree = NULL_SUBTREE;
   }
+  ts_parser__clear_accepted_error_trees(self);
   self->accept_count = 0;
   self->has_scanner_error = false;
   self->has_error = false;
@@ -2608,6 +2741,8 @@ TSTree *ts_parser_parse(
       }
     }
   } while (version_count != 0);
+
+  ts_parser__select_recovery_isolation(self);
 
 balance:
   ts_assert(self->finished_tree.ptr);
