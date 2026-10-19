@@ -717,6 +717,20 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
                 previous_length = ending.len();
             }
         }
+        let source = "class C \n implements number<B; \n export function f() {} const x = export";
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let exported = root
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == "export_statement")
+            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+        assert_eq!(
+            exported.utf8_text(source.as_bytes()).unwrap(),
+            "export function f() {}"
+        );
+        assert!(!exported.has_error());
+
         for name in ["const", "function", "export"] {
             let source = format!("class C implements Box<{name}> {{}}");
             let tree = parser.parse(&source, None).unwrap();

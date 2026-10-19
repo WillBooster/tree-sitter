@@ -2277,7 +2277,8 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
         continue;
       }
       LOG("resume version:%u", i);
-      min_error_cost = ts_stack_error_cost(self->stack, i);
+      unsigned cost = ts_stack_error_cost(self->stack, i);
+      if (cost < min_error_cost) min_error_cost = cost;
       Subtree lookahead = ts_stack_resume(self->stack, i);
       ts_parser__handle_error(self, i, lookahead);
       resumed_paused_version = true;
