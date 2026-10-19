@@ -1581,7 +1581,6 @@ static void ts_parser__recover(
       bool reached_prefix = false;
       for (unsigned i = 0; i < summary->size && !reached_prefix; i++) {
         StackSummaryEntry entry = *array_get(summary, i);
-        reached_prefix = entry.has_root_subtree && ts_parser__state_finishes_root(self, entry.state);
 
         if (entry.state == ERROR_STATE) continue;
         if (entry.position.bytes == position.bytes) continue;
@@ -1614,6 +1613,7 @@ static void ts_parser__recover(
             !ts_language_is_reserved_word(self->language, entry.state, symbol)
           ))
         ) {
+          reached_prefix = entry.has_root_subtree && ts_parser__state_finishes_root(self, entry.state);
           if (
             recovery_entry_count == 2 &&
             recovery_entries[1].state == 1 && entry.state == 1
