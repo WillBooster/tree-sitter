@@ -4024,10 +4024,8 @@ void ts_query_cursor__compare_captures(
   }
 }
 
-// Order two in-progress states for the longest-match dedup pass. Within a
-// (start_depth, pattern_index) group, states with no captures sort first, as they are a
-// subset of every other state (so the dedup pass must always compare them). The rest
-// sort by the start byte of their first capture.
+// Put captureless states before nonempty capture ranges so the dedup scan's
+// range-based early exit cannot skip an eligible capture-subset comparison.
 static bool ts_query_cursor__state_precedes(
   const TSQueryCursor *self,
   const QueryState *a,

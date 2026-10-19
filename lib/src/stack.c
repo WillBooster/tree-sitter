@@ -46,6 +46,11 @@ typedef struct {
   SubtreeArray subtrees;
   uint32_t subtree_count;
   bool is_pending;
+  int precedence;
+  int total_precedence;
+  uint32_t trimmed_count;
+  bool error_free;
+  uint32_t path;
 } StackIterator;
 
 typedef Array(StackNode *) StackNodeArray;
@@ -71,7 +76,31 @@ typedef struct {
   bool has_unconfirmed_missing_token;
 } StackHead;
 
+typedef struct {
+  Subtree subtree;
+  uint32_t previous;
+} ReductionPath;
+typedef Array(ReductionPath) ReductionPaths;
+typedef struct {
+  StackNode *node;
+  uint32_t first;
+  uint32_t last;
+  int priority;
+  bool selected;
+} ReductionChoice;
+typedef struct {
+  uint32_t path;
+  uint32_t length;
+  int precedence;
+  uint32_t next;
+} ReductionCandidate;
+typedef Array(ReductionCandidate) ReductionCandidates;
+typedef Array(ReductionChoice) ReductionChoices;
+typedef Array(uint32_t) ReductionSlots;
+
 struct Stack {
+  bool has_pending_subtrees;
+  bool has_ambiguous_extras;
   Array(StackHead) heads;
   StackSliceArray slices;
   Array(StackIterator) iterators;
@@ -408,28 +437,80 @@ static StackNode *stack__skip_extra_chains(Stack *self, StackNode *node) {
   return node;
 }
 
+static void stack__record_reduction(
+  ReductionChoices *groups,
+  ReductionCandidates *candidates,
+  const StackIterator *iterator,
+  ReductionSlots *slots
+) {
+  int priority = iterator->node->dynamic_precedence + iterator->total_precedence;
+  uint32_t candidate = candidates->size;
+  array_push(candidates, ((ReductionCandidate) {
+    iterator->path, iterator->trimmed_count, iterator->precedence, UINT32_MAX
+  }));
+  if (groups->size * 2 >= slots->size) {
+    uint32_t capacity = slots->size ? slots->size * 2 : 16;
+    array_grow_by(slots, capacity - slots->size);
+    memset(slots->contents, 0, capacity * sizeof(uint32_t));
+    for (uint32_t i = 0; i < groups->size; i++) {
+      uint32_t slot = ((uintptr_t)array_get(groups, i)->node >> 4) & (capacity - 1);
+      while (*array_get(slots, slot)) slot = (slot + 1) & (capacity - 1);
+      *array_get(slots, slot) = i + 1;
+    }
+  }
+  uint32_t slot = ((uintptr_t)iterator->node >> 4) & (slots->size - 1);
+  while (*array_get(slots, slot)) {
+    ReductionChoice *group = array_get(groups, *array_get(slots, slot) - 1);
+    if (group->node == iterator->node) {
+      array_get(candidates, group->last)->next = candidate;
+      group->last = candidate;
+      if (priority > group->priority) group->priority = priority;
+      return;
+    }
+    slot = (slot + 1) & (slots->size - 1);
+  }
+  array_push(groups, ((ReductionChoice) {iterator->node, candidate, candidate, priority, false}));
+  *array_get(slots, slot) = groups->size;
+}
+
+static SubtreeArray stack__materialize_reduction(
+  Stack *, const ReductionPaths *, const ReductionCandidates *, const ReductionChoice *
+);
+
 static StackSliceArray stack__iter(
   Stack *self,
   StackVersion version,
   StackCallback callback,
   void *payload,
-  int goal_subtree_count
+  int goal_subtree_count,
+  uint32_t max_reductions,
+  bool *is_ambiguous
 ) {
   array_clear(&self->slices);
   array_clear(&self->iterators);
 
   StackHead *head = array_get(&self->heads, version);
+  bool compact = is_ambiguous && self->has_ambiguous_extras && head->node->error_cost == 0;
+  // The original head pins every borrowed path until the selected arrays retain it.
+  uint32_t pop_count = 0;
+  bool invalid_path = false;
+  ReductionPaths paths = array_new();
+  ReductionChoices winners = array_new();
+  ReductionCandidates candidates = array_new();
+  ReductionSlots slots = array_new();
   StackIterator new_iterator = {
     .node = head->node,
     .subtrees = array_new(),
     .subtree_count = 0,
     .is_pending = true,
+    .error_free = true,
+    .path = UINT32_MAX,
   };
 
   bool include_subtrees = false;
   if (goal_subtree_count >= 0) {
     include_subtrees = true;
-    array_reserve(&new_iterator.subtrees, (uint32_t)ts_subtree_alloc_size(goal_subtree_count) / sizeof(Subtree));
+    if (!compact) array_reserve(&new_iterator.subtrees, (uint32_t)ts_subtree_alloc_size(goal_subtree_count) / sizeof(Subtree));
   }
 
   array_push(&self->iterators, new_iterator);
@@ -462,7 +543,10 @@ static StackSliceArray stack__iter(
       bool should_pop = action & StackActionPop;
       bool should_stop = action & StackActionStop || node->link_count == 0;
 
-      if (should_pop) {
+      if (should_pop) pop_count++;
+      if (should_pop && compact) {
+        stack__record_reduction(&winners, &candidates, iterator, &slots);
+      } else if (should_pop) {
         SubtreeArray subtrees = iterator->subtrees;
         if (!should_stop) {
           ts_subtree_array_copy(subtrees, &subtrees);
@@ -497,14 +581,26 @@ static StackSliceArray stack__iter(
           StackIterator current_iterator = *array_get(&self->iterators, i);
           array_push(&self->iterators, current_iterator);
           next_iterator = array_back(&self->iterators);
-          ts_subtree_array_copy(next_iterator->subtrees, &next_iterator->subtrees);
+          if (!compact) ts_subtree_array_copy(next_iterator->subtrees, &next_iterator->subtrees);
         }
 
         next_iterator->node = link.node;
         if (link.subtree.ptr) {
           if (include_subtrees) {
-            array_push(&next_iterator->subtrees, link.subtree);
-            ts_subtree_retain(link.subtree);
+            if (compact) next_iterator->total_precedence += ts_subtree_dynamic_precedence(link.subtree);
+            if (compact && (next_iterator->subtree_count > 0 || !ts_subtree_extra(link.subtree))) {
+              next_iterator->precedence += ts_subtree_dynamic_precedence(link.subtree);
+              next_iterator->error_free &= ts_subtree_error_cost(link.subtree) == 0 && !ts_subtree_is_error(link.subtree);
+              next_iterator->trimmed_count++;
+            }
+            if (compact) {
+              array_push(&paths, ((ReductionPath) {link.subtree, next_iterator->path}));
+              next_iterator->path = paths.size - 1;
+              if (!next_iterator->error_free) invalid_path = true;
+            } else {
+              array_push(&next_iterator->subtrees, link.subtree);
+              ts_subtree_retain(link.subtree);
+            }
           }
 
           if (!ts_subtree_extra(link.subtree)) {
@@ -514,6 +610,7 @@ static StackSliceArray stack__iter(
             }
           }
         } else {
+          if (compact) invalid_path = true;
           next_iterator->subtree_count++;
           next_iterator->is_pending = false;
         }
@@ -521,7 +618,88 @@ static StackSliceArray stack__iter(
     }
   }
 
+  if (compact && !invalid_path) {
+    for (uint32_t selected = 0; selected < max_reductions; selected++) {
+      uint32_t best = UINT32_MAX;
+      for (uint32_t i = 0; i < winners.size; i++) {
+        ReductionChoice *group = array_get(&winners, i);
+        if (!group->selected && (best == UINT32_MAX || group->priority > array_get(&winners, best)->priority)) {
+          best = i;
+        }
+      }
+      if (best == UINT32_MAX) break;
+      array_get(&winners, best)->selected = true;
+    }
+    uint32_t retained = 0;
+    for (uint32_t i = 0; i < winners.size; i++) {
+      if (array_get(&winners, i)->selected) {
+        *array_get(&winners, retained) = *array_get(&winners, i);
+        retained++;
+      }
+    }
+    winners.size = retained;
+    for (uint32_t i = 0; i < winners.size; i++) {
+      ReductionChoice group = *array_get(&winners, i);
+      SubtreeArray subtrees = stack__materialize_reduction(self, &paths, &candidates, &group);
+      StackVersion slice_version = ts_stack__add_version(self, version, group.node);
+      array_push(&self->slices, ((StackSlice) {subtrees, slice_version}));
+    }
+  }
+
+  array_delete(&slots);
+  array_delete(&paths);
+  array_delete(&winners);
+  array_delete(&candidates);
+  bool retry = compact && invalid_path;
+  if (is_ambiguous) *is_ambiguous = pop_count > 1;
+  if (retry) {
+    StackSliceArray result = stack__iter(self, version, callback, payload, goal_subtree_count, 0, NULL);
+    *is_ambiguous = result.size > 1;
+    return result;
+  }
   return self->slices;
+}
+
+static SubtreeArray stack__materialize_reduction(
+  Stack *self,
+  const ReductionPaths *paths,
+  const ReductionCandidates *candidates,
+  const ReductionChoice *group
+) {
+  SubtreeArray subtrees = array_new();
+  uint32_t first = group->first;
+  ReductionCandidate winner = *array_get(candidates, first);
+  for (uint32_t i = winner.next; i != UINT32_MAX;) {
+    ReductionCandidate candidate = *array_get(candidates, i);
+    bool replace = candidate.precedence > winner.precedence;
+    if (candidate.precedence == winner.precedence) {
+      replace = candidate.length < winner.length;
+      if (candidate.length == winner.length) {
+        uint32_t left = winner.path, right = candidate.path;
+        int comparison = 0;
+        for (uint32_t j = 0; j < winner.length && !comparison; j++) {
+          ReductionPath a = *array_get(paths, left);
+          ReductionPath b = *array_get(paths, right);
+          if (a.subtree.ptr != b.subtree.ptr) {
+            comparison = ts_subtree_compare(a.subtree, b.subtree, self->subtree_pool);
+          }
+          left = a.previous;
+          right = b.previous;
+        }
+        replace = comparison > 0;
+      }
+    }
+    if (replace) winner = candidate;
+    i = candidate.next;
+  }
+  uint32_t path_index = winner.path;
+  while (path_index != UINT32_MAX) {
+    ReductionPath path = *array_get(paths, path_index);
+    array_push(&subtrees, path.subtree);
+    ts_subtree_retain(path.subtree);
+    path_index = path.previous;
+  }
+  return subtrees;
 }
 
 Stack *ts_stack_new(SubtreePool *subtree_pool) {
@@ -639,6 +817,8 @@ void ts_stack_push(
   TSStateId state
 ) {
   StackHead *head = array_get(&self->heads, version);
+  self->has_pending_subtrees |= pending;
+  self->has_ambiguous_extras |= subtree.ptr && !subtree.data.is_inline && subtree.ptr->has_ambiguous_extra;
   StackNode *new_node = stack_node_new(head->node, subtree, pending, state, &self->node_pool, self->pending_generation);
   if (!subtree.ptr) head->node_count_at_last_error = new_node->node_count;
   head->node = new_node;
@@ -654,9 +834,19 @@ forceinline StackAction pop_count_callback(void *payload, const StackIterator *i
 }
 
 StackSliceArray ts_stack_pop_count(Stack *self, StackVersion version, uint32_t count) {
-  return stack__iter(self, version, pop_count_callback, &count, (int)count);
+  return stack__iter(self, version, pop_count_callback, &count, (int)count, 0, NULL);
 }
 
+
+StackSliceArray ts_stack_pop_count_for_reduce(
+  Stack *self,
+  StackVersion version,
+  uint32_t count,
+  uint32_t max_reductions,
+  bool *is_ambiguous
+) {
+  return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, is_ambiguous);
+}
 
 forceinline StackAction pop_pending_callback(void *payload, const StackIterator *iterator) {
   (void)payload;
@@ -672,6 +862,10 @@ forceinline StackAction pop_pending_callback(void *payload, const StackIterator 
 }
 
 StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version) {
+  if (!self->has_pending_subtrees) {
+    array_clear(&self->slices);
+    return self->slices;
+  }
   StackNode *node = array_get(&self->heads, version)->node;
   if (node->pending_generation == self->pending_generation && !node->has_pending) {
     array_clear(&self->slices);
@@ -689,7 +883,7 @@ StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version) {
     array_clear(&self->slices);
     return self->slices;
   }
-  StackSliceArray pop = stack__iter(self, version, pop_pending_callback, NULL, 0);
+  StackSliceArray pop = stack__iter(self, version, pop_pending_callback, NULL, 0, 0, NULL);
   if (pop.size > 0) {
     ts_stack_renumber_version(self, array_get(&pop, 0)->version, version);
     array_get(&pop, 0)->version = version;
@@ -719,7 +913,7 @@ SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version) {
   for (unsigned i = 0; i < node->link_count; i++) {
     if (node->links[i].subtree.ptr && ts_subtree_is_error(node->links[i].subtree)) {
       bool found_error = false;
-      StackSliceArray pop = stack__iter(self, version, pop_error_callback, &found_error, 1);
+      StackSliceArray pop = stack__iter(self, version, pop_error_callback, &found_error, 1, 0, NULL);
       if (pop.size > 0) {
         ts_assert(pop.size == 1);
         ts_stack_renumber_version(self, array_get(&pop, 0)->version, version);
@@ -737,7 +931,7 @@ forceinline StackAction pop_all_callback(void *payload, const StackIterator *ite
 }
 
 StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version) {
-  return stack__iter(self, version, pop_all_callback, NULL, 0);
+  return stack__iter(self, version, pop_all_callback, NULL, 0, 0, NULL);
 }
 
 typedef struct {
@@ -769,7 +963,7 @@ void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_dep
     .max_depth = max_depth
   };
   array_init(session.summary);
-  stack__iter(self, version, summarize_stack_callback, &session, -1);
+  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL);
   StackHead *head = array_get(&self->heads, version);
   if (head->summary) {
     array_delete(head->summary);
@@ -908,6 +1102,8 @@ Subtree ts_stack_resume(Stack *self, StackVersion version) {
 }
 
 void ts_stack_clear(Stack *self) {
+  self->has_pending_subtrees = false;
+  self->has_ambiguous_extras = false;
   for (uint32_t i = 0; i < self->extra_chains.size; i++) {
     stack_node_release(array_get(&self->extra_chains, i)->start, &self->node_pool, self->subtree_pool);
   }
