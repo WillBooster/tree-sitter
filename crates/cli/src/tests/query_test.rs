@@ -6005,6 +6005,51 @@ fn test_query_deep_clone() {
 }
 
 #[test]
+fn test_query_deep_clone_nullable_roots() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "1";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        for pattern in ["((number)? @number)", "((number)* @number)"] {
+            let query = Query::new(&language, pattern).unwrap().deep_clone();
+            let mut cursor = QueryCursor::new();
+            let matches = collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(matches.len(), 2, "{pattern}");
+            assert_eq!(
+                matches
+                    .iter()
+                    .filter(|(_, captures)| captures.is_empty())
+                    .count(),
+                1,
+                "{pattern}",
+            );
+            let mut captures_cursor = QueryCursor::new();
+            let captures = collect_captures(
+                captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(captures, vec![("number", "1")], "{pattern}");
+            assert_eq!(
+                matches
+                    .into_iter()
+                    .flat_map(|(_, captures)| captures)
+                    .collect::<Vec<_>>(),
+                captures,
+                "{pattern}",
+            );
+        }
+    });
+}
+
+#[test]
 fn test_query_alternative_predicate_prefix() {
     allocations::record(|| {
         let language = get_language("c");
