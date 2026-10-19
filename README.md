@@ -34,6 +34,8 @@ mise exec -- bun run verify
 
 Run `mise install` before activating the project environment: it installs the configured tools and trusts the repository configuration.
 
+Keep Rust toolchain changes in `rust-toolchain.toml`; a `rust` tool entry in `mise.toml` overrides that file.
+
 ## Parser generation and tuning
 
 The CLI generates parsers with shared parse rows, bitmap-ranked sparse lookup, compact metadata, and language ABI
