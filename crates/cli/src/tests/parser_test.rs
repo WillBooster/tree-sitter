@@ -6718,6 +6718,42 @@ fn test_required_nonterminal_extra_preserves_line_before_error() {
 }
 
 #[test]
+fn test_required_nonterminal_extra_recovers_before_external_eof() {
+    let languages = [
+        get_test_fixture_language("required_extra_eof_recovery"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("required_extra_eof_recovery"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let mut source = "a";
+        let mut tree = parser.parse(source, None).unwrap();
+        for next in ["a", "ab", "a", "abq", "a"] {
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: source.len(),
+                new_end_byte: next.len(),
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, source.len()),
+                new_end_position: Point::new(0, next.len()),
+            });
+            source = next;
+            tree = parser.parse(source, Some(&tree)).unwrap();
+            let fresh = parser.parse(source, None).unwrap();
+            let actual = tree.root_node().to_sexp();
+            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
+            let expected = match source {
+                "a" => "(source_file (prefix (MISSING \"b\")) (comment (marker)))",
+                "ab" => "(source_file (prefix) (comment (marker)))",
+                _ => "(source_file (comment (marker)))",
+            };
+            assert_eq!(actual, expected, "{source}");
+            assert_eq!(tree.root_node().has_error(), source == "a");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
 fn test_required_nonterminal_extra_recovers_missing_start() {
     let grammar = serde_json::json!({
         "name": "required_extra_recovery",
@@ -6873,6 +6909,26 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 assert_eq!(tree.root_node().end_byte(), source.len());
             }
             tree = incremental;
+        }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in *b"\nl\nl" {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 6,
+                    deleted_length: 1,
+                    inserted_text: vec![replacement],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert!(!fresh.root_node().has_error());
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().end_byte(), source.len());
         }
         for source in ["l\n", "l#inside# \n"] {
             let tree = parser.parse(source, None).unwrap();

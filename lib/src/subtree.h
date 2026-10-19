@@ -130,6 +130,7 @@ typedef struct {
   bool is_keyword : 1;
   bool first_leaf_is_keyword : 1;
   bool trailing_extra : 1;
+  bool has_ambiguous_extra : 1;
 
   union {
     // Non-terminal subtrees (`child_count > 0`)
