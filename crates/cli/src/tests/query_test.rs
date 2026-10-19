@@ -5894,6 +5894,51 @@ fn test_query_deep_clone() {
 }
 
 #[test]
+fn test_query_deep_clone_nullable_roots() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "1";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        for pattern in ["((number)? @number)", "((number)* @number)"] {
+            let query = Query::new(&language, pattern).unwrap().deep_clone();
+            let mut cursor = QueryCursor::new();
+            let matches = collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(matches.len(), 2, "{pattern}");
+            assert_eq!(
+                matches
+                    .iter()
+                    .filter(|(_, captures)| captures.is_empty())
+                    .count(),
+                1,
+                "{pattern}",
+            );
+            let mut captures_cursor = QueryCursor::new();
+            let captures = collect_captures(
+                captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source,
+            );
+            assert_eq!(captures, vec![("number", "1")], "{pattern}");
+            assert_eq!(
+                matches
+                    .into_iter()
+                    .flat_map(|(_, captures)| captures)
+                    .collect::<Vec<_>>(),
+                captures,
+                "{pattern}",
+            );
+        }
+    });
+}
+
+#[test]
 fn test_query_alternative_predicate_prefix() {
     allocations::record(|| {
         let language = get_language("c");
@@ -8085,6 +8130,382 @@ fn test_last_child_anchor_looks_past_hidden_node() {
 
         assert_query_matches(&language, &query, source, &[(0, vec![("last", "int y;")])]);
     });
+}
+
+#[test]
+fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
+    let item = serde_json::json!({"type": "CHOICE", "members": [
+        {"type": "SYMBOL", "name": "number"},
+        {"type": "SYMBOL", "name": "word"}
+    ]});
+    let documents = [
+        (
+            "fixed",
+            serde_json::json!({"type": "SEQ", "members": [item, item]}),
+        ),
+        (
+            "optional",
+            serde_json::json!({"type": "SEQ", "members": [item,
+            {"type": "CHOICE", "members": [item, {"type": "BLANK"}]}]}),
+        ),
+        (
+            "repeat",
+            serde_json::json!({"type": "REPEAT1", "content": item}),
+        ),
+    ];
+    let source = "3\n4\n";
+    for (name, document) in documents {
+        let grammar = serde_json::json!({
+            "name": format!("nullable_root_{name}"),
+            "rules": {
+                "document": document,
+                "number": {"type": "PATTERN", "value": "[0-9]+"},
+                "word": {"type": "PATTERN", "value": "[a-z]+"}
+            },
+            "extras": [{"type": "PATTERN", "value": "\\s"}]
+        });
+        let (parser_name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+        let language = get_test_language(&parser_name, &parser_code, None);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(root.to_sexp(), "(document (number) (number))");
+        assert_eq!(root.byte_range(), 0..4);
+        assert_eq!(root.child(0).unwrap().byte_range(), 0..1);
+        assert_eq!(root.child(1).unwrap().byte_range(), 2..3);
+
+        for (pattern, nullable) in [
+            ("((number)? @number)", true),
+            ("((number)* @number)", true),
+            ("(number) @number", false),
+            ("((number)+ @number)", false),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            for use_points in [false, true] {
+                let mut cursor = QueryCursor::new();
+                if use_points {
+                    cursor.set_point_range(Point::new(1, 1)..Point::new(2, 1));
+                } else {
+                    cursor.set_byte_range(3..5);
+                }
+                let matches = collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source,
+                );
+                let mut expected = vec![(0, vec![]); usize::from(nullable)];
+                if pattern.contains('*') || pattern.contains('+') {
+                    expected.push((0, vec![("number", "3"), ("number", "4")]));
+                }
+                assert_eq!(
+                    matches, expected,
+                    "{name}: {pattern}, use_points={use_points}"
+                );
+            }
+
+            if nullable {
+                let mut cursor = QueryCursor::new();
+                cursor.set_byte_range(5..6);
+                let matches = collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(matches, [], "{name}: {pattern}");
+                cursor.set_byte_range(2..3);
+                let matches = collect_matches(
+                    cursor.matches(&query, root.child(1).unwrap(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(matches.len(), 1, "{name}: {pattern}");
+                assert_eq!(
+                    matches
+                        .iter()
+                        .filter(|(_, captures)| captures.is_empty())
+                        .count(),
+                    0
+                );
+                assert_eq!(
+                    matches
+                        .iter()
+                        .flat_map(|(_, captures)| captures.iter())
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    vec![("number", "4")]
+                );
+            }
+
+            if pattern == "((number)? @number)" {
+                let mut cursor = QueryCursor::new();
+                let matches = collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(
+                    matches
+                        .iter()
+                        .filter(|(_, captures)| captures.is_empty())
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    matches
+                        .iter()
+                        .flat_map(|(_, captures)| captures.iter())
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    vec![("number", "3"), ("number", "4")]
+                );
+                cursor.set_max_start_depth(Some(0));
+                let matches = collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source,
+                );
+                assert_eq!(matches, vec![(0, vec![])]);
+            }
+        }
+
+        for (pattern, count) in [("(number)", 2), ("((number)?)", 3), ("((number)*)", 2)] {
+            let query = Query::new(&language, pattern).unwrap();
+            let mut cursor = QueryCursor::new();
+            assert_eq!(
+                collect_matches(
+                    cursor.matches(&query, root, source.as_bytes()),
+                    &query,
+                    source
+                ),
+                vec![(0, vec![]); count],
+                "{name}: {pattern}",
+            );
+        }
+
+        if name == "repeat" {
+            let source = "1 ".repeat(1000);
+            let tree = parser.parse(&source, None).unwrap();
+            for pattern in ["((number)?)", "((number)? @number)"] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source
+                    )
+                    .len(),
+                    1001,
+                    "{pattern}",
+                );
+                cursor.set_byte_range(source.len() - 1..source.len() + 1);
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source
+                    ),
+                    vec![(0, vec![])],
+                );
+            }
+        }
+
+        let mut mixed_cases = vec![("1 a", 2, 1, 1), ("a 1", 3, 0, 0)];
+        if name == "repeat" {
+            mixed_cases.extend([
+                ("1 2 a", 2, 2, 1),
+                ("1 a 2", 3, 1, 1),
+                ("1 a b", 3, 2, 1),
+                ("1 a 2 b", 3, 3, 2),
+            ]);
+        }
+        allocations::record(|| {
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            for (source, empty_count, captured_bodies, captureless_bodies) in mixed_cases {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(!tree.root_node().has_error());
+                for (pattern, body_count) in [
+                    ("((number) (word))?", captureless_bodies),
+                    ("((number) @n (word) @w)?", captured_bodies),
+                ] {
+                    let query = Query::new(&language, pattern).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(
+                        matches.len(),
+                        empty_count + body_count,
+                        "{name}: {pattern}, {source}"
+                    );
+                    if pattern.contains('@') {
+                        assert_eq!(
+                            matches
+                                .iter()
+                                .filter(|(_, captures)| captures.is_empty())
+                                .count(),
+                            empty_count,
+                            "{name}: {pattern}, {source}",
+                        );
+                        let body = Query::new(&language, "((number) @n (word) @w)").unwrap();
+                        let mut body_cursor = QueryCursor::new();
+                        let expected = collect_matches(
+                            body_cursor.matches(&body, tree.root_node(), source.as_bytes()),
+                            &body,
+                            source,
+                        );
+                        assert_eq!(
+                            matches
+                                .into_iter()
+                                .filter(|(_, captures)| !captures.is_empty())
+                                .collect::<Vec<_>>(),
+                            expected,
+                            "{name}: {pattern}, {source}",
+                        );
+                    }
+                }
+            }
+        });
+
+        if name == "repeat" {
+            allocations::record(|| {
+                let mut parser = Parser::new();
+                parser.set_language(&language).unwrap();
+                for (source, pattern, body, empty_count) in [
+                    (
+                        "1 2 a",
+                        "((number) @n . (word) @w)?",
+                        "((number) @n . (word) @w)",
+                        3,
+                    ),
+                    ("1 a b", "((number)* @n)", "((number)+ @n)", 3),
+                    ("1 a 2 b", "((number)* @n)", "((number)+ @n)", 3),
+                    ("1 a", "(_ (number) @n)?", "(_ (number) @n)", 2),
+                ] {
+                    let tree = parser.parse(source, None).unwrap();
+                    let query = Query::new(&language, pattern).unwrap();
+                    let body = Query::new(&language, body).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let mut body_cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(
+                        matches
+                            .iter()
+                            .filter(|(_, captures)| captures.is_empty())
+                            .count(),
+                        empty_count,
+                        "{pattern}: {source}"
+                    );
+                    assert_eq!(
+                        matches
+                            .into_iter()
+                            .filter(|(_, captures)| !captures.is_empty())
+                            .collect::<Vec<_>>(),
+                        collect_matches(
+                            body_cursor.matches(&body, tree.root_node(), source.as_bytes()),
+                            &body,
+                            source
+                        ),
+                        "{pattern}: {source}"
+                    );
+                }
+            });
+        }
+
+        for source in if name == "repeat" {
+            ["a b c d e", "1 2 3 4 5"]
+        } else {
+            ["a b", "1 2"]
+        } {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error());
+            for pattern in ["((number) (word))?", "((number) @n (word) @w)?"] {
+                let query = Query::new(&language, pattern).unwrap();
+                for use_points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    assert_eq!(
+                        collect_matches(
+                            cursor.matches(&query, root, source.as_bytes()),
+                            &query,
+                            source
+                        ),
+                        vec![(0, vec![]); root.named_child_count() + 1],
+                        "{name}: {pattern}, source={source:?}",
+                    );
+                    if use_points {
+                        cursor.set_point_range(Point::new(0, 2)..Point::new(0, 3));
+                    } else {
+                        cursor.set_byte_range(2..3);
+                    }
+                    assert_eq!(
+                        collect_matches(
+                            cursor.matches(&query, root, source.as_bytes()),
+                            &query,
+                            source
+                        ),
+                        vec![(0, vec![]); 2],
+                        "{name}: {pattern}, source={source:?}, use_points={use_points}",
+                    );
+                    cursor.set_max_start_depth(Some(0));
+                    assert_eq!(
+                        collect_matches(
+                            cursor.matches(&query, root, source.as_bytes()),
+                            &query,
+                            source
+                        ),
+                        vec![(0, vec![])],
+                    );
+                }
+            }
+        }
+
+        let mut query = Query::new(&language, "((number)? @number)").unwrap();
+        let mut cursor = QueryCursor::new();
+        cursor.set_byte_range(3..5).set_containing_byte_range(0..3);
+        let matches = collect_matches(
+            cursor.matches(&query, root, source.as_bytes()),
+            &query,
+            source,
+        );
+        assert_eq!(matches, []);
+        cursor.set_containing_byte_range(0..source.len());
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, root, source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![(0, vec![])]
+        );
+        query.disable_pattern(0);
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, root, source.as_bytes()),
+                &query,
+                source
+            ),
+            []
+        );
+        let query = Query::new(&language, "(number) @number").unwrap();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, root, source.as_bytes()),
+                &query,
+                source
+            ),
+            []
+        );
+    }
 }
 
 #[test]

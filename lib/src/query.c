@@ -168,12 +168,20 @@ typedef struct {
   uint32_t start_byte;
   uint32_t end_byte;
   bool is_non_local;
+  bool has_empty_root;
 } QueryPattern;
 
 typedef struct {
   uint32_t byte_offset;
   uint16_t step_index;
 } StepOffset;
+
+typedef struct {
+  uint64_t start;
+  uint64_t end;
+} QueryRootRange;
+
+typedef Array(QueryRootRange) QueryRootRanges;
 
 /*
  * QueryState - The state of an in-progress match of a particular pattern
@@ -203,9 +211,12 @@ typedef struct {
  *    it is clear that there can be no other alternative match with more captures.
  */
 typedef struct {
+  QueryRootRanges root_origins;
   uint32_t id;
   uint32_t capture_list_id;
   uint32_t heap_insert_order;
+  // Deferred empty roots share a state, but still yield one result per visited node.
+  uint32_t empty_root_match_count;
   uint16_t start_depth;
   uint16_t step_index;
   uint16_t pattern_index;
@@ -310,6 +321,7 @@ struct TSQuery {
   Array(TSSymbol) repeat_symbols_with_rootless_patterns;
   const TSLanguage *language;
   uint16_t wildcard_root_pattern_count;
+  bool has_empty_roots;
 };
 
 /*
@@ -329,6 +341,7 @@ struct TSQueryCursor {
   uint32_t max_start_depth;
   TSRange included_range;
   TSRange containing_range;
+  Array(uint64_t) root_ids;
   uint32_t next_state_id;
   uint32_t next_finished_state_id;
   const TSQueryCursorOptions *query_options;
@@ -3166,8 +3179,9 @@ TSQuery *ts_query_new(
     array_push(&self->capture_quantifiers, capture_quantifiers);
 
     // Maintain a map that can look up patterns for a given root symbol.
-    Array(uint16_t) root_steps = array_new();
-    array_push(&root_steps, start_step_index);
+    QueryStepIndexArray root_steps = query_step__initial_indices(self->steps.contents, start_step_index, self->steps.size);
+    pattern->has_empty_root = array_get(&self->steps, *array_back(&root_steps))->depth == PATTERN_DONE_MARKER;
+    self->has_empty_roots |= pattern->has_empty_root;
     for (unsigned root_index = 0; root_index < root_steps.size; root_index++) {
       start_step_index = *array_get(&root_steps, root_index);
       QueryStep *step = array_get(&self->steps, start_step_index);
@@ -3189,7 +3203,7 @@ TSQuery *ts_query_new(
       // then optimize the matching process by skipping matching the wildcard.
       // Later, during the matching process, the query cursor will check that
       // there is a parent node, and capture it if necessary.
-      if (step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field) {
+      if (!pattern->has_empty_root && step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
         if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
           if (step->alternative_index != NONE) {
@@ -3215,6 +3229,10 @@ TSQuery *ts_query_new(
         }
       }
 
+      if (step->depth == PATTERN_DONE_MARKER) {
+        pattern->has_empty_root = true;
+        self->has_empty_roots = true;
+      }
       ts_query__pattern_map_insert(self, step->symbol, (PatternEntry) {
         .step_index = start_step_index,
         .pattern_index = pattern_index,
@@ -3330,6 +3348,7 @@ TSQuery *ts_query_copy(const TSQuery *self) {
     .predicate_values = symbol_table_new(),
     .language = ts_language_copy(self->language),
     .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
+    .has_empty_roots = self->has_empty_roots,
   };
 
   array_assign(&copy->steps, &self->steps);
@@ -3517,6 +3536,88 @@ void ts_query_disable_pattern(
  * QueryCursor
  ***************/
 
+static void query_root_ranges__add(QueryRootRanges *self, QueryRootRange range) {
+  uint32_t left = 0, right = self->size;
+  while (left < right) {
+    uint32_t middle = left + (right - left) / 2;
+    if (array_get(self, middle)->end < range.start) left = middle + 1;
+    else right = middle;
+  }
+  uint32_t end = left;
+  while (end < self->size && array_get(self, end)->start <= range.end) {
+    QueryRootRange other = *array_get(self, end);
+    end++;
+    if (other.start < range.start) range.start = other.start;
+    if (other.end > range.end) range.end = other.end;
+  }
+  array_splice(self, left, end - left, 1, &range);
+}
+
+static void query_root_ranges__merge(QueryRootRanges *self, const QueryRootRanges *other) {
+  for (uint32_t i = 0; i < other->size; i++) query_root_ranges__add(self, *array_get(other, i));
+}
+
+static uint32_t query_root_ranges__first_ending_after(const QueryRootRanges *, uint32_t, uint64_t);
+
+static bool query_root_ranges__intersect(const QueryRootRanges *self, const QueryRootRanges *other) {
+  uint32_t i = 0, j = 0;
+  while (i < self->size && j < other->size) {
+    QueryRootRange a = *array_get(self, i), b = *array_get(other, j);
+    if (a.end <= b.start) i = query_root_ranges__first_ending_after(self, i + 1, b.start);
+    else if (b.end <= a.start) j = query_root_ranges__first_ending_after(other, j + 1, a.start);
+    else return true;
+  }
+  return false;
+}
+
+static uint32_t query_root_ranges__subtract(QueryRootRanges *self, const QueryRootRanges *other) {
+  if (!other->size) return 0;
+  uint32_t start = query_root_ranges__first_ending_after(self, 0, array_get(other, 0)->start);
+  uint32_t end = start, removed = 0, j = 0;
+  QueryRootRanges remaining = array_new();
+  while (end < self->size && array_get(self, end)->start < array_back(other)->end) {
+    QueryRootRange a = *array_get(self, end);
+    end++;
+    while (j < other->size && array_get(other, j)->end <= a.start) j++;
+    for (uint32_t k = j; k < other->size && array_get(other, k)->start < a.end; k++) {
+      QueryRootRange b = *array_get(other, k);
+      uint64_t overlap_start = a.start > b.start ? a.start : b.start;
+      uint64_t overlap_end = a.end < b.end ? a.end : b.end;
+      removed += overlap_end - overlap_start;
+      if (a.start < b.start) array_push(&remaining, ((QueryRootRange) {a.start, b.start}));
+      if (b.end > a.start) a.start = b.end;
+      if (a.start >= a.end) break;
+    }
+    if (a.start < a.end) array_push(&remaining, a);
+  }
+  if (removed) array_splice(self, start, end - start, remaining.size, remaining.contents);
+  array_delete(&remaining);
+  return removed;
+}
+
+static uint32_t query_root_ranges__first_ending_after(
+  const QueryRootRanges *self,
+  uint32_t start,
+  uint64_t position
+) {
+  uint32_t left = start, right = start;
+  for (uint64_t stride = 1; right < self->size && array_get(self, right)->end <= position; stride *= 2) {
+    left = right + 1;
+    uint64_t bound = start + stride;
+    right = bound < self->size ? bound : self->size;
+  }
+  while (left < right) {
+    uint32_t middle = left + (right - left) / 2;
+    if (array_get(self, middle)->end <= position) left = middle + 1;
+    else right = middle;
+  }
+  return left;
+}
+
+static void query_states__clear_origins(QueryStateList *states) {
+  for (uint32_t i = 0; i < states->size; i++) array_delete(&array_get(states, i)->root_origins);
+}
+
 TSQueryCursor *ts_query_cursor_new(void) {
   TSQueryCursor *self = ts_malloc(sizeof(TSQueryCursor));
   *self = (TSQueryCursor) {
@@ -3524,6 +3625,7 @@ TSQueryCursor *ts_query_cursor_new(void) {
     .ascending = false,
     .halted = false,
     .states = array_new(),
+    .root_ids = array_new(),
     .finished_states = array_new(),
     .capture_list_pool = capture_list_pool_new(),
     .included_range = {
@@ -3547,6 +3649,9 @@ TSQueryCursor *ts_query_cursor_new(void) {
 }
 
 void ts_query_cursor_delete(TSQueryCursor *self) {
+  query_states__clear_origins(&self->states);
+  query_states__clear_origins(&self->finished_states);
+  array_delete(&self->root_ids);
   array_delete(&self->states);
   array_delete(&self->finished_states);
   ts_tree_cursor_delete(&self->cursor);
@@ -3603,6 +3708,9 @@ void ts_query_cursor_exec(
     }
   }
 
+  query_states__clear_origins(&self->states);
+  query_states__clear_origins(&self->finished_states);
+  array_clear(&self->root_ids);
   array_clear(&self->states);
   array_clear(&self->finished_states);
   self->finished_states_heap_size = 0;
@@ -3873,12 +3981,14 @@ static void ts_query_cursor__sort_states_by_capture(TSQueryCursor *self) {
   }
 }
 
+static uint32_t ts_query_cursor__empty_root_state_index(TSQueryCursor *, uint32_t, const PatternEntry *);
+
 static void ts_query_cursor__add_state(
   TSQueryCursor *self,
   const PatternEntry *pattern
 ) {
   QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-  uint32_t start_depth = self->depth - step->depth;
+  uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
 
   // Keep the states array in ascending order of start_depth and pattern_index,
   // so that it can be processed more efficiently elsewhere. Usually, there is
@@ -3900,6 +4010,10 @@ static void ts_query_cursor__add_state(
   // If there are multiple patterns like this in a query, then this loop will
   // need to execute in order to keep the states ordered by pattern_index.
   uint32_t index = self->states.size;
+  if (step->depth == PATTERN_DONE_MARKER) {
+    uint32_t empty_index = ts_query_cursor__empty_root_state_index(self, start_depth, pattern);
+    if (empty_index < self->states.size) index = empty_index + 1;
+  }
   while (index > 0) {
     QueryState *prev_state = array_get(&self->states, index - 1);
     if (prev_state->start_depth < start_depth) break;
@@ -3908,8 +4022,16 @@ static void ts_query_cursor__add_state(
       // immediately pruned by the longest-match criteria.
       if (
         prev_state->pattern_index == pattern->pattern_index &&
-        prev_state->step_index == pattern->step_index
-      ) return;
+        prev_state->step_index == pattern->step_index &&
+        (prev_state->empty_root_match_count || !array_get(&self->query->patterns, pattern->pattern_index)->has_empty_root)
+      ) {
+        if (prev_state->empty_root_match_count) {
+          uint64_t root = *array_get(&self->root_ids, start_depth);
+          query_root_ranges__add(&prev_state->root_origins, (QueryRootRange) {root, root + 1});
+          prev_state->empty_root_match_count++;
+        }
+        return;
+      }
       if (prev_state->pattern_index <= pattern->pattern_index) break;
     }
     index--;
@@ -3920,10 +4042,17 @@ static void ts_query_cursor__add_state(
     pattern->pattern_index,
     pattern->step_index
   );
+  QueryRootRanges origins = array_new();
+  if (step->depth == PATTERN_DONE_MARKER) {
+    uint64_t root = *array_get(&self->root_ids, start_depth);
+    array_push(&origins, ((QueryRootRange) {root, root + 1}));
+  }
   array_insert(&self->states, index, ((QueryState) {
+    .root_origins = origins,
     .id = UINT32_MAX,
     .capture_list_id = CAPTURE_LIST_NONE,
     .heap_insert_order = UINT32_MAX,
+    .empty_root_match_count = step->depth == PATTERN_DONE_MARKER,
     .step_index = pattern->step_index,
     .pattern_index = pattern->pattern_index,
     .start_depth = start_depth,
@@ -3935,6 +4064,33 @@ static void ts_query_cursor__add_state(
     .dead = false,
     .skipped_quantifier = false,
   }));
+}
+
+static uint32_t ts_query_cursor__empty_root_state_index(
+  TSQueryCursor *self,
+  uint32_t start_depth,
+  const PatternEntry *pattern
+) {
+  uint32_t left = 0, right = self->states.size;
+  while (left < right) {
+    uint32_t middle = left + (right - left) / 2;
+    QueryState *state = array_get(&self->states, middle);
+    if (state->start_depth < start_depth ||
+        (state->start_depth == start_depth && state->pattern_index < pattern->pattern_index)) {
+      left = middle + 1;
+    } else {
+      right = middle;
+    }
+  }
+  for (uint32_t i = left; i < self->states.size; i++) {
+    QueryState *state = array_get(&self->states, i);
+    if (state->start_depth != start_depth || state->pattern_index != pattern->pattern_index ||
+        capture_list_pool_get(&self->capture_list_pool, state->capture_list_id)->size) break;
+    if (state->step_index == pattern->step_index && state->empty_root_match_count) {
+      return i;
+    }
+  }
+  return self->states.size;
 }
 
 // Acquire a capture list for this state. If there are no capture lists left in the
@@ -4037,6 +4193,8 @@ static QueryState *ts_query_cursor__copy_state(
     array_push_all(new_captures, old_captures);
   }
 
+  copy.root_origins = (QueryRootRanges) array_new();
+  array_push_all(&copy.root_origins, &state->root_origins);
   array_insert(&self->states, state_index + 1, copy);
   *state_ref = array_get(&self->states, state_index);
   return array_get(&self->states, state_index + 1);
@@ -4134,6 +4292,7 @@ static inline bool ts_query_cursor__advance(
     if (self->halted) {
       while (self->states.size > 0) {
         QueryState state = array_pop(&self->states);
+        array_delete(&state.root_origins);
         capture_list_pool_release(
           &self->capture_list_pool,
           state.capture_list_id
@@ -4192,6 +4351,7 @@ static inline bool ts_query_cursor__advance(
               state->pattern_index,
               state->step_index
             );
+            array_delete(&state->root_origins);
             capture_list_pool_release(
               &self->capture_list_pool,
               state->capture_list_id
@@ -4264,6 +4424,10 @@ static inline bool ts_query_cursor__advance(
       bool node_within_containing_range =
         range_within(&node_range, &self->containing_range);
 
+      if (self->on_visible_node && self->query->has_empty_roots) {
+        if (self->root_ids.size <= self->depth) array_push(&self->root_ids, 0);
+        else (*array_get(&self->root_ids, self->depth))++;
+      }
       if (node_within_containing_range && self->on_visible_node) {
         TSSymbol symbol = ts_node_symbol(node);
         bool is_named = ts_node_is_named(node);
@@ -4306,11 +4470,12 @@ static inline bool ts_query_cursor__advance(
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
             QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-            uint32_t start_depth = self->depth - step->depth;
+            uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
             if (
-              (pattern->is_rooted ?
+              (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
                 (parent_intersects_range && !parent_is_error)) &&
+              (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
               (start_depth <= self->max_start_depth)
@@ -4326,7 +4491,7 @@ static inline bool ts_query_cursor__advance(
           PatternEntry *pattern = array_get(&self->query->pattern_map, i);
 
           QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-          uint32_t start_depth = self->depth - step->depth;
+          uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
           do {
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
@@ -4348,7 +4513,7 @@ static inline bool ts_query_cursor__advance(
           } while (step->symbol == symbol);
         }
 
-        // Update all of the in-progress states with current node.
+        bool has_completed_root_origins = false;
         for (unsigned j = 0, copy_count = 0; j < self->states.size; j += 1 + copy_count) {
           QueryState *state = array_get(&self->states, j);
           QueryStep *step = array_get(&self->query->steps, state->step_index);
@@ -4425,6 +4590,7 @@ static inline bool ts_query_cursor__advance(
                 state->pattern_index,
                 state->step_index
               );
+              array_delete(&state->root_origins);
               capture_list_pool_release(
                 &self->capture_list_pool,
                 state->capture_list_id
@@ -4448,6 +4614,11 @@ static inline bool ts_query_cursor__advance(
               );
               copy_count++;
             }
+          }
+
+          if (!state->root_origins.size && array_get(&self->query->patterns, state->pattern_index)->has_empty_root) {
+            uint64_t root = *array_get(&self->root_ids, state->start_depth);
+            array_push(&state->root_origins, ((QueryRootRange) {root, root + 1}));
           }
 
           // If this pattern started with a wildcard, such that the pattern map
@@ -4494,6 +4665,7 @@ static inline bool ts_query_cursor__advance(
           }
 
           if (state->dead) {
+            array_delete(&state->root_origins);
             array_erase(&self->states, j);
             j--;
             continue;
@@ -4539,6 +4711,9 @@ static inline bool ts_query_cursor__advance(
             QueryState *child_state = array_get(&self->states, k);
             uint16_t child_step_index = child_state->step_index;
             QueryStep *child_step = array_get(&self->query->steps, child_step_index);
+            if (child_step->depth == PATTERN_DONE_MARKER && child_state->root_origins.size) {
+              has_completed_root_origins = true;
+            }
             if (child_step->alternative_branch_index != NONE) {
               QueryState *branch = ts_query_cursor__copy_state(self, &child_state);
               if (branch) {
@@ -4660,6 +4835,22 @@ static inline bool ts_query_cursor__advance(
           }
         }
 
+        for (uint32_t j = 0; has_completed_root_origins && j < self->states.size; j++) {
+          QueryState *body = array_get(&self->states, j);
+          if (body->dead || body->empty_root_match_count || !body->root_origins.size ||
+              array_get(&self->query->steps, body->step_index)->depth != PATTERN_DONE_MARKER) continue;
+          for (uint32_t k = 0; k < self->states.size; k++) {
+            QueryState *empty = array_get(&self->states, k);
+            if (empty->dead || !empty->empty_root_match_count || empty->pattern_index != body->pattern_index ||
+                empty->start_depth != body->start_depth) continue;
+            uint32_t removed = query_root_ranges__subtract(&empty->root_origins, &body->root_origins);
+            ts_assert(removed <= empty->empty_root_match_count);
+            empty->empty_root_match_count -= removed;
+            if (!empty->empty_root_match_count) empty->dead = true;
+          }
+          array_delete(&body->root_origins);
+        }
+
         // Order states by capture position so the dedup pass below can stop scanning a
         // group once the remaining states are disjoint from the current one.
         ts_query_cursor__sort_states_by_capture(self);
@@ -4667,6 +4858,7 @@ static inline bool ts_query_cursor__advance(
         for (unsigned j = 0; j < self->states.size; j++) {
           QueryState *state = array_get(&self->states, j);
           if (state->dead) {
+            array_delete(&state->root_origins);
             array_erase(&self->states, j);
             j--;
             continue;
@@ -4678,6 +4870,7 @@ static inline bool ts_query_cursor__advance(
           bool did_remove = false;
           for (unsigned k = j + 1; k < self->states.size; k++) {
             QueryState *other_state = array_get(&self->states, k);
+            if (other_state->dead) continue;
 
             // Query states are kept in ascending order of start_depth and pattern_index, and
             // (via the above call to `ts_query_cursor__sort_states_by_capture`) in ascending
@@ -4701,6 +4894,14 @@ static inline bool ts_query_cursor__advance(
               capture_list_pool_get(&self->capture_list_pool, state->capture_list_id);
             const CaptureList *other_captures =
               capture_list_pool_get(&self->capture_list_pool, other_state->capture_list_id);
+            // Completed bodies already canceled their empty origins above. Once an
+            // in-progress body defers this empty root, later captured states can only
+            // repeat that decision; captureless states sort before them.
+            if (
+              state->empty_root_match_count &&
+              state->has_in_progress_alternatives &&
+              other_captures->size > 0
+            ) break;
             if (
               state_captures->size > 0 &&
               other_captures->size > 0 &&
@@ -4710,6 +4911,8 @@ static inline bool ts_query_cursor__advance(
               break;
             }
 
+            if (!!state->empty_root_match_count != !!other_state->empty_root_match_count &&
+                !query_root_ranges__intersect(&state->root_origins, &other_state->root_origins)) continue;
             bool left_contains_right, right_contains_left;
             ts_query_cursor__compare_captures(
               self,
@@ -4718,17 +4921,24 @@ static inline bool ts_query_cursor__advance(
               &left_contains_right,
               &right_contains_left
             );
+            bool same_step = state->step_index == other_state->step_index;
+            bool is_done = array_get(&self->query->steps, state->step_index)->depth == PATTERN_DONE_MARKER;
             if (left_contains_right) {
               if (
-                state->step_index == other_state->step_index &&
-                (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
-                (other_state->seeking_first_named_child || !state->seeking_first_named_child)
+                same_step && (is_done || (
+                  (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
+                  (other_state->seeking_first_named_child || !state->seeking_first_named_child)
+                ))
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
                   state->pattern_index,
                   state->step_index
                 );
+                query_root_ranges__merge(&state->root_origins, &other_state->root_origins);
+                state->empty_root_match_count = state->empty_root_match_count && other_state->empty_root_match_count
+                  ? state->empty_root_match_count + other_state->empty_root_match_count : 0;
+                array_delete(&other_state->root_origins);
                 capture_list_pool_release(&self->capture_list_pool, other_state->capture_list_id);
                 array_erase(&self->states, k);
                 k--;
@@ -4738,15 +4948,20 @@ static inline bool ts_query_cursor__advance(
             }
             if (right_contains_left) {
               if (
-                state->step_index == other_state->step_index &&
-                (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
-                (state->seeking_first_named_child || !other_state->seeking_first_named_child)
+                same_step && (is_done || (
+                  (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
+                  (state->seeking_first_named_child || !other_state->seeking_first_named_child)
+                ))
               ) {
                 LOG(
                   "  drop shorter state. pattern: %u, step_index: %u\n",
                   state->pattern_index,
                   state->step_index
                 );
+                query_root_ranges__merge(&other_state->root_origins, &state->root_origins);
+                other_state->empty_root_match_count = state->empty_root_match_count && other_state->empty_root_match_count
+                  ? state->empty_root_match_count + other_state->empty_root_match_count : 0;
+                array_delete(&state->root_origins);
                 capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
                 array_erase(&self->states, j);
                 j--;
@@ -4836,6 +5051,12 @@ bool ts_query_cursor_next_match(
   );
   match->captures = captures->contents;
   match->capture_count = captures->size;
+  if (state->empty_root_match_count > 1) {
+    state->empty_root_match_count--;
+    state->id = UINT32_MAX;
+    return true;
+  }
+  array_delete(&state->root_origins);
   capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
   if (self->finished_states_heap_size > 0) {
     finished_state_erase(&self->finished_states, state_index, &self->capture_list_pool);
@@ -4855,8 +5076,9 @@ void ts_query_cursor_remove_match(
   }
 
   for (unsigned i = 0; i < self->finished_states.size; i++) {
-    const QueryState *state = array_get(&self->finished_states, i);
+    QueryState *state = array_get(&self->finished_states, i);
     if (state->id == match_id) {
+      array_delete(&state->root_origins);
       capture_list_pool_release(
         &self->capture_list_pool,
         state->capture_list_id
@@ -4874,8 +5096,9 @@ void ts_query_cursor_remove_match(
   // Remove unfinished query states as well to prevent future
   // captures for a match being removed.
   for (unsigned i = 0; i < self->states.size; i++) {
-    const QueryState *state = array_get(&self->states, i);
+    QueryState *state = array_get(&self->states, i);
     if (state->id == match_id) {
+      array_delete(&state->root_origins);
       capture_list_pool_release(
         &self->capture_list_pool,
         state->capture_list_id
@@ -4926,6 +5149,7 @@ bool ts_query_cursor_next_capture(
 
       // Remove states whose captures are all consumed.
       if (state->consumed_capture_count >= captures->size) {
+        array_delete(&state->root_origins);
         capture_list_pool_release(
           &self->capture_list_pool,
           state->capture_list_id
@@ -5008,6 +5232,7 @@ bool ts_query_cursor_next_capture(
         first_unfinished_pattern_index,
         first_unfinished_capture_byte
       );
+      array_delete(&array_get(&self->states, first_unfinished_state_index)->root_origins);
       capture_list_pool_release(
         &self->capture_list_pool,
         array_get(&self->states, first_unfinished_state_index)->capture_list_id
