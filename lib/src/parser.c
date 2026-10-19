@@ -999,6 +999,8 @@ static Subtree ts_parser__reuse_node(
       reason = "is_missing";
     } else if (ts_subtree_is_fragile(result)) {
       reason = "is_fragile";
+    } else if (ts_subtree_child_count(result) > 0 && result.ptr->has_ambiguous_extra) {
+      reason = "contains_ambiguous_extra";
     } else if (
       ts_subtree_child_count(result) > 0 &&
       !ts_subtree_extra(result) &&
@@ -1794,7 +1796,7 @@ static bool ts_parser__insert_missing_token(
       self->language, state_after_missing_symbol, ts_subtree_leaf_symbol(lookahead), &entry
     );
     if (entry.action_count == 0) continue;
-    bool has_reduce = ts_parse_action_is_reduce(&entry.actions[0]);
+    bool has_reduce = ts_table_entry_has_reduce_action(&entry);
     if (has_reduce != require_reduction) continue;
 
     // In case the parser is currently outside of any included range, the lexer will
