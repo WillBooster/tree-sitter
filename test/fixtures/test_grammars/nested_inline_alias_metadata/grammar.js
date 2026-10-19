@@ -6,12 +6,13 @@ export default grammar({
   rules: {
     // Keep the impossible EOF branch: its discarded leaf alias must not weaken
     // the required fields and children of the real `node` schema.
-    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq($._wrapped, '!'), seq(alias($._leaf, $.node), $._end, '!'), seq($._end, $.dead_name, '!'))),
+    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq($._wrapped, '!'), seq(alias($._leaf, $.node), $._end, '!'), seq($._end, $.dead_name, '!'), seq($._end, $.unused, '!'))),
     node: $ => seq('(', field('value', $.identifier), ':', $.identifier, ')'),
     _comment: $ => seq('/*', alias($._note_body, $.note), '*/'),
     _note_body: $ => $.comment_word,
     comment_word: () => /[A-Z]+/,
     dead_name: () => /#[a-z]+/,
+    unused: $ => seq(alias($._leaf, $.node), '!'),
     _wrapped: $ => seq(alias($._leaf, $.node), $._end),
     _leaf: () => choice('x', 'y'),
     _end: () => eof(),

@@ -667,14 +667,15 @@ fn reachable_expanded_productions(
     grammar: &SyntaxGrammar,
     inlines: &InlinedProductionMap,
 ) -> Vec<u32> {
-    let mut pending = (0..grammar.variables.len())
-        .filter(|&i| {
-            let symbol = Symbol::non_terminal(i);
-            i == 0
-                || !grammar.variables_to_inline.contains(&symbol)
-                || grammar.extra_symbols.contains(&symbol)
-        })
-        .flat_map(|i| grammar.variable_prod_ids(i))
+    let mut pending = std::iter::once(Symbol::non_terminal(0))
+        .chain(
+            grammar
+                .extra_symbols
+                .iter()
+                .copied()
+                .filter(|s| s.is_non_terminal()),
+        )
+        .flat_map(|symbol| grammar.variable_prod_ids(symbol.index as usize))
         .collect::<Vec<_>>();
     let mut seen = FxHashSet::default();
     let mut completed = Vec::new();
@@ -687,6 +688,15 @@ fn reachable_expanded_productions(
         {
             pending.extend_from_slice(expansions);
         } else {
+            pending.extend(
+                grammar
+                    .production(id)
+                    .steps
+                    .iter()
+                    .map(|step| step.symbol())
+                    .filter(|symbol| symbol.is_non_terminal())
+                    .flat_map(|symbol| grammar.variable_prod_ids(symbol.index as usize)),
+            );
             completed.push(id);
         }
     }
