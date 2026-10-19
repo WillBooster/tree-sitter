@@ -1,9 +1,12 @@
 export default grammar({
   name: 'nested_inline_alias_metadata',
   word: $ => $.identifier,
-  inline: $ => [$._selector_identifier, $._query_keyword],
+  inline: $ => [$._selector_identifier, $._query_keyword, $._leaf, $._end],
   rules: {
-    source_file: $ => repeat(choice($.tag, $.attribute)),
+    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq(alias($._leaf, $.node), $._end, '!'))),
+    node: $ => seq('(', field('value', $.identifier), ':', $.identifier, ')'),
+    _leaf: () => choice('x', 'y'),
+    _end: () => eof(),
     tag: $ => seq(alias($._selector_identifier, $.tag_name), ';'),
     attribute: $ => seq('[', alias(choice($._selector_identifier, $.namespace_selector), $.attribute_name), ']'),
     _selector_identifier: $ => choice($.identifier, $.function_name, $._query_keyword),

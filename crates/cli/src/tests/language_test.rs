@@ -259,12 +259,18 @@ fn test_nested_inline_alias_metadata_matches_visible_nodes() {
     )
     .unwrap();
     let entries = schema.as_array().unwrap();
+    let node_entry = entries
+        .iter()
+        .find(|entry| entry["type"] == "node")
+        .unwrap();
+    assert_eq!(node_entry["fields"]["value"]["required"], true);
+    assert_eq!(node_entry["children"]["required"], true);
     let language =
         super::helpers::fixtures::get_test_fixture_language("nested_inline_alias_metadata");
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let tree = parser
-        .parse("style; @func; plain; [name] [ns|name]", None)
+        .parse("style; @func; plain; [name] [ns|name] (first:second)", None)
         .unwrap();
     assert!(!tree.root_node().has_error());
     let mut nodes = vec![tree.root_node()];

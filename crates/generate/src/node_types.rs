@@ -632,7 +632,16 @@ fn get_aliases_by_symbol(
                 .insert(None);
         }
     }
-    for step in &syntax_grammar.steps {
+    let fully_expanded_productions = syntax_grammar
+        .productions
+        .iter()
+        .map(|production| &syntax_grammar.steps[production.step_range()])
+        .filter(|steps| {
+            steps
+                .iter()
+                .all(|step| !syntax_grammar.variables_to_inline.contains(&step.symbol()))
+        });
+    for step in fully_expanded_productions.flatten() {
         aliases_by_symbol
             .entry(step.symbol())
             .or_insert_with(BTreeSet::new)
