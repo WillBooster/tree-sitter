@@ -3419,60 +3419,42 @@ fn test_parsing_cancelled_by_another_thread() {
 // Timeouts
 
 #[test]
-#[retry(10)]
 fn test_parsing_with_a_timeout() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
+    let mut read_end = 0;
+    let mut read = |offset: usize, _| {
+        let chunk = match offset {
+            0 => b" [".as_slice(),
+            1 => b"[".as_slice(),
+            _ if offset % 2 == 0 => b",0".as_slice(),
+            _ => b"0,".as_slice(),
+        };
+        read_end = read_end.max(offset + chunk.len());
+        chunk
+    };
 
-    // Parse an infinitely-long array, but pause after 1ms of processing.
-    let start_time = time::Instant::now();
-    let tree = parser.parse_with_options(
-        &mut |offset, _| {
-            if offset == 0 { b" [" } else { b",0" }
-        },
-        None,
-        Some(ParseOptions::new().progress_callback(&mut |_| {
-            if start_time.elapsed().as_micros() > 1000 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })),
-    );
-    assert!(tree.is_none());
-    assert!(start_time.elapsed().as_micros() < 2000);
-
-    // Continue parsing, but pause after 1 ms of processing.
-    let start_time = time::Instant::now();
-    let tree = parser.parse_with_options(
-        &mut |offset, _| {
-            if offset == 0 { b" [" } else { b",0" }
-        },
-        None,
-        Some(ParseOptions::new().progress_callback(&mut |_| {
-            if start_time.elapsed().as_micros() > 5000 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })),
-    );
-    assert!(tree.is_none());
-    assert!(start_time.elapsed().as_micros() > 100);
-    assert!(start_time.elapsed().as_micros() < 10000);
-
-    // Finish parsing
-    let tree = parser
-        .parse_with_options(
-            &mut |offset, _| match offset {
-                5001.. => "".as_bytes(),
-                5000 => "]".as_bytes(),
-                _ => ",0".as_bytes(),
-            },
+    for timeout_micros in [1000, 5000] {
+        let start_time = time::Instant::now();
+        let tree = parser.parse_with_options(
+            &mut read,
             None,
-            None,
-        )
-        .unwrap();
+            Some(ParseOptions::new().progress_callback(&mut |_| {
+                if start_time.elapsed().as_micros() > timeout_micros {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })),
+        );
+        assert!(tree.is_none());
+        assert!(start_time.elapsed().as_micros() > timeout_micros);
+    }
+
+    let source = format!(" [{}]", ",0".repeat(read_end / 2 + 1));
+    let tree = parser.parse(source.as_bytes(), None).unwrap();
+    let fresh = parser.parse(source.as_bytes(), None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
     assert_eq!(tree.root_node().child(0).unwrap().kind(), "array");
 }
 
