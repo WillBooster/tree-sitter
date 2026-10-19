@@ -5730,6 +5730,201 @@ fn test_parsing_with_scanner_logging() {
 }
 
 #[test]
+fn test_external_scanner_display_columns() {
+    for mut parser in display_column_parsers() {
+        for source in [
+            "abc\t#8!",
+            "abc\t@4!",
+            "abc\t$4!",
+            "\t\t%4294967295!",
+            "λ😀\t#8!",
+            "\u{feff}x#1!",
+            "abcdef\r\t#8!",
+            "abcdef\u{c}  @2!",
+            "before\n\t  #10!",
+            "one\t#8!\t#16!",
+            "\"a\tb\"\t#16!",
+        ] {
+            for encoding in ["utf8", "utf16le", "utf16be"] {
+                let tree = match encoding {
+                    "utf16le" => parser.parse_utf16_le(
+                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    "utf16be" => parser.parse_utf16_be(
+                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                        None,
+                    ),
+                    _ => parser.parse(source, None),
+                }
+                .unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{source:?} {encoding}: {}",
+                    tree.root_node().to_sexp()
+                );
+                let byte_offset = |index: usize| {
+                    if encoding == "utf8" {
+                        index
+                    } else {
+                        source[..index].encode_utf16().count() * 2
+                    }
+                };
+                assert_eq!(tree.root_node().end_byte(), byte_offset(source.len()));
+                let actual: Vec<_> = tree
+                    .root_node()
+                    .named_children(&mut tree.walk())
+                    .filter(|node| node.kind() == "alignment")
+                    .map(|node| node.byte_range())
+                    .collect();
+                let expected: Vec<_> = source
+                    .char_indices()
+                    .filter(|(_, ch)| "#@$%".contains(*ch))
+                    .map(|(index, _)| {
+                        byte_offset(index)..byte_offset(index + source[index..].find('!').unwrap())
+                    })
+                    .collect();
+                assert_eq!(actual, expected, "{source:?} {encoding}");
+            }
+        }
+        assert!(
+            parser
+                .parse("abc\t#3!", None)
+                .unwrap()
+                .root_node()
+                .has_error()
+        );
+    }
+}
+
+#[test]
+fn test_external_scanner_display_columns_after_edits_and_range_gaps() {
+    for mut parser in display_column_parsers() {
+        let mut tree = parser.parse("abc#3!", None).unwrap();
+        for (start, old_end, new_end) in [(3, 3, 4), (5, 6, 6)] {
+            tree.edit(&InputEdit {
+                start_byte: start,
+                old_end_byte: old_end,
+                new_end_byte: new_end,
+                start_position: Point::new(0, start),
+                old_end_position: Point::new(0, old_end),
+                new_end_position: Point::new(0, new_end),
+            });
+        }
+        let source = "abc\t#8!";
+        let incremental = parser.parse(source, Some(&tree)).unwrap();
+        let fresh = parser.parse(source, None).unwrap();
+        assert!(!incremental.root_node().has_error());
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+        for (source, position) in [
+            ("abc #4!", 3),
+            ("before\nabc #4!", 10),
+            ("f#1!\nab $3!c#7!", 7),
+        ] {
+            let mut edited = source.as_bytes().to_vec();
+            let mut tree = parser.parse(&edited, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for replacement in *b"\t \t" {
+                perform_edit(
+                    &mut tree,
+                    &mut edited,
+                    &Edit {
+                        position,
+                        deleted_length: 1,
+                        inserted_text: vec![replacement],
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&edited, Some(&tree)).unwrap();
+                let fresh = parser.parse(&edited, None).unwrap();
+                assert_eq!(
+                    tree.root_node().to_sexp(),
+                    fresh.root_node().to_sexp(),
+                    "{edited:?}"
+                );
+                assert_eq!(tree.root_node().has_error(), replacement == b'\t');
+            }
+        }
+        for source in ["excluded\t#8! gap\tx@9!", "excluded\t#8! gap\n\t#8!"] {
+            let first_start = source.find('\t').unwrap();
+            let first_end = source.find('!').unwrap() + 1;
+            let last_start = source.rfind('\t').unwrap();
+            let point = |offset: usize| match source[..offset].rfind('\n') {
+                Some(newline) => Point::new(1, offset - newline - 1),
+                None => Point::new(0, offset),
+            };
+            parser
+                .set_included_ranges(&[
+                    Range {
+                        start_byte: first_start,
+                        end_byte: first_end,
+                        start_point: point(first_start),
+                        end_point: point(first_end),
+                    },
+                    Range {
+                        start_byte: last_start,
+                        end_byte: source.len(),
+                        start_point: point(last_start),
+                        end_point: point(source.len()),
+                    },
+                ])
+                .unwrap();
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{source:?}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(tree.root_node().named_child_count(), 4);
+        }
+    }
+}
+
+#[test]
+fn test_display_column_query_preserves_later_scalar_columns() {
+    for mut parser in display_column_parsers() {
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 1,
+                    end_byte: 2,
+                    start_point: Point::new(0, 1),
+                    end_point: Point::new(0, 2),
+                },
+                Range {
+                    start_byte: 3,
+                    end_byte: 7,
+                    start_point: Point::new(1, 0),
+                    end_point: Point::new(1, 4),
+                },
+            ])
+            .unwrap();
+        for source in ["a&\n  2!", "a^\n  2!"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{source:?}: {}",
+                tree.root_node().to_sexp()
+            );
+            let alignment = tree.root_node().named_child(0).unwrap();
+            assert_eq!(alignment.kind(), "alignment");
+            assert_eq!(alignment.byte_range(), 1..6);
+        }
+    }
+}
+
+fn display_column_parsers() -> impl Iterator<Item = Parser> {
+    parsers_for_languages([
+        get_test_fixture_language("display_column"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("display_column"),
+    ])
+}
+
+#[test]
 fn test_parsing_get_column_at_eof() {
     let mut parser = Parser::new();
     parser
