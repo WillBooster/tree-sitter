@@ -1830,12 +1830,9 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
                   .child_index = action->reduce.child_count,
                   .done = true,
                 };
-                unsigned node_index, node_exists;
-                array_search_sorted_with(
-                  &subgraph->nodes, analysis_subgraph_node__compare, &node,
-                  &node_index, &node_exists
+                array_insert_sorted_with(
+                  &subgraph->nodes, analysis_subgraph_node__compare, node
                 );
-                if (!node_exists) array_insert(&subgraph->nodes, node_index, node);
               }
             }
           } else if (action->type == TSParseActionTypeShift && !action->shift.extra) {
@@ -4273,6 +4270,27 @@ bool range_within(const TSRange *a, const TSRange *b) {
   );
 }
 
+static void ts_query_cursor__merge_states(
+  TSQueryCursor *self,
+  QueryState *state,
+  QueryState *other
+) {
+  if (
+    state->matched_range.start_byte != UINT32_MAX &&
+    !range_intersects(&state->matched_range, &self->included_range) &&
+    (other->matched_range.start_byte == UINT32_MAX ||
+      range_intersects(&other->matched_range, &self->included_range) ||
+      other->matched_range.start_byte < state->matched_range.start_byte)
+  ) {
+    state->matched_range = other->matched_range;
+  }
+  query_root_ranges__merge(&state->root_origins, &other->root_origins);
+  state->empty_root_match_count = state->empty_root_match_count && other->empty_root_match_count
+    ? state->empty_root_match_count + other->empty_root_match_count : 0;
+  array_delete(&other->root_origins);
+  capture_list_pool_release(&self->capture_list_pool, other->capture_list_id);
+}
+
 static bool ts_query_cursor__push_finished_state(
   TSQueryCursor *self,
   QueryState *state
@@ -4611,6 +4629,10 @@ static inline bool ts_query_cursor__advance(
 
           if (later_sibling_can_match && (
             step->contains_captures ||
+            (step->depth == 0 && (
+              node_range.end_byte <= self->included_range.start_byte ||
+              point_lte(node_range.end_point, self->included_range.start_point)
+            )) ||
             step->is_last_child_repetition ||
             ts_query__step_is_fallible(self->query, state->step_index)
           )) {
@@ -4922,11 +4944,7 @@ static inline bool ts_query_cursor__advance(
                   state->pattern_index,
                   state->step_index
                 );
-                query_root_ranges__merge(&state->root_origins, &other_state->root_origins);
-                state->empty_root_match_count = state->empty_root_match_count && other_state->empty_root_match_count
-                  ? state->empty_root_match_count + other_state->empty_root_match_count : 0;
-                array_delete(&other_state->root_origins);
-                capture_list_pool_release(&self->capture_list_pool, other_state->capture_list_id);
+                ts_query_cursor__merge_states(self, state, other_state);
                 array_erase(&self->states, k);
                 k--;
                 continue;
@@ -4945,11 +4963,7 @@ static inline bool ts_query_cursor__advance(
                   state->pattern_index,
                   state->step_index
                 );
-                query_root_ranges__merge(&other_state->root_origins, &state->root_origins);
-                other_state->empty_root_match_count = state->empty_root_match_count && other_state->empty_root_match_count
-                  ? state->empty_root_match_count + other_state->empty_root_match_count : 0;
-                array_delete(&state->root_origins);
-                capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
+                ts_query_cursor__merge_states(self, other_state, state);
                 array_erase(&self->states, j);
                 j--;
                 did_remove = true;

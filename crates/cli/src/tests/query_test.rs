@@ -3849,6 +3849,51 @@ fn test_query_matches_require_actual_roots_to_intersect_interior_ranges() {
 }
 
 #[test]
+fn test_query_ranges_preserve_uncaptured_sibling_alternatives() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1,\n \"a\",\n \"b\"]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for node in [tree.root_node(), tree.root_node().named_child(0).unwrap()] {
+            for pattern in [
+                "((number) @n (string)?)",
+                "((number) @n (string)*)",
+                "((number) @n (string)+)",
+                "((number) @n (string) (string)?)",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                for range in [8..10, 11..14] {
+                    for mode in 0..3 {
+                        cursor.set_byte_range(0..source.len());
+                        cursor.set_point_range(Point::new(0, 0)..Point::new(3, 0));
+                        if mode != 1 {
+                            cursor.set_byte_range(range.clone());
+                        }
+                        if mode != 0 {
+                            cursor.set_point_range(Point::new(2, 0)..Point::new(2, 3));
+                        }
+                        assert_eq!(
+                            collect_matches(
+                                cursor.matches(&query, node, source.as_bytes()),
+                                &query,
+                                source
+                            ),
+                            vec![(0, vec![("n", "1")])],
+                            "{pattern}, range={range:?}, mode={mode}, root={}",
+                            node.kind()
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range() {
     allocations::record(|| {
         let language = get_language("json");
