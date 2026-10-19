@@ -3707,7 +3707,7 @@ fn test_query_cursor_next_capture_with_point_range() {
 }
 
 #[test]
-fn test_query_matches_with_non_rooted_patterns_outside_cursor_range() {
+fn test_query_matches_with_rooted_and_non_rooted_patterns_outside_cursor_range() {
     allocations::record(|| {
         let language = get_language("json");
         let source = "[1, 2]";
