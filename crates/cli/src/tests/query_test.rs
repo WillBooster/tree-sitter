@@ -6821,6 +6821,24 @@ fn test_query_is_pattern_non_local() {
             is_non_local: true,
         },
         Row {
+            description: "comments before Ruby pair in repeated command arguments",
+            pattern: r"((comment)* @doc (pair) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby hash_splat_argument in repeated command arguments",
+            pattern: r"((comment)* @doc (hash_splat_argument) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby block_argument in repeated command arguments",
+            pattern: r"((comment)* @doc (block_argument) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
             description: "siblings that can't occur in any repetition",
             pattern: r#"("{" "}")"#,
             language: get_language("python"),
