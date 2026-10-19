@@ -737,6 +737,74 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
 }
 
 #[test]
+fn test_recovery_keeps_visibility_after_missing_token() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("rust")).unwrap();
+    let prefix = "fn f() {}\n\nimpl<T> A for B<T>\n    where for<'a> D<T>: E<'a>,\nstruct S<T> { x: T\n{\n}\n\n";
+    let declaration = "pub trait A<B> where B: C, {}";
+    for suffix in ["", "\nfn g() {}", "\nstruct Following { value: i32 }"] {
+        let source = format!("{prefix}{declaration}{suffix}");
+        let tree = parser.parse(&source, None).unwrap();
+        let mut cursor = tree.walk();
+        let item = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == "trait_item")
+            .unwrap();
+        assert!(!item.has_error());
+        assert_eq!(item.utf8_text(source.as_bytes()).unwrap(), declaration);
+        if !suffix.is_empty() {
+            let root = tree.root_node();
+            let following = root.named_children(&mut cursor).last().unwrap();
+            assert!(!following.has_error());
+            assert_eq!(
+                following.utf8_text(source.as_bytes()).unwrap(),
+                suffix.trim()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_retains_following_declaration_keywords() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    let prefix = "typedef int my_int;\n\nint f(int a";
+    let mut source = format!("{prefix}\n\ntypedef unsigned long ulong_t;\n").into_bytes();
+    let mut tree = parser.parse(&source, None).unwrap();
+    for newline_count in [2, 1, 3, 2] {
+        let current_count = source[prefix.len()..]
+            .iter()
+            .take_while(|&&byte| byte == b'\n')
+            .count();
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: prefix.len(),
+                deleted_length: current_count,
+                inserted_text: vec![b'\n'; newline_count],
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        let mut cursor = tree.walk();
+        let declarations = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() == "type_definition" && !node.has_error())
+            .map(|node| node.utf8_text(&source).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declarations,
+            ["typedef int my_int;", "typedef unsigned long ulong_t;"]
+        );
+    }
+}
+
+#[test]
 fn test_recovery_preserves_prefixes_in_statement_lists() {
     let languages = [
         get_test_fixture_language("keyword_recovery_priority"),

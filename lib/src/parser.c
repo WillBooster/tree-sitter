@@ -313,7 +313,7 @@ static ErrorComparison ts_parser__compare_ranked_versions(
     return ErrorComparisonPreferLeft;
   }
   if (displaces_higher && (lower.is_unconfirmed || has_unconfirmed_recovery) && !higher.is_in_error) {
-    return ErrorComparisonNone;
+    return lower.is_unconfirmed ? ErrorComparisonNone : ErrorComparisonPreferRight;
   }
   return comparison;
 }
@@ -1765,6 +1765,8 @@ static bool ts_parser__insert_missing_token(
   bool require_reduction
 );
 
+static bool ts_parser__missing_token_completes_recovery(TSParser *self, StackVersion version, StackVersion first_candidate);
+
 static void ts_parser__handle_error(
   TSParser *self,
   StackVersion version,
@@ -1790,9 +1792,19 @@ static void ts_parser__handle_error(
     }
   }
 
+  bool restored_root = did_insert_missing_token &&
+    ts_parser__missing_token_completes_recovery(self, version, version_count);
   for (StackVersion v = version; v < version_count;) {
-    ts_stack_push(self->stack, v, NULL_SUBTREE, false, ERROR_STATE);
+    if (restored_root) {
+      ts_stack_halt(self->stack, v);
+    } else {
+      ts_stack_push(self->stack, v, NULL_SUBTREE, false, ERROR_STATE);
+    }
     v = (v == version) ? previous_version_count : v + 1;
+  }
+  if (restored_root) {
+    ts_subtree_release(&self->tree_pool, lookahead);
+    return;
   }
 
   for (unsigned i = previous_version_count; i < version_count; i++) {
@@ -1813,6 +1825,19 @@ static void ts_parser__handle_error(
   ts_parser__recover(self, version, lookahead);
 
   LOG_STACK();
+}
+
+static bool ts_parser__missing_token_completes_recovery(
+  TSParser *self,
+  StackVersion version,
+  StackVersion first_candidate
+) {
+  if (!ts_stack_unconfirmed_recovery(self->stack, version)) return false;
+  for (StackVersion v = first_candidate; v < ts_stack_version_count(self->stack); v++) {
+    if (ts_stack_is_active(self->stack, v) &&
+        ts_parser__state_finishes_root(self, ts_stack_state(self->stack, v))) return true;
+  }
+  return false;
 }
 
 static bool ts_parser__insert_missing_token(
