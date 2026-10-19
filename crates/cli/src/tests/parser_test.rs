@@ -665,20 +665,28 @@ fn test_incremental_parse_restores_missing_opening_delimiter() {
 }
 
 #[test]
-fn test_recovery_reaches_outer_candidates_after_filtered_prefix() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("go")).unwrap();
-    let declaration = "const (\n  zero = 0\n  one = 1\n)";
-    let source = format!("\npackage ma>  ByfX5iEk\n{declaration}\n");
-    let tree = parser.parse(&source, None).unwrap();
-    let root = tree.root_node();
-    let mut cursor = root.walk();
-    let following = root
-        .named_children(&mut cursor)
-        .find(|node| node.kind() == "const_declaration")
-        .unwrap_or_else(|| panic!("{}", root.to_sexp()));
-    assert_eq!(following.utf8_text(source.as_bytes()).unwrap(), declaration);
-    assert!(!following.has_error());
+fn test_recovery_respects_completed_prefixes() {
+    for (language, source, kind, text) in [
+        (
+            "go",
+            "\npackage ma>  ByfX5iEk\nconst (\n  zero = 0\n  one = 1\n)\n",
+            "const_declaration",
+            "const (\n  zero = 0\n  one = 1\n)",
+        ),
+        ("c", "> T x; bad\n", "declaration", "T x;"),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let declaration = root
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == kind)
+            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+        assert_eq!(declaration.utf8_text(source.as_bytes()).unwrap(), text);
+        assert!(!declaration.has_error());
+    }
 }
 
 #[test]
