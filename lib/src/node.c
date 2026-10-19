@@ -13,10 +13,16 @@ typedef struct {
   const TSSymbol *alias_sequence;
 } NodeChildIterator;
 
+typedef struct {
+  TSNode parent;
+  TSNode child;
+} NodeAncestry;
+
 static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
 static TSNode ts_node__first_child_without_fields(TSNode self);
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant);
+static NodeAncestry ts_node__find_descendant(TSNode root, TSNode descendant, bool check_range);
 
 // TSNode - constructors
 
@@ -180,13 +186,25 @@ static bool ts_subtree_has_trailing_empty_descendant(
   Subtree self,
   Subtree other
 ) {
-  for (unsigned i = ts_subtree_child_count(self) - 1; i + 1 > 0; i--) {
-    Subtree child = ts_subtree_children(self)[i];
-    if (ts_subtree_total_bytes(child) > 0) break;
-    if (child.ptr == other.ptr || ts_subtree_has_trailing_empty_descendant(child, other)) {
-      return true;
+  Array(Subtree) stack = array_new();
+  Subtree subtree = self;
+
+  while (true) {
+    for (unsigned i = ts_subtree_child_count(subtree); i > 0; i--) {
+      Subtree child = ts_subtree_children(subtree)[i - 1];
+      if (ts_subtree_total_bytes(child) > 0) break;
+      if (child.ptr == other.ptr) {
+        array_delete(&stack);
+        return true;
+      }
+      array_push(&stack, child);
     }
+
+    if (!stack.size) break;
+    subtree = array_pop(&stack);
   }
+
+  array_delete(&stack);
   return false;
 }
 
@@ -619,6 +637,14 @@ TSStateId ts_node_next_parse_state(TSNode self) {
 TSNode ts_node_parent(TSNode self) {
   TSNode node = ts_tree_root_node(self.tree);
   if (node.id == self.id) return ts_node__null();
+  if (ts_node_start_byte(self) == ts_node_end_byte(self)) {
+    TSNode parent = ts_node__find_descendant(node, self, true).parent;
+    if (ts_node_is_null(parent)) {
+      // Offset-root nodes can lie outside their ancestors' unshifted ranges.
+      parent = ts_node__find_descendant(node, self, false).parent;
+    }
+    return parent;
+  }
 
   while (true) {
     TSNode next_node = ts_node__child_with_descendant_unchecked(node, self);
@@ -647,7 +673,9 @@ TSNode ts_node_child_with_descendant(TSNode self, TSNode descendant) {
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant) {
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
-  bool is_empty = start_byte == end_byte;
+  if (start_byte == end_byte) {
+    return ts_node__child_with_descendant_checked(self, descendant);
+  }
 
   do {
     NodeChildIterator iter = ts_node_iterate_children(&self);
@@ -662,55 +690,57 @@ static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode desce
         return self;
       }
 
-      if (is_empty && iter.position.bytes >= end_byte && ts_node_child_count(self) > 0) {
-        TSNode child = ts_node__child_with_descendant_unchecked(self, descendant);
-        if (!ts_node_is_null(child)) {
-          return ts_node__is_relevant(self, true) ? self : child;
-        }
-      }
-    } while ((is_empty ? iter.position.bytes <= end_byte : iter.position.bytes < end_byte) || ts_node_child_count(self) == 0);
+    } while (iter.position.bytes < end_byte || ts_node_child_count(self) == 0);
   } while (!ts_node__is_relevant(self, true));
 
   return self;
 }
 
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant) {
+  return ts_node__find_descendant(self, descendant, true).child;
+}
+
+static NodeAncestry ts_node__find_descendant(TSNode root, TSNode descendant, bool check_range) {
+  typedef struct {
+    NodeChildIterator iterator;
+    TSNode parent;
+    TSNode child;
+  } Entry;
+  Array(Entry) stack = array_new();
+  array_push(&stack, ((Entry) {ts_node_iterate_children(&root), root, ts_node__null()}));
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
-  TSTreeCursor cursor = ts_tree_cursor_new(self);
-  if (!ts_tree_cursor_goto_first_child(&cursor)) {
-    ts_tree_cursor_delete(&cursor);
-    return ts_node__null();
-  }
+  NodeAncestry result = {ts_node__null(), ts_node__null()};
 
-  uint32_t depth = 1;
-  TSNode child = ts_tree_cursor_current_node(&cursor);
-  for (;;) {
-    TSNode node = ts_tree_cursor_current_node(&cursor);
-    if (depth == 1) child = node;
-    if (
-      ts_node_start_byte(node) <= start_byte
-      && ts_node_end_byte(node) >= end_byte
-    ) {
-      if (node.id == descendant.id) {
-        ts_tree_cursor_delete(&cursor);
-        return child;
-      }
-      if (ts_tree_cursor_goto_first_child(&cursor)) {
-        depth++;
-        continue;
-      }
+  while (stack.size) {
+    Entry *entry = array_back(&stack);
+    TSNode node;
+    if (!ts_node_child_iterator_next(&entry->iterator, &node)) {
+      stack.size--;
+      continue;
     }
-
-    while (!ts_tree_cursor_goto_next_sibling(&cursor)) {
-      if (depth == 1) {
-        ts_tree_cursor_delete(&cursor);
-        return ts_node__null();
-      }
-      ts_tree_cursor_goto_parent(&cursor);
-      depth--;
+    if (check_range && (ts_node_start_byte(node) > start_byte || ts_node_end_byte(node) < end_byte)) {
+      continue;
+    }
+    bool visible = ts_node__is_relevant(node, true);
+    TSNode first_child = entry->child;
+    if (visible && ts_node_is_null(first_child)) first_child = node;
+    if (node.id == descendant.id) {
+      result = (NodeAncestry) {entry->parent, first_child};
+      break;
+    }
+    if (ts_subtree_child_count(ts_node__subtree(node))) {
+      Entry next = {
+        ts_node_iterate_children(&node),
+        visible ? node : entry->parent,
+        first_child,
+      };
+      array_push(&stack, next);
     }
   }
+
+  array_delete(&stack);
+  return result;
 }
 
 TSNode ts_node_child(TSNode self, uint32_t child_index) {
@@ -722,68 +752,86 @@ TSNode ts_node_named_child(TSNode self, uint32_t child_index) {
 }
 
 TSNode ts_node_child_by_field_id(TSNode self, TSFieldId field_id) {
-recur:
-  if (!field_id || ts_node_child_count(self) == 0) return ts_node__null();
+  typedef struct {
+    TSNode parent;
+    NodeChildIterator iterator;
+    const TSFieldMapEntry *field_map;
+    const TSFieldMapEntry *field_map_end;
+  } FieldSearchFrame;
 
-  const TSFieldMapEntry *field_map, *field_map_end;
+  if (!field_id) return ts_node__null();
+
+  Array(FieldSearchFrame) stack = array_new();
+  NodeChildIterator iterator;
+  const TSFieldMapEntry *field_map;
+  const TSFieldMapEntry *field_map_end;
+  TSNode child;
+
+descend:
+  if (ts_node_child_count(self) == 0) goto not_found;
+
   ts_language_field_map(
     self.tree->language,
     ts_node__subtree(self).ptr->production_id,
     &field_map,
     &field_map_end
   );
-  if (field_map == field_map_end) return ts_node__null();
+  if (field_map == field_map_end) goto not_found;
 
   // The field mappings are sorted by their field id. Scan all
   // the mappings to find the ones for the given field id.
   while (field_map->field_id < field_id) {
     field_map++;
-    if (field_map == field_map_end) return ts_node__null();
+    if (field_map == field_map_end) goto not_found;
   }
   while (field_map_end[-1].field_id > field_id) {
     field_map_end--;
-    if (field_map == field_map_end) return ts_node__null();
+    if (field_map == field_map_end) goto not_found;
   }
 
-  TSNode child;
-  NodeChildIterator iterator = ts_node_iterate_children(&self);
+  iterator = ts_node_iterate_children(&self);
+
+scan:
   while (ts_node_child_iterator_next(&iterator, &child)) {
     if (!ts_subtree_extra(ts_node__subtree(child))) {
       uint32_t index = iterator.structural_child_index - 1;
       if (index < field_map->child_index) continue;
 
-      // Hidden nodes' fields are "inherited" by their visible parent.
       if (field_map->inherited) {
         if (ts_node__is_relevant(child, true)) {
           field_map++;
-          if (field_map == field_map_end) return ts_node__null();
+          if (field_map == field_map_end) goto not_found;
           continue;
         }
 
-        // If this is the *last* possible child node for this field,
-        // then perform a tail call to avoid recursion.
         if (field_map + 1 == field_map_end) {
           self = child;
-          goto recur;
+          goto descend;
         }
 
-        // Otherwise, descend into this child, but if it doesn't contain
-        // the field, continue searching subsequent children.
         else {
-          TSNode result = ts_node_child_by_field_id(child, field_id);
-          if (result.id) return result;
-          field_map++;
-          if (field_map == field_map_end) return ts_node__null();
+          array_push(&stack, ((FieldSearchFrame) {
+            .parent = self,
+            .iterator = iterator,
+            .field_map = field_map,
+            .field_map_end = field_map_end,
+          }));
+          self = child;
+          goto descend;
         }
       }
 
       else if (ts_node__is_relevant(child, true)) {
+        array_delete(&stack);
         return child;
       }
 
       else if (ts_node_child_count(child) > 0) {
         TSNode first_child = ts_node__first_child_without_fields(child);
-        if (first_child.id) return first_child;
+        if (first_child.id) {
+          array_delete(&stack);
+          return first_child;
+        }
         TSTreeCursor cursor = ts_tree_cursor_new(self);
         TSNode result = ts_node__null();
         if (ts_tree_cursor_goto_first_child(&cursor)) {
@@ -795,17 +843,30 @@ recur:
           } while (ts_tree_cursor_goto_next_sibling(&cursor));
         }
         ts_tree_cursor_delete(&cursor);
+        if (ts_node_is_null(result)) goto not_found;
+        array_delete(&stack);
         return result;
       }
 
-      // Otherwise, continue searching subsequent children.
       else {
         field_map++;
-        if (field_map == field_map_end) return ts_node__null();
+        if (field_map == field_map_end) goto not_found;
       }
     }
   }
 
+not_found:
+  if (stack.size) {
+    FieldSearchFrame frame = array_pop(&stack);
+    self = frame.parent;
+    iterator = frame.iterator;
+    field_map = frame.field_map + 1;
+    field_map_end = frame.field_map_end;
+    if (field_map == field_map_end) goto not_found;
+    goto scan;
+  }
+
+  array_delete(&stack);
   return ts_node__null();
 }
 
