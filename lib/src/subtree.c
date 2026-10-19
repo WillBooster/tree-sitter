@@ -375,10 +375,7 @@ void ts_subtree_summarize_children(
   for (uint32_t i = 0; i < self.ptr->child_count; i++) {
     Subtree child = children[i];
 
-    if (
-      (i == 0 || self.ptr->size.extent.row == 0) &&
-      ts_subtree_depends_on_column(child)
-    ) {
+    if (ts_subtree_depends_on_column(child)) {
       self.ptr->depends_on_column = true;
     }
 
@@ -678,7 +675,6 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
     bool is_noop = edit.old_end.bytes == edit.start.bytes && edit.new_end.bytes == edit.start.bytes;
     bool is_pure_insertion = edit.old_end.bytes == edit.start.bytes;
     bool parent_depends_on_column = ts_subtree_depends_on_column(*entry.tree);
-    bool column_shifted = edit.new_end.extent.column != edit.old_end.extent.column;
 
     Length size = ts_subtree_size(*entry.tree);
     Length padding = ts_subtree_padding(*entry.tree);
@@ -769,10 +765,6 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         (child_left.bytes == edit.old_end.bytes && child_size.bytes > 0 && i > 0)
       ) && (
         !parent_depends_on_column ||
-        child_left.extent.row > padding.extent.row
-      ) && (
-        !ts_subtree_depends_on_column(*child) ||
-        !column_shifted ||
         child_left.extent.row > edit.old_end.extent.row
       )) {
         break;
