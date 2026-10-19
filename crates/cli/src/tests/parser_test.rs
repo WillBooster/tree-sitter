@@ -903,6 +903,38 @@ fn test_recovery_reconsiders_errors_after_edits() {
 }
 
 #[test]
+fn test_recovery_reconsiders_reused_nodes_across_edits() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let mut source = b"import t from\"t\";\nimport\"\"\n{r={t ult:e} =w;arse)\n".to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    let mut undos = Vec::new();
+    for (position, deleted_length, inserted_text) in [
+        (32, 4, ""),
+        (14, 3, "type "),
+        (43, 1, "interface "),
+        (46, 2, ","),
+    ] {
+        let edit = Edit {
+            position,
+            deleted_length,
+            inserted_text: inserted_text.as_bytes().to_vec(),
+        };
+        undos.push(invert_edit(&source, &edit));
+        perform_edit(&mut tree, &mut source, &edit).unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+    }
+    for undo in undos.into_iter().rev() {
+        perform_edit(&mut tree, &mut source, &undo).unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+    }
+}
+
+#[test]
 fn test_recovery_keeps_visibility_after_missing_token() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();

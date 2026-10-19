@@ -1977,7 +1977,7 @@ static bool ts_parser__advance(
   TableEntry table_entry = {.action_count = 0};
 
   // If possible, reuse a node from the previous syntax tree.
-  if (allow_node_reuse) {
+  if (allow_node_reuse && !ts_stack_unconfirmed_recovery(self->stack, version)) {
     lookahead = ts_parser__reuse_node(
       self, version, &state, position, last_external_token, &table_entry
     );
