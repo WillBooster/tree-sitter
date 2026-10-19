@@ -14,6 +14,7 @@ typedef struct {
 } NodeChildIterator;
 
 static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
+static TSNode ts_node__first_child_without_fields(TSNode self);
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant);
 
@@ -780,10 +781,21 @@ recur:
         return child;
       }
 
-      // If the field refers to a hidden node with visible children,
-      // return the first visible child.
-      else if (ts_node_child_count(child) > 0 ) {
-        return ts_node_child(child, 0);
+      else if (ts_node_child_count(child) > 0) {
+        TSNode first_child = ts_node__first_child_without_fields(child);
+        if (first_child.id) return first_child;
+        TSTreeCursor cursor = ts_tree_cursor_new(self);
+        TSNode result = ts_node__null();
+        if (ts_tree_cursor_goto_first_child(&cursor)) {
+          do {
+            if (ts_tree_cursor_current_field_id(&cursor) == field_id) {
+              result = ts_tree_cursor_current_node(&cursor);
+              break;
+            }
+          } while (ts_tree_cursor_goto_next_sibling(&cursor));
+        }
+        ts_tree_cursor_delete(&cursor);
+        return result;
       }
 
       // Otherwise, continue searching subsequent children.
@@ -795,6 +807,33 @@ recur:
   }
 
   return ts_node__null();
+}
+
+static TSNode ts_node__first_child_without_fields(TSNode self) {
+  for (;;) {
+    const TSFieldMapEntry *field_map, *field_map_end;
+    ts_language_field_map(
+      self.tree->language,
+      ts_node__subtree(self).ptr->production_id,
+      &field_map,
+      &field_map_end
+    );
+    if (field_map != field_map_end) return ts_node__null();
+
+    TSNode child;
+    NodeChildIterator iterator = ts_node_iterate_children(&self);
+    bool descended = false;
+    while (ts_node_child_iterator_next(&iterator, &child)) {
+      bool visible = ts_node__is_relevant(child, true);
+      if (!visible && ts_node_child_count(child) == 0) continue;
+      if (ts_subtree_extra(ts_node__subtree(child))) return ts_node__null();
+      if (visible) return child;
+      self = child;
+      descended = true;
+      break;
+    }
+    if (!descended) return ts_node__null();
+  }
 }
 
 static inline const char *ts_node__field_name_from_language(TSNode self, uint32_t structural_child_index) {
