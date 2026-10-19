@@ -8576,23 +8576,13 @@ fn test_query_extra_error_parents_do_not_inherit_aliases() {
         &[(0, vec![("parent", "x=1"), ("child", "=")])],
     );
 
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    let tree = parser.parse(source, None).unwrap();
-    let wildcard = Query::new(&language, "(_)").unwrap();
-    let mut cursor = QueryCursor::new();
-    let expected = collect_matches(
-        cursor.matches(&wildcard, tree.root_node(), source.as_bytes()),
-        &wildcard,
-        source,
-    );
     for quantifier in ["?", "*"] {
         let query = Query::new(
             &language,
             &format!("(_ (function_definition){quantifier} @child)"),
         )
         .unwrap();
-        assert_query_matches(&language, &query, source, &expected);
+        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 6]);
     }
 }
 
