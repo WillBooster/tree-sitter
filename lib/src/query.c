@@ -1148,9 +1148,8 @@ static inline AnalysisState *analysis_state_pool__clone_or_reuse(
   return new_item;
 }
 
-// Inserts a clone of the passed-in item at the appropriate position to maintain ordering in this
-// set. The set does not contain duplicates, so if the item is already present, it will not be
-// inserted, and no clone will be made.
+// Equivalent positions share failure evidence: an unskipped path must dominate a skipped one.
+// The return value distinguishes a new position from a merge, so visited skip paths stay bounded.
 //
 // The caller retains ownership of the passed-in memory. However, the clone that is created by this
 // function will be managed by the state set.
@@ -1585,7 +1584,16 @@ static void ts_query__perform_analysis(
           // over any descendant steps of the current child.
           const QueryStep *next_step = step;
           if (does_match) {
-            if (analyze_later_siblings && next_state.depth > 0) {
+            uint16_t next_step_index = next_state.step_index;
+            for (;;) {
+              next_step_index++;
+              next_step = array_get(&self->steps, next_step_index);
+              if (
+                next_step->depth == PATTERN_DONE_MARKER ||
+                next_step->depth <= step->depth
+              ) break;
+            }
+            if (analyze_later_siblings && next_state.depth > 0 && next_step->depth == step->depth) {
               AnalysisState skipped = next_state;
               skipped.skipped_match = true;
               if (analysis_state_set__insert_sorted(&analysis->skipped_states, &analysis->state_pool, &skipped)) {
@@ -1593,14 +1601,7 @@ static void ts_query__perform_analysis(
               }
             }
             next_state.skipped_match = false;
-            for (;;) {
-              next_state.step_index++;
-              next_step = array_get(&self->steps, next_state.step_index);
-              if (
-                next_step->depth == PATTERN_DONE_MARKER ||
-                next_step->depth <= step->depth
-              ) break;
-            }
+            next_state.step_index = next_step_index;
           } else if (successor.state == parse_state) {
             continue;
           }
@@ -4616,6 +4617,9 @@ static inline bool ts_query_cursor__advance(
           self->finished_states.size
         );
 
+        bool node_precedes_range_end =
+          node_range.start_byte < self->included_range.end_byte &&
+          point_lt(node_range.start_point, self->included_range.end_point);
         bool node_is_error = symbol == ts_builtin_sym_error;
         bool parent_is_error =
           !ts_node_is_null(parent_node) &&
@@ -4633,7 +4637,8 @@ static inline bool ts_query_cursor__advance(
             if (
               (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
-                (parent_may_contain_match && !parent_is_error)) &&
+                (parent_may_contain_match && !parent_is_error &&
+                  (step->depth != 0 || node_precedes_range_end))) &&
               (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
@@ -4657,7 +4662,8 @@ static inline bool ts_query_cursor__advance(
             if (
               (pattern->is_rooted ?
                 node_intersects_range :
-                (parent_may_contain_match && !parent_is_error)) &&
+                (parent_may_contain_match && !parent_is_error &&
+                  (step->depth != 0 || node_precedes_range_end))) &&
               (!step->field || field_id == step->field) &&
               (start_depth <= self->max_start_depth)
             ) {

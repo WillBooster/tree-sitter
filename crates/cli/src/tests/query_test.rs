@@ -3883,6 +3883,43 @@ fn test_query_matches_require_actual_roots_to_intersect_interior_ranges() {
 }
 
 #[test]
+fn test_query_range_end_bounds_sibling_search_memory() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = format!("[{}]", ["1, 1, 1, \"s\", 1, 1, 1"; 64].join(", "));
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for pattern in ["((number) @a (string))", "((_) @a (string))"] {
+            let query = Query::new(&language, pattern).unwrap();
+            for points in [false, true] {
+                let mut cursor = QueryCursor::new();
+                cursor.set_match_limit(32);
+                if points {
+                    cursor.set_point_range(Point::new(0, 0)..Point::new(0, 2));
+                } else {
+                    cursor.set_byte_range(0..2);
+                }
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source
+                    ),
+                    vec![(0, vec![("a", "1")])],
+                    "{pattern}, points={points}"
+                );
+                assert!(
+                    !cursor.did_exceed_match_limit(),
+                    "{pattern}, points={points}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_ranges_preserve_uncaptured_sibling_alternatives() {
     allocations::record(|| {
         let language = get_language("json");
@@ -8377,6 +8414,45 @@ fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
                 );
             }
         }
+    });
+}
+
+#[test]
+fn test_query_terminal_wildcard_preserves_parent_capture_publication() {
+    allocations::record(|| {
+        let language = get_language("ruby");
+        let source = "(a)";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let query = Query::new(&language, "(parenthesized_statements _ @child) @parent").unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                (0, vec![("parent", "(a)"), ("child", "(")]),
+                (0, vec![("parent", "(a)"), ("child", "a")]),
+                (0, vec![("parent", "(a)"), ("child", ")")]),
+            ],
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                ("parent", "(a)"),
+                ("child", "("),
+                ("child", "a"),
+                ("child", ")")
+            ],
+        );
     });
 }
 
