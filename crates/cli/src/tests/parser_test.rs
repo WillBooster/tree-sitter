@@ -1069,10 +1069,9 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
         #[cfg(feature = "wasm")]
         super::helpers::fixtures::get_test_language_wasm(&name, &code),
     ];
-    // The trees, ranges, and lookahead names below are what the table layout of upstream's ABI 15
-    // produced for these inputs before this generator stopped emitting it.
     let mut expected_lookaheads = keywords.clone();
-    expected_lookaheads.extend(["/*", "comment", "end"].map(String::from));
+    expected_lookaheads
+        .extend(["/*", "comment", "end", "command", "source_file_repeat1"].map(String::from));
     expected_lookaheads.sort_unstable();
     for language in &languages {
         let mut parser = Parser::new();
