@@ -69,7 +69,10 @@ fn test_identifier_only_grammar_compiles_without_c_warnings() {
     let tree = parser.parse(source, None).unwrap();
     assert!(!tree.root_node().has_error());
     assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
-    assert_eq!(tree.root_node().byte_range(), 0..source.len());
+    assert_eq!(
+        tree.root_node().named_child(0).unwrap().byte_range(),
+        0..source.len()
+    );
 }
 
 #[test]
