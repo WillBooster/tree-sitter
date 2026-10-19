@@ -1,0 +1,19 @@
+Unresolved conflict for symbol sequence:
+
+  first  'p'  'x'  •  'q'  …
+
+Possible interpretations:
+
+  1:  first  'p'  (a  'x'  •  'q'  first_repeat1  'k')
+  2:  first  'p'  (b  'x')  •  'q'  …
+
+Repetition rules used in this conflict:
+
+  first_repeat1: used by a
+
+Possible resolutions:
+
+  1:  Specify a higher precedence in `a` than in the other rules.
+  2:  Specify a higher precedence in `b` than in the other rules.
+  3:  Specify a left or right associativity in `b`
+  4:  Add a conflict for these rules: `a`, `b`
