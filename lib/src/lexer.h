@@ -35,6 +35,8 @@ typedef struct {
   char lookahead_buffer[4];
   bool did_get_column;
   ColumnData column_data;
+  ColumnData display_column_data;
+  uint32_t display_tab_width;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;
