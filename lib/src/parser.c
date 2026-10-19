@@ -1794,7 +1794,7 @@ static bool ts_parser__insert_missing_token(
       self->language, state_after_missing_symbol, ts_subtree_leaf_symbol(lookahead), &entry
     );
     if (entry.action_count == 0) continue;
-    bool has_reduce = ts_parse_action_is_reduce(&entry.actions[0]);
+    bool has_reduce = ts_table_entry_has_reduce_action(&entry);
     if (has_reduce != require_reduction) continue;
 
     // In case the parser is currently outside of any included range, the lexer will
