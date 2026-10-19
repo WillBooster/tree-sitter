@@ -1140,6 +1140,7 @@ fn test_keyword_lookup_with_overlapping_unicode_word_prefixes() {
         }
     });
     for immediate in [false, true] {
+        grammar["name"] = format!("keyword_unicode_word_prefix_{immediate}").into();
         if immediate {
             grammar["rules"]["identifier"] = serde_json::json!({
                 "type": "IMMEDIATE_TOKEN",
