@@ -2241,7 +2241,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       self,
       &subgraphs,
       &analysis,
-      true
+      false
     );
 
     if (analysis.finished_parent_symbols.size > 0) {
