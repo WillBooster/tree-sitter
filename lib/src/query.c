@@ -3203,11 +3203,10 @@ TSQuery *ts_query_new(
         continue;
       }
 
-      // If a pattern has a wildcard at its root, but it has a non-wildcard child,
-      // then optimize the matching process by skipping matching the wildcard.
-      // Later, during the matching process, the query cursor will check that
-      // there is a parent node, and capture it if necessary.
-      if (!pattern->has_empty_root && step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field) {
+      if (
+        !pattern->has_empty_root && step->symbol == WILDCARD_SYMBOL && step->depth == 0 && !step->field &&
+        step->capture_ids[0] == NONE
+      ) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
         if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
           if (step->alternative_index != NONE) {
@@ -4633,9 +4632,6 @@ static inline bool ts_query_cursor__advance(
             array_push(&state->root_origins, ((QueryRootRange) {root, root + 1}));
           }
 
-          // If this pattern started with a wildcard, such that the pattern map
-          // actually points to the *second* step of the pattern, then check
-          // that the node has a parent, and capture the parent node if necessary.
           if (state->needs_parent) {
             TSNode parent = ts_tree_cursor_parent_node(&self->cursor);
             if (
@@ -4651,23 +4647,6 @@ static inline bool ts_query_cursor__advance(
               state->dead = true;
             } else {
               state->needs_parent = false;
-              QueryStep *skipped_wildcard_step = step;
-              do {
-                skipped_wildcard_step--;
-              } while (
-                skipped_wildcard_step->is_dead_end ||
-                skipped_wildcard_step->is_pass_through ||
-                skipped_wildcard_step->depth > 0
-              );
-              if (skipped_wildcard_step->capture_ids[0] != NONE) {
-                LOG("  capture wildcard parent\n");
-                ts_query_cursor__capture(
-                  self,
-                  state,
-                  skipped_wildcard_step,
-                  parent
-                );
-              }
             }
           }
 
