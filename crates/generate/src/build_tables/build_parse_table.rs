@@ -1120,15 +1120,14 @@ impl<'a> ParseTableBuilder<'a> {
                     });
             }
 
-            // Add ShiftExtra actions for the terminal extra tokens. These actions
-            // are added to every state except for those at the ends of non-terminal
-            // extras.
             for extra_token in &self.syntax_grammar.extra_symbols {
                 match extra_token.kind {
                     SymbolType::NonTerminal => {
-                        state
-                            .nonterminal_entries
-                            .insert(*extra_token, GotoAction::ShiftExtra);
+                        if !state.nonterminal_entries.contains_key(extra_token) {
+                            state
+                                .nonterminal_entries
+                                .insert(*extra_token, GotoAction::ShiftExtra);
+                        }
                     }
                     SymbolType::Terminal | SymbolType::External => {
                         self.terminal_entries.get_or_insert_with(*extra_token, || {
