@@ -1173,7 +1173,12 @@ static StackVersion ts_parser__reduce(
   // path back through the stack. For each path, create a new parent node to
   // contain the popped children, and push it onto the stack in place of the
   // children.
-  StackSliceArray pop = ts_stack_pop_count(self->stack, version, count);
+  bool has_multiple_paths;
+  StackSliceArray pop = ts_stack_pop_count_for_reduce(
+    self->stack, version, count, MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW,
+    &has_multiple_paths
+  );
+  is_fragile |= has_multiple_paths;
   uint32_t removed_version_count = 0;
   uint32_t halted_version_count = ts_stack_halted_version_count(self->stack);
   for (uint32_t i = 0; i < pop.size; i++) {
