@@ -9327,6 +9327,44 @@ fn test_query_containing_ranges_preserve_deferred_matches_after_hidden_ascent() 
 }
 
 #[test]
+fn test_query_preserves_distinct_productions_sharing_a_parent_alias() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'shared_parent_alias',
+            rules: {
+                source_file: $ => repeat(choice(
+                    seq(alias($.declaration, $.lhs), ':'),
+                    seq(alias($.definition, $.lhs), '='),
+                )),
+                declaration: $ => alias($._expression, $.function_name),
+                definition: $ => $._expression,
+                _expression: $ => repeat1($.atom),
+                atom: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let file = tempfile::NamedTempFile::with_suffix(".js").unwrap();
+    std::fs::write(file.path(), grammar).unwrap();
+    let grammar_json = load_grammar_file(file.path(), None).unwrap();
+    let (name, code) = generate_parser(&grammar_json).unwrap();
+    let language = get_test_language(&name, &code, None);
+    let source = "declaration : definition =";
+    for (pattern, expected) in [
+        ("(lhs (atom) @name)", "definition"),
+        ("(lhs (function_name (atom) @name))", "declaration"),
+    ] {
+        let query = Query::new(&language, pattern).unwrap();
+        assert_query_matches(&language, &query, source, &[(0, vec![("name", expected)])]);
+    }
+    assert_eq!(
+        Query::new(&language, "(lhs (source_file))")
+            .unwrap_err()
+            .kind,
+        QueryErrorKind::Structure,
+    );
+}
+
+#[test]
 fn test_quantified_captures_are_not_repeated_by_interleaved_patterns() {
     let language = get_language("c");
     let source = "void main(void) { foo = bar(); foo = baz(); }";

@@ -1815,14 +1815,15 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
               );
               if (exists) {
                 AnalysisSubgraph *subgraph = array_get(&subgraphs, subgraph_index);
-                if (subgraph->nodes.size == 0 || array_back(&subgraph->nodes)->state != state) {
-                  array_push(&subgraph->nodes, ((AnalysisSubgraphNode) {
-                    .state = state,
-                    .production_id = action->reduce.production_id,
-                    .child_index = action->reduce.child_count,
-                    .done = true,
-                  }));
-                }
+                AnalysisSubgraphNode node = {
+                  .state = state,
+                  .production_id = action->reduce.production_id,
+                  .child_index = action->reduce.child_count,
+                  .done = true,
+                };
+                array_insert_sorted_with(
+                  &subgraph->nodes, analysis_subgraph_node__compare, node
+                );
               }
             }
           } else if (action->type == TSParseActionTypeShift && !action->shift.extra) {
