@@ -295,6 +295,30 @@ MutableSubtree ts_subtree_make_mut(SubtreePool *pool, Subtree self) {
   return result;
 }
 
+MutableSubtree ts_subtree_make_heap_mut(SubtreePool *pool, Subtree self) {
+  MutableSubtree result = ts_subtree_make_mut(pool, self);
+  if (result.data.is_inline) {
+    SubtreeHeapData *data = ts_subtree_pool_allocate(pool);
+    *data = (SubtreeHeapData) {
+      .ref_count = 1,
+      .padding = ts_subtree_padding(self),
+      .size = ts_subtree_size(self),
+      .lookahead_bytes = ts_subtree_lookahead_bytes(self),
+      .symbol = result.data.symbol,
+      .parse_state = result.data.parse_state,
+      .visible = result.data.visible,
+      .named = result.data.named,
+      .extra = result.data.extra,
+      .has_changes = result.data.has_changes,
+      .is_missing = result.data.is_missing,
+      .is_keyword = result.data.is_keyword,
+      .first_leaf_is_keyword = result.data.first_leaf_is_keyword,
+    };
+    result.ptr = data;
+  }
+  return result;
+}
+
 void ts_subtree_compress(
   MutableSubtree self,
   unsigned count,
@@ -377,9 +401,11 @@ void ts_subtree_summarize_children(
   for (uint32_t i = 0; i < self.ptr->child_count; i++) {
     Subtree child = children[i];
 
-    if (ts_subtree_child_count(child) > 0) {
+    if (!child.data.is_inline) {
       self.ptr->has_ambiguous_extra |= child.ptr->has_ambiguous_extra;
-    } else {
+    }
+
+    if (ts_subtree_child_count(child) == 0) {
       TSStateId state = ts_subtree_parse_state(child);
       TSSymbol symbol = ts_subtree_symbol(child);
       if (state < language->state_count && symbol < language->token_count) {
@@ -732,29 +758,10 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         result.data.padding_columns = padding.extent.column;
         result.data.size_bytes = size.bytes;
       } else {
-        SubtreeHeapData *data = ts_subtree_pool_allocate(pool);
-        data->ref_count = 1;
-        data->padding = padding;
-        data->size = size;
-        data->lookahead_bytes = lookahead_bytes;
-        data->error_cost = 0;
-        data->child_count = 0;
-        data->symbol = result.data.symbol;
-        data->parse_state = result.data.parse_state;
-        data->visible = result.data.visible;
-        data->named = result.data.named;
-        data->extra = result.data.extra;
-        data->fragile_left = false;
-        data->fragile_right = false;
-        data->has_changes = false;
-        data->has_external_tokens = false;
-        data->depends_on_column = false;
-        data->is_missing = result.data.is_missing;
-        data->is_keyword = result.data.is_keyword;
-        data->first_leaf_is_keyword = result.data.first_leaf_is_keyword;
-        data->trailing_extra = false;
-        data->has_ambiguous_extra = false;
-        result.ptr = data;
+        result = ts_subtree_make_heap_mut(pool, ts_subtree_from_mut(result));
+        result.ptr->padding = padding;
+        result.ptr->size = size;
+        result.ptr->lookahead_bytes = lookahead_bytes;
       }
     } else {
       result.ptr->padding = padding;

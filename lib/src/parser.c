@@ -1960,7 +1960,12 @@ static bool ts_parser__advance(
             }
           }
 
-          if (fork) ts_subtree_retain(lookahead);
+          if (fork) {
+            MutableSubtree ambiguous = ts_subtree_make_heap_mut(&self->tree_pool, lookahead);
+            ambiguous.ptr->has_ambiguous_extra = true;
+            lookahead = ts_subtree_from_mut(ambiguous);
+            ts_subtree_retain(lookahead);
+          }
           ts_parser__shift(self, shift_version, next_state, lookahead, action.shift.extra);
           if (fork) break;
           if (did_reuse) reusable_node_advance(&self->reusable_node);
