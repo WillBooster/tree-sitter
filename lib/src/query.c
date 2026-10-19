@@ -1714,8 +1714,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      next_step->root_pattern_guaranteed = !is_wildcard;
-      next_step->parent_pattern_guaranteed = !is_wildcard;
+      next_step->root_pattern_guaranteed = !is_wildcard && step->symbol != ts_builtin_sym_error;
+      next_step->parent_pattern_guaranteed = !is_wildcard && step->symbol != ts_builtin_sym_error;
       has_children = true;
     }
 
