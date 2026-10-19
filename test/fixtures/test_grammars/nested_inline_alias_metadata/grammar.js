@@ -1,18 +1,19 @@
 export default grammar({
   name: 'nested_inline_alias_metadata',
   word: $ => $.identifier,
-  inline: $ => [$._selector_identifier, $._query_keyword, $._leaf, $._end, $._wrapped, $._comment, $._note_body],
+  inline: $ => [$._selector_identifier, $._query_keyword, $._leaf, $._end, $._wrapped, $._direct_wrapped, $._comment, $._note_body],
   extras: $ => [$._comment, /\s/],
   rules: {
     // Keep the impossible EOF branch: its discarded leaf alias must not weaken
     // the required fields and children of the real `node` schema.
-    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq($._wrapped, '!'), seq(alias($._leaf, $.node), $._end, '!'), seq($._end, $.dead_name, '!'), seq($._end, $.unused, '!'))),
+    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq($._wrapped, '!'), seq($._direct_wrapped, '!'), seq(alias($._leaf, $.node), $._end, '!'), seq($._end, $.dead_name, '!'), seq($._end, $.unused, '!'))),
     node: $ => seq('(', field('value', $.identifier), ':', $.identifier, ')'),
     _comment: $ => seq('/*', alias($._note_body, $.note), '*/'),
     _note_body: $ => $.comment_word,
     comment_word: () => /[A-Z]+/,
     dead_name: () => /#[a-z]+/,
     unused: $ => seq(alias($._leaf, $.node), '!'),
+    _direct_wrapped: $ => seq(alias($.identifier, $.node), $._end),
     _wrapped: $ => seq(alias($._leaf, $.node), $._end),
     _leaf: () => choice('x', 'y'),
     _end: () => eof(),
