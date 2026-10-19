@@ -60,10 +60,11 @@ struct AuxiliaryParentSetId(u32);
 ///
 /// A state's context only holds the auxiliary symbols at a dot in that state, and links
 /// to its predecessor: the context of the state that first led to it. Successor states
-/// share a context. Conflict resolution uses the nearest entry, including empty sets,
-/// after filtering auxiliary parents, because those entries determine expected-conflict
-/// matching. Diagnostic ownership follows each parent at its item origin and resumes in an
-/// older context when a zero-step cycle would otherwise hide a source owner.
+/// share a context. Both conflict resolution and diagnostic ownership select contexts at
+/// each item's origin, so later uses of a shared repeat cannot change its earlier owner.
+/// Conflict resolution preserves the nearest entry there, including an empty set after
+/// filtering auxiliary parents. Diagnostic ownership follows enclosing parents and resumes
+/// in an older context when a zero-step cycle would otherwise hide a source owner.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
