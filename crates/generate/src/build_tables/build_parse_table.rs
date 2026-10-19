@@ -1338,7 +1338,11 @@ impl<'a> ParseTableBuilder<'a> {
             return Ok(());
         }
 
-        let legacy_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
+        let legacy_conflict = self.conflict_symbols(
+            &conflicting_items,
+            auxiliary_context,
+            preceding_symbols.len(),
+        );
         conflicting_items.retain(|item| {
             !item.is_done()
                 || reduction_info.reductions.iter().any(|reduction| {
@@ -1346,7 +1350,11 @@ impl<'a> ParseTableBuilder<'a> {
                         && reduction.production_index == item.prod_id
                 })
         });
-        let actual_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
+        let actual_conflict = self.conflict_symbols(
+            &conflicting_items,
+            auxiliary_context,
+            preceding_symbols.len(),
+        );
 
         for conflict in [&actual_conflict, &legacy_conflict] {
             if self.syntax_grammar.expected_conflicts.contains(conflict) {
@@ -1647,6 +1655,7 @@ impl<'a> ParseTableBuilder<'a> {
         &self,
         items: &BTreeSet<&ParseItem>,
         auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
     ) -> Vec<Symbol> {
         let mut symbols = Vec::new();
         for item in items {
@@ -1654,7 +1663,13 @@ impl<'a> ParseTableBuilder<'a> {
             if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
                 symbols.extend(
                     self.auxiliary_contexts
-                        .parents(auxiliary_context, item.variable_index as usize)
+                        .parents(
+                            self.auxiliary_contexts.at_position(
+                                auxiliary_context,
+                                path_length - item.step_index as usize,
+                            ),
+                            item.variable_index as usize,
+                        )
                         .unwrap()
                         .iter()
                         .map(|parent| parent.symbol)
