@@ -780,6 +780,61 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
 }
 
 #[test]
+fn test_recovery_keeps_declarations_after_restarting_an_error() {
+    for (language, source, expected) in [
+        (
+            "javascript",
+            "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
+            vec!["export const k = 2;"],
+        ),
+        (
+            "javascript",
+            "class C extends B<\nexport default function q() {}",
+            vec!["function q() {}"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nexport default class A {}\nexport function f() {}\nconst sentinel = 1;",
+            vec![
+                "class A {}",
+                "export function f() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let mut source = source.as_bytes().to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 0;
+        for prefix in ["\n", "", "\n\n", ""] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length: previous_length,
+                    inserted_text: prefix.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let mut cursor = tree.walk();
+            let declarations = tree
+                .root_node()
+                .named_children(&mut cursor)
+                .filter(|node| !node.has_error())
+                .map(|node| node.utf8_text(&source).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(declarations, expected);
+            previous_length = prefix.len();
+        }
+    }
+}
+
+#[test]
 fn test_recovery_keeps_visibility_after_missing_token() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
@@ -3427,7 +3482,7 @@ fn test_parsing_with_a_timeout() {
         let chunk = match offset {
             0 => b" [".as_slice(),
             1 => b"[".as_slice(),
-            _ if offset % 2 == 0 => b",0".as_slice(),
+            _ if offset.is_multiple_of(2) => b",0".as_slice(),
             _ => b"0,".as_slice(),
         };
         read_end = read_end.max(offset + chunk.len());
