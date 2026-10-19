@@ -12,7 +12,7 @@ pub use build_lex_table::LARGE_CHARACTER_RANGE_COUNT;
 use build_parse_table::BuildTableResult;
 pub use build_parse_table::ParseTableBuilderError;
 use log::{debug, info};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use self::{
     build_lex_table::build_lex_table,
@@ -34,6 +34,7 @@ use crate::{
 };
 
 pub struct Tables {
+    pub surviving_productions: FxHashSet<u32>,
     pub parse_table: ParseTable,
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
@@ -194,11 +195,35 @@ pub fn build_tables(
     }
 
     Ok(Tables {
+        surviving_productions: parse_state_info.surviving_productions,
         parse_table,
         main_lex_table: lex_tables.main_lex_table,
         keyword_lex_table: lex_tables.keyword_lex_table,
         large_character_sets: lex_tables.large_character_sets,
     })
+}
+
+#[cfg(feature = "load")]
+pub fn surviving_productions(
+    syntax_grammar: &SyntaxGrammar,
+    lexical_grammar: &LexicalGrammar,
+    variable_info: &[VariableInfo],
+    inlines: &InlinedProductionMap,
+    str_pool: &StrPool,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> BuildTableResult<FxHashSet<u32>> {
+    let item_key_map = ItemKeyMap::new(syntax_grammar, str_pool);
+    let item_set_builder =
+        ParseItemSetBuilder::new(syntax_grammar, lexical_grammar, inlines, &item_key_map);
+    let (_, state_info) = build_parse_table(
+        syntax_grammar,
+        lexical_grammar,
+        item_set_builder,
+        variable_info,
+        str_pool,
+        diagnostics,
+    )?;
+    Ok(state_info.surviving_productions)
 }
 
 fn get_following_tokens(

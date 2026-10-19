@@ -46,9 +46,7 @@ use crate::{
     grammars::InputGrammar, prepare_grammar::PreparedGrammar, rules::Alias, strpool::StrPool,
 };
 
-struct JSONOutput {
-    #[cfg(feature = "load")]
-    node_types_json: String,
+struct PreparedOutput {
     syntax_grammar: SyntaxGrammar,
     lexical_grammar: LexicalGrammar,
     inlines: InlinedProductionMap,
@@ -427,12 +425,27 @@ where
             .map_err(|e| GenerateError::IO(IoError::new(e, Some(src_path.as_path()))))?;
     }
 
-    // If our job is only to generate `grammar.json` and not `parser.c`, stop here.
     let input_grammar = parse_grammar(&grammar_json, diagnostics)?;
 
     if !generate_parser {
-        let node_types_json =
-            generate_node_types_from_grammar(input_grammar, diagnostics)?.node_types_json;
+        let prepared = prepare_node_types_grammar(input_grammar, diagnostics)?;
+        let surviving_productions = build_tables::surviving_productions(
+            &prepared.syntax_grammar,
+            &prepared.lexical_grammar,
+            &prepared.variable_info,
+            &prepared.inlines,
+            &prepared.str_pool,
+            diagnostics,
+        )?;
+        let node_types_json = node_types::generate_node_types_json(
+            &prepared.syntax_grammar,
+            &prepared.inlines,
+            &prepared.lexical_grammar,
+            &prepared.simple_aliases,
+            &prepared.variable_info,
+            &prepared.str_pool,
+            &surviving_productions,
+        )?;
         write_file(&src_path.join("node-types.json"), node_types_json)?;
         return Ok(());
     }
@@ -500,10 +513,10 @@ pub fn generate_parser_for_grammar(
     Ok((name, parser.c_code))
 }
 
-fn generate_node_types_from_grammar(
+fn prepare_node_types_grammar(
     input_grammar: InputGrammar,
     diagnostics: &mut Vec<Diagnostic>,
-) -> GenerateResult<JSONOutput> {
+) -> GenerateResult<PreparedOutput> {
     let PreparedGrammar {
         syntax_grammar,
         lexical_grammar,
@@ -519,18 +532,7 @@ fn generate_node_types_from_grammar(
         &str_pool,
     )?;
 
-    #[cfg(feature = "load")]
-    let node_types_json = node_types::generate_node_types_json(
-        &syntax_grammar,
-        &inlines,
-        &lexical_grammar,
-        &default_aliases,
-        &variable_info,
-        &str_pool,
-    )?;
-    Ok(JSONOutput {
-        #[cfg(feature = "load")]
-        node_types_json,
+    Ok(PreparedOutput {
         syntax_grammar,
         lexical_grammar,
         inlines,
@@ -549,16 +551,14 @@ fn generate_parser_for_grammar_with_opts(
     profile: Option<&GenerationProfile>,
 ) -> GenerateResult<GeneratedParser> {
     let grammar_name = input_grammar.name;
-    let JSONOutput {
+    let PreparedOutput {
         syntax_grammar,
         lexical_grammar,
         inlines,
         simple_aliases,
         variable_info,
-        #[cfg(feature = "load")]
-        node_types_json,
         str_pool,
-    } = generate_node_types_from_grammar(input_grammar, diagnostics)?;
+    } = prepare_node_types_grammar(input_grammar, diagnostics)?;
     let supertype_symbol_map =
         node_types::get_supertype_symbol_map(&syntax_grammar, &simple_aliases, &variable_info);
     let tables = build_tables(
@@ -571,6 +571,16 @@ fn generate_parser_for_grammar_with_opts(
         report_symbol_name,
         optimizations,
         diagnostics,
+    )?;
+    #[cfg(feature = "load")]
+    let node_types_json = node_types::generate_node_types_json(
+        &syntax_grammar,
+        &inlines,
+        &lexical_grammar,
+        &simple_aliases,
+        &variable_info,
+        &str_pool,
+        &tables.surviving_productions,
     )?;
     let c_code = render_c_code(
         grammar_name,

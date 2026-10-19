@@ -62,6 +62,13 @@ pub fn fixture_node_types(name: &str) -> Vec<serde_json::Value> {
 }
 
 pub fn generate_node_types(grammar: &str) -> Vec<serde_json::Value> {
+    generate_node_types_with_parser(grammar, false)
+}
+
+pub fn generate_node_types_with_parser(
+    grammar: &str,
+    generate_parser: bool,
+) -> Vec<serde_json::Value> {
     let directory = tempfile::tempdir_in(scratch_dir()).unwrap();
     fs::write(directory.path().join("grammar.js"), grammar).unwrap();
     tree_sitter_generate::generate_parser_in_directory(
@@ -70,7 +77,7 @@ pub fn generate_node_types(grammar: &str) -> Vec<serde_json::Value> {
         None::<PathBuf>,
         None,
         None,
-        false,
+        generate_parser,
         tree_sitter_generate::OptLevel::default(),
         &mut Vec::new(),
     )

@@ -224,7 +224,7 @@ fn validate_supertype_aliases(
     default_aliases: &AliasMap,
     str_pool: &StrPool,
 ) -> VariableInfoResult<()> {
-    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, inlines, default_aliases);
+    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, inlines, default_aliases, None);
     for supertype_symbol in &syntax_grammar.supertype_symbols {
         let supertype = &syntax_grammar.variables[supertype_symbol.index as usize];
         let collision = Alias {
@@ -618,6 +618,7 @@ fn get_aliases_by_symbol(
     syntax_grammar: &SyntaxGrammar,
     inlines: &InlinedProductionMap,
     default_aliases: &AliasMap,
+    surviving_productions: Option<&FxHashSet<u32>>,
 ) -> FxHashMap<Symbol, BTreeSet<Option<Alias>>> {
     let mut aliases_by_symbol = FxHashMap::default();
     for (symbol, &alias) in default_aliases {
@@ -644,7 +645,10 @@ fn get_aliases_by_symbol(
             .map(move |id| (id, retain_aliases))
     });
     let expanded_ids = reachable_expanded_productions(syntax_grammar, inlines);
-    let fully_expanded_productions = expanded_ids.into_iter().map(|id| (id, true));
+    let fully_expanded_productions = expanded_ids
+        .into_iter()
+        .filter(|id| surviving_productions.is_none_or(|productions| productions.contains(id)))
+        .map(|id| (id, true));
     for (id, retain_aliases) in original_productions.chain(fully_expanded_productions) {
         for step in syntax_grammar.production(id).steps {
             aliases_by_symbol
@@ -819,6 +823,7 @@ pub fn generate_node_types_json(
     default_aliases: &AliasMap,
     variable_info: &[VariableInfo],
     str_pool: &StrPool,
+    surviving_productions: &FxHashSet<u32>,
 ) -> SuperTypeCycleResult<String> {
     let nodes = generate_node_types(
         syntax_grammar,
@@ -827,6 +832,7 @@ pub fn generate_node_types_json(
         default_aliases,
         variable_info,
         str_pool,
+        Some(surviving_productions),
     )?;
 
     Ok(serde_json::to_string_pretty(&SerializeWithPool {
@@ -844,8 +850,14 @@ fn generate_node_types(
     default_aliases: &AliasMap,
     variable_info: &[VariableInfo],
     str_pool: &StrPool,
+    surviving_productions: Option<&FxHashSet<u32>>,
 ) -> SuperTypeCycleResult<Vec<NodeInfoJSON>> {
-    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, inlines, default_aliases);
+    let aliases_by_symbol = get_aliases_by_symbol(
+        syntax_grammar,
+        inlines,
+        default_aliases,
+        surviving_productions,
+    );
     let extra_node_types =
         collect_extra_node_types(syntax_grammar, lexical_grammar, &aliases_by_symbol);
 
@@ -3402,6 +3414,7 @@ mod tests {
             &default_aliases,
             &variable_info,
             &str_pool,
+            None,
         )
     }
 
