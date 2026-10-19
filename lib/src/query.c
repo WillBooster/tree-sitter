@@ -4308,12 +4308,24 @@ bool range_within(const TSRange *a, const TSRange *b) {
   );
 }
 
+static bool ts_query_cursor__state_range_dominates(
+  const TSQueryCursor *self,
+  const QueryState *state,
+  const QueryState *other
+) {
+  return range_intersects(&state->matched_range, &self->included_range) ||
+    (!range_intersects(&other->matched_range, &self->included_range) &&
+      state->matched_range.start_byte <= other->matched_range.start_byte);
+}
+
 static void ts_query_cursor__merge_states(
   TSQueryCursor *self,
   QueryState *state,
-  QueryState *other
+  QueryState *other,
+  bool equal_captures
 ) {
   if (
+    equal_captures &&
     state->matched_range.start_byte != UINT32_MAX &&
     !range_intersects(&state->matched_range, &self->included_range) &&
     (other->matched_range.start_byte == UINT32_MAX ||
@@ -4968,11 +4980,14 @@ static inline bool ts_query_cursor__advance(
               &left_contains_right,
               &right_contains_left
             );
+            bool equal_captures = left_contains_right && right_contains_left;
             bool same_step = state->step_index == other_state->step_index;
             bool is_done = array_get(&self->query->steps, state->step_index)->depth == PATTERN_DONE_MARKER;
             if (left_contains_right) {
               if (
-                same_step && (is_done || (
+                same_step &&
+                (equal_captures || ts_query_cursor__state_range_dominates(self, state, other_state)) &&
+                (is_done || (
                   (other_state->seeking_immediate_match || !state->seeking_immediate_match) &&
                   (other_state->seeking_first_named_child || !state->seeking_first_named_child)
                 ))
@@ -4982,7 +4997,7 @@ static inline bool ts_query_cursor__advance(
                   state->pattern_index,
                   state->step_index
                 );
-                ts_query_cursor__merge_states(self, state, other_state);
+                ts_query_cursor__merge_states(self, state, other_state, equal_captures);
                 array_erase(&self->states, k);
                 k--;
                 continue;
@@ -4991,7 +5006,9 @@ static inline bool ts_query_cursor__advance(
             }
             if (right_contains_left) {
               if (
-                same_step && (is_done || (
+                same_step &&
+                (equal_captures || ts_query_cursor__state_range_dominates(self, other_state, state)) &&
+                (is_done || (
                   (state->seeking_immediate_match || !other_state->seeking_immediate_match) &&
                   (state->seeking_first_named_child || !other_state->seeking_first_named_child)
                 ))
@@ -5001,7 +5018,7 @@ static inline bool ts_query_cursor__advance(
                   state->pattern_index,
                   state->step_index
                 );
-                ts_query_cursor__merge_states(self, other_state, state);
+                ts_query_cursor__merge_states(self, other_state, state, equal_captures);
                 array_erase(&self->states, j);
                 j--;
                 did_remove = true;
