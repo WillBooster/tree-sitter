@@ -67,6 +67,14 @@ void ts_stack_push(Stack *self, StackVersion version, Subtree subtree, bool pend
 // removed from that version.
 StackSliceArray ts_stack_pop_count(Stack *self, StackVersion version, uint32_t count);
 
+StackSliceArray ts_stack_pop_count_for_reduce(
+  Stack *self,
+  StackVersion version,
+  uint32_t count,
+  uint32_t max_reductions,
+  bool *is_ambiguous
+);
+
 // Remove an error at the top of the given version of the stack.
 SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version);
 

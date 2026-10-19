@@ -168,6 +168,7 @@ typedef struct {
   uint32_t start_byte;
   uint32_t end_byte;
   bool is_non_local;
+  bool is_rooted;
   bool has_empty_root;
 } QueryPattern;
 
@@ -212,6 +213,7 @@ typedef Array(QueryRootRange) QueryRootRanges;
  */
 typedef struct {
   TSRange matched_range;
+  uint64_t root_id;
   QueryRootRanges root_origins;
   uint32_t id;
   uint32_t capture_list_id;
@@ -228,6 +230,7 @@ typedef struct {
   bool has_in_progress_alternatives: 1;
   bool dead: 1;
   bool needs_parent: 1;
+  bool is_rooted: 1;
   bool skipped_quantifier: 1;
   bool needs_repeated_match: 1;
 } QueryState;
@@ -3212,6 +3215,7 @@ TSQuery *ts_query_new(
       .predicate_steps = (Slice) {.offset = start_predicate_step_index},
       .start_byte = stream_offset(&stream),
       .is_non_local = false,
+      .is_rooted = true,
     }));
     CaptureQuantifiers capture_quantifiers = capture_quantifiers_new();
     *error_type = ts_query__parse_pattern(self, &stream, 0, 0, false, false, &capture_quantifiers);
@@ -3292,6 +3296,7 @@ TSQuery *ts_query_new(
         pattern->has_empty_root = true;
         self->has_empty_roots = true;
       }
+      pattern->is_rooted &= is_rooted;
       ts_query__pattern_map_insert(self, step->symbol, (PatternEntry) {
         .step_index = start_step_index,
         .pattern_index = pattern_index,
@@ -4019,10 +4024,8 @@ void ts_query_cursor__compare_captures(
   }
 }
 
-// Order two in-progress states for the longest-match dedup pass. Within a
-// (start_depth, pattern_index) group, states with no captures sort first, as they are a
-// subset of every other state (so the dedup pass must always compare them). The rest
-// sort by the start byte of their first capture.
+// Put captureless states before nonempty capture ranges so the dedup scan's
+// range-based early exit cannot skip an eligible capture-subset comparison.
 static bool ts_query_cursor__state_precedes(
   const TSQueryCursor *self,
   const QueryState *a,
@@ -4127,6 +4130,7 @@ static void ts_query_cursor__add_state(
   }
   array_insert(&self->states, index, ((QueryState) {
     .matched_range = {.start_byte = UINT32_MAX},
+    .root_id = UINT64_MAX,
     .root_origins = origins,
     .id = UINT32_MAX,
     .capture_list_id = CAPTURE_LIST_NONE,
@@ -4140,6 +4144,7 @@ static void ts_query_cursor__add_state(
     .seeking_immediate_match = true,
     .has_in_progress_alternatives = false,
     .needs_parent = step->depth == 1,
+    .is_rooted = array_get(&self->query->patterns, pattern->pattern_index)->is_rooted,
     .dead = false,
     .skipped_quantifier = false,
   }));
@@ -4587,7 +4592,7 @@ static inline bool ts_query_cursor__advance(
       bool node_within_containing_range =
         range_within(&node_range, &self->containing_range);
 
-      if (self->on_visible_node && self->query->has_empty_roots) {
+      if (self->on_visible_node) {
         if (self->root_ids.size <= self->depth) array_push(&self->root_ids, 0);
         else (*array_get(&self->root_ids, self->depth))++;
       }
@@ -4828,6 +4833,10 @@ static inline bool ts_query_cursor__advance(
             } else {
               state->needs_parent = false;
             }
+          }
+
+          if (state->is_rooted && state->root_id == UINT64_MAX) {
+            state->root_id = *array_get(&self->root_ids, state->start_depth);
           }
 
           if (step->depth == 0 || (step->depth == 1 && state->matched_range.start_byte == UINT32_MAX)) {
@@ -5091,6 +5100,7 @@ static inline bool ts_query_cursor__advance(
 
             if (!!state->empty_root_match_count != !!other_state->empty_root_match_count &&
                 !query_root_ranges__intersect(&state->root_origins, &other_state->root_origins)) continue;
+            if (state->is_rooted && other_state->is_rooted && state->root_id != other_state->root_id) continue;
             bool left_contains_right, right_contains_left;
             ts_query_cursor__compare_captures(
               self,
