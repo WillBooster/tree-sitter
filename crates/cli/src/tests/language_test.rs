@@ -249,12 +249,16 @@ fn test_nested_inline_alias_metadata_matches_visible_nodes() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let tree = parser
-        .parse("style; @func; plain; [name] [ns|name] (first:second)", None)
+        .parse(
+            "style; /* NOTE */ @func; plain; [name] [ns|name] (first:second)",
+            None,
+        )
         .unwrap();
     assert!(!tree.root_node().has_error());
     let error_tree = parser.parse("#broken", None).unwrap();
     assert!(error_tree.root_node().has_error());
     let mut found_recovered_token = false;
+    let mut found_inline_extra = false;
     let mut nodes = vec![tree.root_node(), error_tree.root_node()];
     while let Some(node) = nodes.pop() {
         let mut cursor = node.walk();
@@ -263,6 +267,7 @@ fn test_nested_inline_alias_metadata_matches_visible_nodes() {
             continue;
         }
         found_recovered_token |= node.kind() == "dead_name";
+        found_inline_extra |= node.kind() == "note";
         let entry = entries
             .iter()
             .find(|entry| entry["type"] == node.kind() && entry["named"] == true)
@@ -283,4 +288,5 @@ fn test_nested_inline_alias_metadata_matches_visible_nodes() {
         }
     }
     assert!(found_recovered_token);
+    assert!(found_inline_extra);
 }

@@ -669,9 +669,10 @@ fn reachable_expanded_productions(
 ) -> Vec<u32> {
     let mut pending = (0..grammar.variables.len())
         .filter(|&i| {
-            !grammar
-                .variables_to_inline
-                .contains(&Symbol::non_terminal(i))
+            let symbol = Symbol::non_terminal(i);
+            i == 0
+                || !grammar.variables_to_inline.contains(&symbol)
+                || grammar.extra_symbols.contains(&symbol)
         })
         .flat_map(|i| grammar.variable_prod_ids(i))
         .collect::<Vec<_>>();
