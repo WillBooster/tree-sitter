@@ -192,6 +192,7 @@ typedef struct {
   int32_t mark_start;
   int32_t mark_end_at;
   int32_t get_mark_end;
+  int32_t get_display_column;
 } LexerInWasmMemory;
 
 // Linear memory layout:
@@ -445,6 +446,17 @@ static wasm_trap_t *callback__lexer_get_mark_end(
   size_t len
 ) {
   return callback__lexer_position(env, caller, args, LexerPositionGetMarkEnd);
+}
+
+static wasm_trap_t *callback__lexer_get_display_column(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  TSWasmStore *store = env;
+  args[0].i32 = store->current_lexer->get_display_column(store->current_lexer, args[1].i32);
+  return NULL;
 }
 
 static wasm_trap_t *callback__lexer_get_column(
@@ -845,6 +857,11 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
       &lexer.get_mark_end,
       callback__lexer_get_mark_end,
       wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.get_display_column,
+      callback__lexer_get_display_column,
+      wasm_functype_new_2_1(wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32())
     },
     {
       &lexer.get_column,
