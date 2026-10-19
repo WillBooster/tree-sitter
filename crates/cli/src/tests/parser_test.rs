@@ -6763,6 +6763,95 @@ fn test_required_nonterminal_extra_recovers_missing_start() {
 }
 
 #[test]
+fn test_adjacent_required_and_extra_comments_scale_quadratically() {
+    let grammar = serde_json::json!({
+        "name": "adjacent_comments",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "SYMBOL", "name": "line"}
+            ]}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let measure = |parser: &mut Parser, count: usize| {
+            let source = "#a# ".repeat(count);
+            let mut fastest = Duration::MAX;
+            for _ in 0..3 {
+                let started = cpu_time::ThreadTime::now();
+                let tree = parser.parse(&source, None).unwrap();
+                let elapsed = started.elapsed();
+                let root = tree.root_node();
+                assert!(!root.has_error());
+                assert_eq!(root.end_byte(), source.len());
+                assert_eq!(root.named_child_count(), count);
+                for index in 0..count {
+                    let comment = root.named_child(index as u32).unwrap();
+                    assert_eq!(comment.kind(), "comment");
+                    assert_eq!(comment.byte_range(), index * 4..index * 4 + 3);
+                }
+                fastest = fastest.min(elapsed);
+            }
+            fastest
+        };
+        measure(&mut parser, 40);
+        let small = measure(&mut parser, 40);
+        let large = measure(&mut parser, 160);
+        assert!(large < small * 32, "small: {small:?}, large: {large:?}");
+    }
+
+    for precedence in [-1, 0, 1] {
+        let mut grammar = grammar.clone();
+        grammar["rules"]["line"] = serde_json::json!({
+            "type": "PREC_DYNAMIC", "value": precedence,
+            "content": grammar["rules"]["line"].clone()
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            let source = format!("l{}", "#a# ".repeat(40));
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let line = tree.root_node().named_child(0).unwrap();
+            assert_eq!(line.kind(), "line");
+            assert!(line.named_child_count() > 0);
+            assert!(
+                (0..line.named_child_count())
+                    .any(|index| { !line.named_child(index as u32).unwrap().is_extra() })
+            );
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 5,
+                new_end_byte: 1,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 5),
+                new_end_position: Point::new(0, 1),
+            });
+            let edited = format!("l{}", "#a# ".repeat(39));
+            let incremental = parser.parse(&edited, Some(&tree)).unwrap();
+            let fresh = parser.parse(&edited, None).unwrap();
+            assert!(!incremental.root_node().has_error());
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            assert_eq!(incremental.root_node().byte_range(), 0..edited.len());
+        }
+    }
+}
+
+#[test]
 fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
     let grammar = serde_json::json!({
         "name": "explicit_nonterminal_extra",
