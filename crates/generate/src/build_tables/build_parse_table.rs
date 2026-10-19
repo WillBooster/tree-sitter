@@ -1634,10 +1634,6 @@ impl<'a> ParseTableBuilder<'a> {
                         }),
                 );
             }
-            pending.extend(
-                self.containing_rules(symbol, items, auxiliary_context, path_length)
-                    .map(|(parent, context)| (parent, context, ancestors.clone())),
-            );
         }
         parents
     }
