@@ -3811,8 +3811,31 @@ bool ts_query_cursor_set_containing_point_range(
   return true;
 }
 
-// Search through all of the in-progress states, and find the captured
-// node that occurs earliest in the document.
+bool range_intersects(const TSRange *a, const TSRange *b) {
+  bool is_empty = a->start_byte == a->end_byte;
+  return (
+    (
+      a->end_byte > b->start_byte ||
+      (is_empty && a->end_byte == b->start_byte)
+    ) &&
+    (
+      point_gt(a->end_point, b->start_point) ||
+      (is_empty && point_eq(a->end_point, b->start_point))
+    ) &&
+    a->start_byte < b->end_byte &&
+    point_lt(a->start_point, b->end_point)
+  );
+}
+
+static bool ts_query_cursor__node_intersects_range(const TSQueryCursor *self, TSNode node) {
+  return range_intersects(&(TSRange) {
+    .start_byte = ts_node_start_byte(node),
+    .end_byte = ts_node_end_byte(node),
+    .start_point = ts_node_start_point(node),
+    .end_point = ts_node_end_point(node),
+  }, &self->included_range);
+}
+
 static bool ts_query_cursor__first_in_progress_capture(
   TSQueryCursor *self,
   uint32_t *state_index,
@@ -3820,7 +3843,6 @@ static bool ts_query_cursor__first_in_progress_capture(
   uint32_t *pattern_index,
   bool *is_definite
 ) {
-  bool result = false;
   *state_index = UINT32_MAX;
   *byte_offset = UINT32_MAX;
   *pattern_index = UINT32_MAX;
@@ -3837,12 +3859,7 @@ static bool ts_query_cursor__first_in_progress_capture(
     }
 
     TSNode node = array_get(captures, state->consumed_capture_count)->node;
-    if (
-      ts_node_end_byte(node) <= self->included_range.start_byte ||
-      point_lte(ts_node_end_point(node), self->included_range.start_point) ||
-      ts_node_start_byte(node) >= self->included_range.end_byte ||
-      point_gte(ts_node_start_point(node), self->included_range.end_point)
-    ) {
+    if (!ts_query_cursor__node_intersects_range(self, node)) {
       state->consumed_capture_count++;
       i--;
       continue;
@@ -3850,25 +3867,23 @@ static bool ts_query_cursor__first_in_progress_capture(
 
     uint32_t node_start_byte = ts_node_start_byte(node);
     if (
-      !result ||
-      node_start_byte < *byte_offset ||
-      (node_start_byte == *byte_offset && state->pattern_index < *pattern_index)
-    ) {
-      QueryStep *step = array_get(&self->query->steps, state->step_index);
-      if (is_definite) {
-        *is_definite = step->root_pattern_guaranteed && !step->is_immediate &&
-          !state->has_in_progress_alternatives;
-      } else if (step->root_pattern_guaranteed) {
-        continue;
-      }
+      node_start_byte > *byte_offset ||
+      (node_start_byte == *byte_offset && state->pattern_index >= *pattern_index)
+    ) continue;
 
-      result = true;
-      *state_index = i;
-      *byte_offset = node_start_byte;
-      *pattern_index = state->pattern_index;
+    QueryStep *step = array_get(&self->query->steps, state->step_index);
+    if (is_definite) {
+      *is_definite = step->root_pattern_guaranteed && !step->is_immediate &&
+        !state->has_in_progress_alternatives;
+    } else if (step->root_pattern_guaranteed) {
+      continue;
     }
+
+    *state_index = i;
+    *byte_offset = node_start_byte;
+    *pattern_index = state->pattern_index;
   }
-  return result;
+  return *state_index != UINT32_MAX;
 }
 
 // Determine which node is first in a depth-first traversal
@@ -4173,14 +4188,14 @@ static QueryState *ts_query_cursor__copy_state(
 
 static inline bool ts_query_cursor__should_descend(
   TSQueryCursor *self,
-  bool node_intersects_range
+  bool node_may_contain_match
 ) {
 
   bool depth_allows_children = self->depth < self->max_start_depth || (
     self->depth == self->max_start_depth && self->query->has_skipped_root
   );
 
-  if (node_intersects_range && depth_allows_children) {
+  if (node_may_contain_match && depth_allows_children) {
     return true;
   }
 
@@ -4229,17 +4244,10 @@ static inline bool ts_query_cursor__should_descend(
   return false;
 }
 
-bool range_intersects(const TSRange *a, const TSRange *b) {
-  bool is_empty = a->start_byte == a->end_byte;
+static bool range_can_contain_match(const TSRange *a, const TSRange *b) {
   return (
-    (
-      a->end_byte > b->start_byte ||
-      (is_empty && a->end_byte == b->start_byte)
-    ) &&
-    (
-      point_gt(a->end_point, b->start_point) ||
-      (is_empty && point_eq(a->end_point, b->start_point))
-    ) &&
+    a->end_byte >= b->start_byte &&
+    point_gte(a->end_point, b->start_point) &&
     a->start_byte < b->end_byte &&
     point_lt(a->start_point, b->end_point)
   );
@@ -4431,8 +4439,8 @@ static inline bool ts_query_cursor__advance(
       TSNode parent_node = ts_tree_cursor_parent_node(&self->cursor);
 
       TSNode range_parent = ts_node_is_null(parent_node) ? node : parent_node;
-      bool parent_intersects_range =
-        range_intersects(&(TSRange) {
+      bool parent_may_contain_match =
+        range_can_contain_match(&(TSRange) {
           .start_point = ts_node_start_point(range_parent),
           .end_point = ts_node_end_point(range_parent),
           .start_byte = ts_node_start_byte(range_parent),
@@ -4444,8 +4452,8 @@ static inline bool ts_query_cursor__advance(
         .start_byte = ts_node_start_byte(node),
         .end_byte = ts_node_end_byte(node),
       };
-      bool node_intersects_range =
-        parent_intersects_range && range_intersects(&node_range, &self->included_range);
+      bool node_intersects_range = range_intersects(&node_range, &self->included_range);
+      bool node_may_contain_match = range_can_contain_match(&node_range, &self->included_range);
       // Containing ranges include empty nodes at either boundary. Keep touching
       // ancestors so their leading or trailing empty descendants remain reachable.
       bool node_intersects_containing_range =
@@ -4506,7 +4514,7 @@ static inline bool ts_query_cursor__advance(
             if (
               (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
-                (parent_intersects_range && !parent_is_error)) &&
+                (parent_may_contain_match && !parent_is_error)) &&
               (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
@@ -4530,7 +4538,7 @@ static inline bool ts_query_cursor__advance(
             if (
               (pattern->is_rooted ?
                 node_intersects_range :
-                (parent_intersects_range && !parent_is_error)) &&
+                (parent_may_contain_match && !parent_is_error)) &&
               (!step->field || field_id == step->field) &&
               (start_depth <= self->max_start_depth)
             ) {
@@ -5012,7 +5020,7 @@ static inline bool ts_query_cursor__advance(
         }
       }
 
-      if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_intersects_range)) {
+      if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_may_contain_match)) {
         switch (ts_tree_cursor_goto_first_child_internal(&self->cursor)) {
           case TreeCursorStepVisible:
             self->depth++;
@@ -5175,18 +5183,7 @@ bool ts_query_cursor_next_capture(
 
       TSNode node = array_get(captures, state->consumed_capture_count)->node;
 
-      bool node_precedes_range = (
-        ts_node_end_byte(node) <= self->included_range.start_byte ||
-        point_lte(ts_node_end_point(node), self->included_range.start_point)
-      );
-      bool node_follows_range = (
-        ts_node_start_byte(node) >= self->included_range.end_byte ||
-        point_gte(ts_node_start_point(node), self->included_range.end_point)
-      );
-      bool node_outside_of_range = node_precedes_range || node_follows_range;
-
-      // Skip captures that are outside of the cursor's range.
-      if (node_outside_of_range) {
+      if (!ts_query_cursor__node_intersects_range(self, node)) {
         state->consumed_capture_count++;
         finished_state_sift_down(&self->finished_states, 0, &self->capture_list_pool);
         continue;
