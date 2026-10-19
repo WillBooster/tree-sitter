@@ -2064,7 +2064,6 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     }
   }
 
-  // Mark as indefinite any step with captures that are used in predicates.
   Array(uint16_t) predicate_capture_ids = array_new();
   for (unsigned i = 0; i < self->patterns.size; i++) {
     QueryPattern *pattern = array_get(&self->patterns, i);
@@ -2083,13 +2082,16 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       }
     }
 
-    // Find all of the steps that have these captures.
     for (
       unsigned start = pattern->steps.offset,
       end = start + pattern->steps.length,
       j = start; j < end; j++
     ) {
       QueryStep *step = array_get(&self->steps, j);
+      if (step->is_missing || step->symbol == ts_builtin_sym_error) {
+        step->root_pattern_guaranteed = false;
+        step->parent_pattern_guaranteed = false;
+      }
       for (unsigned k = 0; k < MAX_STEP_CAPTURE_COUNT; k++) {
         uint16_t capture_id = step->capture_ids[k];
         if (capture_id == NONE) break;
