@@ -65,6 +65,7 @@ struct TSLexer {
   void (*mark_start)(TSLexer *, const TSLexerPosition *);
   void (*mark_end_at)(TSLexer *, const TSLexerPosition *);
   void (*get_mark_end)(const TSLexer *, TSLexerPosition *);
+  uint32_t (*get_display_column)(TSLexer *, uint32_t tab_width);
 };
 
 typedef enum {
