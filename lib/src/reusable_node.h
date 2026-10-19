@@ -77,7 +77,7 @@ static inline void reusable_node_advance(ReusableNode *self) {
 
 static inline bool reusable_node_descend(ReusableNode *self) {
   StackEntry last_entry = *array_back(&self->stack);
-  if (ts_subtree_child_count(last_entry.tree) > 0) {
+  if (ts_subtree_child_count(last_entry.tree) > 0 && !ts_subtree_is_error(last_entry.tree)) {
     array_push(&self->stack, ((StackEntry) {
       .tree = ts_subtree_children(last_entry.tree)[0],
       .child_index = 0,

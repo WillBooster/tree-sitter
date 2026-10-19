@@ -906,31 +906,43 @@ fn test_recovery_reconsiders_errors_after_edits() {
 fn test_recovery_reconsiders_reused_nodes_across_edits() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let mut source = b"import t from\"t\";\nimport\"\"\n{r={t ult:e} =w;arse)\n".to_vec();
-    let mut tree = parser.parse(&source, None).unwrap();
-    let mut undos = Vec::new();
-    for (position, deleted_length, inserted_text) in [
-        (32, 4, ""),
-        (14, 3, "type "),
-        (43, 1, "interface "),
-        (46, 2, ","),
+    for (initial_source, edits) in [
+        (
+            "import t from\"t\";\nimport\"\"\n{r={t ult:e} =w;arse)\n",
+            [
+                (32, 4, ""),
+                (14, 3, "type "),
+                (43, 1, "interface "),
+                (46, 2, ","),
+            ]
+            .as_slice(),
+        ),
+        (
+            "({e:''>['',pe: $=>[+/,\n//\na;\n",
+            [(12, 3, ">"), (16, 0, "interface "), (11, 0, "=")].as_slice(),
+        ),
     ] {
-        let edit = Edit {
-            position,
-            deleted_length,
-            inserted_text: inserted_text.as_bytes().to_vec(),
-        };
-        undos.push(invert_edit(&source, &edit));
-        perform_edit(&mut tree, &mut source, &edit).unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-    }
-    for undo in undos.into_iter().rev() {
-        perform_edit(&mut tree, &mut source, &undo).unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        let mut source = initial_source.as_bytes().to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut undos = Vec::new();
+        for &(position, deleted_length, inserted_text) in edits {
+            let edit = Edit {
+                position,
+                deleted_length,
+                inserted_text: inserted_text.as_bytes().to_vec(),
+            };
+            undos.push(invert_edit(&source, &edit));
+            perform_edit(&mut tree, &mut source, &edit).unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        }
+        for undo in undos.into_iter().rev() {
+            perform_edit(&mut tree, &mut source, &undo).unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        }
     }
 }
 
