@@ -122,6 +122,7 @@ typedef struct {
   unsigned node_count;
   int dynamic_precedence;
   bool is_in_error;
+  bool is_paused;
   bool is_unconfirmed;
   uint64_t unconfirmed_recovery;
 } ErrorStatus;
@@ -298,7 +299,8 @@ static ErrorComparison ts_parser__compare_versions(
 
 // A recovery can resume inside a construct the input never closes. Until it reaches the
 // root state, its lower error cost must not discard another resumed parse.
-// Descendants of the same recovery still compete normally, including by dynamic precedence.
+// Paused heads have not tried recovery for their lookahead yet; an active head
+// alone is not evidence that their continuation cannot finish the construct.
 static ErrorComparison ts_parser__compare_ranked_versions(
   TSParser *self,
   ErrorStatus higher,
@@ -306,13 +308,17 @@ static ErrorComparison ts_parser__compare_ranked_versions(
 ) {
   ErrorComparison comparison = ts_parser__compare_versions(self, higher, lower);
   bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
+  bool paused_recovery = higher.is_paused && higher.unconfirmed_recovery;
   bool has_unconfirmed_recovery = lower.unconfirmed_recovery &&
     lower.unconfirmed_recovery != higher.unconfirmed_recovery;
   if (comparison == ErrorComparisonTakeLeft && higher.unconfirmed_recovery &&
-      higher.unconfirmed_recovery != lower.unconfirmed_recovery && !lower.is_in_error) {
+      higher.unconfirmed_recovery != lower.unconfirmed_recovery &&
+      (!lower.is_in_error || lower.is_paused)) {
     return ErrorComparisonPreferLeft;
   }
-  if (displaces_higher && (lower.is_unconfirmed || has_unconfirmed_recovery) && !higher.is_in_error) {
+  if (displaces_higher &&
+      (lower.is_unconfirmed || has_unconfirmed_recovery || paused_recovery) &&
+      (!higher.is_in_error || paused_recovery || (has_unconfirmed_recovery && higher.is_paused))) {
     return lower.is_unconfirmed ? ErrorComparisonNone : ErrorComparisonPreferRight;
   }
   return comparison;
@@ -330,6 +336,7 @@ static ErrorStatus ts_parser__version_status(
     .node_count = ts_stack_node_count_since_error(self->stack, version),
     .dynamic_precedence = ts_stack_dynamic_precedence(self->stack, version),
     .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE,
+    .is_paused = is_paused,
     .is_unconfirmed = ts_stack_has_unconfirmed_missing_token(self->stack, version),
     .unconfirmed_recovery = ts_stack_unconfirmed_recovery(self->stack, version),
   };
@@ -2228,6 +2235,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
         case ErrorComparisonPreferRight:
           made_changes = true;
           ts_stack_swap_versions(self->stack, i, j);
+          status_i = ts_parser__version_status(self, i);
           break;
 
         case ErrorComparisonTakeRight:
@@ -2247,28 +2255,29 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
     made_changes = true;
   }
 
-  // If the best-performing stack version is currently paused, or all
-  // versions are paused, then resume the best paused version and begin
-  // the error recovery process. Otherwise, remove the paused versions.
   if (ts_stack_version_count(self->stack) > 0) {
     bool has_unpaused_version = false;
+    bool resumed_paused_version = false;
     for (StackVersion i = 0, n = ts_stack_version_count(self->stack); i < n; i++) {
-      if (ts_stack_is_paused(self->stack, i)) {
-        if (!has_unpaused_version && self->accept_count < MAX_VERSION_COUNT) {
-          LOG("resume version:%u", i);
-          min_error_cost = ts_stack_error_cost(self->stack, i);
-          Subtree lookahead = ts_stack_resume(self->stack, i);
-          ts_parser__handle_error(self, i, lookahead);
-          has_unpaused_version = true;
-        } else {
-          ts_stack_remove_version(self->stack, i);
-          made_changes = true;
-          i--;
-          n--;
-        }
-      } else {
-        has_unpaused_version = true;
+      if (!ts_stack_is_paused(self->stack, i)) {
+        has_unpaused_version |= !ts_stack_unconfirmed_recovery(self->stack, i);
+        continue;
       }
+      bool can_resume_recovery = !resumed_paused_version &&
+        ts_stack_unconfirmed_recovery(self->stack, i);
+      if ((has_unpaused_version && !can_resume_recovery) || self->accept_count >= MAX_VERSION_COUNT) {
+        ts_stack_remove_version(self->stack, i);
+        made_changes = true;
+        i--;
+        n--;
+        continue;
+      }
+      LOG("resume version:%u", i);
+      min_error_cost = ts_stack_error_cost(self->stack, i);
+      Subtree lookahead = ts_stack_resume(self->stack, i);
+      ts_parser__handle_error(self, i, lookahead);
+      resumed_paused_version = true;
+      has_unpaused_version = true;
     }
   }
 

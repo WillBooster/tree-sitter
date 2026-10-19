@@ -525,14 +525,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
     let for_in = ("for_in_statement", false);
     let exports = [export; 14];
     let after_invalid_export = [
-        &[
-            export,
-            export,
-            ("ERROR", true),
-            ("expression_statement", false),
-            ("ERROR", true),
-            ("empty_statement", false),
-        ][..],
+        &[export, export, ("expression_statement", true)][..],
         &exports,
     ]
     .concat();
@@ -540,12 +533,12 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         (
             "typescript/typescript",
             "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[("labeled_statement", true), export, alias][..],
+            &[("expression_statement", true), export, alias][..],
         ),
         (
             "typescript/typescript",
             "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[("labeled_statement", true), export, alias],
+            &[("type_alias_declaration", true), export, alias],
         ),
         (
             "typescript/typescript",
@@ -782,6 +775,21 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
 #[test]
 fn test_recovery_keeps_declarations_after_restarting_an_error() {
     for (language, source, expected) in [
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\nclass Example { }",
+            vec!["class Example { }"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\n[B]\nusing System.Linq;",
+            vec!["using System.Linq;"],
+        ),
+        (
+            "c-sharp",
+            "class Before {}\nclass C implements A, number<B\n[A]\nnamespace Example { }",
+            vec!["class Before {}", "namespace Example { }"],
+        ),
         (
             "typescript/typescript",
             "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
