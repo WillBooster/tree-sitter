@@ -234,3 +234,60 @@ fn test_supertypes() {
         }
     }
 }
+
+#[test]
+fn test_nested_inline_alias_metadata_matches_visible_nodes() {
+    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let directory = tempfile::tempdir_in(scratch).unwrap();
+    let grammar = super::helpers::fixtures::fixtures_dir()
+        .join("test_grammars/nested_inline_alias_metadata/grammar.js");
+    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<std::path::PathBuf>,
+        None::<std::path::PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let schema: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
+    )
+    .unwrap();
+    let entries = schema.as_array().unwrap();
+    let language =
+        super::helpers::fixtures::get_test_fixture_language("nested_inline_alias_metadata");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser
+        .parse("style; @func; plain; [name] [ns|name]", None)
+        .unwrap();
+    assert!(!tree.root_node().has_error());
+    let mut nodes = vec![tree.root_node()];
+    while let Some(node) = nodes.pop() {
+        let entry = entries
+            .iter()
+            .find(|entry| entry["type"] == node.kind() && entry["named"] == true)
+            .unwrap_or_else(|| panic!("missing schema for {}", node.kind()));
+        if entry["children"]["required"] == true {
+            assert!(node.named_child_count() > 0, "{} is a leaf", node.kind());
+        }
+        if let Some(fields) = entry["fields"].as_object() {
+            for (name, field) in fields {
+                if field["required"] == true {
+                    assert!(
+                        node.child_by_field_name(name).is_some(),
+                        "{} lacks {name}",
+                        node.kind()
+                    );
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        nodes.extend(node.named_children(&mut cursor));
+    }
+}

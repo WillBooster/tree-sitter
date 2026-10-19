@@ -632,20 +632,16 @@ fn get_aliases_by_symbol(
                 .insert(None);
         }
     }
-    for i in 0..syntax_grammar.variables.len() {
-        for prod_id in syntax_grammar.variable_prod_ids(i) {
-            for step in syntax_grammar.production(prod_id).steps {
-                aliases_by_symbol
-                    .entry(step.symbol())
-                    .or_insert_with(BTreeSet::new)
-                    .insert(
-                        step.alias()
-                            .as_ref()
-                            .or_else(|| default_aliases.get(&step.symbol()))
-                            .copied(),
-                    );
-            }
-        }
+    for step in &syntax_grammar.steps {
+        aliases_by_symbol
+            .entry(step.symbol())
+            .or_insert_with(BTreeSet::new)
+            .insert(
+                step.alias()
+                    .as_ref()
+                    .or_else(|| default_aliases.get(&step.symbol()))
+                    .copied(),
+            );
     }
     aliases_by_symbol.insert(
         Symbol::non_terminal(0),
