@@ -50,35 +50,62 @@ fn test_reserved_named_tokens_shared_with_inline_rules() {
         .unwrap();
     let path = directory.path().join("grammar.js");
     for wrapper in ["token", "token.immediate", "token.nonkeyword"] {
-        std::fs::write(&path, grammar.replace("TOKEN", wrapper)).unwrap();
-        let json = load_grammar_file(&path, None).unwrap();
-        for mut parser in parsers_for_grammar(&json) {
-            let source = "if name";
-            let tree = parser.parse(source, None).unwrap();
-            let root = tree.root_node();
-            assert!(!root.has_error(), "{wrapper}: {}", root.to_sexp());
-            assert_eq!(root.to_sexp(), "(source_file (identifier))");
-            assert_eq!(root.byte_range(), 0..source.len());
-            assert_eq!(root.named_child(0).unwrap().byte_range(), 3..7);
-            let reserved = parser.parse("if if", None).unwrap();
-            assert!(
-                reserved.root_node().has_error(),
-                "{wrapper}: {}",
-                reserved.root_node().to_sexp()
-            );
+        for keyword in [
+            "keyword: _ => TOKEN('if')",
+            "keyword: $ => $.shared, shared: _ => TOKEN('if')",
+            "keyword: $ => $.first, first: $ => $.second, second: $ => $.shared, shared: _ => TOKEN('if')",
+        ] {
+            std::fs::write(
+                &path,
+                grammar
+                    .replace("keyword: _ => TOKEN('if')", keyword)
+                    .replace("TOKEN", wrapper),
+            )
+            .unwrap();
+            let json = load_grammar_file(&path, None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                let source = "if name";
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{wrapper}: {}", root.to_sexp());
+                assert_eq!(root.to_sexp(), "(source_file (identifier))");
+                assert_eq!(root.byte_range(), 0..source.len());
+                assert_eq!(root.named_child(0).unwrap().byte_range(), 3..7);
+                let reserved = parser.parse("if if", None).unwrap();
+                assert!(
+                    reserved.root_node().has_error(),
+                    "{wrapper}: {}",
+                    reserved.root_node().to_sexp()
+                );
+            }
         }
     }
-    let invalid = grammar.replace("TOKEN", "token").replace(
-        "keyword: _ => token('if')",
-        "keyword: _ => seq('if', 'then')",
-    );
-    std::fs::write(&path, invalid).unwrap();
-    let json = load_grammar_file(&path, None).unwrap();
-    let error = generate_parser(&json).unwrap_err().to_string();
-    assert!(
-        error.contains("Reserved word 'keyword' must be a token"),
-        "{error}"
-    );
+    for (keyword, expected_error) in [
+        (
+            "keyword: _ => seq('if', 'then')",
+            "Reserved word 'keyword' must be a token",
+        ),
+        (
+            "keyword: $ => $.shared, shared: _ => seq('if', 'then')",
+            "Reserved word 'keyword' must be a token",
+        ),
+        (
+            "keyword: $ => $.keyword",
+            "Reserved word 'keyword' must be a token",
+        ),
+        (
+            "keyword: $ => $.shared, shared: $ => $.keyword",
+            "Grammar contains an indirectly recursive rule",
+        ),
+    ] {
+        let invalid = grammar
+            .replace("keyword: _ => TOKEN('if')", keyword)
+            .replace("TOKEN", "token");
+        std::fs::write(&path, invalid).unwrap();
+        let json = load_grammar_file(&path, None).unwrap();
+        let error = generate_parser(&json).unwrap_err().to_string();
+        assert!(error.contains(expected_error), "{keyword}: {error}");
+    }
 }
 
 #[test]
