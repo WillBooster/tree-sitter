@@ -6868,6 +6868,26 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
             }
             tree = incremental;
         }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in *b"\nl\nl" {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 6,
+                    deleted_length: 1,
+                    inserted_text: vec![replacement],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert!(!fresh.root_node().has_error());
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
         for source in ["l\n", "l#inside# \n"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(

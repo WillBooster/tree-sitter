@@ -222,6 +222,7 @@ Subtree ts_subtree_new_leaf(
       .is_keyword = is_keyword,
       .first_leaf_is_keyword = is_keyword_exact,
       .trailing_extra = false,
+      .has_ambiguous_extra = false,
       {{.first_leaf = {.symbol = 0, .parse_state = 0}}}
     };
     return (Subtree) {.ptr = data};
@@ -366,6 +367,7 @@ void ts_subtree_summarize_children(
   self.ptr->depends_on_column = false;
   self.ptr->has_external_scanner_state_change = false;
   self.ptr->dynamic_precedence = 0;
+  self.ptr->has_ambiguous_extra = false;
 
   uint32_t structural_index = 0;
   const TSSymbol *alias_sequence = ts_language_alias_sequence(language, self.ptr->production_id);
@@ -374,6 +376,19 @@ void ts_subtree_summarize_children(
   const Subtree *children = ts_subtree_children(self);
   for (uint32_t i = 0; i < self.ptr->child_count; i++) {
     Subtree child = children[i];
+
+    if (ts_subtree_child_count(child) > 0) {
+      self.ptr->has_ambiguous_extra |= child.ptr->has_ambiguous_extra;
+    } else {
+      TSStateId state = ts_subtree_parse_state(child);
+      TSSymbol symbol = ts_subtree_symbol(child);
+      if (state < language->state_count && symbol < language->token_count) {
+        TableEntry entry;
+        ts_language_table_entry(language, state, symbol, &entry);
+        self.ptr->has_ambiguous_extra |= entry.action_count > 1 &&
+          entry.actions[0].type == TSParseActionTypeShift;
+      }
+    }
 
     if (ts_subtree_depends_on_column(child)) {
       self.ptr->depends_on_column = true;
@@ -527,6 +542,7 @@ MutableSubtree ts_subtree_new_node(
     .is_keyword = false,
     .first_leaf_is_keyword = false,
     .trailing_extra = false,
+    .has_ambiguous_extra = false,
     {{
       .visible_descendant_count = 0,
       .production_id = production_id,
@@ -737,6 +753,7 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         data->is_keyword = result.data.is_keyword;
         data->first_leaf_is_keyword = result.data.first_leaf_is_keyword;
         data->trailing_extra = false;
+        data->has_ambiguous_extra = false;
         result.ptr = data;
       }
     } else {

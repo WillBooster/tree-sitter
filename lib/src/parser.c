@@ -999,6 +999,8 @@ static Subtree ts_parser__reuse_node(
       reason = "is_missing";
     } else if (ts_subtree_is_fragile(result)) {
       reason = "is_fragile";
+    } else if (ts_subtree_child_count(result) > 0 && result.ptr->has_ambiguous_extra) {
+      reason = "contains_ambiguous_extra";
     } else if (
       ts_subtree_child_count(result) > 0 &&
       !ts_subtree_extra(result) &&
