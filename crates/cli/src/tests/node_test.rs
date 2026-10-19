@@ -1138,6 +1138,60 @@ fn test_missing_node_parent_with_root_offset() {
 }
 
 #[test]
+fn test_wide_missing_node_navigation() {
+    let (name, code) = generate_parser(
+        r#"{
+            "name": "wide_missing_navigation",
+            "rules": {
+                "document": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "["},
+                    {"type": "REPEAT", "content": {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "value"},
+                        {"type": "STRING", "value": ","}
+                    ]}},
+                    {"type": "SYMBOL", "name": "value"},
+                    {"type": "STRING", "value": "]"}
+                ]},
+                "value": {"type": "CHOICE", "members": [
+                    {"type": "STRING", "value": "a"},
+                    {"type": "STRING", "value": "b"}
+                ]}
+            }
+        }"#,
+    )
+    .unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    for count in [1_000, 4_000] {
+        let source = format!("[{}]", "a,".repeat(count as usize));
+        let tree = parser.parse(&source, None).unwrap();
+        for offset in [0, 100] {
+            let root = tree.root_node_with_offset(offset, Point::new(0, offset));
+            let value = root.named_child(count).unwrap();
+            let missing = value.child(0).unwrap();
+            assert!(missing.is_missing());
+            assert_eq!(
+                value.byte_range(),
+                offset + source.len() - 1..offset + source.len() - 1
+            );
+            assert_eq!(value.parent(), Some(tree.root_node()));
+            assert_eq!(
+                missing.parent(),
+                Some(tree.root_node().named_child(count).unwrap())
+            );
+            assert_eq!(root.child_with_descendant(missing), Some(value));
+            assert_eq!(value.child_with_descendant(missing), Some(missing));
+            if offset == 0 {
+                assert_eq!(value.prev_sibling().unwrap().kind(), ",");
+                assert_eq!(value.next_sibling().unwrap().kind(), "]");
+            }
+        }
+    }
+}
+
+#[test]
 fn test_node_is_extra() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
