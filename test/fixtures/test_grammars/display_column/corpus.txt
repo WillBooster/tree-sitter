@@ -1,0 +1,6 @@
+==================
+Tab alignment after an internal token
+==================
+abc	#8!
+---
+(source_file (text) (alignment))
