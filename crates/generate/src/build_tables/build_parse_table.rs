@@ -384,6 +384,24 @@ impl TerminalEntryBuilder {
             })
     }
 
+    fn unconditional_reduction(&self) -> Option<ParseAction> {
+        let mut entries = self
+            .symbols
+            .iter()
+            .map(|&symbol| self.entries[self.indexer.index(symbol)].as_ref().unwrap());
+        let [
+            action @ ParseAction::Reduce {
+                child_count: 1.., ..
+            },
+        ] = &entries.next()?.actions[..]
+        else {
+            return None;
+        };
+        entries
+            .all(|entry| entry.actions[..] == [*action])
+            .then_some(*action)
+    }
+
     fn drain(&mut self) -> impl Iterator<Item = (Symbol, ParseTableEntry)> + '_ {
         let indexer = self.indexer;
         let entries = &mut self.entries;
@@ -1085,6 +1103,11 @@ impl<'a> ParseTableBuilder<'a> {
         }
         // Add actions for the start tokens of each non-terminal extra rule.
         else if allows_extras {
+            let reduction = if state.has_eof_gated_reduce {
+                None
+            } else {
+                self.terminal_entries.unconditional_reduction()
+            };
             for (terminal, state_id) in &self.non_terminal_extra_states {
                 let starts_required_extra = item_set.entries.iter().any(|entry| {
                     let item = &entry.item;
@@ -1101,10 +1124,10 @@ impl<'a> ParseTableBuilder<'a> {
                 let entry = self
                     .terminal_entries
                     .get_or_insert_with(*terminal, ParseTableEntry::new);
-                let action = ParseAction::Shift {
+                let action = reduction.unwrap_or(ParseAction::Shift {
                     state: *state_id,
                     is_repetition: false,
-                };
+                });
                 if !entry.actions.contains(&action) {
                     entry.actions.push(action);
                     entry.actions.rotate_right(1);
