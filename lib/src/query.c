@@ -322,6 +322,7 @@ struct TSQuery {
   const TSLanguage *language;
   uint16_t wildcard_root_pattern_count;
   bool has_empty_roots;
+  bool has_skipped_root;
 };
 
 /*
@@ -1325,6 +1326,9 @@ static inline void ts_query__pattern_map_insert(
   }
 
   array_insert(&self->pattern_map, index, new_entry);
+  if (array_get(&self->steps, new_entry.step_index)->depth == 1) {
+    self->has_skipped_root = true;
+  }
 }
 
 // Walk the subgraph for this non-terminal, tracking all of the possible
@@ -3349,6 +3353,7 @@ TSQuery *ts_query_copy(const TSQuery *self) {
     .language = ts_language_copy(self->language),
     .wildcard_root_pattern_count = self->wildcard_root_pattern_count,
     .has_empty_roots = self->has_empty_roots,
+    .has_skipped_root = self->has_skipped_root,
   };
 
   array_assign(&copy->steps, &self->steps);
@@ -3520,6 +3525,7 @@ void ts_query_disable_pattern(
 ) {
   // Remove the given pattern from the pattern map. Its steps will still
   // be in the `steps` array, but they will never be read.
+  self->has_skipped_root = false;
   for (unsigned i = 0; i < self->pattern_map.size; i++) {
     PatternEntry *pattern = array_get(&self->pattern_map, i);
     if (pattern->pattern_index == pattern_index) {
@@ -3528,6 +3534,8 @@ void ts_query_disable_pattern(
       }
       array_erase(&self->pattern_map, i);
       i--;
+    } else if (array_get(&self->steps, pattern->step_index)->depth == 1) {
+      self->has_skipped_root = true;
     }
   }
 }
@@ -4205,7 +4213,11 @@ static inline bool ts_query_cursor__should_descend(
   bool node_intersects_range
 ) {
 
-  if (node_intersects_range && self->depth < self->max_start_depth) {
+  bool depth_allows_children = self->depth < self->max_start_depth || (
+    self->depth == self->max_start_depth && self->query->has_skipped_root
+  );
+
+  if (node_intersects_range && depth_allows_children) {
     return true;
   }
 
@@ -4222,7 +4234,7 @@ static inline bool ts_query_cursor__should_descend(
     }
   }
 
-  if (self->depth >= self->max_start_depth) {
+  if (!depth_allows_children) {
     return false;
   }
 
@@ -4491,8 +4503,8 @@ static inline bool ts_query_cursor__advance(
           PatternEntry *pattern = array_get(&self->query->pattern_map, i);
 
           QueryStep *step = array_get(&self->query->steps, pattern->step_index);
-          uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
           do {
+            uint32_t start_depth = self->depth - (step->depth == PATTERN_DONE_MARKER ? 0 : step->depth);
             // If this node matches the first step of the pattern, then add a new
             // state at the start of this pattern.
             if (
