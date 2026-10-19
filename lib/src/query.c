@@ -334,6 +334,8 @@ struct TSQueryCursor {
   TSTreeCursor cursor;
   QueryStateList states;
   QueryStateList finished_states;
+  uint32_t state_gap_start;
+  uint32_t state_gap_size;
   // Tracks how much of finished_states is in heap order. Elements at indices
   // < this value satisfy the min-heap property; elements >= this value are
   // newly pushed and need to be sifted into place. Only used by `next_capture`.
@@ -4156,6 +4158,27 @@ static void ts_query_cursor__capture(
   }
 }
 
+static void ts_query_cursor__grow_state_gap(TSQueryCursor *self) {
+  uint32_t count = self->states.size ? self->states.size : 1;
+  uint32_t start = self->state_gap_start;
+  array_reserve(&self->states, self->states.size + count);
+  memmove(self->states.contents + start + count, self->states.contents + start,
+    (self->states.size - start) * sizeof(QueryState));
+  self->states.size += count;
+  for (uint32_t i = start; i < start + count; i++) {
+    self->states.contents[i] = (QueryState) {.capture_list_id = CAPTURE_LIST_NONE, .dead = true};
+  }
+  self->state_gap_size += count;
+}
+
+static void ts_query_cursor__erase_state_before_gap(TSQueryCursor *self, uint32_t index) {
+  ts_assert(index < self->state_gap_start);
+  memmove(self->states.contents + index, self->states.contents + index + 1,
+    (self->state_gap_start - index - 1) * sizeof(QueryState));
+  self->states.contents[--self->state_gap_start] = (QueryState) {.capture_list_id = CAPTURE_LIST_NONE, .dead = true};
+  self->state_gap_size++;
+}
+
 // Duplicate the given state and insert the newly-created state immediately after
 // the given state in the `states` array. Ensures that the given state reference is
 // still valid, even if the states array is reallocated.
@@ -4181,7 +4204,12 @@ static QueryState *ts_query_cursor__copy_state(
 
   copy.root_origins = (QueryRootRanges) array_new();
   array_push_all(&copy.root_origins, &state->root_origins);
-  array_insert(&self->states, state_index + 1, copy);
+  if (!self->state_gap_size) ts_query_cursor__grow_state_gap(self);
+  memmove(self->states.contents + state_index + 2, self->states.contents + state_index + 1,
+    (self->state_gap_start - state_index - 1) * sizeof(QueryState));
+  self->states.contents[state_index + 1] = copy;
+  self->state_gap_start++;
+  self->state_gap_size--;
   *state_ref = array_get(&self->states, state_index);
   return array_get(&self->states, state_index + 1);
 }
@@ -4303,6 +4331,7 @@ static void ts_query_cursor__merge_states(
     ? state->empty_root_match_count + other->empty_root_match_count : 0;
   array_delete(&other->root_origins);
   capture_list_pool_release(&self->capture_list_pool, other->capture_list_id);
+  other->capture_list_id = CAPTURE_LIST_NONE;
 }
 
 static bool ts_query_cursor__push_finished_state(
@@ -4313,10 +4342,13 @@ static bool ts_query_cursor__push_finished_state(
       !range_intersects(&state->matched_range, &self->included_range)) {
     array_delete(&state->root_origins);
     capture_list_pool_release(&self->capture_list_pool, state->capture_list_id);
+    state->capture_list_id = CAPTURE_LIST_NONE;
     return false;
   }
   state->heap_insert_order = self->next_finished_state_id++;
   array_push(&self->finished_states, *state);
+  state->root_origins = (QueryRootRanges) array_new();
+  state->capture_list_id = CAPTURE_LIST_NONE;
   return true;
 }
 
@@ -4553,8 +4585,18 @@ static inline bool ts_query_cursor__advance(
           } while (step->symbol == symbol);
         }
 
-        // Update all of the in-progress states with current node.
-        for (unsigned j = 0, copy_count = 0; j < self->states.size; j += 1 + copy_count) {
+        // Keep copies adjacent without repeatedly moving the unprocessed suffix.
+        ts_assert(self->state_gap_size == 0);
+        self->state_gap_start = 0;
+        for (unsigned j = 0, copy_count = 0; j + self->state_gap_size < self->states.size; j += 1 + copy_count) {
+          ts_assert(j == self->state_gap_start);
+          if (self->state_gap_size) {
+            self->states.contents[j] = self->states.contents[j + self->state_gap_size];
+            self->states.contents[j + self->state_gap_size] = (QueryState) {
+              .capture_list_id = CAPTURE_LIST_NONE, .dead = true,
+            };
+          }
+          self->state_gap_start++;
           QueryState *state = array_get(&self->states, j);
           QueryStep *step = array_get(&self->query->steps, state->step_index);
           state->has_in_progress_alternatives = false;
@@ -4643,7 +4685,7 @@ static inline bool ts_query_cursor__advance(
                 &self->capture_list_pool,
                 state->capture_list_id
               );
-              array_erase(&self->states, j);
+              ts_query_cursor__erase_state_before_gap(self, j);
               j--;
             }
             continue;
@@ -4703,7 +4745,7 @@ static inline bool ts_query_cursor__advance(
 
           if (state->dead) {
             array_delete(&state->root_origins);
-            array_erase(&self->states, j);
+            ts_query_cursor__erase_state_before_gap(self, j);
             j--;
             continue;
           }
@@ -4869,6 +4911,10 @@ static inline bool ts_query_cursor__advance(
           }
         }
 
+        ts_assert(self->state_gap_start + self->state_gap_size == self->states.size);
+        self->states.size -= self->state_gap_size;
+        self->state_gap_size = 0;
+
         for (uint32_t j = 0; self->query->has_empty_roots && j < self->states.size; j++) {
           QueryState *body = array_get(&self->states, j);
           if (body->dead || body->empty_root_match_count || !body->root_origins.size ||
@@ -4893,8 +4939,6 @@ static inline bool ts_query_cursor__advance(
           QueryState *state = array_get(&self->states, j);
           if (state->dead) {
             array_delete(&state->root_origins);
-            array_erase(&self->states, j);
-            j--;
             continue;
           }
 
@@ -4965,8 +5009,7 @@ static inline bool ts_query_cursor__advance(
                   state->step_index
                 );
                 ts_query_cursor__merge_states(self, state, other_state, equal_captures);
-                array_erase(&self->states, k);
-                k--;
+                other_state->dead = true;
                 continue;
               }
               other_state->has_in_progress_alternatives = true;
@@ -4986,8 +5029,7 @@ static inline bool ts_query_cursor__advance(
                   state->step_index
                 );
                 ts_query_cursor__merge_states(self, other_state, state, equal_captures);
-                array_erase(&self->states, j);
-                j--;
+                state->dead = true;
                 did_remove = true;
                 break;
               }
@@ -5012,12 +5054,18 @@ static inline bool ts_query_cursor__advance(
               } else {
                 LOG("  finish pattern %u\n", state->pattern_index);
                 did_match |= ts_query_cursor__push_finished_state(self, state);
-                array_erase(&self->states, (uint32_t)(state - self->states.contents));
-                j--;
+                state->dead = true;
               }
             }
           }
         }
+        uint32_t retained = 0;
+        for (uint32_t j = 0; j < self->states.size; j++) {
+          if (!self->states.contents[j].dead) {
+            self->states.contents[retained++] = self->states.contents[j];
+          }
+        }
+        self->states.size = retained;
       }
 
       if (node_intersects_containing_range && ts_query_cursor__should_descend(self, node_may_contain_match)) {
