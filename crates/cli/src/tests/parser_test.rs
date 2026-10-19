@@ -783,6 +783,16 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
 fn test_recovery_keeps_declarations_after_restarting_an_error() {
     for (language, source, expected) in [
         (
+            "typescript/typescript",
+            "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
+            vec!["interface I2 {}", "declare function g(): void;"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nlet v = 1;\nexport default function q() {}\nnamespace M {}",
+            vec!["export default function q() {}", "namespace M {}"],
+        ),
+        (
             "c-sharp",
             "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
             vec![

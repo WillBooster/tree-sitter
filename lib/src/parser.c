@@ -1607,7 +1607,10 @@ static void ts_parser__recover(
             !ts_language_is_reserved_word(self->language, entry.state, symbol)
           ))
         ) {
-          if (recovery_entry_count == 2 && recovery_entries[1].state == entry.state) continue;
+          if (
+            recovery_entry_count == 2 &&
+            recovery_entries[1].state == 1 && entry.state == 1
+          ) continue;
           entry.depth = depth;
           recovery_entries[recovery_entry_count == 0 ? 0 : 1] = entry;
           if (recovery_entry_count < 2) recovery_entry_count++;
