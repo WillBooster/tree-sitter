@@ -513,6 +513,7 @@ fn generate_node_types_from_grammar(
     } = prepare_grammar(input_grammar, diagnostics)?;
     let variable_info = node_types::get_variable_info(
         &syntax_grammar,
+        &inlines,
         &lexical_grammar,
         &default_aliases,
         &str_pool,
@@ -521,6 +522,7 @@ fn generate_node_types_from_grammar(
     #[cfg(feature = "load")]
     let node_types_json = node_types::generate_node_types_json(
         &syntax_grammar,
+        &inlines,
         &lexical_grammar,
         &default_aliases,
         &variable_info,

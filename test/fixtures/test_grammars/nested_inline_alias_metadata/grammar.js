@@ -1,13 +1,14 @@
 export default grammar({
   name: 'nested_inline_alias_metadata',
   word: $ => $.identifier,
-  inline: $ => [$._selector_identifier, $._query_keyword, $._leaf, $._end],
+  inline: $ => [$._selector_identifier, $._query_keyword, $._leaf, $._end, $._wrapped],
   rules: {
     // Keep the impossible EOF branch: its discarded leaf alias must not weaken
     // the required fields and children of the real `node` schema.
-    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq(alias($._leaf, $.node), $._end, '!'), seq($._end, $.dead_name, '!'))),
+    source_file: $ => repeat(choice($.tag, $.attribute, $.node, seq($._wrapped, '!'), seq(alias($._leaf, $.node), $._end, '!'), seq($._end, $.dead_name, '!'))),
     node: $ => seq('(', field('value', $.identifier), ':', $.identifier, ')'),
     dead_name: () => /#[a-z]+/,
+    _wrapped: $ => seq(alias($._leaf, $.node), $._end),
     _leaf: () => choice('x', 'y'),
     _end: () => eof(),
     tag: $ => seq(alias($._selector_identifier, $.tag_name), ';'),
