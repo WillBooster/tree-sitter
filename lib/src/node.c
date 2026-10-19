@@ -13,11 +13,16 @@ typedef struct {
   const TSSymbol *alias_sequence;
 } NodeChildIterator;
 
+typedef struct {
+  TSNode parent;
+  TSNode child;
+} NodeAncestry;
+
 static inline bool ts_node__is_relevant(TSNode self, bool include_anonymous);
 static TSNode ts_node__first_child_without_fields(TSNode self);
 static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode descendant);
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant);
-static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child, bool check_range);
+static NodeAncestry ts_node__find_descendant(TSNode root, TSNode descendant, bool check_range);
 
 // TSNode - constructors
 
@@ -633,18 +638,11 @@ TSNode ts_node_parent(TSNode self) {
   TSNode node = ts_tree_root_node(self.tree);
   if (node.id == self.id) return ts_node__null();
   if (ts_node_start_byte(self) == ts_node_end_byte(self)) {
-    TSTreeCursor cursor = ts_tree_cursor_new(node);
-    bool found = ts_node__goto_descendant(&cursor, self, NULL, true);
-    if (!found) {
+    TSNode parent = ts_node__find_descendant(node, self, true).parent;
+    if (ts_node_is_null(parent)) {
       // Offset-root nodes can lie outside their ancestors' unshifted ranges.
-      ts_tree_cursor_reset(&cursor, node);
-      found = ts_node__goto_descendant(&cursor, self, NULL, false);
+      parent = ts_node__find_descendant(node, self, false).parent;
     }
-    TSNode parent = ts_node__null();
-    if (found && ts_tree_cursor_goto_parent(&cursor)) {
-      parent = ts_tree_cursor_current_node(&cursor);
-    }
-    ts_tree_cursor_delete(&cursor);
     return parent;
   }
 
@@ -699,43 +697,50 @@ static TSNode ts_node__child_with_descendant_unchecked(TSNode self, TSNode desce
 }
 
 static TSNode ts_node__child_with_descendant_checked(TSNode self, TSNode descendant) {
-  TSTreeCursor cursor = ts_tree_cursor_new(self);
-  TSNode child = ts_node__null();
-  if (!ts_node__goto_descendant(&cursor, descendant, &child, true)) {
-    child = ts_node__null();
-  }
-  ts_tree_cursor_delete(&cursor);
-  return child;
+  return ts_node__find_descendant(self, descendant, true).child;
 }
 
-static bool ts_node__goto_descendant(TSTreeCursor *cursor, TSNode descendant, TSNode *child, bool check_range) {
+static NodeAncestry ts_node__find_descendant(TSNode root, TSNode descendant, bool check_range) {
+  typedef struct {
+    NodeChildIterator iterator;
+    TSNode parent;
+    TSNode child;
+  } Entry;
+  Array(Entry) stack = array_new();
+  array_push(&stack, ((Entry) {ts_node_iterate_children(&root), root, ts_node__null()}));
   uint32_t start_byte = ts_node_start_byte(descendant);
   uint32_t end_byte = ts_node_end_byte(descendant);
-  if (!ts_tree_cursor_goto_first_child(cursor)) return false;
+  NodeAncestry result = {ts_node__null(), ts_node__null()};
 
-  uint32_t depth = 1;
-  for (;;) {
-    TSNode node = ts_tree_cursor_current_node(cursor);
-    if (child && depth == 1) *child = node;
-    if (
-      !check_range || (
-        ts_node_start_byte(node) <= start_byte
-        && ts_node_end_byte(node) >= end_byte
-      )
-    ) {
-      if (node.id == descendant.id) return true;
-      if (ts_tree_cursor_goto_first_child(cursor)) {
-        depth++;
-        continue;
-      }
+  while (stack.size) {
+    Entry *entry = array_back(&stack);
+    TSNode node;
+    if (!ts_node_child_iterator_next(&entry->iterator, &node)) {
+      stack.size--;
+      continue;
     }
-
-    while (!ts_tree_cursor_goto_next_sibling(cursor)) {
-      if (depth == 1) return false;
-      ts_tree_cursor_goto_parent(cursor);
-      depth--;
+    if (check_range && (ts_node_start_byte(node) > start_byte || ts_node_end_byte(node) < end_byte)) {
+      continue;
+    }
+    bool visible = ts_node__is_relevant(node, true);
+    TSNode first_child = entry->child;
+    if (visible && ts_node_is_null(first_child)) first_child = node;
+    if (node.id == descendant.id) {
+      result = (NodeAncestry) {entry->parent, first_child};
+      break;
+    }
+    if (ts_subtree_child_count(ts_node__subtree(node))) {
+      Entry next = {
+        ts_node_iterate_children(&node),
+        visible ? node : entry->parent,
+        first_child,
+      };
+      array_push(&stack, next);
     }
   }
+
+  array_delete(&stack);
+  return result;
 }
 
 TSNode ts_node_child(TSNode self, uint32_t child_index) {

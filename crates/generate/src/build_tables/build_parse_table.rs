@@ -726,9 +726,7 @@ impl<'a> ParseTableBuilder<'a> {
                 ))?;
             }
 
-            // Add the parse state, and *then* push the terminal and the state id into the
-            // list of nonterminal extra states
-            let state_id = self.add_parse_state(&Vec::new(), None, &item_set);
+            let state_id = self.add_parse_state(&vec![terminal], None, &item_set);
             self.non_terminal_extra_states.push((terminal, state_id));
         }
 
