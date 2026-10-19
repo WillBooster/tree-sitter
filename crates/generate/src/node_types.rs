@@ -632,6 +632,9 @@ fn get_aliases_by_symbol(
                 .insert(None);
         }
     }
+    let original_productions = (0..syntax_grammar.variables.len())
+        .flat_map(|i| syntax_grammar.variable_prod_ids(i))
+        .map(|id| syntax_grammar.production(id).steps);
     let fully_expanded_productions = syntax_grammar
         .productions
         .iter()
@@ -641,7 +644,10 @@ fn get_aliases_by_symbol(
                 .iter()
                 .all(|step| !syntax_grammar.variables_to_inline.contains(&step.symbol()))
         });
-    for step in fully_expanded_productions.flatten() {
+    for step in original_productions
+        .chain(fully_expanded_productions)
+        .flatten()
+    {
         aliases_by_symbol
             .entry(step.symbol())
             .or_insert_with(BTreeSet::new)
