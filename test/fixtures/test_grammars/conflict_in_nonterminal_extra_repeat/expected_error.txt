@@ -1,0 +1,18 @@
+Unresolved conflict for symbol sequence:
+
+  '#'  identifier  •  ';'  …
+
+Possible interpretations:
+
+  1:  '#'  (comment_repeat1  identifier)  •  ';'  …
+  2:  '#'  (comment_repeat2  identifier  •  ';')
+
+Repetition rules used in this conflict:
+
+  comment_repeat1: used by comment
+  comment_repeat2: used by comment
+
+Possible resolutions:
+
+  1:  Specify a left or right associativity in `comment_repeat1`
+  2:  Add a conflict for these rules: `comment`
