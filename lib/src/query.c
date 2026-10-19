@@ -341,7 +341,6 @@ struct TSQueryCursor {
   uint32_t max_start_depth;
   TSRange included_range;
   TSRange containing_range;
-  uint64_t next_root_id;
   Array(uint64_t) root_ids;
   uint32_t next_state_id;
   uint32_t next_finished_state_id;
@@ -3686,7 +3685,6 @@ void ts_query_cursor_exec(
   query_states__clear_origins(&self->states);
   query_states__clear_origins(&self->finished_states);
   array_clear(&self->root_ids);
-  self->next_root_id = 0;
   array_clear(&self->states);
   array_clear(&self->finished_states);
   self->finished_states_heap_size = 0;
@@ -4368,9 +4366,8 @@ static inline bool ts_query_cursor__advance(
         range_within(&node_range, &self->containing_range);
 
       if (self->on_visible_node && self->query->has_empty_roots) {
-        if (self->root_ids.size <= self->depth) array_push(&self->root_ids, self->next_root_id);
-        else *array_get(&self->root_ids, self->depth) = self->next_root_id;
-        self->next_root_id++;
+        if (self->root_ids.size <= self->depth) array_push(&self->root_ids, 0);
+        else (*array_get(&self->root_ids, self->depth))++;
       }
       if (node_within_containing_range && self->on_visible_node) {
         TSSymbol symbol = ts_node_symbol(node);
