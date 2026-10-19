@@ -5507,7 +5507,12 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
 
 #[test]
 fn test_keyword_precedence_with_word() {
-    for word_precedence in [-1, 0, 1] {
+    for (word_pattern, word_precedence, permits_call) in [
+        ("[a-z0-9,]+", -1, true),
+        ("[a-z0-9,]+", 0, true),
+        ("[a-z0-9,]+", 1, true),
+        ("[a-z0-9(,]+", 0, false),
+    ] {
         let (parser_name, parser_code) = generate_parser(
         &r#"{
             "name": "keyword_precedence_with_word",
@@ -5532,12 +5537,13 @@ fn test_keyword_precedence_with_word() {
                 "rgb": {"type": "TOKEN", "content": {"type": "PREC", "value": 2, "content": {"type": "STRING", "value": "rgb"}}},
                 "word": {"type": "TOKEN", "content": {
                     "type": "PREC", "value": WORD_PRECEDENCE, "content": {
-                        "type": "PATTERN", "value": "[a-z0-9(,]+"
+                        "type": "PATTERN", "value": "WORD_PATTERN"
                     }
                 }}
             }
         }"#.replace("WORD_PRECEDENCE", &word_precedence.to_string())
-        .replace("keyword_precedence_with_word", &format!("keyword_precedence_with_word_{}", word_precedence + 1)),
+        .replace("WORD_PATTERN", word_pattern)
+        .replace("keyword_precedence_with_word", &format!("keyword_precedence_with_word_{}_{}", word_precedence + 1, permits_call)),
     )
     .unwrap();
         let mut parser = Parser::new();
@@ -5546,12 +5552,15 @@ fn test_keyword_precedence_with_word() {
             .unwrap();
 
         let rgb = parser.parse("rgb(1)", None).unwrap();
-        assert!(
+        assert_eq!(
             !rgb.root_node().has_error(),
-            "{}",
+            permits_call,
+            "word={word_pattern}, precedence={word_precedence}: {}",
             rgb.root_node().to_sexp()
         );
-        assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
+        if permits_call {
+            assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
+        }
         let word = parser.parse("otherxyz", None).unwrap();
         assert_eq!(word.root_node().to_sexp(), "(program (word))");
     }
@@ -7210,4 +7219,84 @@ fn test_incremental_parse_removing_trailing_empty_included_range() {
         extended_fresh.root_node().range()
     );
     assert_eq!(extended.root_node().end_byte(), 5);
+}
+
+#[test]
+fn test_word_keywords_with_nonalphabetic_prefixes() {
+    for prefix in [":", "1", "a", "é", "_"] {
+        let keyword = format!("{prefix}b");
+        let grammar = serde_json::json!({
+            "name": format!("word_prefix_{}", prefix.chars().next().unwrap() as u32),
+            "word": "identifier",
+            "extras": [{"type": "PATTERN", "value": "\\s"}],
+            "rules": {
+                "document": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "rule"},
+                    {"type": "SYMBOL", "name": "condition"}
+                ]},
+                "rule": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": keyword}, {"type": "STRING", "value": "p"}
+                ]},
+                "condition": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": prefix}, {"type": "SYMBOL", "name": "name"}
+                ]},
+                "name": {"type": "PATTERN", "value": "b[ ]*[pq]"},
+                "identifier": {"type": "TOKEN", "content": {"type": "CHOICE", "members": [
+                    {"type": "STRING", "value": "p"},
+                    {"type": "STRING", "value": keyword},
+                    {"type": "STRING", "value": prefix}
+                ]}}
+            }
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            let valid = format!("{keyword} p {prefix} b q");
+            assert!(
+                !parser.parse(&valid, None).unwrap().root_node().has_error(),
+                "{valid}"
+            );
+            let invalid = format!("{keyword} p {keyword} q");
+            assert!(
+                parser
+                    .parse(&invalid, None)
+                    .unwrap()
+                    .root_node()
+                    .has_error(),
+                "{invalid}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_low_precedence_word_keywords_ignore_initial_character_class() {
+    let grammar = serde_json::json!({
+        "name": "low_precedence_word_prefix",
+        "word": "other",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "document": {"type": "REPEAT1", "content": {"type": "SYMBOL", "name": "string"}},
+            "string": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "\""},
+                {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "boolean"},
+                    {"type": "SYMBOL", "name": "other"}
+                ]},
+                {"type": "STRING", "value": "\""}
+            ]},
+            "boolean": {"type": "CHOICE", "members": [
+                {"type": "STRING", "value": "1true@"},
+                {"type": "STRING", "value": "false@"}
+            ]},
+            "other": {"type": "TOKEN", "content": {"type": "PREC", "value": -1,
+                "content": {"type": "PATTERN", "value": "[^\"]+"}
+            }}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let tree = parser.parse("\"1true@ \"\n\"false@ \"", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(document (string (other)) (string (other)))"
+        );
+    }
 }
