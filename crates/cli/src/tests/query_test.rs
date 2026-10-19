@@ -8381,6 +8381,45 @@ fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
 }
 
 #[test]
+fn test_query_terminal_wildcard_preserves_parent_capture_publication() {
+    allocations::record(|| {
+        let language = get_language("ruby");
+        let source = "(a)";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let query = Query::new(&language, "(parenthesized_statements _ @child) @parent").unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                (0, vec![("parent", "(a)"), ("child", "(")]),
+                (0, vec![("parent", "(a)"), ("child", "a")]),
+                (0, vec![("parent", "(a)"), ("child", ")")]),
+            ],
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                ("parent", "(a)"),
+                ("child", "("),
+                ("child", "a"),
+                ("child", ")")
+            ],
+        );
+    });
+}
+
+#[test]
 fn test_wildcard_alternatives_do_not_publish_duplicate_captures() {
     let language = get_language("json");
     let source = r#"[{},[[true,"bb","x y"],"a",[[],"bb",1,"a"]],""]"#;

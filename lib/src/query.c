@@ -1148,9 +1148,8 @@ static inline AnalysisState *analysis_state_pool__clone_or_reuse(
   return new_item;
 }
 
-// Inserts a clone of the passed-in item at the appropriate position to maintain ordering in this
-// set. The set does not contain duplicates, so if the item is already present, it will not be
-// inserted, and no clone will be made.
+// Equivalent positions share failure evidence: an unskipped path must dominate a skipped one.
+// The return value distinguishes a new position from a merge, so visited skip paths stay bounded.
 //
 // The caller retains ownership of the passed-in memory. However, the clone that is created by this
 // function will be managed by the state set.
@@ -1585,7 +1584,16 @@ static void ts_query__perform_analysis(
           // over any descendant steps of the current child.
           const QueryStep *next_step = step;
           if (does_match) {
-            if (analyze_later_siblings && next_state.depth > 0) {
+            uint16_t next_step_index = next_state.step_index;
+            for (;;) {
+              next_step_index++;
+              next_step = array_get(&self->steps, next_step_index);
+              if (
+                next_step->depth == PATTERN_DONE_MARKER ||
+                next_step->depth <= step->depth
+              ) break;
+            }
+            if (analyze_later_siblings && next_state.depth > 0 && next_step->depth == step->depth) {
               AnalysisState skipped = next_state;
               skipped.skipped_match = true;
               if (analysis_state_set__insert_sorted(&analysis->skipped_states, &analysis->state_pool, &skipped)) {
@@ -1593,14 +1601,7 @@ static void ts_query__perform_analysis(
               }
             }
             next_state.skipped_match = false;
-            for (;;) {
-              next_state.step_index++;
-              next_step = array_get(&self->steps, next_state.step_index);
-              if (
-                next_step->depth == PATTERN_DONE_MARKER ||
-                next_step->depth <= step->depth
-              ) break;
-            }
+            next_state.step_index = next_step_index;
           } else if (successor.state == parse_state) {
             continue;
           }
