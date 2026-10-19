@@ -1,0 +1,15 @@
+==================
+Completed documentation before an unfinished comment
+==================
+/// d
+/* unterminated
+---
+(source_file (ERROR (documentation (doc_text))))
+
+==================
+Orphan documentation before a complete comment
+==================
+/// d
+/* closed */
+---
+(source_file (ERROR (documentation (doc_text))) (block_comment))
