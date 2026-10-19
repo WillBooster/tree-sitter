@@ -1697,10 +1697,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (next_step->capture_ids[0] != NONE) {
         step->contains_captures = true;
       }
-      if (!is_wildcard) {
-        next_step->root_pattern_guaranteed = true;
-        next_step->parent_pattern_guaranteed = true;
-      }
+      next_step->root_pattern_guaranteed = !is_wildcard;
+      next_step->parent_pattern_guaranteed = !is_wildcard;
       has_children = true;
     }
 
@@ -3747,10 +3745,8 @@ static bool ts_query_cursor__first_in_progress_capture(
     ) {
       QueryStep *step = array_get(&self->query->steps, state->step_index);
       if (is_definite) {
-        // We're being a bit conservative here by asserting that the following step
-        // is not immediate, because this capture might end up being discarded if the
-        // following symbol in the tree isn't the required symbol for this step.
-        *is_definite = step->root_pattern_guaranteed && !step->is_immediate;
+        *is_definite = step->root_pattern_guaranteed && !step->is_immediate &&
+          !state->has_in_progress_alternatives;
       } else if (step->root_pattern_guaranteed) {
         continue;
       }

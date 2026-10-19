@@ -6796,10 +6796,7 @@ fn test_query_quantified_captures() {
             pattern: r"
                 ((comment) ?+ @comment)
             ",
-            // This should be identical to the `*` quantifier.
             captures: &[
-                ("comment", "// foo"),
-                ("comment", "// foo"),
                 ("comment", "// foo"),
                 ("comment", "// bar"),
                 ("comment", "// baz"),
@@ -6821,6 +6818,11 @@ fn test_query_quantified_captures() {
             let matches = cursor.captures(&query, tree.root_node(), row.code.as_bytes());
 
             assert_eq!(collect_captures(matches, &query, row.code), row.captures);
+            if row.pattern.contains("?+") {
+                let query = Query::new(&row.language, &row.pattern.replace("?+", "*")).unwrap();
+                let matches = cursor.captures(&query, tree.root_node(), row.code.as_bytes());
+                assert_eq!(collect_captures(matches, &query, row.code), row.captures);
+            }
         }
     });
 }
@@ -7606,6 +7608,170 @@ function foo() {
         source_code,
         &[(0, vec![("part", "function foo() {\n    \"bar\"\n}")])],
     );
+}
+
+#[test]
+fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        for (pattern, negative_source, positive_source) in [
+            (
+                r"(pair (string) @key . (_ (array)))",
+                r#"{"": [1]}"#,
+                r#"{"": [[]]}"#,
+            ),
+            (
+                r"(pair key: (string) @key value: (_ (array)))",
+                r#"{"": [1]}"#,
+                r#"{"": [[]]}"#,
+            ),
+            (
+                r"(pair (string) @key . (_ (_ (array))))",
+                r#"{"": [[]]}"#,
+                r#"{"": [[[]]]}"#,
+            ),
+            (
+                r"(pair (string) @key . (array (array)))",
+                r#"{"": [1]}"#,
+                r#"{"": [[]]}"#,
+            ),
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            for source in [
+                r#"{"":true}"#,
+                r#"{"":[]}"#,
+                negative_source,
+                positive_source,
+            ] {
+                let tree = parser.parse(source, None).unwrap();
+                assert!(!tree.root_node().has_error());
+                let expected_captures = if source == positive_source {
+                    vec![("key", "\"\"")]
+                } else {
+                    vec![]
+                };
+                let expected_matches = if source == positive_source {
+                    vec![(0, expected_captures.clone())]
+                } else {
+                    vec![]
+                };
+
+                let mut matches_cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        matches_cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    ),
+                    expected_matches,
+                    "matches for {pattern} on {source}",
+                );
+
+                let mut captures_cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_captures(
+                        captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    ),
+                    expected_captures,
+                    "captures for {pattern} on {source}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn test_wildcard_alternatives_do_not_publish_duplicate_captures() {
+    let language = get_language("json");
+    let source = r#"[{},[[true,"bb","x y"],"a",[[],"bb",1,"a"]],""]"#;
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    let query = Query::new(&language, "(array . (array) @a2 [(_)* (_ (string) @c3)])").unwrap();
+    let mut cursor = QueryCursor::new();
+    let matches = collect_matches(
+        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+        &query,
+        source,
+    );
+    assert_eq!(matches.len(), 3);
+    let mut captures_cursor = QueryCursor::new();
+    let captures = collect_captures(
+        captures_cursor.captures(&query, tree.root_node(), source.as_bytes()),
+        &query,
+        source,
+    );
+    assert_eq!(
+        captures,
+        vec![
+            ("a2", r#"[true,"bb","x y"]"#),
+            ("a2", r#"[true,"bb","x y"]"#),
+            ("a2", "[]"),
+            ("c3", r#""bb""#),
+            ("c3", r#""a""#),
+        ]
+    );
+    let mut match_captures: Vec<_> = matches
+        .into_iter()
+        .flat_map(|(_, captures)| captures)
+        .collect();
+    let mut captures = captures;
+    match_captures.sort_unstable();
+    captures.sort_unstable();
+    assert_eq!(captures, match_captures);
+}
+
+#[test]
+fn test_query_wildcard_child_guarantees_preserve_concrete_descendants() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let cases: &[(&str, &[(&str, bool)])] = &[
+            (
+                r"(pair (string) @key . (_ (array)))",
+                &[
+                    ("(pair", false),
+                    ("(string", false),
+                    ("(_", false),
+                    ("(array", false),
+                ],
+            ),
+            (
+                r"(pair (string) @key . (_ (_ (array))))",
+                &[
+                    ("(string", false),
+                    ("(_ (_", false),
+                    ("(_ (array", false),
+                    ("(array", false),
+                ],
+            ),
+            (
+                r#"(pair (string) @key . (_ (array "[" "]")))"#,
+                &[
+                    ("(string", false),
+                    ("(_", false),
+                    ("(array", false),
+                    ("\"[\"", true),
+                    ("\"]\"", true),
+                ],
+            ),
+        ];
+        for (pattern, expected_steps) in cases {
+            let query = Query::new(&language, pattern).unwrap();
+            for (step, expected) in *expected_steps {
+                assert_eq!(
+                    query.is_pattern_guaranteed_at_step(pattern.find(step).unwrap()),
+                    *expected,
+                    "guarantee for {step} in {pattern}",
+                );
+            }
+        }
+    });
 }
 
 #[test]
