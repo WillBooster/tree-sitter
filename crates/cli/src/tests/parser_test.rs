@@ -6646,7 +6646,7 @@ fn test_grammar_that_should_hang_and_not_segfault() {
 #[test]
 fn test_required_nonterminal_extra_preserves_line_before_error() {
     let grammar = serde_json::json!({
-        "name": "required_extra_recovery",
+        "name": "required_extra_recovery_line",
         "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
         "rules": {
             "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
@@ -6714,7 +6714,7 @@ fn test_required_nonterminal_extra_recovers_before_external_eof() {
 #[test]
 fn test_required_nonterminal_extra_recovers_missing_start() {
     let grammar = serde_json::json!({
-        "name": "required_extra_recovery",
+        "name": "required_extra_recovery_missing_start",
         "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
         "rules": {
             "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
@@ -6813,8 +6813,9 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
         assert!(large < small * 32, "small: {small:?}, large: {large:?}");
     }
 
-    for precedence in [-1, 0, 1] {
+    for (index, precedence) in [-1, 0, 1].into_iter().enumerate() {
         let mut grammar = grammar.clone();
+        grammar["name"] = serde_json::json!(format!("adjacent_comments_precedence_{index}"));
         grammar["rules"]["line"] = serde_json::json!({
             "type": "PREC_DYNAMIC", "value": precedence,
             "content": grammar["rules"]["line"].clone()
