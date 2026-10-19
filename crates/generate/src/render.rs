@@ -17,7 +17,7 @@ use super::{
     LANGUAGE_VERSION,
     build_tables::Tables,
     grammars::{LexicalGrammar, SyntaxGrammar, VariableType},
-    nfa::CharacterSet,
+    nfa::{CharacterSet, NfaCursor, NfaState},
     node_types::ChildType,
     rules::Alias,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
@@ -203,13 +203,16 @@ impl Generator {
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            if keyword_lex_table.states.len() >= 64
+            if !self.keyword_separators_overlap_word(&keyword_lex_table)
+                && keyword_lex_table.states.len() >= 64
                 && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
                 && keyword_lex_table.states.iter().all(|state| {
                     state.eof_action.is_none()
-                        && state.advance_actions.iter().all(|(set, _)| {
-                            set.ranges()
-                                .all(|range| *range.start() > '\0' && range.end().is_ascii())
+                        && state.advance_actions.iter().all(|(set, action)| {
+                            set.ranges().all(|range| {
+                                *range.start() > '\0'
+                                    && (!action.in_main_token || range.end().is_ascii())
+                            })
                         })
                 })
             {
@@ -365,20 +368,22 @@ impl Generator {
         let mut rows = Vec::new();
         for state in &table.states {
             let index = transitions.len();
-            let mut ranges = state
-                .advance_actions
-                .iter()
-                .flat_map(|(set, action)| {
-                    let destination = action.state
-                        | if action.in_main_token {
-                            0
-                        } else {
-                            KEYWORD_SKIP_FLAG as u32
-                        };
-                    set.ranges()
-                        .map(move |range| (*range.start() as u8, *range.end() as u8, destination))
-                })
-                .collect::<Vec<_>>();
+            let mut ranges = Vec::new();
+            for (set, action) in &state.advance_actions {
+                let destination = action.state
+                    | if action.in_main_token {
+                        0
+                    } else {
+                        KEYWORD_SKIP_FLAG as u32
+                    };
+                for range in set.ranges() {
+                    let first = *range.start() as u32;
+                    let last = *range.end() as u32;
+                    if first < 128 {
+                        ranges.push((first as u8, last.min(127) as u8, destination));
+                    }
+                }
+            }
             ranges.sort_unstable();
             rows.push((index, state.accept_action));
             transitions.extend(ranges);
@@ -434,6 +439,38 @@ impl Generator {
         add_line!(self, "}};");
         self.buffer
             .push_str(include_str!("templates/keyword_table.h"));
+    }
+
+    fn keyword_separators_overlap_word(&self, table: &LexTable) -> bool {
+        let has_unicode_separator = table.states.iter().any(|state| {
+            state.advance_actions.iter().any(|(set, action)| {
+                !action.in_main_token && set.ranges().any(|range| !range.end().is_ascii())
+            })
+        });
+        if !has_unicode_separator {
+            return false;
+        }
+        let word = self.syntax_grammar.word_token.unwrap();
+        let nfa = &self.lexical_grammar.nfa;
+        let cursor = NfaCursor::new(
+            nfa,
+            vec![self.lexical_grammar.variables[word.index as usize].start_state],
+        );
+        cursor.state_ids.iter().any(|&token_state| {
+            let NfaState::Advance {
+                chars,
+                is_sep: false,
+                ..
+            } = &nfa.states[token_state as usize]
+            else {
+                return false;
+            };
+            table.states.iter().any(|state| {
+                state.advance_actions.iter().any(|(separators, action)| {
+                    !action.in_main_token && chars.does_intersect(separators)
+                })
+            })
+        })
     }
 
     fn add_lexer_helpers(&mut self) {
