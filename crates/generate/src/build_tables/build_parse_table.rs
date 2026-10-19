@@ -357,7 +357,7 @@ impl TerminalEntryBuilder {
             return None;
         };
         entries
-            .all(|entry| &entry.actions[..] == [*action])
+            .all(|entry| entry.actions[..] == [*action])
             .then_some(*action)
     }
 
@@ -1053,7 +1053,11 @@ impl<'a> ParseTableBuilder<'a> {
         }
         // Add actions for the start tokens of each non-terminal extra rule.
         else if allows_extras {
-            let reduction = self.terminal_entries.unconditional_reduction();
+            let reduction = if state.has_eof_gated_reduce {
+                None
+            } else {
+                self.terminal_entries.unconditional_reduction()
+            };
             for (terminal, state_id) in &self.non_terminal_extra_states {
                 self.terminal_entries
                     .get_or_insert_with(*terminal, || ParseTableEntry {

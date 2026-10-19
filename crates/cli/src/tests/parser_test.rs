@@ -1977,6 +1977,41 @@ fn test_regex_extra_preserves_matching_named_token() {
 }
 
 #[test]
+fn test_nonterminal_extras_preserve_eof_gated_reductions() {
+    let grammar = serde_json::json!({
+        "name": "eof_gated_extra",
+        "extras": [{"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "ended"},
+                {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "ended"},
+                    {"type": "STRING", "value": "b"}
+                ]}
+            ]},
+            "ended": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "a"},
+                {"type": "EOF"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "/*"},
+                {"type": "STRING", "value": "*/"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["a", "a/**/"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{source}");
+        }
+        for source in ["ab", "a/**/b", "a/**//**/b"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error(), "{source}");
+        }
+    }
+}
+
+#[test]
 fn test_completed_nodes_before_unfinished_nonterminal_extras() {
     let languages = [
         get_test_fixture_language("unfinished_nonterminal_extra"),
