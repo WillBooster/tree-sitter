@@ -1814,12 +1814,9 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
                   .child_index = action->reduce.child_count,
                   .done = true,
                 };
-                unsigned node_index, node_exists;
-                array_search_sorted_with(
-                  &subgraph->nodes, analysis_subgraph_node__compare, &node,
-                  &node_index, &node_exists
+                array_insert_sorted_with(
+                  &subgraph->nodes, analysis_subgraph_node__compare, node
                 );
-                if (!node_exists) array_insert(&subgraph->nodes, node_index, node);
               }
             }
           } else if (action->type == TSParseActionTypeShift && !action->shift.extra) {
