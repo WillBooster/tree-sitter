@@ -4554,6 +4554,9 @@ static inline bool ts_query_cursor__advance(
           self->finished_states.size
         );
 
+        bool node_precedes_range_end =
+          node_range.start_byte < self->included_range.end_byte &&
+          point_lt(node_range.start_point, self->included_range.end_point);
         bool node_is_error = symbol == ts_builtin_sym_error;
         bool parent_is_error =
           !ts_node_is_null(parent_node) &&
@@ -4571,7 +4574,8 @@ static inline bool ts_query_cursor__advance(
             if (
               (pattern->is_rooted || step->depth == PATTERN_DONE_MARKER ?
                 node_intersects_range :
-                (parent_intersects_range && !parent_is_error)) &&
+                (parent_intersects_range && !parent_is_error &&
+                  (step->depth != 0 || node_precedes_range_end))) &&
               (step->depth != PATTERN_DONE_MARKER || !parent_is_error) &&
               (!step->field || field_id == step->field) &&
               (!step->supertype_symbol || supertype_count > 0) &&
@@ -4595,7 +4599,8 @@ static inline bool ts_query_cursor__advance(
             if (
               (pattern->is_rooted ?
                 node_intersects_range :
-                (parent_intersects_range && !parent_is_error)) &&
+                (parent_intersects_range && !parent_is_error &&
+                  (step->depth != 0 || node_precedes_range_end))) &&
               (!step->field || field_id == step->field) &&
               (start_depth <= self->max_start_depth)
             ) {
