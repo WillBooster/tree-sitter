@@ -15,4 +15,4 @@ Repetition rules used in this conflict:
 Possible resolutions:
 
   1:  Specify a left or right associativity in `_c`
-  2:  Add an empty set `[]` to `conflicts`
+  2:  Add a conflict for these rules: `source`

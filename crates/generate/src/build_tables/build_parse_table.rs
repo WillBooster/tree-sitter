@@ -62,9 +62,8 @@ struct AuxiliaryParentSetId(u32);
 /// to its predecessor: the context of the state that first led to it. Successor states
 /// share a context. Both conflict resolution and diagnostic ownership select contexts at
 /// each item's origin, so later uses of a shared repeat cannot change its earlier owner.
-/// Conflict resolution preserves the nearest entry there, including an empty set after
-/// filtering auxiliary parents. Diagnostic ownership follows enclosing parents and resumes
-/// in an older context when a zero-step cycle would otherwise hide a source owner.
+/// Ownership follows enclosing parents and resumes in an older context when a zero-step
+/// cycle would otherwise hide a nameable source owner.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
@@ -96,8 +95,7 @@ struct AuxiliaryParentSet {
 impl AuxiliarySymbolContexts {
     /// Adds the context of a state whose predecessor is `predecessor`. `uses` records each
     /// auxiliary symbol at a dot, the containing rule, and its consumed steps. Auxiliary
-    /// parents must remain available for diagnostic ownership, even when conflict
-    /// resolution filters them out and the resulting empty set hides an earlier entry.
+    /// parents must remain available to follow nested repeats during ownership resolution.
     fn push(
         &mut self,
         predecessor: Option<AuxiliaryContextId>,
@@ -133,17 +131,6 @@ impl AuxiliarySymbolContexts {
             len: self.entries.len() as u32 - start,
         });
         Some(id)
-    }
-
-    /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
-    /// the path to the state whose context is `context`.
-    fn parents(
-        &self,
-        context: Option<AuxiliaryContextId>,
-        symbol: usize,
-    ) -> Option<&[AuxiliaryParentUse]> {
-        self.find_parents(context, symbol, |_| true)
-            .map(|(_, parents)| parents)
     }
 
     fn find_parents(
@@ -1589,13 +1576,71 @@ impl<'a> ParseTableBuilder<'a> {
         path_length: usize,
         has_contextual_occurrence: bool,
     ) -> BTreeSet<Symbol> {
-        let mut pending = self
+        let roots = self
             .containing_rules(symbol, items, auxiliary_context, path_length)
-            .map(|(parent, context)| (parent, context, Vec::new()))
-            .collect::<Vec<_>>();
-        if has_contextual_occurrence {
-            pending.push((symbol, auxiliary_context, Vec::new()));
+            .chain(has_contextual_occurrence.then_some((symbol, auxiliary_context)));
+        self.resolve_repetition_owners(roots)
+    }
+
+    fn containing_rules<'b>(
+        &'b self,
+        symbol: Symbol,
+        items: &'b BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+    ) -> impl Iterator<Item = (Symbol, Option<AuxiliaryContextId>)> + 'b {
+        items.iter().filter_map(move |item| {
+            let parent = Symbol::non_terminal(item.variable_index as usize);
+            (parent != symbol
+                && item
+                    .production(self.syntax_grammar)
+                    .steps
+                    .iter()
+                    .any(|step| step.symbol() == symbol))
+            .then(|| {
+                (
+                    parent,
+                    self.auxiliary_contexts
+                        .at_position(auxiliary_context, path_length - item.step_index as usize),
+                )
+            })
+        })
+    }
+
+    fn conflict_symbols(
+        &self,
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+    ) -> Vec<Symbol> {
+        let mut symbols = Vec::new();
+        let mut repetitions = Vec::new();
+        for item in items {
+            let symbol = Symbol::non_terminal(item.variable_index as usize);
+            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
+                repetitions.push((
+                    symbol,
+                    self.auxiliary_contexts
+                        .at_position(auxiliary_context, path_length - item.step_index as usize),
+                ));
+            } else {
+                symbols.push(symbol);
+            }
         }
+        symbols.extend(self.resolve_repetition_owners(repetitions));
+        symbols.sort_unstable();
+        symbols.dedup();
+        symbols
+    }
+
+    fn resolve_repetition_owners(
+        &self,
+        roots: impl IntoIterator<Item = (Symbol, Option<AuxiliaryContextId>)>,
+    ) -> BTreeSet<Symbol> {
+        let mut pending = roots
+            .into_iter()
+            .map(|(symbol, context)| (symbol, context, Vec::new()))
+            .collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut parents = BTreeSet::new();
         while let Some((symbol, context, mut ancestors)) = pending.pop() {
@@ -1642,66 +1687,6 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
         parents
-    }
-
-    fn containing_rules<'b>(
-        &'b self,
-        symbol: Symbol,
-        items: &'b BTreeSet<&ParseItem>,
-        auxiliary_context: Option<AuxiliaryContextId>,
-        path_length: usize,
-    ) -> impl Iterator<Item = (Symbol, Option<AuxiliaryContextId>)> + 'b {
-        items.iter().filter_map(move |item| {
-            let parent = Symbol::non_terminal(item.variable_index as usize);
-            (parent != symbol
-                && item
-                    .production(self.syntax_grammar)
-                    .steps
-                    .iter()
-                    .any(|step| step.symbol() == symbol))
-            .then(|| {
-                (
-                    parent,
-                    self.auxiliary_contexts
-                        .at_position(auxiliary_context, path_length - item.step_index as usize),
-                )
-            })
-        })
-    }
-
-    fn conflict_symbols(
-        &self,
-        items: &BTreeSet<&ParseItem>,
-        auxiliary_context: Option<AuxiliaryContextId>,
-        path_length: usize,
-    ) -> Vec<Symbol> {
-        let mut symbols = Vec::new();
-        for item in items {
-            let symbol = Symbol::non_terminal(item.variable_index as usize);
-            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
-                symbols.extend(
-                    self.auxiliary_contexts
-                        .parents(
-                            self.auxiliary_contexts.at_position(
-                                auxiliary_context,
-                                path_length - item.step_index as usize,
-                            ),
-                            item.variable_index as usize,
-                        )
-                        .unwrap()
-                        .iter()
-                        .map(|parent| parent.symbol)
-                        .filter(|parent| {
-                            !self.syntax_grammar.variables[parent.index as usize].is_auxiliary()
-                        }),
-                );
-            } else {
-                symbols.push(symbol);
-            }
-        }
-        symbols.sort_unstable();
-        symbols.dedup();
-        symbols
     }
 
     fn compare_precedence(
