@@ -737,6 +737,49 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
 }
 
 #[test]
+fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_language("typescript/typescript"))
+        .unwrap();
+    for prefix in ["", "export = Linter;\n", "const first = 0;\n"] {
+        let annotation = format!("{prefix}const a: Foo<Bar");
+        let mut source =
+            format!("{annotation}>;\nexport = {{}};\nconst sentinel = 1;").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 2;
+        for ending in ["", ">;", "", ">;"] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: annotation.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().has_error(), ending.is_empty());
+            let root = tree.root_node();
+            let mut cursor = tree.walk();
+            let following = root
+                .named_children(&mut cursor)
+                .filter(|node| node.start_byte() > annotation.len())
+                .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                following,
+                [("export = {};", false), ("const sentinel = 1;", false)]
+            );
+            previous_length = ending.len();
+        }
+    }
+}
+
+#[test]
 fn test_recovery_keeps_visibility_after_missing_token() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();

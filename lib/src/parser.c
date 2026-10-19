@@ -1552,9 +1552,11 @@ static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state);
 static void ts_parser__recover(
   TSParser *self,
   StackVersion version,
-  Subtree lookahead
+  Subtree lookahead,
+  bool has_missing_token_alternative
 ) {
   bool did_recover = false;
+  bool recovered_root = false;
   unsigned previous_version_count = ts_stack_version_count(self->stack);
   Length position = ts_stack_position(self->stack, version);
   StackSummary *summary = ts_stack_get_summary(self->stack, version);
@@ -1614,6 +1616,8 @@ static void ts_parser__recover(
         StackSummaryEntry entry = recovery_entries[i];
         if (ts_parser__recover_to_state(self, version, entry.depth, entry.state)) {
           did_recover = true;
+          recovered_root |= recovery_pass == 0 &&
+            (entry.state == 1 || ts_parser__state_finishes_root(self, entry.state));
           LOG("recover_to_previous state:%u, depth:%u", entry.state, entry.depth);
           LOG_STACK();
         }
@@ -1650,7 +1654,9 @@ static void ts_parser__recover(
 
   if (
     did_recover &&
-    ts_subtree_has_external_scanner_state_change(lookahead)
+    (ts_subtree_has_external_scanner_state_change(lookahead) ||
+     (!has_missing_token_alternative && recovered_root && ts_subtree_leaf_is_keyword(lookahead) &&
+      ts_subtree_symbol(lookahead) != self->language->keyword_capture_token))
   ) {
     ts_stack_halt(self->stack, version);
     ts_subtree_release(&self->tree_pool, lookahead);
@@ -1792,7 +1798,7 @@ static void ts_parser__handle_error(
     }
   }
 
-  bool restored_root = did_insert_missing_token &&
+  bool restored_root = did_insert_missing_token && ts_subtree_leaf_is_keyword(lookahead) &&
     ts_parser__missing_token_completes_recovery(self, version, version_count);
   for (StackVersion v = version; v < version_count;) {
     if (restored_root) {
@@ -1822,7 +1828,7 @@ static void ts_parser__handle_error(
   if (ts_subtree_child_count(lookahead) > 0) {
     ts_parser__breakdown_lookahead(self, &lookahead, ERROR_STATE, &self->reusable_node);
   }
-  ts_parser__recover(self, version, lookahead);
+  ts_parser__recover(self, version, lookahead, did_insert_missing_token);
 
   LOG_STACK();
 }
@@ -2059,7 +2065,7 @@ static bool ts_parser__advance(
             ts_parser__breakdown_lookahead(self, &lookahead, ERROR_STATE, &self->reusable_node);
           }
 
-          ts_parser__recover(self, version, lookahead);
+          ts_parser__recover(self, version, lookahead, false);
           if (did_reuse) reusable_node_advance(&self->reusable_node);
           return true;
         }
@@ -2136,7 +2142,7 @@ static bool ts_parser__advance(
     // If the current lookahead token is not valid and the parser is
     // already in the error state, restart the error recovery process.
     if (state == ERROR_STATE) {
-      ts_parser__recover(self, version, lookahead);
+      ts_parser__recover(self, version, lookahead, false);
       return true;
     }
 
