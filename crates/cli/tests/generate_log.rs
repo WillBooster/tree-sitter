@@ -94,9 +94,13 @@ fn generate_warning_identifies_unused_empty_and_named_conflicts() {
 }
 
 #[test]
-fn generate_resolves_nested_and_recursive_repeats_with_named_conflicts() {
+fn generate_resolves_repeat_conflicts_with_named_rules() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (fixture, conflicts) in [
+        (
+            "conflict_in_overlapping_shared_repeat",
+            vec![vec!["first", "second"]],
+        ),
         (
             "conflict_in_first_symbol_recursive_repeat",
             vec![vec!["source"]],
