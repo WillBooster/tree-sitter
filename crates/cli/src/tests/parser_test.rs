@@ -921,6 +921,10 @@ fn test_recovery_reconsiders_reused_nodes_across_edits() {
             "({e:''>['',pe: $=>[+/,\n//\na;\n",
             [(12, 3, ">"), (16, 0, "interface "), (11, 0, "=")].as_slice(),
         ),
+        (
+            "({e:'',,:s$=p $ =>[+/,\n//\nd:};\n",
+            [(13, 3, ">"), (16, 0, "interface "), (10, 0, "=")].as_slice(),
+        ),
     ] {
         let mut source = initial_source.as_bytes().to_vec();
         let mut tree = parser.parse(&source, None).unwrap();

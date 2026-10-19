@@ -77,7 +77,7 @@ static inline void reusable_node_advance(ReusableNode *self) {
 
 static inline bool reusable_node_descend(ReusableNode *self) {
   StackEntry last_entry = *array_back(&self->stack);
-  if (ts_subtree_child_count(last_entry.tree) > 0 && !ts_subtree_is_error(last_entry.tree)) {
+  if (ts_subtree_child_count(last_entry.tree) > 0) {
     array_push(&self->stack, ((StackEntry) {
       .tree = ts_subtree_children(last_entry.tree)[0],
       .child_index = 0,
@@ -96,6 +96,7 @@ static inline void reusable_node_advance_past_leaf(ReusableNode *self) {
 
 static inline void reusable_node_reset(ReusableNode *self, Subtree tree) {
   reusable_node_clear(self);
+  if (ts_subtree_is_error(tree) || ts_subtree_error_cost(tree)) return;
   array_push(&self->stack, ((StackEntry) {
     .tree = tree,
     .child_index = 0,
