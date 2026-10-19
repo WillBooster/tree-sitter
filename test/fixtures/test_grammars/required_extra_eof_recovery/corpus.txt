@@ -1,0 +1,20 @@
+==================
+Required extra at end of input
+==================
+ab
+---
+(source_file (prefix) (comment (marker)))
+
+==================
+Recover the missing immediate token
+==================
+a
+---
+(source_file (prefix (MISSING "b")) (comment (marker)))
+
+==================
+Ordinary continuation
+==================
+abq
+---
+(source_file (comment (marker)))

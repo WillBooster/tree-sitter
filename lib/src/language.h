@@ -79,6 +79,13 @@ static inline bool ts_parse_action_is_reduce(const TSParseAction *action) {
   return action->type == TSParseActionTypeReduce || action->type == TSParseActionTypeReduceExtra;
 }
 
+static inline bool ts_table_entry_has_reduce_action(const TableEntry *entry) {
+  for (unsigned i = 0; i < entry->action_count; i++) {
+    if (ts_parse_action_is_reduce(&entry->actions[i])) return true;
+  }
+  return false;
+}
+
 static inline bool ts_language_has_reduce_action(
   const TSLanguage *self,
   TSStateId state,
@@ -86,7 +93,7 @@ static inline bool ts_language_has_reduce_action(
 ) {
   TableEntry entry;
   ts_language_table_entry(self, state, symbol, &entry);
-  return entry.action_count > 0 && ts_parse_action_is_reduce(&entry.actions[0]);
+  return ts_table_entry_has_reduce_action(&entry);
 }
 
 // Lookup the table value for a given symbol and state.
