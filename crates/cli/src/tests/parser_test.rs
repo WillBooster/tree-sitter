@@ -872,6 +872,37 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
 }
 
 #[test]
+fn test_recovery_reconsiders_errors_after_edits() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for edit in [
+        Edit {
+            position: 9,
+            deleted_length: 2,
+            inserted_text: Vec::new(),
+        },
+        Edit {
+            position: 16,
+            deleted_length: 0,
+            inserted_text: b";".to_vec(),
+        },
+    ] {
+        let mut source = b"export default grammar({s:{,),)x}});".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(tree.root_node().has_error());
+        let undo = invert_edit(&source, &edit);
+        perform_edit(&mut tree, &mut source, &edit).unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        perform_edit(&mut tree, &mut source, &undo).unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+    }
+}
+
+#[test]
 fn test_recovery_keeps_visibility_after_missing_token() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();

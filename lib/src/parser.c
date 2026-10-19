@@ -1013,6 +1013,8 @@ static Subtree ts_parser__reuse_node(
       reason = "is_error";
     } else if (ts_subtree_missing(result)) {
       reason = "is_missing";
+    } else if (ts_subtree_error_cost(result)) {
+      reason = "has_error";
     } else if (ts_subtree_is_fragile(result)) {
       reason = "is_fragile";
     } else if (
