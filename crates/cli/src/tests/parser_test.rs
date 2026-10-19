@@ -1069,10 +1069,9 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
         #[cfg(feature = "wasm")]
         super::helpers::fixtures::get_test_language_wasm(&name, &code),
     ];
-    // The trees, ranges, and lookahead names below are what the table layout of upstream's ABI 15
-    // produced for these inputs before this generator stopped emitting it.
     let mut expected_lookaheads = keywords.clone();
-    expected_lookaheads.extend(["/*", "comment", "end"].map(String::from));
+    expected_lookaheads
+        .extend(["/*", "comment", "end", "command", "source_file_repeat1"].map(String::from));
     expected_lookaheads.sort_unstable();
     for language in &languages {
         let mut parser = Parser::new();
@@ -2068,6 +2067,78 @@ fn test_regex_extra_preserves_matching_named_token() {
             "(program)"
         };
         assert_eq!(tree.root_node().to_sexp(), expected);
+    }
+}
+
+#[test]
+fn test_nonterminal_extras_preserve_eof_gated_reductions() {
+    let grammar = serde_json::json!({
+        "name": "eof_gated_extra",
+        "extras": [{"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "ended"},
+                {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "ended"},
+                    {"type": "STRING", "value": "b"}
+                ]}
+            ]},
+            "ended": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "a"},
+                {"type": "EOF"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "/*"},
+                {"type": "STRING", "value": "*/"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["a", "a/**/"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error(), "{source}");
+        }
+        for source in ["ab", "a/**/b", "a/**//**/b"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(tree.root_node().has_error(), "{source}");
+        }
+    }
+}
+
+#[test]
+fn test_completed_nodes_before_unfinished_nonterminal_extras() {
+    let languages = [
+        get_test_fixture_language("unfinished_nonterminal_extra"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("unfinished_nonterminal_extra"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let prefix = "/// documentation\n/* comment";
+        let mut source = prefix.to_string();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for suffix in ["", " */", " */ item x;", "", " */ item x;", ""] {
+            let next = format!("{prefix}{suffix}");
+            let position = |text: &str| Point::new(1, text.len() - "/// documentation\n".len());
+            tree.edit(&InputEdit {
+                start_byte: prefix.len(),
+                old_end_byte: source.len(),
+                new_end_byte: next.len(),
+                start_position: position(prefix),
+                old_end_position: position(&source),
+                new_end_position: position(&next),
+            });
+            source = next;
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            let actual = tree.root_node().to_sexp();
+            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
+            assert!(
+                actual.contains("(documentation (doc_text))"),
+                "{source}: {actual}"
+            );
+            assert_eq!(tree.root_node().has_error(), !suffix.ends_with("item x;"));
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
     }
 }
 
