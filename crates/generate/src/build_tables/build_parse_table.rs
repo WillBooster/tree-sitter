@@ -182,6 +182,7 @@ impl AuxiliarySymbolContexts {
 }
 
 pub struct ParseStateInfo<'a> {
+    #[cfg(feature = "load")]
     pub surviving_productions: FxHashSet<u32>,
     pub preceding_symbols_by_id: Vec<SymbolSequence>,
     item_sets_by_ids: IndexMap<ParseItemSet<'a>, ParseStateId, BuildHasherDefault<FxHasher>>,
@@ -396,7 +397,8 @@ struct ParseTableBuilder<'a> {
     terminal_entries: TerminalEntryBuilder,
     successor_sets: SuccessorSets<'a>,
     reduction_infos: ReductionInfos,
-    surviving_productions: FxHashSet<u32>,
+    #[cfg(feature = "load")]
+    surviving_reduction_keys: FxHashSet<(u32, u32)>,
 }
 
 pub type BuildTableResult<T> = Result<T, ParseTableBuilderError>;
@@ -614,7 +616,8 @@ impl<'a> ParseTableBuilder<'a> {
             terminal_entries: TerminalEntryBuilder::new(symbol_indexer),
             successor_sets: SuccessorSets::new(symbol_indexer),
             reduction_infos: ReductionInfos::new(symbol_indexer),
-            surviving_productions: FxHashSet::default(),
+            #[cfg(feature = "load")]
+            surviving_reduction_keys: FxHashSet::default(),
         }
     }
 
@@ -731,7 +734,10 @@ impl<'a> ParseTableBuilder<'a> {
         Ok((
             self.parse_table,
             ParseStateInfo {
-                surviving_productions: self.surviving_productions,
+                #[cfg(feature = "load")]
+                surviving_productions: self
+                    .item_set_builder
+                    .equivalent_productions(&self.surviving_reduction_keys),
                 preceding_symbols_by_id: self.preceding_symbols_by_id,
                 item_sets_by_ids: self.state_ids_by_item_set,
                 lookaheads: self.item_set_builder.lookaheads,
@@ -1013,11 +1019,16 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
+        #[cfg(feature = "load")]
         for (lookahead, entry) in self.terminal_entries.iter_mut() {
             for reduction in &self.reduction_infos.get(lookahead).reductions {
                 if entry.actions.contains(&reduction.action) {
-                    self.surviving_productions
-                        .insert(reduction.production_index);
+                    let keys = self
+                        .item_set_builder
+                        .key_map
+                        .keys_for(reduction.production_index);
+                    self.surviving_reduction_keys
+                        .insert((reduction.symbol.index, keys.last().unwrap().cmp));
                 }
             }
         }

@@ -12,7 +12,9 @@ pub use build_lex_table::LARGE_CHARACTER_RANGE_COUNT;
 use build_parse_table::BuildTableResult;
 pub use build_parse_table::ParseTableBuilderError;
 use log::{debug, info};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
+#[cfg(feature = "load")]
+use rustc_hash::FxHashSet;
 
 use self::{
     build_lex_table::build_lex_table,
@@ -34,6 +36,7 @@ use crate::{
 };
 
 pub struct Tables {
+    #[cfg(feature = "load")]
     pub surviving_productions: FxHashSet<u32>,
     pub parse_table: ParseTable,
     pub main_lex_table: LexTable,
@@ -195,6 +198,7 @@ pub fn build_tables(
     }
 
     Ok(Tables {
+        #[cfg(feature = "load")]
         surviving_productions: parse_state_info.surviving_productions,
         parse_table,
         main_lex_table: lex_tables.main_lex_table,
