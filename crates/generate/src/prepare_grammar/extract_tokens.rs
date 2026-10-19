@@ -421,16 +421,11 @@ pub(super) fn extract_tokens(
                 let mut symbol = replace_symbol(s);
                 if symbol.is_non_terminal() {
                     let variable = &g.variables[symbol.index as usize];
-                    symbol = g
-                        .pool
-                        .node(variable.root)
-                        .symbol()
-                        .filter(|symbol| symbol.is_terminal())
-                        .ok_or_else(|| {
-                            ExtractTokensError::NonTokenReservedWord(
-                                g.pool.resolve(variable.name).to_string(),
-                            )
-                        })?;
+                    symbol = resolve_reserved_terminal(g, symbol).ok_or_else(|| {
+                        ExtractTokensError::NonTokenReservedWord(
+                            g.pool.resolve(variable.name).to_string(),
+                        )
+                    })?;
                 }
                 symbols.push(symbol);
             } else if let Some(i) = extractor.find(&mut g.pool, root) {
@@ -463,6 +458,19 @@ pub(super) fn extract_tokens(
         inline,
         word,
     })
+}
+
+fn resolve_reserved_terminal(grammar: &InputGrammar, mut symbol: Symbol) -> Option<Symbol> {
+    for _ in 0..=grammar.variables.len() {
+        if !symbol.is_non_terminal() {
+            return symbol.is_terminal().then_some(symbol);
+        }
+        symbol = grammar
+            .pool
+            .node(grammar.variables[symbol.index as usize].root)
+            .symbol()?;
+    }
+    None
 }
 
 fn renumber_root(
