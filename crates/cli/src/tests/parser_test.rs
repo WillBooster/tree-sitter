@@ -7069,6 +7069,67 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
             assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
             assert_eq!(tree.root_node().end_byte(), source.len());
         }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (position, inserted_text) in [(2, b"#".as_slice()), (1, b""), (5, b"\n")] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position,
+                    deleted_length: 1,
+                    inserted_text: inserted_text.to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let mut pending = vec![(tree.root_node(), fresh.root_node())];
+            while let Some((incremental_node, fresh_node)) = pending.pop() {
+                assert_eq!(incremental_node.kind(), fresh_node.kind());
+                assert_eq!(incremental_node.range(), fresh_node.range());
+                assert_eq!(incremental_node.is_extra(), fresh_node.is_extra());
+                assert_eq!(incremental_node.child_count(), fresh_node.child_count());
+                for index in 0..incremental_node.child_count() {
+                    pending.push((
+                        incremental_node.child(index).unwrap(),
+                        fresh_node.child(index).unwrap(),
+                    ));
+                }
+            }
+        }
+        assert!(!tree.root_node().has_error());
+        let line = tree.root_node().named_child(0).unwrap();
+        assert_eq!(line.byte_range(), 0..10);
+        assert!(line.named_child(0).unwrap().is_extra());
+        assert!(!line.named_child(1).unwrap().is_extra());
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (position, deleted_length, inserted_text) in [
+            (11, 0, "\n\n"),
+            (1, 3, "#"),
+            (11, 0, " "),
+            (1, 3, "a"),
+            (4, 0, " "),
+            (1, 0, "\n"),
+            (5, 3, "\n\n"),
+            (7, 0, "a"),
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position,
+                    deleted_length,
+                    inserted_text: inserted_text.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        }
         for source in ["l\n", "l#inside# \n"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
