@@ -880,8 +880,21 @@ fn test_query_errors_on_invalid_predicates() {
 fn test_query_errors_on_impossible_patterns() {
     let js_lang = get_language("javascript");
     let rb_lang = get_language("ruby");
+    let bash_lang = get_language("bash");
 
     allocations::record(|| {
+        for (language, pattern) in [
+            (
+                &js_lang,
+                "(jsx_opening_element (jsx_expression) (_) . (jsx_attribute) (jsx_namespace_name))",
+            ),
+            (&bash_lang, "(file_redirect (_) (file_descriptor))"),
+        ] {
+            assert_eq!(
+                Query::new(language, pattern).unwrap_err().kind,
+                QueryErrorKind::Structure,
+            );
+        }
         for kind in ["number", "identifier", "string"] {
             Query::new(&js_lang, &format!("(binary_expression ({kind}) ({kind}))")).unwrap();
             assert_eq!(

@@ -1336,7 +1336,8 @@ static inline void ts_query__pattern_map_insert(
 static void ts_query__perform_analysis(
   TSQuery *self,
   const AnalysisSubgraphArray *subgraphs,
-  QueryAnalysis *analysis
+  QueryAnalysis *analysis,
+  bool analyze_later_siblings
 ) {
   unsigned recursion_depth_limit = 0;
   unsigned prev_final_step_count = 0;
@@ -1582,7 +1583,7 @@ static void ts_query__perform_analysis(
           // over any descendant steps of the current child.
           const QueryStep *next_step = step;
           if (does_match) {
-            if (next_state.depth > 0) {
+            if (analyze_later_siblings && next_state.depth > 0) {
               AnalysisState skipped = next_state;
               skipped.skipped_match = true;
               if (analysis_state_set__insert_sorted(&analysis->skipped_states, &analysis->state_pool, &skipped)) {
@@ -1648,6 +1649,38 @@ static void ts_query__perform_analysis(
     analysis->next_states = _states;
   }
   array_delete(&transition_steps);
+}
+
+static void ts_query__analyze_pattern(
+  TSQuery *self,
+  const AnalysisSubgraphArray *subgraphs,
+  QueryAnalysis *analysis
+) {
+  Array(AnalysisState) initial_states = array_new();
+  array_reserve(&initial_states, analysis->states.size);
+  for (unsigned i = 0; i < analysis->states.size; i++) {
+    array_push(&initial_states, **array_get(&analysis->states, i));
+  }
+  ts_query__perform_analysis(self, subgraphs, analysis, true);
+
+  if (analysis->did_abort) {
+    QueryAnalysis structural_analysis = query_analysis__new();
+    for (unsigned i = 0; i < initial_states.size; i++) {
+      analysis_state_set__push(
+        &structural_analysis.states,
+        &structural_analysis.state_pool,
+        array_get(&initial_states, i)
+      );
+    }
+    ts_query__perform_analysis(self, subgraphs, &structural_analysis, false);
+    if (!structural_analysis.did_abort && structural_analysis.finished_parent_symbols.size == 0) {
+      analysis->did_abort = false;
+      array_clear(&analysis->finished_parent_symbols);
+      array_assign(&analysis->final_step_indices, &structural_analysis.final_step_indices);
+    }
+    query_analysis__delete(&structural_analysis);
+  }
+  array_delete(&initial_states);
 }
 
 #ifdef DEBUG_DUMP_STEPS
@@ -2020,9 +2053,11 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     #endif
 
     analysis.did_abort = false;
-    ts_query__perform_analysis(self, &subgraphs, &analysis);
     if (initial_path_finishes_parent) {
+      ts_query__perform_analysis(self, &subgraphs, &analysis, true);
       array_insert_sorted_by(&analysis.finished_parent_symbols, , parent_symbol);
+    } else {
+      ts_query__analyze_pattern(self, &subgraphs, &analysis);
     }
 
     // If this pattern could not be fully analyzed, then every step should
@@ -2203,7 +2238,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     ts_query__perform_analysis(
       self,
       &subgraphs,
-      &analysis
+      &analysis,
+      true
     );
 
     if (analysis.finished_parent_symbols.size > 0) {
