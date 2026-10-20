@@ -2676,11 +2676,12 @@ impl Generator {
                         child_count,
                         dynamic_precedence,
                         production_id,
-                        ..
+                        is_extra,
                     } => {
+                        let action = if is_extra { "REDUCE_EXTRA" } else { "REDUCE" };
                         add!(
                             self,
-                            "REDUCE({}, {child_count}, {dynamic_precedence}, {production_id})",
+                            "{action}({}, {child_count}, {dynamic_precedence}, {production_id})",
                             self.symbol_ids[&symbol]
                         );
                     }

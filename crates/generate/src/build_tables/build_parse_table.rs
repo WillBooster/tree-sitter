@@ -721,6 +721,7 @@ impl<'a> ParseTableBuilder<'a> {
                         step_index: 1,
                         keys: self.item_set_builder.key_map.keys_for(prod_id),
                         has_preceding_inherited_fields: false,
+                        is_extra_root: true,
                     });
                 entry.lookaheads = self
                     .item_set_builder
@@ -916,6 +917,7 @@ impl<'a> ParseTableBuilder<'a> {
                         child_count: item.step_index as u16,
                         dynamic_precedence: item.production(self.syntax_grammar).dynamic_precedence,
                         production_id: production_id as u16,
+                        is_extra: item.is_extra_root,
                     }
                 };
 
@@ -1110,14 +1112,29 @@ impl<'a> ParseTableBuilder<'a> {
                 self.terminal_entries.unconditional_reduction()
             };
             for (terminal, state_id) in &self.non_terminal_extra_states {
-                self.terminal_entries
-                    .get_or_insert_with(*terminal, || ParseTableEntry {
-                        reusable: true,
-                        actions: ActionList::One(reduction.unwrap_or(ParseAction::Shift {
-                            state: *state_id,
-                            is_repetition: false,
-                        })),
-                    });
+                let starts_required_extra = item_set.entries.iter().any(|entry| {
+                    let item = &entry.item;
+                    item.step_index == 0
+                        && self
+                            .syntax_grammar
+                            .extra_symbols
+                            .contains(&Symbol::non_terminal(item.variable_index as usize))
+                        && item.production(self.syntax_grammar).first_symbol() == Some(*terminal)
+                });
+                if self.terminal_entries.contains(*terminal) && !starts_required_extra {
+                    continue;
+                }
+                let entry = self
+                    .terminal_entries
+                    .get_or_insert_with(*terminal, ParseTableEntry::new);
+                let action = reduction.unwrap_or(ParseAction::Shift {
+                    state: *state_id,
+                    is_repetition: false,
+                });
+                if !entry.actions.contains(&action) {
+                    entry.actions.push(action);
+                    entry.actions.rotate_right(1);
+                }
             }
 
             for extra_token in &self.syntax_grammar.extra_symbols {

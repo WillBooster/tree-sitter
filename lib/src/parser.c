@@ -999,6 +999,8 @@ static Subtree ts_parser__reuse_node(
       reason = "is_missing";
     } else if (ts_subtree_is_fragile(result)) {
       reason = "is_fragile";
+    } else if (ts_subtree_child_count(result) > 0 && result.ptr->has_ambiguous_extra) {
+      reason = "contains_ambiguous_extra";
     } else if (
       ts_subtree_child_count(result) > 0 &&
       !ts_subtree_extra(result) &&
@@ -1162,7 +1164,7 @@ static StackVersion ts_parser__reduce(
   int dynamic_precedence,
   uint16_t production_id,
   bool is_fragile,
-  bool end_of_non_terminal_extra
+  bool is_extra
 ) {
   uint32_t initial_version_count = ts_stack_version_count(self->stack);
 
@@ -1171,7 +1173,12 @@ static StackVersion ts_parser__reduce(
   // path back through the stack. For each path, create a new parent node to
   // contain the popped children, and push it onto the stack in place of the
   // children.
-  StackSliceArray pop = ts_stack_pop_count(self->stack, version, count);
+  bool has_multiple_paths;
+  StackSliceArray pop = ts_stack_pop_count_for_reduce(
+    self->stack, version, count, MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW,
+    &has_multiple_paths
+  );
+  is_fragile |= has_multiple_paths;
   uint32_t removed_version_count = 0;
   uint32_t halted_version_count = ts_stack_halted_version_count(self->stack);
   for (uint32_t i = 0; i < pop.size; i++) {
@@ -1238,7 +1245,8 @@ static StackVersion ts_parser__reduce(
 
     TSStateId state = ts_stack_state(self->stack, slice_version);
     TSStateId next_state = ts_language_next_state(self->language, state, symbol);
-    if (end_of_non_terminal_extra && next_state == state) {
+    if (is_extra) {
+      next_state = state;
       parent.ptr->extra = true;
     }
     if (is_fragile || pop.size > 1 || initial_version_count > 1) {
@@ -1349,12 +1357,14 @@ static bool ts_parser__process_candidate_recovery_actions(
         if (!action.shift.extra && !action.shift.repetition) has_shift_action = true;
         break;
       case TSParseActionTypeReduce:
+      case TSParseActionTypeReduceExtra:
         if (action.reduce.child_count > 0)
           ts_reduce_action_set_add(&self->reduce_actions, (ReduceAction) {
             .symbol = action.reduce.symbol,
             .count = action.reduce.child_count,
             .dynamic_precedence = action.reduce.dynamic_precedence,
             .production_id = action.reduce.production_id,
+            .is_extra = action.type == TSParseActionTypeReduceExtra,
           });
         break;
       default:
@@ -1431,7 +1441,7 @@ static bool ts_parser__do_all_potential_reductions(
       reduction_version = ts_parser__reduce(
         self, version, action.symbol, action.count,
         action.dynamic_precedence, action.production_id,
-        true, false
+        true, action.is_extra
       );
     }
 
@@ -1791,7 +1801,7 @@ static bool ts_parser__insert_missing_token(
       self->language, state_after_missing_symbol, ts_subtree_leaf_symbol(lookahead), &entry
     );
     if (entry.action_count == 0) continue;
-    bool has_reduce = entry.actions[0].type == TSParseActionTypeReduce;
+    bool has_reduce = ts_table_entry_has_reduce_action(&entry);
     if (has_reduce != require_reduction) continue;
 
     // In case the parser is currently outside of any included range, the lexer will
@@ -1927,11 +1937,6 @@ static bool ts_parser__advance(
       return false;
     }
 
-    // Process each parse action for the current lookahead token in
-    // the current state. If there are multiple actions, then this is
-    // an ambiguous state. REDUCE actions always create a new stack
-    // version, whereas SHIFT actions update the existing stack version
-    // and terminate this loop.
     bool did_reduce = false;
     StackVersion last_reduction_version = STACK_VERSION_NONE;
     for (uint32_t i = 0; i < table_entry.action_count; i++) {
@@ -1949,24 +1954,38 @@ static bool ts_parser__advance(
             LOG("shift state:%u, from_state:%u", next_state, state);
           }
 
+          bool fork = i + 1 < table_entry.action_count;
+          StackVersion shift_version = fork
+            ? ts_stack_copy_version(self->stack, version)
+            : version;
           if (ts_subtree_child_count(lookahead) > 0) {
             ts_parser__breakdown_lookahead(self, &lookahead, state, &self->reusable_node);
-            next_state = ts_language_next_state(self->language, state, ts_subtree_symbol(lookahead));
+            if (ts_subtree_child_count(lookahead) > 0) {
+              next_state = ts_language_next_state(self->language, state, ts_subtree_symbol(lookahead));
+            }
           }
 
-          ts_parser__shift(self, version, next_state, lookahead, action.shift.extra);
+          if (fork) {
+            MutableSubtree ambiguous = ts_subtree_make_heap_mut(&self->tree_pool, lookahead);
+            ambiguous.ptr->has_ambiguous_extra = true;
+            lookahead = ts_subtree_from_mut(ambiguous);
+            ts_subtree_retain(lookahead);
+          }
+          ts_parser__shift(self, shift_version, next_state, lookahead, action.shift.extra);
+          if (fork) break;
           if (did_reuse) reusable_node_advance(&self->reusable_node);
           return true;
         }
 
-        case TSParseActionTypeReduce: {
+        case TSParseActionTypeReduce:
+        case TSParseActionTypeReduceExtra: {
           bool is_fragile = table_entry.action_count > 1;
-          bool end_of_non_terminal_extra = lookahead.ptr == NULL;
+          bool is_extra = action.type == TSParseActionTypeReduceExtra;
           LOG("reduce sym:%s, child_count:%u, state:%u", SYM_NAME(action.reduce.symbol), action.reduce.child_count, state);
           StackVersion reduction_version = ts_parser__reduce(
             self, version, action.reduce.symbol, action.reduce.child_count,
             action.reduce.dynamic_precedence, action.reduce.production_id,
-            is_fragile, end_of_non_terminal_extra
+            is_fragile, is_extra
           );
           did_reduce = true;
           if (reduction_version != STACK_VERSION_NONE) {

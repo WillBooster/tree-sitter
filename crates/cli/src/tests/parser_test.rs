@@ -6644,6 +6644,238 @@ fn test_grammar_that_should_hang_and_not_segfault() {
 }
 
 #[test]
+fn test_required_nonterminal_extra_preserves_line_before_error() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery_line",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["l#a#\nx", "l#a#x"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (line (comment)) (ERROR))",
+                "{source}"
+            );
+            assert_eq!(tree.root_node().byte_range(), 0..source.len());
+            assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..4);
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_recovers_before_external_eof() {
+    let languages = [
+        get_test_fixture_language("required_extra_eof_recovery"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("required_extra_eof_recovery"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let mut source = "a";
+        let mut tree = parser.parse(source, None).unwrap();
+        for next in ["a", "ab", "a", "abq", "a"] {
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: source.len(),
+                new_end_byte: next.len(),
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, source.len()),
+                new_end_position: Point::new(0, next.len()),
+            });
+            source = next;
+            tree = parser.parse(source, Some(&tree)).unwrap();
+            let fresh = parser.parse(source, None).unwrap();
+            let actual = tree.root_node().to_sexp();
+            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
+            let expected = match source {
+                "a" => "(source_file (prefix (MISSING \"b\")) (comment (marker)))",
+                "ab" => "(source_file (prefix) (comment (marker)))",
+                _ => "(source_file (comment (marker)))",
+            };
+            assert_eq!(actual, expected, "{source}");
+            assert_eq!(tree.root_node().has_error(), source == "a");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_recovers_missing_start() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery_missing_start",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "STRING", "value": "x"},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut tree = parser.parse("lx#\n", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(source_file (line (comment (MISSING \"#\"))))"
+        );
+        let comment = tree
+            .root_node()
+            .named_child(0)
+            .unwrap()
+            .named_child(0)
+            .unwrap();
+        assert!(!comment.is_extra());
+        let missing = comment.child(0).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(missing.byte_range(), 1..1);
+        tree.edit(&InputEdit {
+            start_byte: 1,
+            old_end_byte: 1,
+            new_end_byte: 2,
+            start_position: Point::new(0, 1),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 2),
+        });
+        let repaired = parser.parse("l#x#\n", Some(&tree)).unwrap();
+        let fresh = parser.parse("l#x#\n", None).unwrap();
+        assert!(!repaired.root_node().has_error());
+        assert_eq!(repaired.root_node().to_sexp(), fresh.root_node().to_sexp());
+        assert_eq!(repaired.root_node().byte_range(), 0..5);
+    }
+}
+
+#[test]
+fn test_adjacent_required_and_extra_comments_scale_quadratically() {
+    let grammar = serde_json::json!({
+        "name": "adjacent_comments",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "SYMBOL", "name": "line"}
+            ]}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for error_position in ["none", "before", "middle", "after"] {
+            let measure = |parser: &mut Parser, count: usize| {
+                let mut source = "#a# ".repeat(count);
+                let error_offset = match error_position {
+                    "before" => 0,
+                    "middle" => count * 2,
+                    _ => count * 4,
+                };
+                let has_error = error_position != "none";
+                if has_error {
+                    source.insert_str(error_offset, "x ");
+                }
+                let mut fastest = Duration::MAX;
+                for _ in 0..3 {
+                    let started = cpu_time::ThreadTime::now();
+                    let mut samples = 0;
+                    let elapsed = loop {
+                        let tree = parser.parse(&source, None).unwrap();
+                        let root = tree.root_node();
+                        assert_eq!(root.has_error(), has_error);
+                        assert_eq!(root.end_byte(), source.len());
+                        let mut cursor = root.walk();
+                        let comments = root
+                            .named_children(&mut cursor)
+                            .filter(|node| node.kind() == "comment")
+                            .collect::<Vec<_>>();
+                        assert_eq!(comments.len(), count);
+                        for (index, comment) in comments.into_iter().enumerate() {
+                            let start =
+                                index * 4 + usize::from(has_error && index * 4 >= error_offset) * 2;
+                            assert_eq!(comment.byte_range(), start..start + 3);
+                        }
+                        samples += 1;
+                        let elapsed = started.elapsed();
+                        if elapsed >= Duration::from_millis(100) {
+                            break elapsed;
+                        }
+                    };
+                    fastest = fastest.min(elapsed / samples);
+                }
+                fastest
+            };
+            measure(&mut parser, 40);
+            let small = measure(&mut parser, 40);
+            let large = measure(&mut parser, 160);
+            assert!(large < small * 32, "small: {small:?}, large: {large:?}");
+        }
+    }
+
+    for (index, precedence) in [-1, 0, 1].into_iter().enumerate() {
+        let mut grammar = grammar.clone();
+        grammar["name"] = serde_json::json!(format!("adjacent_comments_precedence_{index}"));
+        grammar["rules"]["line"] = serde_json::json!({
+            "type": "PREC_DYNAMIC", "value": precedence,
+            "content": grammar["rules"]["line"].clone()
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            let source = format!("l{}", "#a# ".repeat(40));
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let line = tree.root_node().named_child(0).unwrap();
+            assert_eq!(line.kind(), "line");
+            assert!(line.named_child_count() > 0);
+            assert!(
+                (0..line.named_child_count())
+                    .any(|index| { !line.named_child(index as u32).unwrap().is_extra() })
+            );
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 5,
+                new_end_byte: 1,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 5),
+                new_end_position: Point::new(0, 1),
+            });
+            let edited = format!("l{}", "#a# ".repeat(39));
+            let incremental = parser.parse(&edited, Some(&tree)).unwrap();
+            let fresh = parser.parse(&edited, None).unwrap();
+            assert!(!incremental.root_node().has_error());
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            assert_eq!(incremental.root_node().byte_range(), 0..edited.len());
+        }
+    }
+}
+
+#[test]
 fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
     let grammar = serde_json::json!({
         "name": "explicit_nonterminal_extra",
@@ -6666,7 +6898,13 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        for source in ["l#inside#\n", "#before#l#inside#\n#after#"] {
+        for (source, preceding_comments) in [
+            ("l#inside#\n", 0),
+            ("#before#l#inside#\n#after#", 0),
+            ("l#before##inside#\n", 1),
+            ("l#before# #inside#\n", 1),
+            ("l#before##before##inside#\n", 2),
+        ] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
@@ -6676,8 +6914,19 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 .named_children(&mut cursor)
                 .find(|node| node.kind() == "line")
                 .unwrap();
-            let comment = line.named_child(0).unwrap();
+            assert_eq!(line.named_child_count(), preceding_comments + 1);
+            let comment = line
+                .named_children(&mut cursor)
+                .find(|node| !node.is_extra())
+                .unwrap();
             assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), "#inside#");
+            for extra in line
+                .named_children(&mut cursor)
+                .filter(tree_sitter::Node::is_extra)
+            {
+                assert_eq!(extra.kind(), "comment");
+                assert_eq!(extra.utf8_text(source.as_bytes()).unwrap(), "#before#");
+            }
             assert!(!comment.is_extra());
             let extras = root
                 .named_children(&mut cursor)
@@ -6694,6 +6943,124 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 assert_eq!(child.byte_range(), range);
                 assert_eq!(child.utf8_text(source.as_bytes()).unwrap(), text);
             }
+        }
+        let mut source = "l#inside#\n".to_string();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in ["#before#", "", "#before# #before#", ""] {
+            let end = source.find("#inside#").unwrap();
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: end,
+                new_end_byte: 1 + replacement.len(),
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, end),
+                new_end_position: Point::new(0, 1 + replacement.len()),
+            });
+            source.replace_range(1..end, replacement);
+            let incremental = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!fresh.root_node().has_error(), "{source:?}");
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            for tree in [&incremental, &fresh] {
+                let line = tree.root_node().named_child(0).unwrap();
+                let mut cursor = line.walk();
+                let required = line
+                    .named_children(&mut cursor)
+                    .filter(|node| !node.is_extra())
+                    .collect::<Vec<_>>();
+                assert_eq!(required.len(), 1);
+                assert_eq!(
+                    required[0].utf8_text(source.as_bytes()).unwrap(),
+                    "#inside#"
+                );
+                assert_eq!(required[0].start_byte(), 1 + replacement.len());
+                assert_eq!(tree.root_node().end_byte(), source.len());
+            }
+            tree = incremental;
+        }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in *b"\nl\nl" {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 6,
+                    deleted_length: 1,
+                    inserted_text: vec![replacement],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert!(!fresh.root_node().has_error());
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (position, inserted_text) in [(2, b"#".as_slice()), (1, b""), (5, b"\n")] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position,
+                    deleted_length: 1,
+                    inserted_text: inserted_text.to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let mut pending = vec![(tree.root_node(), fresh.root_node())];
+            while let Some((incremental_node, fresh_node)) = pending.pop() {
+                assert_eq!(incremental_node.kind(), fresh_node.kind());
+                assert_eq!(incremental_node.range(), fresh_node.range());
+                assert_eq!(incremental_node.is_extra(), fresh_node.is_extra());
+                assert_eq!(incremental_node.child_count(), fresh_node.child_count());
+                for index in 0..incremental_node.child_count() {
+                    pending.push((
+                        incremental_node.child(index).unwrap(),
+                        fresh_node.child(index).unwrap(),
+                    ));
+                }
+            }
+        }
+        assert!(!tree.root_node().has_error());
+        let line = tree.root_node().named_child(0).unwrap();
+        assert_eq!(line.byte_range(), 0..10);
+        assert!(line.named_child(0).unwrap().is_extra());
+        assert!(!line.named_child(1).unwrap().is_extra());
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (position, deleted_length, inserted_text) in [
+            (11, 0, "\n\n"),
+            (1, 3, "#"),
+            (11, 0, " "),
+            (1, 3, "a"),
+            (4, 0, " "),
+            (1, 0, "\n"),
+            (5, 3, "\n\n"),
+            (7, 0, "a"),
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position,
+                    deleted_length,
+                    inserted_text: inserted_text.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
         }
         for source in ["l\n", "l#inside# \n"] {
             let tree = parser.parse(source, None).unwrap();

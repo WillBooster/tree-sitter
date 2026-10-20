@@ -1844,7 +1844,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
       if (lookahead_iterator.action_count) {
         for (unsigned i = 0; i < lookahead_iterator.action_count; i++) {
           const TSParseAction *action = &lookahead_iterator.actions[i];
-          if (action->type == TSParseActionTypeReduce) {
+          if (ts_parse_action_is_reduce(action)) {
             const TSSymbol *aliases, *aliases_end;
             ts_language_aliases_for_symbol(
               self->language,

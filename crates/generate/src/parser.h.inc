@@ -73,6 +73,7 @@ typedef enum {
   TSParseActionTypeReduce,
   TSParseActionTypeAccept,
   TSParseActionTypeRecover,
+  TSParseActionTypeReduceExtra,
 } TSParseActionType;
 
 typedef union {
@@ -276,16 +277,22 @@ static inline bool set_contains(const TSCharacterRange *ranges, uint32_t len, in
     }                                 \
   }}
 
-#define REDUCE(symbol_name, children, precedence, prod_id) \
-  {{                                                       \
-    .reduce = {                                            \
-      .type = TSParseActionTypeReduce,                     \
-      .symbol = symbol_name,                               \
-      .child_count = children,                             \
-      .dynamic_precedence = precedence,                    \
-      .production_id = prod_id                             \
-    },                                                     \
+#define REDUCE_ACTION(action_type, symbol_name, children, precedence, prod_id)\
+  {{                                                                          \
+    .reduce = {                                                               \
+      .type = action_type,                                                    \
+      .symbol = symbol_name,                                                  \
+      .child_count = children,                                                \
+      .dynamic_precedence = precedence,                                       \
+      .production_id = prod_id                                                \
+    },                                                                        \
   }}
+
+#define REDUCE(symbol_name, children, precedence, prod_id) \
+  REDUCE_ACTION(TSParseActionTypeReduce, symbol_name, children, precedence, prod_id)
+
+#define REDUCE_EXTRA(symbol_name, children, precedence, prod_id) \
+  REDUCE_ACTION(TSParseActionTypeReduceExtra, symbol_name, children, precedence, prod_id)
 
 #define RECOVER()                    \
   {{                                 \
