@@ -3931,35 +3931,51 @@ fn test_query_ranges_preserve_uncaptured_sibling_alternatives() {
 }
 
 #[test]
-fn test_query_ranges_preserve_missing_root_at_start() {
+fn test_query_ranges_preserve_missing_nodes_at_start() {
     let language = get_language("c");
-    let source = "int broken = ;";
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    let tree = parser.parse(source, None).unwrap();
-    let missing = tree
-        .root_node()
-        .named_child(0)
-        .unwrap()
-        .child_by_field_name("declarator")
-        .unwrap()
-        .child_by_field_name("value")
-        .unwrap();
-    assert!(missing.is_missing());
-    let query = Query::new(&language, "(MISSING) @missing").unwrap();
-    for points in [false, true] {
-        let mut cursor = QueryCursor::new();
-        if points {
-            let start = missing.start_position();
-            cursor.set_point_range(start..Point::new(start.row, start.column + 1));
-        } else {
-            cursor.set_byte_range(missing.start_byte()..missing.start_byte() + 1);
+    for source in ["int broken = ;", "\nint broken = ;"] {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let declaration = tree.root_node().named_child(0).unwrap();
+        let missing = declaration
+            .child_by_field_name("declarator")
+            .unwrap()
+            .child_by_field_name("value")
+            .unwrap();
+        assert!(missing.is_missing());
+        for pattern in [
+            "(MISSING) @missing",
+            "(MISSING identifier) @missing",
+            "(identifier) @missing",
+        ] {
+            let query = Query::new(&language, pattern).unwrap();
+            for node in [missing, declaration, tree.root_node()] {
+                for points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    if points {
+                        let start = missing.start_position();
+                        cursor.set_point_range(start..Point::new(start.row, start.column + 1));
+                    } else {
+                        cursor.set_byte_range(missing.start_byte()..missing.start_byte() + 1);
+                    }
+                    let mut matches = cursor.matches(&query, node, source.as_bytes());
+                    let result = matches.next().unwrap_or_else(|| {
+                        panic!("{pattern}, root={}, points={points}", node.kind())
+                    });
+                    assert_eq!(result.captures().len(), 1);
+                    assert_eq!(result.captures()[0].node, missing);
+                    assert!(matches.next().is_none());
+                    drop(matches);
+                    let mut captures = cursor.captures(&query, node, source.as_bytes());
+                    let (result, index) = captures.next().unwrap_or_else(|| {
+                        panic!("capture {pattern}, root={}, points={points}", node.kind())
+                    });
+                    assert_eq!(result.captures()[*index].node, missing);
+                    assert!(captures.next().is_none());
+                }
+            }
         }
-        let mut matches = cursor.matches(&query, missing, source.as_bytes());
-        let result = matches.next().unwrap();
-        assert_eq!(result.captures().len(), 1);
-        assert_eq!(result.captures()[0].node, missing);
-        assert!(matches.next().is_none());
     }
 }
 
