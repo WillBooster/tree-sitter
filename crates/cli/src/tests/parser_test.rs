@@ -2406,6 +2406,71 @@ fn test_completed_nodes_before_unfinished_nonterminal_extras() {
 }
 
 #[test]
+fn test_append_after_reused_nonterminal_extra() {
+    let languages = [
+        get_test_fixture_language("nonterminal_extra_append"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("nonterminal_extra_append"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for initial in ["c&#\n", "c&!hé\n", "c&first&#\n", "c&!one\n#two\n"] {
+            let mut source = initial.as_bytes().to_vec();
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for inserted in ["e", "&f", "&!漢\ng"] {
+                let position = source.len();
+                perform_edit(
+                    &mut tree,
+                    &mut source,
+                    &Edit {
+                        position,
+                        deleted_length: 0,
+                        inserted_text: inserted.as_bytes().to_vec(),
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{}",
+                    tree.root_node().to_sexp()
+                );
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(nodes(&tree), nodes(&fresh));
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+            }
+        }
+    }
+
+    fn nodes(tree: &tree_sitter::Tree) -> Vec<(u16, Range, bool, bool, Option<String>)> {
+        let mut cursor = tree.walk();
+        let mut result = Vec::new();
+        loop {
+            let node = cursor.node();
+            result.push((
+                node.kind_id(),
+                node.range(),
+                node.is_named(),
+                node.is_extra(),
+                cursor.field_name().map(str::to_owned),
+            ));
+            if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return result;
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_recovery_through_many_nonterminal_extras() {
     let language = get_test_fixture_language("recovery_extra_chain");
     let mut parser = Parser::new();

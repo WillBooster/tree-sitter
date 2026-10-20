@@ -1,0 +1,15 @@
+==================
+Trailing comment
+==================
+c&#
+---
+(program (command (word)) (comment))
+
+==================
+Command after comment
+==================
+c&!hé
+#second
+e&f
+---
+(program (command (word)) (comment) (comment) (command (word)) (command (word)))
