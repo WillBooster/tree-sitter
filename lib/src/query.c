@@ -4917,6 +4917,25 @@ static inline bool ts_query_cursor__advance(
                 continue;
               }
 
+              uint32_t child_depth = child_state->start_depth + child_step->depth;
+              bool child_has_later_named_siblings =
+                child_depth <= self->depth && has_later_named_siblings;
+              if (child_step->is_last_child && child_depth < self->depth) {
+                TSTreeCursor child_cursor = ts_tree_cursor_copy(&self->cursor);
+                for (uint32_t depth = self->depth; depth > child_depth; depth--) {
+                  ts_tree_cursor_goto_parent(&child_cursor);
+                }
+                TSFieldId unused_field;
+                bool unused_siblings, unused_field_siblings;
+                unsigned unused_supertype_count = 0;
+                ts_tree_cursor_current_status(
+                  &child_cursor, &unused_field, &unused_siblings,
+                  &child_has_later_named_siblings, &unused_field_siblings,
+                  NULL, &unused_supertype_count
+                );
+                ts_tree_cursor_delete(&child_cursor);
+              }
+
               if (child_step->is_pass_through) {
                 if (child_step->alternative_is_skip && child_step->is_immediate &&
                     child_step_index > 0 &&
@@ -4924,24 +4943,7 @@ static inline bool ts_query_cursor__advance(
                   child_state->seeking_first_named_child = true;
                 }
                 if (child_step->is_last_child && !child_step->alternative_is_skip) {
-                  bool repetition_has_later_named_siblings = has_later_named_siblings;
-                  uint32_t repetition_depth = child_state->start_depth + child_step->depth;
-                  if (repetition_depth < self->depth) {
-                    TSTreeCursor repetition_cursor = ts_tree_cursor_copy(&self->cursor);
-                    for (uint32_t depth = self->depth; depth > repetition_depth; depth--) {
-                      ts_tree_cursor_goto_parent(&repetition_cursor);
-                    }
-                    TSFieldId unused_field;
-                    bool unused_siblings, unused_field_siblings;
-                    unsigned unused_supertype_count = 0;
-                    ts_tree_cursor_current_status(
-                      &repetition_cursor, &unused_field, &unused_siblings,
-                      &repetition_has_later_named_siblings, &unused_field_siblings,
-                      NULL, &unused_supertype_count
-                    );
-                    ts_tree_cursor_delete(&repetition_cursor);
-                  }
-                  if (repetition_has_later_named_siblings) {
+                  if (child_has_later_named_siblings) {
                     if (child_step->alternative_index >= child_state->repetition_entry) {
                       child_state->dead = true;
                       continue;
@@ -4961,7 +4963,7 @@ static inline bool ts_query_cursor__advance(
               if (
                 child_step->alternative_is_skip &&
                 (child_state->needs_repeated_match ||
-                 (child_step->is_last_child && has_later_named_siblings))
+                 (child_step->is_last_child && child_has_later_named_siblings))
               ) {
                 continue;
               }
