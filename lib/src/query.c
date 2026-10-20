@@ -168,6 +168,7 @@ typedef struct {
   uint32_t start_byte;
   uint32_t end_byte;
   bool is_non_local;
+  bool is_rooted;
   bool has_empty_root;
 } QueryPattern;
 
@@ -212,6 +213,7 @@ typedef Array(QueryRootRange) QueryRootRanges;
  */
 typedef struct {
   TSRange matched_range;
+  uint64_t root_id;
   QueryRootRanges root_origins;
   uint32_t id;
   uint32_t capture_list_id;
@@ -228,6 +230,7 @@ typedef struct {
   bool has_in_progress_alternatives: 1;
   bool dead: 1;
   bool needs_parent: 1;
+  bool is_rooted: 1;
   bool skipped_quantifier: 1;
   bool needs_repeated_match: 1;
 } QueryState;
@@ -3212,6 +3215,7 @@ TSQuery *ts_query_new(
       .predicate_steps = (Slice) {.offset = start_predicate_step_index},
       .start_byte = stream_offset(&stream),
       .is_non_local = false,
+      .is_rooted = true,
     }));
     CaptureQuantifiers capture_quantifiers = capture_quantifiers_new();
     *error_type = ts_query__parse_pattern(self, &stream, 0, 0, false, false, &capture_quantifiers);
@@ -3261,7 +3265,10 @@ TSQuery *ts_query_new(
         step->capture_ids[0] == NONE
       ) {
         QueryStep *second_step = array_get(&self->steps, start_step_index + 1);
-        if (second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
+        QueryStepIndexArray child_steps = query_step__initial_indices(self->steps.contents, start_step_index + 1, self->steps.size);
+        bool requires_child = array_get(&self->steps, *array_back(&child_steps))->depth == 1;
+        array_delete(&child_steps);
+        if (requires_child && second_step->symbol != WILDCARD_SYMBOL && second_step->depth == 1 && !second_step->is_immediate) {
           if (step->alternative_index != NONE) {
             array_insert_sorted_by(&root_steps, , step->alternative_index);
           }
@@ -3289,6 +3296,7 @@ TSQuery *ts_query_new(
         pattern->has_empty_root = true;
         self->has_empty_roots = true;
       }
+      pattern->is_rooted &= is_rooted;
       ts_query__pattern_map_insert(self, step->symbol, (PatternEntry) {
         .step_index = start_step_index,
         .pattern_index = pattern_index,
@@ -4016,10 +4024,8 @@ void ts_query_cursor__compare_captures(
   }
 }
 
-// Order two in-progress states for the longest-match dedup pass. Within a
-// (start_depth, pattern_index) group, states with no captures sort first, as they are a
-// subset of every other state (so the dedup pass must always compare them). The rest
-// sort by the start byte of their first capture.
+// Put captureless states before nonempty capture ranges so the dedup scan's
+// range-based early exit cannot skip an eligible capture-subset comparison.
 static bool ts_query_cursor__state_precedes(
   const TSQueryCursor *self,
   const QueryState *a,
@@ -4124,6 +4130,7 @@ static void ts_query_cursor__add_state(
   }
   array_insert(&self->states, index, ((QueryState) {
     .matched_range = {.start_byte = UINT32_MAX},
+    .root_id = UINT64_MAX,
     .root_origins = origins,
     .id = UINT32_MAX,
     .capture_list_id = CAPTURE_LIST_NONE,
@@ -4137,6 +4144,7 @@ static void ts_query_cursor__add_state(
     .seeking_immediate_match = true,
     .has_in_progress_alternatives = false,
     .needs_parent = step->depth == 1,
+    .is_rooted = array_get(&self->query->patterns, pattern->pattern_index)->is_rooted,
     .dead = false,
     .skipped_quantifier = false,
   }));
@@ -4584,7 +4592,7 @@ static inline bool ts_query_cursor__advance(
       bool node_within_containing_range =
         range_within(&node_range, &self->containing_range);
 
-      if (self->on_visible_node && self->query->has_empty_roots) {
+      if (self->on_visible_node) {
         if (self->root_ids.size <= self->depth) array_push(&self->root_ids, 0);
         else (*array_get(&self->root_ids, self->depth))++;
       }
@@ -4827,6 +4835,10 @@ static inline bool ts_query_cursor__advance(
             }
           }
 
+          if (state->is_rooted && state->root_id == UINT64_MAX) {
+            state->root_id = *array_get(&self->root_ids, state->start_depth);
+          }
+
           if (step->depth == 0 || (step->depth == 1 && state->matched_range.start_byte == UINT32_MAX)) {
             TSNode matched_node = step->depth == 0 ? node : parent_node;
             state->matched_range = query_state__extend_range(state, matched_node);
@@ -4905,6 +4917,25 @@ static inline bool ts_query_cursor__advance(
                 continue;
               }
 
+              uint32_t child_depth = child_state->start_depth + child_step->depth;
+              bool child_has_later_named_siblings =
+                child_depth <= self->depth && has_later_named_siblings;
+              if (child_step->is_last_child && child_depth < self->depth) {
+                TSTreeCursor child_cursor = ts_tree_cursor_copy(&self->cursor);
+                for (uint32_t depth = self->depth; depth > child_depth; depth--) {
+                  ts_tree_cursor_goto_parent(&child_cursor);
+                }
+                TSFieldId unused_field;
+                bool unused_siblings, unused_field_siblings;
+                unsigned unused_supertype_count = 0;
+                ts_tree_cursor_current_status(
+                  &child_cursor, &unused_field, &unused_siblings,
+                  &child_has_later_named_siblings, &unused_field_siblings,
+                  NULL, &unused_supertype_count
+                );
+                ts_tree_cursor_delete(&child_cursor);
+              }
+
               if (child_step->is_pass_through) {
                 if (child_step->alternative_is_skip && child_step->is_immediate &&
                     child_step_index > 0 &&
@@ -4912,24 +4943,7 @@ static inline bool ts_query_cursor__advance(
                   child_state->seeking_first_named_child = true;
                 }
                 if (child_step->is_last_child && !child_step->alternative_is_skip) {
-                  bool repetition_has_later_named_siblings = has_later_named_siblings;
-                  uint32_t repetition_depth = child_state->start_depth + child_step->depth;
-                  if (repetition_depth < self->depth) {
-                    TSTreeCursor repetition_cursor = ts_tree_cursor_copy(&self->cursor);
-                    for (uint32_t depth = self->depth; depth > repetition_depth; depth--) {
-                      ts_tree_cursor_goto_parent(&repetition_cursor);
-                    }
-                    TSFieldId unused_field;
-                    bool unused_siblings, unused_field_siblings;
-                    unsigned unused_supertype_count = 0;
-                    ts_tree_cursor_current_status(
-                      &repetition_cursor, &unused_field, &unused_siblings,
-                      &repetition_has_later_named_siblings, &unused_field_siblings,
-                      NULL, &unused_supertype_count
-                    );
-                    ts_tree_cursor_delete(&repetition_cursor);
-                  }
-                  if (repetition_has_later_named_siblings) {
+                  if (child_has_later_named_siblings) {
                     if (child_step->alternative_index >= child_state->repetition_entry) {
                       child_state->dead = true;
                       continue;
@@ -4949,7 +4963,7 @@ static inline bool ts_query_cursor__advance(
               if (
                 child_step->alternative_is_skip &&
                 (child_state->needs_repeated_match ||
-                 (child_step->is_last_child && has_later_named_siblings))
+                 (child_step->is_last_child && child_has_later_named_siblings))
               ) {
                 continue;
               }
@@ -5088,6 +5102,7 @@ static inline bool ts_query_cursor__advance(
 
             if (!!state->empty_root_match_count != !!other_state->empty_root_match_count &&
                 !query_root_ranges__intersect(&state->root_origins, &other_state->root_origins)) continue;
+            if (state->is_rooted && other_state->is_rooted && state->root_id != other_state->root_id) continue;
             bool left_contains_right, right_contains_left;
             ts_query_cursor__compare_captures(
               self,

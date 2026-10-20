@@ -1782,6 +1782,26 @@ fn test_query_matches_with_last_child_anchor_after_optional() {
 ",
             &[(0, vec![("def", "#define A\n")])],
         );
+
+        let language = get_language("python");
+        for quantifier in ["?", "*"] {
+            let query = Query::new(
+                &language,
+                &format!(
+                    "(list (call function: (identifier) @function) (string){quantifier} @string .)"
+                ),
+            )
+            .unwrap();
+            assert_query_matches(&language, &query, "[f()]", &[(0, vec![("function", "f")])]);
+            assert_query_matches(&language, &query, "[f(), x]", &[]);
+            assert_query_matches(
+                &language,
+                &query,
+                "[f(), 'x']",
+                &[(0, vec![("function", "f"), ("string", "'x'")])],
+            );
+            assert_query_matches(&language, &query, "[f(), 'x', y]", &[]);
+        }
     });
 }
 
@@ -3737,6 +3757,77 @@ fn test_query_cursor_next_capture_with_point_range() {
             collect_captures(captures, &query, source),
             &[("variable", "foo"),]
         );
+    });
+}
+
+#[test]
+fn test_query_wildcard_parent_with_optional_children() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, child) in [("1", Some("1")), ("true", None)] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for quantifier in ["?", "*"] {
+                let query =
+                    Query::new(&language, &format!("(_ (number){quantifier} @number)")).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_max_start_depth(Some(0));
+                let matches = collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                let captures = child.map(|text| vec![("number", text)]).unwrap_or_default();
+                assert_eq!(matches, vec![(0, captures)], "{source}: {quantifier}");
+            }
+        }
+    });
+}
+
+#[test]
+fn test_query_wildcard_parent_optional_children_preserve_siblings() {
+    allocations::record(|| {
+        let language = get_language("python");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, expected_captures) in [
+            ("f()", vec![]),
+            ("f(x)", vec![]),
+            ("f();g()", vec![]),
+            ("f('x')", vec!["'x'"]),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let mut nodes = vec![tree.root_node()];
+            let mut named_count = 0;
+            while let Some(node) = nodes.pop() {
+                named_count += usize::from(node.is_named());
+                nodes.extend(node.children(&mut node.walk()));
+            }
+            for quantifier in ["?", "*"] {
+                for (leading, trailing) in [("", ""), (".", ""), ("", "."), (".", ".")] {
+                    let pattern = format!("(_ {leading} (string){quantifier} @child {trailing})");
+                    let query = Query::new(&language, &pattern).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(matches.len(), named_count, "{source}: {pattern}");
+                    assert_eq!(
+                        matches
+                            .iter()
+                            .flat_map(|(_, captures)| captures.iter().map(|(_, text)| *text))
+                            .collect::<Vec<_>>(),
+                        expected_captures,
+                        "{source}: {pattern}",
+                    );
+                }
+            }
+        }
     });
 }
 
@@ -8626,14 +8717,13 @@ fn test_query_extra_error_parents_do_not_inherit_aliases() {
         &[(0, vec![("parent", "x=1"), ("child", "=")])],
     );
 
-    // Keep empty-match controls independent of captured-root scheduling.
     for quantifier in ["?", "*"] {
         let query = Query::new(
             &language,
             &format!("(_ (function_definition){quantifier} @child)"),
         )
         .unwrap();
-        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 8]);
+        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 6]);
     }
 }
 
