@@ -123,7 +123,9 @@ typedef struct {
   unsigned node_count;
   int dynamic_precedence;
   bool is_in_error;
+  bool is_paused;
   bool is_unconfirmed;
+  uint64_t unconfirmed_recovery;
 } ErrorStatus;
 
 typedef enum {
@@ -296,11 +298,10 @@ static ErrorComparison ts_parser__compare_versions(
   return ErrorComparisonNone;
 }
 
-// Compares two stack versions, where `higher` is ranked above `lower`. A version whose fallback
-// missing token neither a reduction nor an ERROR has incorporated yet can still turn out to have
-// opened a construct that the input never closes. Until then it neither removes nor overtakes a
-// higher-ranked version that has resumed parsing, or the construct can absorb the following valid
-// code.
+// A recovery can resume inside a construct the input never closes. Until it reaches the
+// root state, its lower error cost must not discard another resumed parse.
+// Paused heads have not tried recovery for their lookahead yet; an active head
+// alone is not evidence that their continuation cannot finish the construct.
 static ErrorComparison ts_parser__compare_ranked_versions(
   TSParser *self,
   ErrorStatus higher,
@@ -308,7 +309,19 @@ static ErrorComparison ts_parser__compare_ranked_versions(
 ) {
   ErrorComparison comparison = ts_parser__compare_versions(self, higher, lower);
   bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
-  if (displaces_higher && lower.is_unconfirmed && !higher.is_in_error) return ErrorComparisonNone;
+  bool paused_recovery = higher.is_paused && higher.unconfirmed_recovery;
+  bool has_unconfirmed_recovery = lower.unconfirmed_recovery &&
+    lower.unconfirmed_recovery != higher.unconfirmed_recovery;
+  if (comparison == ErrorComparisonTakeLeft && higher.unconfirmed_recovery &&
+      higher.unconfirmed_recovery != lower.unconfirmed_recovery &&
+      (!lower.is_in_error || lower.is_paused)) {
+    return ErrorComparisonPreferLeft;
+  }
+  if (displaces_higher &&
+      (lower.is_unconfirmed || has_unconfirmed_recovery || paused_recovery) &&
+      (!higher.is_in_error || paused_recovery || (has_unconfirmed_recovery && higher.is_paused))) {
+    return lower.is_unconfirmed ? ErrorComparisonNone : ErrorComparisonPreferRight;
+  }
   return comparison;
 }
 
@@ -324,7 +337,9 @@ static ErrorStatus ts_parser__version_status(
     .node_count = ts_stack_node_count_since_error(self->stack, version),
     .dynamic_precedence = ts_stack_dynamic_precedence(self->stack, version),
     .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE,
+    .is_paused = is_paused,
     .is_unconfirmed = ts_stack_has_unconfirmed_missing_token(self->stack, version),
+    .unconfirmed_recovery = ts_stack_unconfirmed_recovery(self->stack, version),
   };
 }
 
@@ -351,6 +366,7 @@ static bool ts_parser__better_version_exists(
         !ts_stack_is_active(self->stack, i) ||
         ts_stack_position(self->stack, i).bytes < position.bytes) continue;
     ErrorStatus status_i = ts_parser__version_status(self, i);
+    if (status_i.is_unconfirmed || status_i.unconfirmed_recovery) continue;
     switch (ts_parser__compare_versions(self, status, status_i)) {
       case ErrorComparisonTakeRight:
         return true;
@@ -1162,7 +1178,7 @@ static void ts_parser__shift(
   }
 }
 
-static void ts_parser__clear_incorporated_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children);
+static void ts_parser__confirm_incorporated_recovery(TSParser *self, StackVersion version, const SubtreeArray *children, bool normal_reduction);
 
 static StackVersion ts_parser__reduce(
   TSParser *self,
@@ -1216,7 +1232,7 @@ static StackVersion ts_parser__reduce(
     // created and pushed.
     SubtreeArray children = slice.subtrees;
     ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
-    ts_parser__clear_incorporated_missing_token(self, slice_version, &children);
+    ts_parser__confirm_incorporated_recovery(self, slice_version, &children, true);
 
     MutableSubtree parent = ts_subtree_new_node(
       symbol, &children, production_id, self->language
@@ -1288,12 +1304,22 @@ static StackVersion ts_parser__reduce(
     : STACK_VERSION_NONE;
 }
 
-static void ts_parser__clear_incorporated_missing_token(TSParser *self, StackVersion version, const SubtreeArray *children) {
-  if (!ts_stack_has_unconfirmed_missing_token(self->stack, version)) return;
+static void ts_parser__confirm_incorporated_recovery(
+  TSParser *self,
+  StackVersion version,
+  const SubtreeArray *children,
+  bool normal_reduction
+) {
+  if (!ts_stack_has_unconfirmed_missing_token(self->stack, version) &&
+      !ts_stack_unconfirmed_recovery(self->stack, version)) return;
   for (uint32_t i = 0; i < children->size; i++) {
-    if (ts_subtree_missing(*array_get(children, i))) {
+    Subtree child = *array_get(children, i);
+    if (ts_subtree_missing(child)) {
       ts_stack_set_unconfirmed_missing_token(self->stack, version, false);
-      return;
+    }
+    // A recovered expression can reduce while its enclosing block remains unfinished.
+    if (normal_reduction && ts_stack_state(self->stack, version) == 1 && ts_subtree_error_cost(child) > 0) {
+      ts_stack_set_unconfirmed_recovery(self->stack, version, false);
     }
   }
 }
@@ -1525,11 +1551,12 @@ static bool ts_parser__recover_to_state(
     // it would change how ambiguities in the unrelated code that follows are resolved, while the
     // changed ranges of an incremental parse assume that a subtree's content depends only on its
     // symbol, parse state, and text.
-    ts_parser__clear_incorporated_missing_token(self, slice.version, &slice.subtrees);
+    ts_parser__confirm_incorporated_recovery(self, slice.version, &slice.subtrees, false);
 
     if (slice.subtrees.size > 0) {
       Subtree error = ts_subtree_new_error_node(&slice.subtrees, true, self->language);
       ts_stack_push(self->stack, slice.version, error, false, goal_state);
+      ts_stack_set_unconfirmed_recovery(self->stack, slice.version, true);
     } else {
       array_delete(&slice.subtrees);
     }
@@ -1545,12 +1572,36 @@ static bool ts_parser__recover_to_state(
   return previous_version != STACK_VERSION_NONE;
 }
 
+static bool ts_parser__recover_to_entry(
+  TSParser *self, StackVersion version, StackSummaryEntry *entry
+) {
+  if (ts_parser__recover_to_state(self, version, entry->depth, entry->state)) return true;
+  StackSummary current = ts_stack_current_summary(self->stack, version, MAX_SUMMARY_DEPTH + 1);
+  bool recovered = false;
+  for (unsigned i = 0; i < current.size; i++) {
+    StackSummaryEntry candidate = *array_get(&current, i);
+    if (candidate.state == entry->state && candidate.position.bytes >= entry->position.bytes &&
+        (!entry->has_root_subtree || candidate.has_root_subtree) && candidate.depth != entry->depth &&
+        ts_parser__recover_to_state(self, version, candidate.depth, candidate.state)) {
+      entry->depth = candidate.depth;
+      recovered = true;
+      break;
+    }
+  }
+  array_delete(&current);
+  return recovered;
+}
+
+static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state);
+
 static void ts_parser__recover(
   TSParser *self,
   StackVersion version,
-  Subtree lookahead
+  Subtree lookahead,
+  bool can_commit_keyword_recovery
 ) {
   bool did_recover = false;
+  bool recovered_root = false;
   unsigned previous_version_count = ts_stack_version_count(self->stack);
   Length position = ts_stack_position(self->stack, version);
   StackSummary *summary = ts_stack_get_summary(self->stack, version);
@@ -1563,8 +1614,16 @@ static void ts_parser__recover(
       symbol != self->language->keyword_capture_token ? 2 : 1;
     for (unsigned recovery_pass = 0; recovery_pass < recovery_pass_count && !did_recover; recovery_pass++) {
       TSSymbol recovery_symbol = recovery_pass == 0 ? symbol : self->language->keyword_capture_token;
-      for (unsigned i = 0; i < summary->size; i++) {
+      // Keep the nearest and outermost compatible states: nearest-only recovery loses following
+      // declarations, and keeping every candidate multiplies stack versions. The search stops
+      // below a completed root prefix so recovery never discards a finished declaration, except
+      // that an exact keyword with no candidate yet may search past a prefix that cannot accept it.
+      StackSummaryEntry recovery_entries[2];
+      unsigned recovery_entry_count = 0;
+      bool reached_prefix = false;
+      for (unsigned i = 0; i < summary->size && !reached_prefix; i++) {
         StackSummaryEntry entry = *array_get(summary, i);
+        reached_prefix = entry.has_root_subtree && ts_parser__state_finishes_root(self, entry.state);
 
         if (entry.state == ERROR_STATE) continue;
         if (entry.position.bytes == position.bytes) continue;
@@ -1597,12 +1656,25 @@ static void ts_parser__recover(
             !ts_language_is_reserved_word(self->language, entry.state, symbol)
           ))
         ) {
-          if (ts_parser__recover_to_state(self, version, depth, entry.state)) {
-            did_recover = true;
-            LOG("recover_to_previous state:%u, depth:%u", entry.state, depth);
-            LOG_STACK();
-            break;
-          }
+          if (
+            recovery_entry_count == 2 &&
+            recovery_entries[1].state == 1 && entry.state == 1
+          ) continue;
+          entry.depth = depth;
+          recovery_entries[recovery_entry_count == 0 ? 0 : 1] = entry;
+          if (recovery_entry_count < 2) recovery_entry_count++;
+        } else if (recovery_entry_count == 0 && recovery_pass == 0 && ts_subtree_leaf_is_keyword(lookahead)) {
+          reached_prefix = false;
+        }
+      }
+      for (unsigned i = 0; i < recovery_entry_count; i++) {
+        StackSummaryEntry entry = recovery_entries[i];
+        if (ts_parser__recover_to_entry(self, version, &entry)) {
+          did_recover = true;
+          recovered_root |= recovery_pass == 0 &&
+            (entry.state == 1 || ts_parser__state_finishes_root(self, entry.state));
+          LOG("recover_to_previous state:%u, depth:%u", entry.state, entry.depth);
+          LOG_STACK();
         }
       }
     }
@@ -1637,7 +1709,9 @@ static void ts_parser__recover(
 
   if (
     did_recover &&
-    ts_subtree_has_external_scanner_state_change(lookahead)
+    (ts_subtree_has_external_scanner_state_change(lookahead) ||
+     (can_commit_keyword_recovery && recovered_root && ts_subtree_leaf_is_keyword(lookahead) &&
+      ts_subtree_symbol(lookahead) != self->language->keyword_capture_token))
   ) {
     ts_stack_halt(self->stack, version);
     ts_subtree_release(&self->tree_pool, lookahead);
@@ -1725,6 +1799,23 @@ static void ts_parser__recover(
   self->has_error = has_error;
 }
 
+static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state) {
+  TableEntry entry;
+  ts_language_table_entry(self->language, state, ts_builtin_sym_end, &entry);
+  for (unsigned i = 0; i < entry.action_count; i++) {
+    TSParseAction action = entry.actions[i];
+    if (action.type == TSParseActionTypeAccept) return true;
+    if (action.type != TSParseActionTypeReduce || action.reduce.child_count != 1) continue;
+    TSStateId next_state = ts_language_next_state(self->language, 1, action.reduce.symbol);
+    TableEntry next_entry;
+    ts_language_table_entry(self->language, next_state, ts_builtin_sym_end, &next_entry);
+    for (unsigned j = 0; j < next_entry.action_count; j++) {
+      if (next_entry.actions[j].type == TSParseActionTypeAccept) return true;
+    }
+  }
+  return false;
+}
+
 static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state);
 
 static bool ts_parser__insert_missing_token(
@@ -1734,6 +1825,8 @@ static bool ts_parser__insert_missing_token(
   Length position,
   bool require_reduction
 );
+
+static bool ts_parser__missing_token_completes_recovery(TSParser *self, StackVersion version, StackVersion first_candidate);
 
 static void ts_parser__handle_error(
   TSParser *self,
@@ -1760,9 +1853,19 @@ static void ts_parser__handle_error(
     }
   }
 
+  bool restored_root = did_insert_missing_token && ts_subtree_leaf_is_keyword(lookahead) &&
+    ts_parser__missing_token_completes_recovery(self, version, version_count);
   for (StackVersion v = version; v < version_count;) {
-    ts_stack_push(self->stack, v, NULL_SUBTREE, false, ERROR_STATE);
+    if (restored_root) {
+      ts_stack_halt(self->stack, v);
+    } else {
+      ts_stack_push(self->stack, v, NULL_SUBTREE, false, ERROR_STATE);
+    }
     v = (v == version) ? previous_version_count : v + 1;
+  }
+  if (restored_root) {
+    ts_subtree_release(&self->tree_pool, lookahead);
+    return;
   }
 
   for (unsigned i = previous_version_count; i < version_count; i++) {
@@ -1780,9 +1883,22 @@ static void ts_parser__handle_error(
   if (ts_subtree_child_count(lookahead) > 0) {
     ts_parser__breakdown_lookahead(self, &lookahead, ERROR_STATE, &self->reusable_node);
   }
-  ts_parser__recover(self, version, lookahead);
+  ts_parser__recover(self, version, lookahead, !did_insert_missing_token);
 
   LOG_STACK();
+}
+
+static bool ts_parser__missing_token_completes_recovery(
+  TSParser *self,
+  StackVersion version,
+  StackVersion first_candidate
+) {
+  if (!ts_stack_unconfirmed_recovery(self->stack, version)) return false;
+  for (StackVersion v = first_candidate; v < ts_stack_version_count(self->stack); v++) {
+    if (ts_stack_is_active(self->stack, v) &&
+        ts_parser__state_finishes_root(self, ts_stack_state(self->stack, v))) return true;
+  }
+  return false;
 }
 
 static bool ts_parser__insert_missing_token(
@@ -2013,7 +2129,7 @@ static bool ts_parser__advance(
             ts_parser__breakdown_lookahead(self, &lookahead, ERROR_STATE, &self->reusable_node);
           }
 
-          ts_parser__recover(self, version, lookahead);
+          ts_parser__recover(self, version, lookahead, false);
           if (did_reuse) reusable_node_advance(&self->reusable_node);
           return true;
         }
@@ -2090,7 +2206,7 @@ static bool ts_parser__advance(
     // If the current lookahead token is not valid and the parser is
     // already in the error state, restart the error recovery process.
     if (state == ERROR_STATE) {
-      ts_parser__recover(self, version, lookahead);
+      ts_parser__recover(self, version, lookahead, false);
       return true;
     }
 
@@ -2172,6 +2288,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
         case ErrorComparisonPreferRight:
           made_changes = true;
           ts_stack_swap_versions(self->stack, i, j);
+          status_i = ts_parser__version_status(self, i);
           break;
 
         case ErrorComparisonTakeRight:
@@ -2191,28 +2308,38 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
     made_changes = true;
   }
 
-  // If the best-performing stack version is currently paused, or all
-  // versions are paused, then resume the best paused version and begin
-  // the error recovery process. Otherwise, remove the paused versions.
+  // While any version is active, resume at most one paused version, and only if its recovery is
+  // still provisional or its penalized cost beats every active version; remove the others.
+  // Resuming every paused version absorbs preceding valid declarations into ERROR nodes, and
+  // resuming none loses declarations that only a paused path keeps.
   if (ts_stack_version_count(self->stack) > 0) {
-    bool has_unpaused_version = false;
+    unsigned active_cost = UINT_MAX;
+    bool has_active_version = false;
+    bool resumed_paused_version = false;
     for (StackVersion i = 0, n = ts_stack_version_count(self->stack); i < n; i++) {
-      if (ts_stack_is_paused(self->stack, i)) {
-        if (!has_unpaused_version && self->accept_count < MAX_VERSION_COUNT) {
-          LOG("resume version:%u", i);
-          min_error_cost = ts_stack_error_cost(self->stack, i);
-          Subtree lookahead = ts_stack_resume(self->stack, i);
-          ts_parser__handle_error(self, i, lookahead);
-          has_unpaused_version = true;
-        } else {
-          ts_stack_remove_version(self->stack, i);
-          made_changes = true;
-          i--;
-          n--;
-        }
-      } else {
-        has_unpaused_version = true;
+      if (!ts_stack_is_paused(self->stack, i)) {
+        unsigned cost = ts_stack_error_cost(self->stack, i);
+        if (cost < active_cost) active_cost = cost;
+        has_active_version = true;
+        continue;
       }
+      bool can_resume_recovery = !resumed_paused_version &&
+        (ts_stack_unconfirmed_recovery(self->stack, i) ||
+         ts_parser__version_status(self, i).cost < active_cost);
+      if ((has_active_version && !can_resume_recovery) || self->accept_count >= MAX_VERSION_COUNT) {
+        ts_stack_remove_version(self->stack, i);
+        made_changes = true;
+        i--;
+        n--;
+        continue;
+      }
+      LOG("resume version:%u", i);
+      unsigned cost = ts_stack_error_cost(self->stack, i);
+      if (cost < min_error_cost) min_error_cost = cost;
+      Subtree lookahead = ts_stack_resume(self->stack, i);
+      ts_parser__handle_error(self, i, lookahead);
+      resumed_paused_version = true;
+      has_active_version = true;
     }
   }
 
