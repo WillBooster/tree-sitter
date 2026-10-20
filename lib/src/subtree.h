@@ -199,6 +199,7 @@ Subtree ts_subtree_new_error(
   SubtreePool *pool, int32_t lookahead_char, Length padding, Length size,
   uint32_t bytes_scanned, TSStateId parse_state, const TSLanguage *language
 );
+Subtree ts_subtree_new_extra_group(Subtree left, Subtree right, const TSLanguage *language);
 MutableSubtree ts_subtree_new_node(
   TSSymbol symbol,
   SubtreeArray *chiildren,

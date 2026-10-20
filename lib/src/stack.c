@@ -181,7 +181,7 @@ static uint32_t stack__subtree_node_count(Subtree subtree) {
   // Count intermediate error nodes even though they are not visible,
   // because a stack version's node count is used to check whether it
   // has made any progress since the last time it encountered an error.
-  if (ts_subtree_symbol(subtree) == ts_builtin_sym_error_repeat) count++;
+  if (ts_subtree_symbol(subtree) == ts_builtin_sym_error_repeat && !ts_subtree_extra(subtree)) count++;
 
   return count;
 }
@@ -602,7 +602,7 @@ static StackSliceArray stack__iter(
             if (compact && (next_iterator->subtree_count > 0 || !ts_subtree_extra(link.subtree))) {
               next_iterator->precedence += ts_subtree_dynamic_precedence(link.subtree);
               uint32_t error_cost = ts_subtree_error_cost(link.subtree);
-              if (ts_subtree_symbol(link.subtree) == ts_builtin_sym_error_repeat) {
+              if (ts_subtree_symbol(link.subtree) == ts_builtin_sym_error_repeat && !ts_subtree_extra(link.subtree)) {
                 uint32_t extent_cost = ts_subtree__error_extent_cost(ts_subtree_size(link.subtree));
                 error_cost -= extent_cost;
                 next_iterator->total_error_cost -= extent_cost;
@@ -831,6 +831,35 @@ unsigned ts_stack_node_count_since_error(const Stack *self, StackVersion version
     head->node_count_at_last_error = head->node->node_count;
   }
   return head->node->node_count - head->node_count_at_last_error;
+}
+
+void ts_stack_push_recovery(
+  Stack *self, StackVersion version, Subtree subtree, TSStateId state,
+  const TSLanguage *language
+) {
+  ts_assert(ts_subtree_is_error(subtree) && ts_subtree_extra(subtree));
+  StackHead *head = array_get(&self->heads, version);
+  StackNode *node = head->node;
+  Subtree prefix = NULL_SUBTREE;
+  unsigned extra_count = 0;
+  while (node->state == state && node->link_count == 1 &&
+         node->links[0].node->state == state && !node->links[0].is_pending &&
+         node->links[0].subtree.ptr && ts_subtree_extra(node->links[0].subtree)) {
+    Subtree extra = node->links[0].subtree;
+    ts_subtree_retain(extra);
+    prefix = prefix.ptr ? ts_subtree_new_extra_group(extra, prefix, language) : extra;
+    node = node->links[0].node;
+    extra_count++;
+  }
+  if (extra_count > 1) {
+    stack_node_retain(node);
+    stack_node_release(head->node, &self->node_pool, self->subtree_pool);
+    head->node = node;
+    ts_stack_push(self, version, prefix, false, state);
+  } else if (prefix.ptr) {
+    ts_subtree_release(self->subtree_pool, prefix);
+  }
+  ts_stack_push(self, version, subtree, false, state);
 }
 
 void ts_stack_push(

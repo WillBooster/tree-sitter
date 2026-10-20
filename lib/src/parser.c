@@ -1529,7 +1529,7 @@ static bool ts_parser__recover_to_state(
 
     if (slice.subtrees.size > 0) {
       Subtree error = ts_subtree_new_error_node(&slice.subtrees, true, self->language);
-      ts_stack_push(self->stack, slice.version, error, false, goal_state);
+      ts_stack_push_recovery(self->stack, slice.version, error, goal_state, self->language);
     } else {
       array_delete(&slice.subtrees);
     }

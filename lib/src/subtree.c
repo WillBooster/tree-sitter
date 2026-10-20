@@ -384,6 +384,8 @@ void ts_subtree_summarize_children(
   self.ptr->dynamic_precedence = 0;
   self.ptr->has_ambiguous_extra = false;
 
+  bool charges_error_extent = self.ptr->symbol == ts_builtin_sym_error ||
+    (self.ptr->symbol == ts_builtin_sym_error_repeat && !self.ptr->extra);
   uint32_t structural_index = 0;
   const TSSymbol *alias_sequence = ts_language_alias_sequence(language, self.ptr->production_id);
   uint32_t lookahead_end_byte = 0;
@@ -431,7 +433,7 @@ void ts_subtree_summarize_children(
     }
 
     uint32_t grandchild_count = ts_subtree_child_count(child);
-    if (ts_subtree_symbol(child) == ts_builtin_sym_error_repeat) {
+    if (ts_subtree_symbol(child) == ts_builtin_sym_error_repeat && !ts_subtree_extra(child)) {
       // Refund an `_ERROR` child's extent penalty, which this node re-charges
       // as part of its own extent below, so that the grouping is cost-neutral.
       uint32_t extent_cost = ts_subtree__error_extent_cost(ts_subtree_size(child));
@@ -439,10 +441,7 @@ void ts_subtree_summarize_children(
       self.ptr->error_cost += ts_subtree_error_cost(child) - extent_cost;
     } else {
       self.ptr->error_cost += ts_subtree_error_cost(child);
-      if (
-        self.ptr->symbol == ts_builtin_sym_error ||
-        self.ptr->symbol == ts_builtin_sym_error_repeat
-      ) {
+      if (charges_error_extent) {
         if (!ts_subtree_extra(child) && !(ts_subtree_is_error(child) && grandchild_count == 0)) {
           if (ts_subtree_visible(child)) {
             self.ptr->error_cost += ERROR_COST_PER_SKIPPED_TREE;
@@ -491,10 +490,7 @@ void ts_subtree_summarize_children(
 
   self.ptr->lookahead_bytes = lookahead_end_byte - self.ptr->size.bytes - self.ptr->padding.bytes;
 
-  if (
-    self.ptr->symbol == ts_builtin_sym_error ||
-    self.ptr->symbol == ts_builtin_sym_error_repeat
-  ) {
+  if (charges_error_extent) {
     self.ptr->error_cost += ts_subtree__error_extent_cost(self.ptr->size);
   }
 
@@ -524,6 +520,18 @@ void ts_subtree_summarize_children(
       }
     }
   }
+}
+
+// Takes ownership of both subtrees.
+Subtree ts_subtree_new_extra_group(Subtree left, Subtree right, const TSLanguage *language) {
+  ts_assert(ts_subtree_extra(left) && ts_subtree_extra(right));
+  SubtreeArray children = array_new();
+  array_push(&children, left);
+  array_push(&children, right);
+  MutableSubtree result = ts_subtree_new_node(ts_builtin_sym_error_repeat, &children, 0, language);
+  result.ptr->extra = true;
+  ts_subtree_summarize_children(result, language);
+  return ts_subtree_from_mut(result);
 }
 
 // Create a new parent node with the given children.
