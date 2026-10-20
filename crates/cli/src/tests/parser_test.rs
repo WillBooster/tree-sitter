@@ -31,6 +31,49 @@ use crate::{
 };
 
 #[test]
+fn test_identifier_only_grammar_compiles_without_c_warnings() {
+    let grammar = serde_json::json!({
+        "name": "identifier_without_keywords",
+        "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "SYMBOL", "name": "identifier"},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("empty-keywords-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path();
+    std::fs::create_dir(path.join("tree_sitter")).unwrap();
+    std::fs::write(path.join("parser.c"), code).unwrap();
+    std::fs::write(
+        path.join("strict_parser.c"),
+        "#if defined(_MSC_VER)\n#pragma warning(error: 4100 4102)\n#else\n#pragma GCC diagnostic error \"-Wunused-label\"\n#endif\n#include \"parser.c\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        path.join("tree_sitter/parser.h"),
+        tree_sitter::PARSER_HEADER,
+    )
+    .unwrap();
+    let mut config = tree_sitter_loader::CompileConfig::new(path, None, None);
+    config.name = name;
+    config.parser_path = path.join("strict_parser.c");
+    let loader = tree_sitter_loader::Loader::with_parser_lib_path(path.to_path_buf());
+    let language = loader.load_language_at_path_with_name(config).unwrap();
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = " identifier ";
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
+    assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 1..11);
+}
+
+#[test]
 fn test_lexer_character_partitions_preserve_token_start_tags() {
     let grammar = serde_json::json!({
         "name": "partitioned_token_starts",
@@ -1338,17 +1381,17 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
 
 #[test]
 fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
-    let keywords = (0..64)
-        .map(|i| format!("keyword_{i:04}_{}", "x".repeat(80)))
-        .collect::<Vec<_>>();
-    for separate_keywords in [false, true] {
+    for (suffix_length, separate_keywords) in [(40, false), (80, false), (80, true)] {
+        let keywords = (0..64)
+            .map(|i| format!("keyword_{i:04}_{}", "x".repeat(suffix_length)))
+            .collect::<Vec<_>>();
         let mut members = keywords
             .iter()
             .map(|word| serde_json::json!({"type": "STRING", "value": word}))
             .collect::<Vec<_>>();
         members.push(serde_json::json!({"type": "SYMBOL", "name": "identifier"}));
         let mut grammar = serde_json::json!({
-            "name": format!("large_lexer_{separate_keywords}"),
+            "name": format!("large_lexer_{suffix_length}_{separate_keywords}"),
             "extras": [{"type": "PATTERN", "value": "\\s"}],
             "rules": {
                 "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": members}},
@@ -1362,6 +1405,15 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                 .insert("word".into(), serde_json::json!("identifier"));
         }
         let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        for function in code.split("\nstatic ").filter(|definition| {
+            definition.starts_with("bool ts_lex(") || definition.starts_with("uint8_t ts_lex_")
+        }) {
+            assert!(
+                function.len() <= 512 * 1024,
+                "generated lexer function is too large: {} bytes",
+                function.len()
+            );
+        }
         let languages = [
             get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
             #[cfg(feature = "wasm")]
