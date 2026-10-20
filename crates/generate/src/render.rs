@@ -199,7 +199,8 @@ impl Generator {
 
         let mut main_lex_table = LexTable::default();
         swap(&mut main_lex_table, &mut self.main_lex_table);
-        self.add_lex_function("ts_lex", main_lex_table);
+        self.add_lex_function("ts_lex", &main_lex_table);
+        drop(main_lex_table);
 
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
@@ -220,7 +221,7 @@ impl Generator {
                 self.uses_keyword_table = true;
                 self.add_keyword_table(&keyword_lex_table);
             } else {
-                self.add_lex_function("ts_lex_keywords", keyword_lex_table);
+                self.add_lex_function("ts_lex_keywords", &keyword_lex_table);
             }
         }
 
@@ -1316,7 +1317,7 @@ impl Generator {
         add_line!(self, "");
     }
 
-    fn add_lex_function(&mut self, name: &str, lex_table: LexTable) {
+    fn add_lex_function(&mut self, name: &str, lex_table: &LexTable) {
         if lex_table
             .states
             .iter()
@@ -1340,14 +1341,14 @@ impl Generator {
             );
         }
         if lex_table.states.len() > MAX_SINGLE_LEXER_STATES {
-            self.add_chunked_lex_function(name, &lex_table, has_fallback);
+            self.add_chunked_lex_function(name, lex_table, has_fallback);
             return;
         }
         let function_start = self.buffer.len();
-        self.add_single_lex_function(name, &lex_table, has_fallback);
+        self.add_single_lex_function(name, lex_table, has_fallback);
         if self.buffer.len() - function_start > MAX_SINGLE_LEXER_BYTES {
             self.buffer.truncate(function_start);
-            self.add_chunked_lex_function(name, &lex_table, has_fallback);
+            self.add_chunked_lex_function(name, lex_table, has_fallback);
         }
     }
 
