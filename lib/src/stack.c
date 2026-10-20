@@ -970,6 +970,7 @@ StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version) {
 }
 
 typedef struct {
+  Stack *stack;
   StackSummary *summary;
   unsigned max_depth;
 } SummarizeStackSession;
@@ -987,8 +988,9 @@ forceinline StackAction summarize_stack_callback(void *payload, const StackItera
     if (entry.depth == depth && entry.state == state) return StackActionNone;
   }
   bool has_root_subtree = false;
-  for (unsigned i = 0; i < iterator->node->link_count; i++) {
-    StackLink link = iterator->node->links[i];
+  StackNode *node = stack__skip_extra_chains(session->stack, iterator->node);
+  for (unsigned i = 0; i < node->link_count; i++) {
+    StackLink link = node->links[i];
     if (link.subtree.ptr && link.node->state == 1 &&
         subtree_has_completed_prefix(link.subtree)) {
       has_root_subtree = true;
@@ -1014,6 +1016,7 @@ static bool subtree_has_completed_prefix(Subtree subtree) {
 
 void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_depth) {
   SummarizeStackSession session = {
+    .stack = self,
     .summary = ts_malloc(sizeof(StackSummary)),
     .max_depth = max_depth
   };

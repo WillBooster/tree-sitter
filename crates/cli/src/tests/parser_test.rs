@@ -936,6 +936,15 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
 fn test_recovery_keeps_declarations_after_restarting_an_error() {
     for (language, source, expected) in [
         (
+            "javascript",
+            "const before = 0;\n=a=]\nexport function following() {}\nconst sentinel = 1;",
+            vec![
+                "const before = 0;",
+                "export function following() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+        (
             "c-sharp",
             "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
             vec!["class Following { int Value => 1; }"],
