@@ -60,10 +60,10 @@ struct AuxiliaryParentSetId(u32);
 ///
 /// A state's context only holds the auxiliary symbols at a dot in that state, and links
 /// to its predecessor: the context of the state that first led to it. Successor states
-/// share a context. Conflict resolution uses the nearest entry, including empty sets,
-/// after filtering auxiliary parents, because those entries determine expected-conflict
-/// matching. Diagnostic ownership follows each parent at its item origin and resumes in an
-/// older context when a zero-step cycle would otherwise hide a source owner.
+/// share a context. Both conflict resolution and diagnostic ownership select contexts at
+/// each item's origin, so later uses of a shared repeat cannot change its earlier owner.
+/// Ownership follows enclosing parents and resumes in an older context when a zero-step
+/// cycle would otherwise hide a nameable source owner.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
@@ -95,8 +95,7 @@ struct AuxiliaryParentSet {
 impl AuxiliarySymbolContexts {
     /// Adds the context of a state whose predecessor is `predecessor`. `uses` records each
     /// auxiliary symbol at a dot, the containing rule, and its consumed steps. Auxiliary
-    /// parents must remain available for diagnostic ownership, even when conflict
-    /// resolution filters them out and the resulting empty set hides an earlier entry.
+    /// parents must remain available to follow nested repeats during ownership resolution.
     fn push(
         &mut self,
         predecessor: Option<AuxiliaryContextId>,
@@ -132,17 +131,6 @@ impl AuxiliarySymbolContexts {
             len: self.entries.len() as u32 - start,
         });
         Some(id)
-    }
-
-    /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
-    /// the path to the state whose context is `context`.
-    fn parents(
-        &self,
-        context: Option<AuxiliaryContextId>,
-        symbol: usize,
-    ) -> Option<&[AuxiliaryParentUse]> {
-        self.find_parents(context, symbol, |_| true)
-            .map(|(_, parents)| parents)
     }
 
     fn find_parents(
@@ -583,37 +571,34 @@ impl std::fmt::Display for Interpretation {
 
 impl std::fmt::Display for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Precedence { symbols } => {
-                write!(f, "Specify a higher precedence in ")?;
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " and ")?;
-                    }
-                    write!(f, "`{symbol}`")?;
-                }
-                write!(f, " than in the other rules.")?;
-            }
-            Self::Associativity { symbols } => {
-                write!(f, "Specify a left or right associativity in ")?;
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "`{symbol}`")?;
-                }
+        let (prefix, symbols, separator, suffix) = match self {
+            Self::Precedence { symbols } => (
+                "Specify a higher precedence in ",
+                symbols,
+                " and ",
+                " than in the other rules.",
+            ),
+            Self::Associativity { symbols } => (
+                "Specify a left or right associativity in ",
+                symbols,
+                ", ",
+                "",
+            ),
+            Self::AddConflict { symbols } if symbols.is_empty() => {
+                return write!(f, "Add an empty set `[]` to `conflicts`");
             }
             Self::AddConflict { symbols } => {
-                write!(f, "Add a conflict for these rules: ")?;
-                for (i, symbol) in symbols.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "`{symbol}`")?;
-                }
+                ("Add a conflict for these rules: ", symbols, ", ", "")
             }
+        };
+        write!(f, "{prefix}")?;
+        for (i, symbol) in symbols.iter().enumerate() {
+            if i > 0 {
+                write!(f, "{separator}")?;
+            }
+            write!(f, "`{symbol}`")?;
         }
-        Ok(())
+        write!(f, "{suffix}")
     }
 }
 
@@ -721,6 +706,7 @@ impl<'a> ParseTableBuilder<'a> {
                         step_index: 1,
                         keys: self.item_set_builder.key_map.keys_for(prod_id),
                         has_preceding_inherited_fields: false,
+                        is_extra_root: true,
                     });
                 entry.lookaheads = self
                     .item_set_builder
@@ -916,6 +902,7 @@ impl<'a> ParseTableBuilder<'a> {
                         child_count: item.step_index as u16,
                         dynamic_precedence: item.production(self.syntax_grammar).dynamic_precedence,
                         production_id: production_id as u16,
+                        is_extra: item.is_extra_root,
                     }
                 };
 
@@ -1110,14 +1097,29 @@ impl<'a> ParseTableBuilder<'a> {
                 self.terminal_entries.unconditional_reduction()
             };
             for (terminal, state_id) in &self.non_terminal_extra_states {
-                self.terminal_entries
-                    .get_or_insert_with(*terminal, || ParseTableEntry {
-                        reusable: true,
-                        actions: ActionList::One(reduction.unwrap_or(ParseAction::Shift {
-                            state: *state_id,
-                            is_repetition: false,
-                        })),
-                    });
+                let starts_required_extra = item_set.entries.iter().any(|entry| {
+                    let item = &entry.item;
+                    item.step_index == 0
+                        && self
+                            .syntax_grammar
+                            .extra_symbols
+                            .contains(&Symbol::non_terminal(item.variable_index as usize))
+                        && item.production(self.syntax_grammar).first_symbol() == Some(*terminal)
+                });
+                if self.terminal_entries.contains(*terminal) && !starts_required_extra {
+                    continue;
+                }
+                let entry = self
+                    .terminal_entries
+                    .get_or_insert_with(*terminal, ParseTableEntry::new);
+                let action = reduction.unwrap_or(ParseAction::Shift {
+                    state: *state_id,
+                    is_repetition: false,
+                });
+                if !entry.actions.contains(&action) {
+                    entry.actions.push(action);
+                    entry.actions.rotate_right(1);
+                }
             }
 
             for extra_token in &self.syntax_grammar.extra_symbols {
@@ -1345,7 +1347,11 @@ impl<'a> ParseTableBuilder<'a> {
             return Ok(());
         }
 
-        let legacy_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
+        let legacy_conflict = self.conflict_symbols(
+            &conflicting_items,
+            auxiliary_context,
+            preceding_symbols.len(),
+        );
         conflicting_items.retain(|item| {
             !item.is_done()
                 || reduction_info.reductions.iter().any(|reduction| {
@@ -1353,7 +1359,11 @@ impl<'a> ParseTableBuilder<'a> {
                         && reduction.production_index == item.prod_id
                 })
         });
-        let actual_conflict = self.conflict_symbols(&conflicting_items, auxiliary_context);
+        let actual_conflict = self.conflict_symbols(
+            &conflicting_items,
+            auxiliary_context,
+            preceding_symbols.len(),
+        );
 
         for conflict in [&actual_conflict, &legacy_conflict] {
             if self.syntax_grammar.expected_conflicts.contains(conflict) {
@@ -1566,13 +1576,71 @@ impl<'a> ParseTableBuilder<'a> {
         path_length: usize,
         has_contextual_occurrence: bool,
     ) -> BTreeSet<Symbol> {
-        let mut pending = self
+        let roots = self
             .containing_rules(symbol, items, auxiliary_context, path_length)
-            .map(|(parent, context)| (parent, context, Vec::new()))
-            .collect::<Vec<_>>();
-        if has_contextual_occurrence {
-            pending.push((symbol, auxiliary_context, Vec::new()));
+            .chain(has_contextual_occurrence.then_some((symbol, auxiliary_context)));
+        self.resolve_repetition_owners(roots)
+    }
+
+    fn containing_rules<'b>(
+        &'b self,
+        symbol: Symbol,
+        items: &'b BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+    ) -> impl Iterator<Item = (Symbol, Option<AuxiliaryContextId>)> + 'b {
+        items.iter().filter_map(move |item| {
+            let parent = Symbol::non_terminal(item.variable_index as usize);
+            (parent != symbol
+                && item
+                    .production(self.syntax_grammar)
+                    .steps
+                    .iter()
+                    .any(|step| step.symbol() == symbol))
+            .then(|| {
+                (
+                    parent,
+                    self.auxiliary_contexts
+                        .at_position(auxiliary_context, path_length - item.step_index as usize),
+                )
+            })
+        })
+    }
+
+    fn conflict_symbols(
+        &self,
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+    ) -> Vec<Symbol> {
+        let mut symbols = Vec::new();
+        let mut repetitions = Vec::new();
+        for item in items {
+            let symbol = Symbol::non_terminal(item.variable_index as usize);
+            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
+                repetitions.push((
+                    symbol,
+                    self.auxiliary_contexts
+                        .at_position(auxiliary_context, path_length - item.step_index as usize),
+                ));
+            } else {
+                symbols.push(symbol);
+            }
         }
+        symbols.extend(self.resolve_repetition_owners(repetitions));
+        symbols.sort_unstable();
+        symbols.dedup();
+        symbols
+    }
+
+    fn resolve_repetition_owners(
+        &self,
+        roots: impl IntoIterator<Item = (Symbol, Option<AuxiliaryContextId>)>,
+    ) -> BTreeSet<Symbol> {
+        let mut pending = roots
+            .into_iter()
+            .map(|(symbol, context)| (symbol, context, Vec::new()))
+            .collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut parents = BTreeSet::new();
         while let Some((symbol, context, mut ancestors)) = pending.pop() {
@@ -1619,59 +1687,6 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
         parents
-    }
-
-    fn containing_rules<'b>(
-        &'b self,
-        symbol: Symbol,
-        items: &'b BTreeSet<&ParseItem>,
-        auxiliary_context: Option<AuxiliaryContextId>,
-        path_length: usize,
-    ) -> impl Iterator<Item = (Symbol, Option<AuxiliaryContextId>)> + 'b {
-        items.iter().filter_map(move |item| {
-            let parent = Symbol::non_terminal(item.variable_index as usize);
-            (parent != symbol
-                && item
-                    .production(self.syntax_grammar)
-                    .steps
-                    .iter()
-                    .any(|step| step.symbol() == symbol))
-            .then(|| {
-                (
-                    parent,
-                    self.auxiliary_contexts
-                        .at_position(auxiliary_context, path_length - item.step_index as usize),
-                )
-            })
-        })
-    }
-
-    fn conflict_symbols(
-        &self,
-        items: &BTreeSet<&ParseItem>,
-        auxiliary_context: Option<AuxiliaryContextId>,
-    ) -> Vec<Symbol> {
-        let mut symbols = Vec::new();
-        for item in items {
-            let symbol = Symbol::non_terminal(item.variable_index as usize);
-            if self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
-                symbols.extend(
-                    self.auxiliary_contexts
-                        .parents(auxiliary_context, item.variable_index as usize)
-                        .unwrap()
-                        .iter()
-                        .map(|parent| parent.symbol)
-                        .filter(|parent| {
-                            !self.syntax_grammar.variables[parent.index as usize].is_auxiliary()
-                        }),
-                );
-            } else {
-                symbols.push(symbol);
-            }
-        }
-        symbols.sort_unstable();
-        symbols.dedup();
-        symbols
     }
 
     fn compare_precedence(

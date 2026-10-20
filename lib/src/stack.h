@@ -24,6 +24,7 @@ typedef struct {
   Length position;
   unsigned depth;
   TSStateId state;
+  bool has_root_subtree;
 } StackSummaryEntry;
 typedef Array(StackSummaryEntry) StackSummary;
 
@@ -67,6 +68,14 @@ void ts_stack_push(Stack *self, StackVersion version, Subtree subtree, bool pend
 // removed from that version.
 StackSliceArray ts_stack_pop_count(Stack *self, StackVersion version, uint32_t count);
 
+StackSliceArray ts_stack_pop_count_for_reduce(
+  Stack *self,
+  StackVersion version,
+  uint32_t count,
+  uint32_t max_reductions,
+  bool *is_ambiguous
+);
+
 // Remove an error at the top of the given version of the stack.
 SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version);
 
@@ -79,6 +88,10 @@ StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version);
 // Get the maximum number of tree nodes reachable from this version of the stack
 // since the last error was detected.
 unsigned ts_stack_node_count_since_error(const Stack *self, StackVersion version);
+
+uint64_t ts_stack_unconfirmed_recovery(const Stack *self, StackVersion version);
+
+void ts_stack_set_unconfirmed_recovery(Stack *self, StackVersion version, bool value);
 
 // Whether the version holds a missing token that error recovery inserted although the lookahead
 // is then shifted rather than reduced, and that neither a reduction nor an ERROR has incorporated

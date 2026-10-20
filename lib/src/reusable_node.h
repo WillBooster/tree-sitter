@@ -96,6 +96,7 @@ static inline void reusable_node_advance_past_leaf(ReusableNode *self) {
 
 static inline void reusable_node_reset(ReusableNode *self, Subtree tree) {
   reusable_node_clear(self);
+  if (ts_subtree_is_error(tree) || ts_subtree_error_cost(tree)) return;
   array_push(&self->stack, ((StackEntry) {
     .tree = tree,
     .child_index = 0,

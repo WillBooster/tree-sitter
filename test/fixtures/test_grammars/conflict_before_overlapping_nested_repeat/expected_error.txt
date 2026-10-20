@@ -17,4 +17,4 @@ Possible resolutions:
   1:  Specify a higher precedence in `first_repeat2` than in the other rules.
   2:  Specify a higher precedence in `b` than in the other rules.
   3:  Specify a left or right associativity in `b`
-  4:  Add a conflict for these rules: `second`, `b`
+  4:  Add a conflict for these rules: `first`, `b`

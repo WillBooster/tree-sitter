@@ -34,6 +34,9 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
         if grammar_name == "bash" {
             adapt_bash_operators(&grammar_dir.join("src/grammar.json"))?;
         }
+        if matches!(grammar_name, "typescript" | "tsx") {
+            adapt_typescript_class_conflict(&grammar_dir.join("src/grammar.json"))?;
+        }
 
         println!(
             "Regenerating {grammar_name} parser{}",
@@ -67,6 +70,19 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn adapt_typescript_class_conflict(path: &Path) -> Result<()> {
+    let mut grammar: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let conflicts = grammar["conflicts"]
+        .as_array_mut()
+        .context("Missing TypeScript conflicts")?;
+    let conflict = serde_json::json!(["class", "_parameter_name"]);
+    if !conflicts.contains(&conflict) {
+        conflicts.push(conflict);
+    }
+    fs::write(path, serde_json::to_vec_pretty(&grammar)?)?;
     Ok(())
 }
 

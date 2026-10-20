@@ -880,8 +880,42 @@ fn test_query_errors_on_invalid_predicates() {
 fn test_query_errors_on_impossible_patterns() {
     let js_lang = get_language("javascript");
     let rb_lang = get_language("ruby");
+    let bash_lang = get_language("bash");
 
     allocations::record(|| {
+        for (language, pattern) in [
+            (
+                &js_lang,
+                "(jsx_opening_element (jsx_expression) (_) . (jsx_attribute) (jsx_namespace_name))",
+            ),
+            (&bash_lang, "(file_redirect (_) (file_descriptor))"),
+        ] {
+            assert_eq!(
+                Query::new(language, pattern).unwrap_err().kind,
+                QueryErrorKind::Structure,
+            );
+        }
+        for kind in ["number", "identifier", "string"] {
+            Query::new(&js_lang, &format!("(binary_expression ({kind}) ({kind}))")).unwrap();
+            assert_eq!(
+                Query::new(
+                    &js_lang,
+                    &format!("(binary_expression ({kind}) ({kind}) ({kind}))")
+                )
+                .unwrap_err()
+                .kind,
+                QueryErrorKind::Structure,
+            );
+        }
+        assert_eq!(
+            Query::new(
+                &js_lang,
+                "(binary_expression left: (number) right: (number) (number))"
+            )
+            .unwrap_err()
+            .kind,
+            QueryErrorKind::Structure,
+        );
         assert_eq!(
             Query::new(
                 &js_lang,
@@ -1748,6 +1782,26 @@ fn test_query_matches_with_last_child_anchor_after_optional() {
 ",
             &[(0, vec![("def", "#define A\n")])],
         );
+
+        let language = get_language("python");
+        for quantifier in ["?", "*"] {
+            let query = Query::new(
+                &language,
+                &format!(
+                    "(list (call function: (identifier) @function) (string){quantifier} @string .)"
+                ),
+            )
+            .unwrap();
+            assert_query_matches(&language, &query, "[f()]", &[(0, vec![("function", "f")])]);
+            assert_query_matches(&language, &query, "[f(), x]", &[]);
+            assert_query_matches(
+                &language,
+                &query,
+                "[f(), 'x']",
+                &[(0, vec![("function", "f"), ("string", "'x'")])],
+            );
+            assert_query_matches(&language, &query, "[f(), 'x', y]", &[]);
+        }
     });
 }
 
@@ -2931,16 +2985,6 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         )
         .unwrap();
 
-        // Most of the document will fail to parse, resulting in a
-        // large number of tokens that are *direct* children of an
-        // ERROR node.
-        //
-        // These children should still match, unless they are part
-        // of a "non-rooted" pattern, in which there are multiple
-        // top-level sibling nodes. Those patterns should not match
-        // directly inside of an error node, because the contents of
-        // an error node are not syntactically well-structured, so we
-        // would get many spurious matches.
         let source = "
             fn a() {}
 
@@ -2959,14 +3003,26 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(source, None).unwrap();
         let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        while let Some(found) = matches.next() {
+            if found.pattern_index == 0 {
+                let captures = found.captures();
+                let parent = captures[0].node.parent().unwrap();
+                assert_eq!(parent, captures[1].node.parent().unwrap());
+                assert_ne!(parent.kind(), "ERROR");
+            }
+        }
         let matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
         assert_eq!(
             collect_matches(matches, &query, source),
             &[
                 (0, vec![("open", "{"), ("close", "}")]),
+                (0, vec![("open", "{"), ("close", "}")]),
                 (1, vec![("comment", "// comment 1")]),
                 (1, vec![("comment", "/* comment 2 */")]),
                 (1, vec![("comment", "// comment 3")]),
+                (0, vec![("open", "{"), ("close", "}")]),
+                (0, vec![("open", "{"), ("close", "}")]),
             ],
         );
     });
@@ -3636,6 +3692,77 @@ fn test_query_cursor_next_capture_with_point_range() {
             collect_captures(captures, &query, source),
             &[("variable", "foo"),]
         );
+    });
+}
+
+#[test]
+fn test_query_wildcard_parent_with_optional_children() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, child) in [("1", Some("1")), ("true", None)] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for quantifier in ["?", "*"] {
+                let query =
+                    Query::new(&language, &format!("(_ (number){quantifier} @number)")).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_max_start_depth(Some(0));
+                let matches = collect_matches(
+                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                    &query,
+                    source,
+                );
+                let captures = child.map(|text| vec![("number", text)]).unwrap_or_default();
+                assert_eq!(matches, vec![(0, captures)], "{source}: {quantifier}");
+            }
+        }
+    });
+}
+
+#[test]
+fn test_query_wildcard_parent_optional_children_preserve_siblings() {
+    allocations::record(|| {
+        let language = get_language("python");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for (source, expected_captures) in [
+            ("f()", vec![]),
+            ("f(x)", vec![]),
+            ("f();g()", vec![]),
+            ("f('x')", vec!["'x'"]),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let mut nodes = vec![tree.root_node()];
+            let mut named_count = 0;
+            while let Some(node) = nodes.pop() {
+                named_count += usize::from(node.is_named());
+                nodes.extend(node.children(&mut node.walk()));
+            }
+            for quantifier in ["?", "*"] {
+                for (leading, trailing) in [("", ""), (".", ""), ("", "."), (".", ".")] {
+                    let pattern = format!("(_ {leading} (string){quantifier} @child {trailing})");
+                    let query = Query::new(&language, &pattern).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(matches.len(), named_count, "{source}: {pattern}");
+                    assert_eq!(
+                        matches
+                            .iter()
+                            .flat_map(|(_, captures)| captures.iter().map(|(_, text)| *text))
+                            .collect::<Vec<_>>(),
+                        expected_captures,
+                        "{source}: {pattern}",
+                    );
+                }
+            }
+        }
     });
 }
 
@@ -6233,13 +6360,8 @@ fn test_query_alternative_predicate_prefix() {
         )
         .unwrap();
         let source = r#"
-            DEFUN ("identity", Fidentity, Sidentity, 1, 1, 0,
-                   doc: /* Return the argument unchanged.  */
-                   attributes: const)
-              (Lisp_Object arg)
-            {
-              return arg;
-            }
+            DEFUN("identity", Fidentity, Sidentity, 1, 1, 0);
+            OTHER("ignored");
         "#;
         assert_query_matches(
             &language,
@@ -6754,6 +6876,24 @@ fn test_query_is_pattern_non_local() {
             description: "siblings that can occur in a source file",
             pattern: r"((function_definition) (class_definition))",
             language: get_language("python"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby pair in repeated command arguments",
+            pattern: r"((comment)* @doc (pair) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby hash_splat_argument in repeated command arguments",
+            pattern: r"((comment)* @doc (hash_splat_argument) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby block_argument in repeated command arguments",
+            pattern: r"((comment)* @doc (block_argument) @argument)",
+            language: get_language("ruby"),
             is_non_local: true,
         },
         Row {
@@ -8182,6 +8322,48 @@ function foo() {
 }
 
 #[test]
+fn test_query_guarantees_account_for_later_matching_siblings() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for value in [r#""a""#, "1", "true", "null", "[1,2]", "{}"] {
+            let source = format!(r#"{{"k":{value}}}"#);
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for pattern in [
+                "(pair (string) @key (_))",
+                "(pair (_) @key (_))",
+                "(pair (string) @key . (_))",
+                "(pair key: (string) @key value: (_))",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let expected = vec![("key", "\"k\"")];
+                let mut cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source,
+                    ),
+                    vec![(0, expected.clone())],
+                    "matches for {pattern} on {source}",
+                );
+                assert_eq!(
+                    collect_captures(
+                        cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source,
+                    ),
+                    expected,
+                    "captures for {pattern} on {source}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
     allocations::record(|| {
         let language = get_language("json");
@@ -8253,6 +8435,45 @@ fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
                 );
             }
         }
+    });
+}
+
+#[test]
+fn test_query_terminal_wildcard_preserves_parent_capture_publication() {
+    allocations::record(|| {
+        let language = get_language("ruby");
+        let source = "(a)";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let query = Query::new(&language, "(parenthesized_statements _ @child) @parent").unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                (0, vec![("parent", "(a)"), ("child", "(")]),
+                (0, vec![("parent", "(a)"), ("child", "a")]),
+                (0, vec![("parent", "(a)"), ("child", ")")]),
+            ],
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                ("parent", "(a)"),
+                ("child", "("),
+                ("child", "a"),
+                ("child", ")")
+            ],
+        );
     });
 }
 
@@ -8426,14 +8647,13 @@ fn test_query_extra_error_parents_do_not_inherit_aliases() {
         &[(0, vec![("parent", "x=1"), ("child", "=")])],
     );
 
-    // Keep empty-match controls independent of captured-root scheduling.
     for quantifier in ["?", "*"] {
         let query = Query::new(
             &language,
             &format!("(_ (function_definition){quantifier} @child)"),
         )
         .unwrap();
-        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 8]);
+        assert_query_matches(&language, &query, source, &vec![(0, Vec::new()); 6]);
     }
 }
 
