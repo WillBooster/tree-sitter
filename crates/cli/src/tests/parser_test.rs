@@ -177,6 +177,50 @@ fn test_lexer_character_partitions_preserve_token_start_tags() {
 }
 
 #[test]
+fn test_lexer_preserves_lower_precedence_comment_continuations() {
+    let path = fixtures_dir().join("test_grammars/lower_precedence_comment/grammar.js");
+    let grammar = load_grammar_file(&path, None).unwrap();
+    for mut parser in parsers_for_grammar(&grammar) {
+        let prefix = "a { x: red";
+        let mut source = format!("{prefix}; }}\n").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 1;
+        for ending in [" // note\n", ";", " // other\n", ";"] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: prefix.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{}", root.to_sexp());
+            assert_eq!(root.to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(root.byte_range(), fresh.root_node().byte_range());
+            let mut cursor = root.walk();
+            let comment = root
+                .named_children(&mut cursor)
+                .find(|node| node.kind() == "comment");
+            if ending == ";" {
+                assert!(comment.is_none());
+            } else {
+                let comment = comment.unwrap();
+                assert!(comment.is_extra());
+                assert_eq!(comment.utf8_text(&source).unwrap(), ending.trim());
+                assert_eq!(comment.start_byte(), prefix.len() + 1);
+                assert_eq!(comment.end_byte(), prefix.len() + ending.len() - 1);
+            }
+            previous_length = ending.len();
+        }
+    }
+}
+
+#[test]
 fn test_lexer_minimization_preserves_distinct_eof_tokens() {
     let grammar = serde_json::json!({
         "name": "distinct_eof_tokens",
