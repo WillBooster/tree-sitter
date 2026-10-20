@@ -4053,7 +4053,9 @@ fn test_parsing_with_a_timeout() {
             })),
         );
         assert!(tree.is_none());
-        assert!(start_time.elapsed().as_micros() > timeout_micros);
+        let elapsed = start_time.elapsed();
+        assert!(elapsed.as_micros() > timeout_micros);
+        assert!(elapsed < time::Duration::from_secs(1));
     }
 
     let source = format!(" [{}]", ",0".repeat(read_end / 2 + 1));
