@@ -8,7 +8,23 @@ use crate::{
 };
 
 #[test]
-fn test_changed_ranges_cover_external_descendant_boundaries() {
+fn test_incremental_external_boundaries_match_fresh_ranges() {
+    let assert_matches_fresh = |tree: &Tree, fresh: &Tree| {
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        let mut pending = vec![(tree.root_node(), fresh.root_node())];
+        while let Some((actual, expected)) = pending.pop() {
+            assert_eq!(
+                (actual.kind(), actual.range(), actual.child_count()),
+                (expected.kind(), expected.range(), expected.child_count())
+            );
+            for index in 0..actual.child_count() {
+                pending.push((
+                    actual.child(index as u32).unwrap(),
+                    expected.child(index as u32).unwrap(),
+                ));
+            }
+        }
+    };
     let mut parser = Parser::new();
     parser.set_language(&get_language("haskell")).unwrap();
     let source = "\na = do\n  a\n  . a\n";
@@ -26,26 +42,79 @@ fn test_changed_ranges_cover_external_descendant_boundaries() {
         old_end_position: Point::new(4, 0),
         new_end_position: Point::new(4, 2),
     });
-    let new_tree = parser
-        .parse(format!("{source}fN"), Some(&old_tree))
-        .unwrap();
+    let edited = format!("{source}fN");
+    let new_tree = parser.parse(&edited, Some(&old_tree)).unwrap();
+    let fresh = parser.parse(&edited, None).unwrap();
     assert!(!old_tree.root_node().has_error());
     assert!(!new_tree.root_node().has_error());
-    let new_do = new_tree
-        .root_node()
-        .named_descendant_for_byte_range(5, 11)
-        .unwrap();
-    assert_eq!((new_do.kind(), new_do.byte_range()), ("do", 5..11));
-    let ranges: Vec<_> = old_tree.changed_ranges(&new_tree).collect();
+    assert_matches_fresh(&new_tree, &fresh);
     assert!(
-        ranges
-            .iter()
-            .any(|range| range.start_byte <= 11 && range.end_byte >= 14)
-    );
-    assert!(
-        ranges
-            .iter()
+        old_tree
+            .changed_ranges(&new_tree)
             .any(|range| range.start_byte <= source.len() && range.end_byte >= source.len() + 2)
+    );
+}
+
+#[test]
+fn test_changed_ranges_cover_external_descendant_boundaries() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("external_descendant_boundaries"))
+        .unwrap();
+    let source = "(x  )ab";
+    let old_tree = parser.parse(source, None).unwrap();
+    let old_content = old_tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .named_child(0)
+        .unwrap();
+    assert_eq!(
+        (old_content.kind(), old_content.byte_range()),
+        ("content", 1..4)
+    );
+    parser
+        .set_included_ranges(&[
+            Range {
+                start_byte: 0,
+                end_byte: 5,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(0, 5),
+            },
+            Range {
+                start_byte: 6,
+                end_byte: 7,
+                start_point: Point::new(0, 6),
+                end_point: Point::new(0, 7),
+            },
+        ])
+        .unwrap();
+    let new_tree = parser.parse(source, Some(&old_tree)).unwrap();
+    let fresh = parser.parse(source, None).unwrap();
+    assert!(!old_tree.root_node().has_error());
+    assert!(!new_tree.root_node().has_error());
+    assert_eq!(new_tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+    let new_content = new_tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .named_child(0)
+        .unwrap();
+    let fresh_content = fresh
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .named_child(0)
+        .unwrap();
+    assert_eq!(
+        (new_content.kind(), new_content.byte_range()),
+        ("content", 1..2)
+    );
+    assert_eq!(new_content.range(), fresh_content.range());
+    assert!(
+        old_tree
+            .changed_ranges(&new_tree)
+            .any(|range| range.start_byte <= 3 && range.end_byte >= 4)
     );
 }
 
