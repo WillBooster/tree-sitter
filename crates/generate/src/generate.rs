@@ -65,7 +65,7 @@ struct GeneratedParser {
 
 // NOTE: This constant must be kept in sync with the definition of
 // `TREE_SITTER_LANGUAGE_VERSION` in `lib/include/tree_sitter/api.h`.
-const LANGUAGE_VERSION: usize = 0x5742_0005;
+const LANGUAGE_VERSION: usize = 0x5742_0006;
 
 pub const ALLOC_HEADER: &str = include_str!("templates/alloc.h");
 pub const ARRAY_HEADER: &str = include_str!("templates/array.h");
@@ -276,11 +276,10 @@ impl std::fmt::Display for Diagnostic {
                 writeln!(f, "unnecessary conflicts:")?;
                 for (i, conflict) in conflicts.iter().enumerate() {
                     write!(f, "  ")?;
-                    for (j, symbol) in conflict.iter().enumerate() {
-                        write!(f, "`{symbol}`")?;
-                        if j < conflict.len() - 1 {
-                            write!(f, ", ")?;
-                        }
+                    if conflict.is_empty() {
+                        write!(f, "an empty set `[]`")?;
+                    } else {
+                        write!(f, "`{}`", conflict.join("`, `"))?;
                     }
                     if i < conflicts.len() - 1 {
                         writeln!(f)?;
