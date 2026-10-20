@@ -6830,37 +6830,53 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let measure = |parser: &mut Parser, count: usize| {
-            let source = "#a# ".repeat(count);
-            let mut fastest = Duration::MAX;
-            for _ in 0..3 {
-                let started = cpu_time::ThreadTime::now();
-                let mut samples = 0;
-                let elapsed = loop {
-                    let tree = parser.parse(&source, None).unwrap();
-                    let root = tree.root_node();
-                    assert!(!root.has_error());
-                    assert_eq!(root.end_byte(), source.len());
-                    assert_eq!(root.named_child_count(), count);
-                    for index in 0..count {
-                        let comment = root.named_child(index as u32).unwrap();
-                        assert_eq!(comment.kind(), "comment");
-                        assert_eq!(comment.byte_range(), index * 4..index * 4 + 3);
-                    }
-                    samples += 1;
-                    let elapsed = started.elapsed();
-                    if elapsed >= Duration::from_millis(100) {
-                        break elapsed;
-                    }
+        for error_position in ["none", "before", "middle", "after"] {
+            let measure = |parser: &mut Parser, count: usize| {
+                let mut source = "#a# ".repeat(count);
+                let error_offset = match error_position {
+                    "before" => 0,
+                    "middle" => count * 2,
+                    _ => count * 4,
                 };
-                fastest = fastest.min(elapsed / samples);
-            }
-            fastest
-        };
-        measure(&mut parser, 40);
-        let small = measure(&mut parser, 40);
-        let large = measure(&mut parser, 160);
-        assert!(large < small * 32, "small: {small:?}, large: {large:?}");
+                let has_error = error_position != "none";
+                if has_error {
+                    source.insert_str(error_offset, "x ");
+                }
+                let mut fastest = Duration::MAX;
+                for _ in 0..3 {
+                    let started = cpu_time::ThreadTime::now();
+                    let mut samples = 0;
+                    let elapsed = loop {
+                        let tree = parser.parse(&source, None).unwrap();
+                        let root = tree.root_node();
+                        assert_eq!(root.has_error(), has_error);
+                        assert_eq!(root.end_byte(), source.len());
+                        let mut cursor = root.walk();
+                        let comments = root
+                            .named_children(&mut cursor)
+                            .filter(|node| node.kind() == "comment")
+                            .collect::<Vec<_>>();
+                        assert_eq!(comments.len(), count);
+                        for (index, comment) in comments.into_iter().enumerate() {
+                            let start =
+                                index * 4 + usize::from(has_error && index * 4 >= error_offset) * 2;
+                            assert_eq!(comment.byte_range(), start..start + 3);
+                        }
+                        samples += 1;
+                        let elapsed = started.elapsed();
+                        if elapsed >= Duration::from_millis(100) {
+                            break elapsed;
+                        }
+                    };
+                    fastest = fastest.min(elapsed / samples);
+                }
+                fastest
+            };
+            measure(&mut parser, 40);
+            let small = measure(&mut parser, 40);
+            let large = measure(&mut parser, 160);
+            assert!(large < small * 32, "small: {small:?}, large: {large:?}");
+        }
     }
 
     for (index, precedence) in [-1, 0, 1].into_iter().enumerate() {
