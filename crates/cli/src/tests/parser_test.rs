@@ -5018,6 +5018,184 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
 }
 
 #[test]
+fn test_immediate_word_preserves_identifiers_during_keyword_recovery() {
+    let grammar = serde_json::json!({
+        "name": "immediate_word_keyword_recovery",
+        "word": "identifier",
+        "extras": [],
+        "rules": {
+            "source_file": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": ";"},
+                {"type": "STRING", "value": "is"}
+            ]},
+            "identifier": {"type": "IMMEDIATE_TOKEN", "content": {
+                "type": "PATTERN", "value": "[a-z]+"
+            }}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut before = parser.parse(";is", None).unwrap();
+        assert!(!before.root_node().has_error());
+        for source in ["is", "name", ";a", "x"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(root.has_error(), "{source}: {}", root.to_sexp());
+            assert_eq!(root.named_child_count(), 1, "{source}: {}", root.to_sexp());
+            let identifier = root.named_child(0).unwrap();
+            assert_eq!(
+                identifier.kind(),
+                "identifier",
+                "{source}: {}",
+                root.to_sexp()
+            );
+            let start = usize::from(source.starts_with(';'));
+            assert_eq!(identifier.byte_range(), start..source.len());
+        }
+        before.edit(&InputEdit {
+            start_byte: 0,
+            old_end_byte: 1,
+            new_end_byte: 0,
+            start_position: Point::new(0, 0),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 0),
+        });
+        let incremental = parser.parse("is", Some(&before)).unwrap();
+        let fresh = parser.parse("is", None).unwrap();
+        assert_eq!(incremental.root_node().to_sexp(), "(ERROR (identifier))");
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+    }
+}
+
+#[test]
+fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
+    for immediate in [false, true] {
+        for (extra, named) in [("#", false), ("#", true), ("#!", true)] {
+            let comment = if extra == "#" {
+                serde_json::json!({"type": "TOKEN", "content": {"type": "STRING", "value": "#"}})
+            } else {
+                serde_json::json!({"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "comment_text"}
+                ]})
+            };
+            let grammar = serde_json::json!({
+                "name": "immediate_word_named_extra",
+                "word": "identifier",
+                "extras": [if named { serde_json::json!({"type": "SYMBOL", "name": "comment"}) } else { serde_json::json!({"type": "STRING", "value": "#"}) }],
+                "rules": {
+                    "source_file": {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "keyword_use"},
+                        {"type": "SYMBOL", "name": "identifier_use"}
+                    ]},
+                    "keyword_use": {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "do"}, {"type": "STRING", "value": "?"}
+                    ]},
+                    "identifier_use": {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": "?"}
+                    ]},
+                    "identifier": {"type": if immediate { "IMMEDIATE_TOKEN" } else { "TOKEN" },
+                        "content": {"type": "PATTERN", "value": "[a-z]+"}},
+                    "comment": comment,
+                    "comment_text": {"type": "TOKEN", "content": {"type": "STRING", "value": "#!"}}
+                }
+            });
+            for mut parser in parsers_for_grammar(&grammar.to_string()) {
+                for (source, has_error, kind) in [
+                    ("do?".to_string(), false, "keyword_use"),
+                    (format!("{extra}do?"), false, "keyword_use"),
+                    (format!("{extra}name?"), immediate, "identifier_use"),
+                    (format!("{extra}dox?"), immediate, "identifier_use"),
+                ] {
+                    let tree = parser.parse(&source, None).unwrap();
+                    let root = tree.root_node();
+                    assert_eq!(
+                        root.has_error(),
+                        has_error,
+                        "{source:?}, immediate={immediate}: {}",
+                        root.to_sexp()
+                    );
+                    assert_eq!(root.end_byte(), source.len());
+                    if !has_error {
+                        assert_eq!(
+                            root.named_children(&mut root.walk()).last().unwrap().kind(),
+                            kind
+                        );
+                    }
+                    if extra == "#!" && source.starts_with(extra) {
+                        let comment = root.named_child(0).unwrap();
+                        assert_eq!(comment.kind(), "comment");
+                        let text = comment.named_child(0).unwrap();
+                        assert_eq!(text.kind(), "comment_text");
+                        assert_eq!(text.utf8_text(source.as_bytes()).unwrap(), extra);
+                    }
+                }
+                let mut before = parser.parse("do?", None).unwrap();
+                before.edit(&InputEdit {
+                    start_byte: 0,
+                    old_end_byte: 0,
+                    new_end_byte: extra.len(),
+                    start_position: Point::new(0, 0),
+                    old_end_position: Point::new(0, 0),
+                    new_end_position: Point::new(0, extra.len()),
+                });
+                let source = format!("{extra}do?");
+                let incremental = parser.parse(&source, Some(&before)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert!(!incremental.root_node().has_error());
+                assert_eq!(
+                    incremental.root_node().to_sexp(),
+                    fresh.root_node().to_sexp()
+                );
+                assert_eq!(
+                    incremental.root_node().byte_range(),
+                    fresh.root_node().byte_range()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_retained_keyword_after_named_extra_with_immediate_word_stays_unguarded() {
+    let grammar = serde_json::json!({
+        "name": "retained_keyword_after_named_extra",
+        "word": "identifier",
+        "extras": [{"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "keyword_use"},
+                {"type": "SYMBOL", "name": "exclaim"}
+            ]},
+            "keyword_use": {"type": "SEQ", "members": [
+                {"type": "TOKEN", "content": {"type": "PREC", "value": 1,
+                    "content": {"type": "STRING", "value": "iffy"}}},
+                {"type": "SYMBOL", "name": "exclaim"},
+                {"type": "STRING", "value": "?"}
+            ]},
+            "identifier": {"type": "IMMEDIATE_TOKEN", "content": {
+                "type": "PATTERN", "value": "[a-z]+"
+            }},
+            "exclaim": {"type": "PATTERN", "value": "[a-z]+!"},
+            "comment": {"type": "STRING", "value": "#"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected) in [
+            ("iffyname!?", "(source_file (keyword_use (exclaim)))"),
+            (
+                "#iffyname!?",
+                "(source_file (comment) (keyword_use (exclaim)))",
+            ),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected, "{source}");
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
     let grammar = r"
         module.exports = grammar({

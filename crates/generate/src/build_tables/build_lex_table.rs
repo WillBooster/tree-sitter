@@ -29,6 +29,15 @@ pub struct LexTables {
     pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
 }
 
+struct LexStateGroup {
+    tokens: TokenSet,
+    guard_keywords: TokenSet,
+    keywords_after_extra: TokenSet,
+    preserve_fallback: bool,
+    accepts_word: bool,
+    parse_state_ids: Vec<ParseStateId>,
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "all parameters are required for lex table building"
@@ -58,14 +67,17 @@ pub fn build_lex_table(
         LexTable::default()
     };
 
-    let mut parse_state_ids_by_token_set =
-        Vec::<(TokenSet, TokenSet, bool, bool, Vec<ParseStateId>)>::new();
+    let mut parse_state_ids_by_token_set = Vec::<LexStateGroup>::new();
     let starting_chars = token_conflict_map.starting_chars();
     let word_start_chars: CharacterSet = syntax_grammar
         .word_token
         .filter(|token| token.is_terminal())
         .map(|w| starting_chars[w.index as usize].clone())
         .unwrap_or_default();
+    let word_is_immediate = syntax_grammar
+        .word_token
+        .filter(|token| token.is_terminal())
+        .is_some_and(|word| lexical_grammar.variables[word.index as usize].is_immediate);
     let mut continuation_cache: FxHashMap<usize, CharacterSet> = FxHashMap::default();
     let token_precedence: Vec<i32> = {
         let mut prec = vec![0i32; lexical_grammar.variables.len()];
@@ -236,44 +248,58 @@ pub fn build_lex_table(
                 }
             })
             .collect();
+        let keywords_after_extra = if word_is_immediate {
+            keywords
+                .iter()
+                .filter(|keyword| {
+                    has_entry(*keyword)
+                        && !retained.contains(keyword)
+                        && !lexical_grammar.variables[keyword.index as usize].is_immediate
+                })
+                .collect::<TokenSet>()
+        } else {
+            TokenSet::new()
+        };
 
         let has_terminals = tokens.iter().any(Symbol::is_terminal);
         let mut did_merge = false;
         for entry in &mut parse_state_ids_by_token_set {
-            let group_has_terminals = entry.0.iter().any(Symbol::is_terminal);
+            let group_has_terminals = entry.tokens.iter().any(Symbol::is_terminal);
             let terminal_free = !has_terminals || !group_has_terminals;
-            if (terminal_free
-                || (entry.1 == guard_keywords
-                    && entry.2 == preserve_fallback
-                    && entry.3 == accepts_word))
-                && (entry.0 == tokens
+            if entry.keywords_after_extra == keywords_after_extra
+                && (terminal_free
+                    || (entry.guard_keywords == guard_keywords
+                        && entry.preserve_fallback == preserve_fallback
+                        && entry.accepts_word == accepts_word))
+                && (entry.tokens == tokens
                     || ((terminal_free || guard_keywords.is_empty())
                         && merge_token_set(
-                            &mut entry.0,
+                            &mut entry.tokens,
                             &tokens,
                             token_conflict_map,
                             coincident_token_index,
                         )))
             {
                 if !group_has_terminals {
-                    entry.1 = guard_keywords.clone();
-                    entry.2 = preserve_fallback;
-                    entry.3 = accepts_word;
+                    entry.guard_keywords = guard_keywords.clone();
+                    entry.preserve_fallback = preserve_fallback;
+                    entry.accepts_word = accepts_word;
                 }
                 did_merge = true;
-                entry.4.push(i as u32);
+                entry.parse_state_ids.push(i as u32);
                 break;
             }
         }
 
         if !did_merge {
-            parse_state_ids_by_token_set.push((
+            parse_state_ids_by_token_set.push(LexStateGroup {
                 tokens,
                 guard_keywords,
+                keywords_after_extra,
                 preserve_fallback,
                 accepts_word,
-                vec![i as u32],
-            ));
+                parse_state_ids: vec![i as u32],
+            });
         }
         for &symbol in state.terminal_entries.keys() {
             entries_by_symbol[indexer.index(symbol)] = None;
@@ -285,8 +311,14 @@ pub fn build_lex_table(
         .word_token
         .filter(|token| token.is_terminal());
     builder.immediate_keywords = immediate_keywords.clone();
-    for (tokens, guard_keywords, preserve_fallback, accepts_word, parse_state_ids) in
-        parse_state_ids_by_token_set
+    for LexStateGroup {
+        tokens,
+        guard_keywords,
+        keywords_after_extra,
+        preserve_fallback,
+        accepts_word,
+        parse_state_ids,
+    } in parse_state_ids_by_token_set
     {
         let lex_state_id = builder.add_state_for_tokens_with_word_guard(
             &tokens,
@@ -301,10 +333,12 @@ pub fn build_lex_table(
                 !symbol.is_terminal()
                     || !lexical_grammar.variables[symbol.index as usize].is_immediate
             })
+            .chain(keywords_after_extra.iter())
             .collect::<TokenSet>();
         let guards_after_extra = guard_keywords
             .iter()
             .filter(|symbol| !lexical_grammar.variables[symbol.index as usize].is_immediate)
+            .chain(keywords_after_extra.iter())
             .collect::<TokenSet>();
         let accepts_word_after_extra = accepts_word
             && builder
