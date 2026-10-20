@@ -3788,6 +3788,225 @@ fn test_query_matches_with_rooted_and_non_rooted_patterns_outside_cursor_range()
 }
 
 #[test]
+fn test_query_matches_require_actual_roots_to_intersect_interior_ranges() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1, 2]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        for node in [root, root.named_child(0).unwrap()] {
+            for pattern in ["(number)+ @n", "(number)+", "[(number) (string)] @n"] {
+                let query = Query::new(&language, pattern).unwrap();
+                for points in [false, true] {
+                    let mut cursor = QueryCursor::new();
+                    if points {
+                        cursor.set_point_range(Point::new(0, 3)..Point::new(0, 4));
+                    } else {
+                        cursor.set_byte_range(3..4);
+                    }
+                    assert!(
+                        cursor
+                            .matches(&query, node, source.as_bytes())
+                            .next()
+                            .is_none(),
+                        "{pattern}, points={points}, root={}",
+                        node.kind()
+                    );
+                }
+            }
+            for (pattern, expected) in [
+                (
+                    "((number) @left (number) @right)",
+                    vec![(0, vec![("left", "1"), ("right", "2")])],
+                ),
+                ("((number) (number))", vec![(0, vec![])]),
+                ("((number) @left (number)?)", vec![(0, vec![("left", "1")])]),
+                (
+                    "((number)? (number) @right)",
+                    vec![(0, vec![("right", "2")])],
+                ),
+                (
+                    "((number) (number) @right)",
+                    vec![(0, vec![("right", "2")])],
+                ),
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                cursor.set_byte_range(3..4);
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, node, source.as_bytes()),
+                        &query,
+                        source
+                    ),
+                    expected
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn test_query_range_end_bounds_sibling_search_memory() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = format!("[{}]", ["1, 1, 1, \"s\", 1, 1, 1"; 64].join(", "));
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for pattern in ["((number) @a (string))", "((_) @a (string))"] {
+            let query = Query::new(&language, pattern).unwrap();
+            for points in [false, true] {
+                let mut cursor = QueryCursor::new();
+                cursor.set_match_limit(32);
+                if points {
+                    cursor.set_point_range(Point::new(0, 0)..Point::new(0, 2));
+                } else {
+                    cursor.set_byte_range(0..2);
+                }
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source
+                    ),
+                    vec![(0, vec![("a", "1")])],
+                    "{pattern}, points={points}"
+                );
+                assert!(
+                    !cursor.did_exceed_match_limit(),
+                    "{pattern}, points={points}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn test_query_ranges_preserve_uncaptured_sibling_alternatives() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[1,\n \"a\",\n \"b\"]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for node in [tree.root_node(), tree.root_node().named_child(0).unwrap()] {
+            for pattern in [
+                "((number) @n (string)?)",
+                "((number) @n (string)*)",
+                "((number) @n (string)+)",
+                "((number) @n (string) (string)?)",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let mut cursor = QueryCursor::new();
+                for range in [8..10, 11..14] {
+                    for mode in 0..3 {
+                        cursor.set_byte_range(0..source.len());
+                        cursor.set_point_range(Point::new(0, 0)..Point::new(3, 0));
+                        if mode != 1 {
+                            cursor.set_byte_range(range.clone());
+                        }
+                        if mode != 0 {
+                            cursor.set_point_range(Point::new(2, 0)..Point::new(2, 3));
+                        }
+                        assert_eq!(
+                            collect_matches(
+                                cursor.matches(&query, node, source.as_bytes()),
+                                &query,
+                                source
+                            ),
+                            vec![(0, vec![("n", "1")])],
+                            "{pattern}, range={range:?}, mode={mode}, root={}",
+                            node.kind()
+                        );
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn test_query_ranges_preserve_missing_root_at_start() {
+    let language = get_language("c");
+    let source = "int broken = ;";
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let missing = tree
+        .root_node()
+        .named_child(0)
+        .unwrap()
+        .child_by_field_name("declarator")
+        .unwrap()
+        .child_by_field_name("value")
+        .unwrap();
+    assert!(missing.is_missing());
+    let query = Query::new(&language, "(MISSING) @missing").unwrap();
+    for points in [false, true] {
+        let mut cursor = QueryCursor::new();
+        if points {
+            let start = missing.start_position();
+            cursor.set_point_range(start..Point::new(start.row, start.column + 1));
+        } else {
+            cursor.set_byte_range(missing.start_byte()..missing.start_byte() + 1);
+        }
+        let mut matches = cursor.matches(&query, missing, source.as_bytes());
+        let result = matches.next().unwrap();
+        assert_eq!(result.captures().len(), 1);
+        assert_eq!(result.captures()[0].node, missing);
+        assert!(matches.next().is_none());
+    }
+}
+
+#[test]
+fn test_query_ranges_filter_capture_dominance_before_reporting_matches() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let source = "[\"a\", 1, \"b\"]";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let query = Query::new(&language, "((number)? @n (string)* (string))").unwrap();
+        for node in [tree.root_node(), tree.root_node().named_child(0).unwrap()] {
+            let mut cursor = QueryCursor::new();
+            for points in [false, true] {
+                cursor.set_byte_range(0..source.len());
+                cursor.set_point_range(Point::new(0, 0)..Point::new(1, 0));
+                if points {
+                    cursor.set_point_range(Point::new(0, 0)..Point::new(0, 2));
+                } else {
+                    cursor.set_byte_range(0..2);
+                }
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, node, source.as_bytes()),
+                        &query,
+                        source
+                    ),
+                    vec![(0, vec![])],
+                );
+                cursor.set_byte_range(0..source.len());
+                cursor.set_point_range(Point::new(0, 0)..Point::new(1, 0));
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, node, source.as_bytes()),
+                        &query,
+                        source
+                    ),
+                    vec![(0, vec![("n", "1")])],
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_non_rooted_patterns_preserve_matches_spanning_cursor_range() {
     allocations::record(|| {
         let language = get_language("json");
@@ -8762,10 +8981,7 @@ fn test_query_nullable_roots_with_ranges_through_hidden_repetitions() {
                     &query,
                     source,
                 );
-                let mut expected = vec![(0, vec![]); usize::from(nullable)];
-                if pattern.contains('*') || pattern.contains('+') {
-                    expected.push((0, vec![("number", "3"), ("number", "4")]));
-                }
+                let expected = vec![(0, vec![]); usize::from(nullable)];
                 assert_eq!(
                     matches, expected,
                     "{name}: {pattern}, use_points={use_points}"
