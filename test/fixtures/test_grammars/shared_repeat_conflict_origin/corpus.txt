@@ -1,0 +1,20 @@
+==================
+First occurrence
+==================
+Axyk
+---
+(source (first))
+
+==================
+Later occurrence
+==================
+Axxyk
+---
+(source (second))
+
+==================
+Competing reduction
+==================
+Axyz
+---
+(source (third (b)))
