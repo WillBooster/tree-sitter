@@ -49,7 +49,8 @@ typedef struct {
   int precedence;
   int total_precedence;
   uint32_t trimmed_count;
-  bool error_free;
+  uint32_t error_cost;
+  uint32_t total_error_cost;
   uint32_t path;
 } StackIterator;
 
@@ -87,12 +88,14 @@ typedef struct {
   uint32_t first;
   uint32_t last;
   int priority;
+  uint32_t error_cost;
   bool selected;
 } ReductionChoice;
 typedef struct {
   uint32_t path;
   uint32_t length;
   int precedence;
+  uint32_t error_cost;
   uint32_t next;
 } ReductionCandidate;
 typedef Array(ReductionCandidate) ReductionCandidates;
@@ -447,9 +450,10 @@ static void stack__record_reduction(
   ReductionSlots *slots
 ) {
   int priority = iterator->node->dynamic_precedence + iterator->total_precedence;
+  uint32_t error_cost = iterator->node->error_cost + iterator->total_error_cost;
   uint32_t candidate = candidates->size;
   array_push(candidates, ((ReductionCandidate) {
-    iterator->path, iterator->trimmed_count, iterator->precedence, UINT32_MAX
+    iterator->path, iterator->trimmed_count, iterator->precedence, iterator->error_cost, UINT32_MAX
   }));
   if (groups->size * 2 >= slots->size) {
     uint32_t capacity = slots->size ? slots->size * 2 : 16;
@@ -467,12 +471,17 @@ static void stack__record_reduction(
     if (group->node == iterator->node) {
       array_get(candidates, group->last)->next = candidate;
       group->last = candidate;
-      if (priority > group->priority) group->priority = priority;
+      if (error_cost < group->error_cost) {
+        group->error_cost = error_cost;
+        group->priority = priority;
+      } else if (error_cost == group->error_cost && priority > group->priority) {
+        group->priority = priority;
+      }
       return;
     }
     slot = (slot + 1) & (slots->size - 1);
   }
-  array_push(groups, ((ReductionChoice) {iterator->node, candidate, candidate, priority, false}));
+  array_push(groups, ((ReductionChoice) {iterator->node, candidate, candidate, priority, error_cost, false}));
   *array_get(slots, slot) = groups->size;
 }
 
@@ -493,7 +502,7 @@ static StackSliceArray stack__iter(
   array_clear(&self->iterators);
 
   StackHead *head = array_get(&self->heads, version);
-  bool compact = is_ambiguous && self->has_ambiguous_extras && head->node->error_cost == 0;
+  bool compact = is_ambiguous && self->has_ambiguous_extras;
   // The original head pins every borrowed path until the selected arrays retain it.
   uint32_t pop_count = 0;
   bool invalid_path = false;
@@ -506,7 +515,6 @@ static StackSliceArray stack__iter(
     .subtrees = array_new(),
     .subtree_count = 0,
     .is_pending = true,
-    .error_free = true,
     .path = UINT32_MAX,
   };
 
@@ -590,16 +598,24 @@ static StackSliceArray stack__iter(
         next_iterator->node = link.node;
         if (link.subtree.ptr) {
           if (include_subtrees) {
-            if (compact) next_iterator->total_precedence += ts_subtree_dynamic_precedence(link.subtree);
+            if (compact) {
+              next_iterator->total_precedence += ts_subtree_dynamic_precedence(link.subtree);
+              next_iterator->total_error_cost += ts_subtree_error_cost(link.subtree);
+            }
             if (compact && (next_iterator->subtree_count > 0 || !ts_subtree_extra(link.subtree))) {
               next_iterator->precedence += ts_subtree_dynamic_precedence(link.subtree);
-              next_iterator->error_free &= ts_subtree_error_cost(link.subtree) == 0 && !ts_subtree_is_error(link.subtree);
+              uint32_t error_cost = ts_subtree_error_cost(link.subtree);
+              if (ts_subtree_symbol(link.subtree) == ts_builtin_sym_error_repeat) {
+                uint32_t extent_cost = ts_subtree__error_extent_cost(ts_subtree_size(link.subtree));
+                error_cost -= extent_cost;
+                next_iterator->total_error_cost -= extent_cost;
+              }
+              next_iterator->error_cost += error_cost;
               next_iterator->trimmed_count++;
             }
             if (compact) {
               array_push(&paths, ((ReductionPath) {link.subtree, next_iterator->path}));
               next_iterator->path = paths.size - 1;
-              if (!next_iterator->error_free) invalid_path = true;
             } else {
               array_push(&next_iterator->subtrees, link.subtree);
               ts_subtree_retain(link.subtree);
@@ -626,7 +642,10 @@ static StackSliceArray stack__iter(
       uint32_t best = UINT32_MAX;
       for (uint32_t i = 0; i < winners.size; i++) {
         ReductionChoice *group = array_get(&winners, i);
-        if (!group->selected && (best == UINT32_MAX || group->priority > array_get(&winners, best)->priority)) {
+        if (!group->selected && (best == UINT32_MAX ||
+            group->error_cost < array_get(&winners, best)->error_cost ||
+            (group->error_cost == array_get(&winners, best)->error_cost &&
+             group->priority > array_get(&winners, best)->priority))) {
           best = i;
         }
       }
@@ -674,23 +693,28 @@ static SubtreeArray stack__materialize_reduction(
   ReductionCandidate winner = *array_get(candidates, first);
   for (uint32_t i = winner.next; i != UINT32_MAX;) {
     ReductionCandidate candidate = *array_get(candidates, i);
-    bool replace = candidate.precedence > winner.precedence;
-    if (candidate.precedence == winner.precedence) {
+    bool replace;
+    if (candidate.error_cost != winner.error_cost) {
+      replace = candidate.error_cost < winner.error_cost;
+    } else if (candidate.precedence != winner.precedence) {
+      replace = candidate.precedence > winner.precedence;
+    } else if (candidate.error_cost > 0) {
+      replace = true;
+    } else if (candidate.length != winner.length) {
       replace = candidate.length < winner.length;
-      if (candidate.length == winner.length) {
-        uint32_t left = winner.path, right = candidate.path;
-        int comparison = 0;
-        for (uint32_t j = 0; j < winner.length && !comparison; j++) {
-          ReductionPath a = *array_get(paths, left);
-          ReductionPath b = *array_get(paths, right);
-          if (a.subtree.ptr != b.subtree.ptr) {
-            comparison = ts_subtree_compare(a.subtree, b.subtree, self->subtree_pool);
-          }
-          left = a.previous;
-          right = b.previous;
+    } else {
+      uint32_t left = winner.path, right = candidate.path;
+      int comparison = 0;
+      for (uint32_t j = 0; j < winner.length && !comparison; j++) {
+        ReductionPath a = *array_get(paths, left);
+        ReductionPath b = *array_get(paths, right);
+        if (a.subtree.ptr != b.subtree.ptr) {
+          comparison = ts_subtree_compare(a.subtree, b.subtree, self->subtree_pool);
         }
-        replace = comparison > 0;
+        left = a.previous;
+        right = b.previous;
       }
+      replace = comparison > 0;
     }
     if (replace) winner = candidate;
     i = candidate.next;
