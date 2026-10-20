@@ -937,6 +937,16 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
     for (language, source, expected) in [
         (
             "c-sharp",
+            "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
+            vec!["class Following { int Value => 1; }"],
+        ),
+        (
+            "c-sharp",
+            "var r = () => {\nx?o;}\nclass Following { int Value => 1; }",
+            vec!["class Following { int Value => 1; }"],
+        ),
+        (
+            "c-sharp",
             "void b()\n  var z = __refvalue(g, int);\n}",
             vec!["var z = __refvalue(g, int);"],
         ),
