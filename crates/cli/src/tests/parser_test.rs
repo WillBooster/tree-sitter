@@ -10,7 +10,7 @@ use std::{
 
 use tree_sitter::{
     Decode, IncludedRangesError, InputEdit, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
-    ParseState, Parser, Point, Query, QueryErrorKind, Range,
+    ParseState, Parser, Point, Query, QueryErrorKind, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -878,10 +878,7 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
                     deleted_length: previous_length,
                     inserted_text: ending.as_bytes().to_vec(),
                 };
-                perform_edit(&mut tree, &mut source, &edit).unwrap();
-                tree = parser.parse(&source, Some(&tree)).unwrap();
-                let fresh = parser.parse(&source, None).unwrap();
-                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
                 assert_eq!(tree.root_node().has_error(), ending != "> {}");
                 let root = tree.root_node();
                 let mut cursor = root.walk();
@@ -946,7 +943,8 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
         let mut tree = parser.parse(&source, None).unwrap();
         let mut previous_length = 2;
         for ending in ["", ">;", "", ">;"] {
-            perform_edit(
+            edit_and_assert_fresh(
+                &mut parser,
                 &mut tree,
                 &mut source,
                 &Edit {
@@ -954,11 +952,7 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
                     deleted_length: previous_length,
                     inserted_text: ending.as_bytes().to_vec(),
                 },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            );
             assert_eq!(tree.root_node().has_error(), ending.is_empty());
             let root = tree.root_node();
             let mut cursor = tree.walk();
@@ -1092,7 +1086,8 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
         let mut tree = parser.parse(&source, None).unwrap();
         let mut previous_length = 0;
         for prefix in ["\n", "", "\n\n", ""] {
-            perform_edit(
+            edit_and_assert_fresh(
+                &mut parser,
                 &mut tree,
                 &mut source,
                 &Edit {
@@ -1100,11 +1095,7 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
                     deleted_length: previous_length,
                     inserted_text: prefix.as_bytes().to_vec(),
                 },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            );
             let mut cursor = tree.walk();
             let declarations = tree
                 .root_node()
@@ -1138,14 +1129,8 @@ fn test_recovery_reconsiders_errors_after_edits() {
         let mut tree = parser.parse(&source, None).unwrap();
         assert!(tree.root_node().has_error());
         let undo = invert_edit(&source, &edit);
-        perform_edit(&mut tree, &mut source, &edit).unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-        perform_edit(&mut tree, &mut source, &undo).unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
+        edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &undo);
     }
 }
 
@@ -1183,16 +1168,10 @@ fn test_recovery_reconsiders_reused_nodes_across_edits() {
                 inserted_text: inserted_text.as_bytes().to_vec(),
             };
             undos.push(invert_edit(&source, &edit));
-            perform_edit(&mut tree, &mut source, &edit).unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
         }
         for undo in undos.into_iter().rev() {
-            perform_edit(&mut tree, &mut source, &undo).unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &undo);
         }
     }
 }
@@ -1238,7 +1217,8 @@ fn test_recovery_retains_following_declaration_keywords() {
             .iter()
             .take_while(|&&byte| byte == b'\n')
             .count();
-        perform_edit(
+        edit_and_assert_fresh(
+            &mut parser,
             &mut tree,
             &mut source,
             &Edit {
@@ -1246,11 +1226,7 @@ fn test_recovery_retains_following_declaration_keywords() {
                 deleted_length: current_count,
                 inserted_text: vec![b'\n'; newline_count],
             },
-        )
-        .unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        );
         let mut cursor = tree.walk();
         let declarations = tree
             .root_node()
@@ -1288,10 +1264,7 @@ fn test_recovery_preserves_prefixes_in_statement_lists() {
                         b" implements A".to_vec()
                     },
                 };
-                perform_edit(&mut tree, &mut source, &edit).unwrap();
-                tree = parser.parse(&source, Some(&tree)).unwrap();
-                let fresh = parser.parse(&source, None).unwrap();
-                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
                 let root = tree.root_node();
                 let mut cursor = root.walk();
                 let declarations = root
@@ -1310,6 +1283,13 @@ fn test_recovery_preserves_prefixes_in_statement_lists() {
             }
         }
     }
+}
+
+fn edit_and_assert_fresh(parser: &mut Parser, tree: &mut Tree, source: &mut Vec<u8>, edit: &Edit) {
+    perform_edit(tree, source, edit).unwrap();
+    *tree = parser.parse(&*source, Some(tree)).unwrap();
+    let fresh = parser.parse(&*source, None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
 }
 
 #[test]
