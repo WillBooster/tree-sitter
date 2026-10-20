@@ -130,6 +130,7 @@ typedef struct {
   bool is_keyword : 1;
   bool first_leaf_is_keyword : 1;
   bool trailing_extra : 1;
+  bool has_ambiguous_extra : 1;
 
   union {
     // Non-terminal subtrees (`child_count > 0`)
@@ -218,6 +219,7 @@ Subtree ts_subtree_new_missing_leaf(
   const TSLanguage *language
 );
 MutableSubtree ts_subtree_make_mut(SubtreePool *pool, Subtree self);
+MutableSubtree ts_subtree_make_heap_mut(SubtreePool *pool, Subtree self);
 void ts_subtree_retain(Subtree self);
 void ts_subtree_release(SubtreePool *pool, Subtree self);
 int ts_subtree_compare(Subtree left, Subtree right, SubtreePool *pool);
@@ -344,6 +346,13 @@ static inline uint32_t ts_subtree_visible_child_count(Subtree self) {
   } else {
     return 0;
   }
+}
+
+static inline uint32_t ts_subtree__error_extent_cost(Length size) {
+  return
+    ERROR_COST_PER_RECOVERY +
+    ERROR_COST_PER_SKIPPED_CHAR * size.bytes +
+    ERROR_COST_PER_SKIPPED_LINE * size.extent.row;
 }
 
 static inline uint32_t ts_subtree_error_cost(Subtree self) {

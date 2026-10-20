@@ -27,6 +27,7 @@ pub enum ParseAction {
         child_count: u16,
         dynamic_precedence: i32,
         production_id: u16,
+        is_extra: bool,
     },
 }
 

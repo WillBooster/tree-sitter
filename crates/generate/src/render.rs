@@ -1316,6 +1316,18 @@ impl Generator {
     }
 
     fn add_lex_function(&mut self, name: &str, lex_table: LexTable) {
+        if lex_table
+            .states
+            .iter()
+            .all(|state| state.accept_action.is_none() && state.fallback_accept.is_none())
+        {
+            add_line!(
+                self,
+                "static bool {name}(TSLexer *lexer, TSStateId state) {{ (void)lexer; (void)state; return false; }}"
+            );
+            add_line!(self, "");
+            return;
+        }
         let has_fallback = lex_table
             .states
             .iter()
@@ -2676,11 +2688,12 @@ impl Generator {
                         child_count,
                         dynamic_precedence,
                         production_id,
-                        ..
+                        is_extra,
                     } => {
+                        let action = if is_extra { "REDUCE_EXTRA" } else { "REDUCE" };
                         add!(
                             self,
-                            "REDUCE({}, {child_count}, {dynamic_precedence}, {production_id})",
+                            "{action}({}, {child_count}, {dynamic_precedence}, {production_id})",
                             self.symbol_ids[&symbol]
                         );
                     }

@@ -453,6 +453,7 @@ impl<'a> ParseItemSetBuilder<'a> {
                         keys: key_map.keys_for(prod_id),
                         step_index: 0,
                         has_preceding_inherited_fields: false,
+                        is_extra_root: false,
                     };
 
                     if let Some(ids) = inlines.inlined_prod_ids(item.prod_id, item.step_index) {

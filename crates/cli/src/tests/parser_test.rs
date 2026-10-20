@@ -31,6 +31,127 @@ use crate::{
 };
 
 #[test]
+fn test_reserved_named_tokens_shared_with_inline_rules() {
+    let grammar = r"
+        module.exports = grammar({
+            name: 'reserved_shared_token',
+            word: $ => $.identifier,
+            reserved: { words: $ => [$.keyword] },
+            rules: {
+                source_file: $ => seq(reserved('words', TOKEN('if')), $.identifier),
+                keyword: _ => TOKEN('if'),
+                identifier: _ => /[a-z]+/,
+            },
+        });
+    ";
+    let directory = tempfile::Builder::new()
+        .prefix("reserved-shared-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path().join("grammar.js");
+    for wrapper in ["token", "token.immediate", "token.nonkeyword"] {
+        for keyword in [
+            "keyword: _ => TOKEN('if')",
+            "keyword: $ => $.shared, shared: _ => TOKEN('if')",
+            "keyword: $ => $.first, first: $ => $.second, second: $ => $.shared, shared: _ => TOKEN('if')",
+        ] {
+            std::fs::write(
+                &path,
+                grammar
+                    .replace("keyword: _ => TOKEN('if')", keyword)
+                    .replace("TOKEN", wrapper),
+            )
+            .unwrap();
+            let json = load_grammar_file(&path, None).unwrap();
+            for mut parser in parsers_for_grammar(&json) {
+                let source = "if name";
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{wrapper}: {}", root.to_sexp());
+                assert_eq!(root.to_sexp(), "(source_file (identifier))");
+                assert_eq!(root.byte_range(), 0..source.len());
+                assert_eq!(root.named_child(0).unwrap().byte_range(), 3..7);
+                let reserved = parser.parse("if if", None).unwrap();
+                assert!(
+                    reserved.root_node().has_error(),
+                    "{wrapper}: {}",
+                    reserved.root_node().to_sexp()
+                );
+            }
+        }
+    }
+    for (keyword, expected_error) in [
+        (
+            "keyword: _ => seq('if', 'then')",
+            "Reserved word 'keyword' must be a token",
+        ),
+        (
+            "keyword: $ => $.shared, shared: _ => seq('if', 'then')",
+            "Reserved word 'keyword' must be a token",
+        ),
+        (
+            "keyword: $ => $.keyword",
+            "Reserved word 'keyword' must be a token",
+        ),
+        (
+            "keyword: $ => $.shared, shared: $ => $.keyword",
+            "Grammar contains an indirectly recursive rule",
+        ),
+    ] {
+        let invalid = grammar
+            .replace("keyword: _ => TOKEN('if')", keyword)
+            .replace("TOKEN", "token");
+        std::fs::write(&path, invalid).unwrap();
+        let json = load_grammar_file(&path, None).unwrap();
+        let error = generate_parser(&json).unwrap_err().to_string();
+        assert!(error.contains(expected_error), "{keyword}: {error}");
+    }
+}
+
+#[test]
+fn test_identifier_only_grammar_compiles_without_c_warnings() {
+    let grammar = serde_json::json!({
+        "name": "identifier_without_keywords",
+        "word": "identifier",
+        "extras": [{"type": "PATTERN", "value": "\\s"}],
+        "rules": {
+            "source_file": {"type": "SYMBOL", "name": "identifier"},
+            "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("empty-keywords-")
+        .tempdir_in(super::helpers::fixtures::scratch_dir())
+        .unwrap();
+    let path = directory.path();
+    std::fs::create_dir(path.join("tree_sitter")).unwrap();
+    std::fs::write(path.join("parser.c"), code).unwrap();
+    std::fs::write(
+        path.join("strict_parser.c"),
+        "#if defined(_MSC_VER)\n#pragma warning(error: 4100 4102)\n#else\n#pragma GCC diagnostic error \"-Wunused-label\"\n#endif\n#include \"parser.c\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        path.join("tree_sitter/parser.h"),
+        tree_sitter::PARSER_HEADER,
+    )
+    .unwrap();
+    let mut config = tree_sitter_loader::CompileConfig::new(path, None, None);
+    config.name = name;
+    config.parser_path = path.join("strict_parser.c");
+    let loader = tree_sitter_loader::Loader::with_parser_lib_path(path.to_path_buf());
+    let language = loader.load_language_at_path_with_name(config).unwrap();
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = " identifier ";
+    let tree = parser.parse(source, None).unwrap();
+    assert!(!tree.root_node().has_error());
+    assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
+    assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 1..11);
+}
+
+#[test]
 fn test_lexer_character_partitions_preserve_token_start_tags() {
     let grammar = serde_json::json!({
         "name": "partitioned_token_starts",
@@ -518,15 +639,12 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 
 #[test]
 fn test_missing_token_recovery_preserves_following_declarations() {
-    let alias_with_error = ("type_alias_declaration", true);
     let (alias, export) = (
         ("type_alias_declaration", false),
         ("export_statement", false),
     );
     let for_in = ("for_in_statement", false);
-    let exports = [export; 7];
-    // Recovery absorbs the seven exports right after `export[` into the erroneous statement; the
-    // seven exports after the blank line must stay separate.
+    let exports = [export; 14];
     let after_invalid_export = [
         &[export, export, ("expression_statement", true)][..],
         &exports,
@@ -536,12 +654,12 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         (
             "typescript/typescript",
             "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[alias_with_error, export, alias][..],
+            &[("expression_statement", true), export, alias][..],
         ),
         (
             "typescript/typescript",
             "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[alias_with_error, export, alias],
+            &[("type_alias_declaration", true), export, alias],
         ),
         (
             "typescript/typescript",
@@ -556,6 +674,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
             "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
             &[
                 ("ERROR", true),
+                ("expression_statement", false),
                 for_in,
                 for_in,
                 for_in,
@@ -664,6 +783,495 @@ fn test_incremental_parse_restores_missing_opening_delimiter() {
     perform_edit(&mut tree, &mut source, &undo).unwrap();
     let restored = parser.parse(&source, Some(&tree)).unwrap();
     assert_eq!(restored.root_node().to_sexp(), expected);
+}
+
+#[test]
+fn test_recovery_respects_completed_prefixes() {
+    for (language, source, kind, text) in [
+        (
+            "go",
+            "\npackage ma>  ByfX5iEk\nconst (\n  zero = 0\n  one = 1\n)\n",
+            "const_declaration",
+            "const (\n  zero = 0\n  one = 1\n)",
+        ),
+        ("c", "> T x; bad\n", "declaration", "T x;"),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let declaration = root
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == kind)
+            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+        assert_eq!(declaration.utf8_text(source.as_bytes()).unwrap(), text);
+        assert!(!declaration.has_error());
+    }
+}
+
+#[test]
+fn test_recovery_isolates_malformed_prefix_from_following_struct() {
+    for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language("c")).unwrap();
+        let following = "struct b c;";
+        let mut source = format!("{before}{following}{after}").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 0;
+        for prefix in [
+            "class C implements A, B<C\n",
+            "",
+            "class C implements A, B<C\n",
+            "",
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: before.len(),
+                    deleted_length: previous_length,
+                    inserted_text: prefix.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let declarations = root
+                .named_children(&mut cursor)
+                .filter(|node| !node.has_error())
+                .map(|node| (node.kind(), node.utf8_text(&source).unwrap()))
+                .collect::<Vec<_>>();
+            let mut expected = Vec::new();
+            if !before.is_empty() {
+                expected.push(("declaration", before.trim()));
+            }
+            expected.push(("declaration", following));
+            if !after.is_empty() {
+                expected.push(("declaration", after.trim()));
+            }
+            assert_eq!(declarations, expected, "{}", root.to_sexp());
+            previous_length = prefix.len();
+        }
+    }
+}
+
+#[test]
+fn test_recovery_preserves_declarations_after_incomplete_generics() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for following in [
+            "export function f() {}\nconst sentinel = 1;",
+            "function f() {}\nconst sentinel = 1;",
+            "const sentinel = 1;",
+        ] {
+            let prefix = "class C implements A, number<B";
+            let mut source = format!("{prefix}> {{}}\n{following}").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let mut previous_length = 4;
+            for ending in [";", "> {}", "", "> {}", " {}", "> {}"] {
+                let edit = Edit {
+                    position: prefix.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                };
+                perform_edit(&mut tree, &mut source, &edit).unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(tree.root_node().has_error(), ending != "> {}");
+                let root = tree.root_node();
+                let mut cursor = root.walk();
+                let declarations = root
+                    .named_children(&mut cursor)
+                    .filter(|node| {
+                        matches!(
+                            node.kind(),
+                            "export_statement" | "function_declaration" | "lexical_declaration"
+                        )
+                    })
+                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    declarations,
+                    following
+                        .lines()
+                        .map(|line| (line, false))
+                        .collect::<Vec<_>>(),
+                    "{}",
+                    root.to_sexp()
+                );
+                previous_length = ending.len();
+            }
+        }
+        let source = "class C \n implements number<B; \n export function f() {} const x = export";
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let exported = root
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == "export_statement")
+            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+        assert_eq!(
+            exported.utf8_text(source.as_bytes()).unwrap(),
+            "export function f() {}"
+        );
+        assert!(!exported.has_error());
+
+        for name in ["const", "function", "export"] {
+            let source = format!("class C implements Box<{name}> {{}}");
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_language("typescript/typescript"))
+        .unwrap();
+    for prefix in ["", "export = Linter;\n", "const first = 0;\n"] {
+        let annotation = format!("{prefix}const a: Foo<Bar");
+        let mut source =
+            format!("{annotation}>;\nexport = {{}};\nconst sentinel = 1;").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 2;
+        for ending in ["", ">;", "", ">;"] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: annotation.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().has_error(), ending.is_empty());
+            let root = tree.root_node();
+            let mut cursor = tree.walk();
+            let following = root
+                .named_children(&mut cursor)
+                .filter(|node| node.start_byte() > annotation.len())
+                .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                following,
+                [("export = {};", false), ("const sentinel = 1;", false)]
+            );
+            previous_length = ending.len();
+        }
+    }
+}
+
+#[test]
+fn test_recovery_keeps_declarations_after_restarting_an_error() {
+    for (language, source, expected) in [
+        (
+            "c-sharp",
+            "void b()\n  var z = __refvalue(g, int);\n}",
+            vec!["var z = __refvalue(g, int);"],
+        ),
+        (
+            "c-sharp",
+            "int b()\n  var z = F(g, 1);\n}",
+            vec!["var z = F(g, 1);"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\nclass Example { }",
+            vec!["class Example { }"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\n[B]\nusing System.Linq;",
+            vec!["using System.Linq;"],
+        ),
+        (
+            "c-sharp",
+            "class Before {}\nclass C implements A, number<B\n[A]\nnamespace Example { }",
+            vec!["class Before {}", "namespace Example { }"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
+            vec!["interface I2 {}", "declare function g(): void;"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nlet v = 1;\nexport default function q() {}\nnamespace M {}",
+            vec!["export default function q() {}", "namespace M {}"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
+            vec![
+                "using System.Linq;",
+                "namespace M { }",
+                "public enum F { A, B }",
+            ],
+        ),
+        (
+            "javascript",
+            "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
+            vec!["export const k = 2;"],
+        ),
+        (
+            "javascript",
+            "class C extends B<\nexport default function q() {}",
+            vec!["function q() {}"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nexport default class A {}\nexport function f() {}\nconst sentinel = 1;",
+            vec![
+                "class A {}",
+                "export function f() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let mut source = source.as_bytes().to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 0;
+        for prefix in ["\n", "", "\n\n", ""] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length: previous_length,
+                    inserted_text: prefix.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let mut cursor = tree.walk();
+            let declarations = tree
+                .root_node()
+                .named_children(&mut cursor)
+                .filter(|node| !node.has_error())
+                .map(|node| node.utf8_text(&source).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(declarations, expected);
+            previous_length = prefix.len();
+        }
+    }
+}
+
+#[test]
+fn test_recovery_reconsiders_errors_after_edits() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for edit in [
+        Edit {
+            position: 9,
+            deleted_length: 2,
+            inserted_text: Vec::new(),
+        },
+        Edit {
+            position: 16,
+            deleted_length: 0,
+            inserted_text: b";".to_vec(),
+        },
+    ] {
+        let mut source = b"export default grammar({s:{,),)x}});".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(tree.root_node().has_error());
+        let undo = invert_edit(&source, &edit);
+        perform_edit(&mut tree, &mut source, &edit).unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        perform_edit(&mut tree, &mut source, &undo).unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+    }
+}
+
+#[test]
+fn test_recovery_reconsiders_reused_nodes_across_edits() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for (initial_source, edits) in [
+        (
+            "import t from\"t\";\nimport\"\"\n{r={t ult:e} =w;arse)\n",
+            [
+                (32, 4, ""),
+                (14, 3, "type "),
+                (43, 1, "interface "),
+                (46, 2, ","),
+            ]
+            .as_slice(),
+        ),
+        (
+            "({e:''>['',pe: $=>[+/,\n//\na;\n",
+            [(12, 3, ">"), (16, 0, "interface "), (11, 0, "=")].as_slice(),
+        ),
+        (
+            "({e:'',,:s$=p $ =>[+/,\n//\nd:};\n",
+            [(13, 3, ">"), (16, 0, "interface "), (10, 0, "=")].as_slice(),
+        ),
+    ] {
+        let mut source = initial_source.as_bytes().to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut undos = Vec::new();
+        for &(position, deleted_length, inserted_text) in edits {
+            let edit = Edit {
+                position,
+                deleted_length,
+                inserted_text: inserted_text.as_bytes().to_vec(),
+            };
+            undos.push(invert_edit(&source, &edit));
+            perform_edit(&mut tree, &mut source, &edit).unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        }
+        for undo in undos.into_iter().rev() {
+            perform_edit(&mut tree, &mut source, &undo).unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        }
+    }
+}
+
+#[test]
+fn test_recovery_keeps_visibility_after_missing_token() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("rust")).unwrap();
+    let prefix = "fn f() {}\n\nimpl<T> A for B<T>\n    where for<'a> D<T>: E<'a>,\nstruct S<T> { x: T\n{\n}\n\n";
+    let declaration = "pub trait A<B> where B: C, {}";
+    for suffix in ["", "\nfn g() {}", "\nstruct Following { value: i32 }"] {
+        let source = format!("{prefix}{declaration}{suffix}");
+        let tree = parser.parse(&source, None).unwrap();
+        let mut cursor = tree.walk();
+        let item = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == "trait_item")
+            .unwrap();
+        assert!(!item.has_error());
+        assert_eq!(item.utf8_text(source.as_bytes()).unwrap(), declaration);
+        if !suffix.is_empty() {
+            let root = tree.root_node();
+            let following = root.named_children(&mut cursor).last().unwrap();
+            assert!(!following.has_error());
+            assert_eq!(
+                following.utf8_text(source.as_bytes()).unwrap(),
+                suffix.trim()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_retains_following_declaration_keywords() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    let prefix = "typedef int my_int;\n\nint f(int a";
+    let mut source = format!("{prefix}\n\ntypedef unsigned long ulong_t;\n").into_bytes();
+    let mut tree = parser.parse(&source, None).unwrap();
+    for newline_count in [2, 1, 3, 2] {
+        let current_count = source[prefix.len()..]
+            .iter()
+            .take_while(|&&byte| byte == b'\n')
+            .count();
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: prefix.len(),
+                deleted_length: current_count,
+                inserted_text: vec![b'\n'; newline_count],
+            },
+        )
+        .unwrap();
+        tree = parser.parse(&source, Some(&tree)).unwrap();
+        let fresh = parser.parse(&source, None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        let mut cursor = tree.walk();
+        let declarations = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() == "type_definition" && !node.has_error())
+            .map(|node| node.utf8_text(&source).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declarations,
+            ["typedef int my_int;", "typedef unsigned long ulong_t;"]
+        );
+    }
+}
+
+#[test]
+fn test_recovery_preserves_prefixes_in_statement_lists() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for prefix in ["function f() {}", "const a = 1;"] {
+            let before_edit = format!("{prefix}\nnumber<B;\nclass E");
+            let mut source =
+                format!("{before_edit} implements A {{}}\nconst sentinel = 1;").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            for remove in [true, false, true, false] {
+                let edit = Edit {
+                    position: before_edit.len(),
+                    deleted_length: if remove { " implements A".len() } else { 0 },
+                    inserted_text: if remove {
+                        Vec::new()
+                    } else {
+                        b" implements A".to_vec()
+                    },
+                };
+                perform_edit(&mut tree, &mut source, &edit).unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                let root = tree.root_node();
+                let mut cursor = root.walk();
+                let declarations = root
+                    .named_children(&mut cursor)
+                    .filter(|node| {
+                        matches!(node.kind(), "function_declaration" | "lexical_declaration")
+                    })
+                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    declarations,
+                    [(prefix, false), ("const sentinel = 1;", false)],
+                    "{}",
+                    root.to_sexp()
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -3357,60 +3965,42 @@ fn test_parsing_cancelled_by_another_thread() {
 // Timeouts
 
 #[test]
-#[retry(10)]
 fn test_parsing_with_a_timeout() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
+    let mut read_end = 0;
+    let mut read = |offset: usize, _| {
+        let chunk = match offset {
+            0 => b" [".as_slice(),
+            1 => b"[".as_slice(),
+            _ if offset.is_multiple_of(2) => b",0".as_slice(),
+            _ => b"0,".as_slice(),
+        };
+        read_end = read_end.max(offset + chunk.len());
+        chunk
+    };
 
-    // Parse an infinitely-long array, but pause after 1ms of processing.
-    let start_time = time::Instant::now();
-    let tree = parser.parse_with_options(
-        &mut |offset, _| {
-            if offset == 0 { b" [" } else { b",0" }
-        },
-        None,
-        Some(ParseOptions::new().progress_callback(&mut |_| {
-            if start_time.elapsed().as_micros() > 1000 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })),
-    );
-    assert!(tree.is_none());
-    assert!(start_time.elapsed().as_micros() < 2000);
-
-    // Continue parsing, but pause after 1 ms of processing.
-    let start_time = time::Instant::now();
-    let tree = parser.parse_with_options(
-        &mut |offset, _| {
-            if offset == 0 { b" [" } else { b",0" }
-        },
-        None,
-        Some(ParseOptions::new().progress_callback(&mut |_| {
-            if start_time.elapsed().as_micros() > 5000 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })),
-    );
-    assert!(tree.is_none());
-    assert!(start_time.elapsed().as_micros() > 100);
-    assert!(start_time.elapsed().as_micros() < 10000);
-
-    // Finish parsing
-    let tree = parser
-        .parse_with_options(
-            &mut |offset, _| match offset {
-                5001.. => "".as_bytes(),
-                5000 => "]".as_bytes(),
-                _ => ",0".as_bytes(),
-            },
+    for timeout_micros in [1000, 5000] {
+        let start_time = time::Instant::now();
+        let tree = parser.parse_with_options(
+            &mut read,
             None,
-            None,
-        )
-        .unwrap();
+            Some(ParseOptions::new().progress_callback(&mut |_| {
+                if start_time.elapsed().as_micros() > timeout_micros {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })),
+        );
+        assert!(tree.is_none());
+        assert!(start_time.elapsed().as_micros() > timeout_micros);
+    }
+
+    let source = format!(" [{}]", ",0".repeat(read_end / 2 + 1));
+    let tree = parser.parse(source.as_bytes(), None).unwrap();
+    let fresh = parser.parse(source.as_bytes(), None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
     assert_eq!(tree.root_node().child(0).unwrap().kind(), "array");
 }
 
@@ -4882,6 +5472,146 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
                     assert_eq!(root.end_byte(), source.len());
                     assert_eq!(root.named_child(0).unwrap().kind(), kind, "{source}");
                 }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_immediate_word_preserves_identifiers_during_keyword_recovery() {
+    let grammar = serde_json::json!({
+        "name": "immediate_word_keyword_recovery",
+        "word": "identifier",
+        "extras": [],
+        "rules": {
+            "source_file": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": ";"},
+                {"type": "STRING", "value": "is"}
+            ]},
+            "identifier": {"type": "IMMEDIATE_TOKEN", "content": {
+                "type": "PATTERN", "value": "[a-z]+"
+            }}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut before = parser.parse(";is", None).unwrap();
+        assert!(!before.root_node().has_error());
+        for source in ["is", "name", ";a", "x"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(root.has_error(), "{source}: {}", root.to_sexp());
+            assert_eq!(root.named_child_count(), 1, "{source}: {}", root.to_sexp());
+            let identifier = root.named_child(0).unwrap();
+            assert_eq!(
+                identifier.kind(),
+                "identifier",
+                "{source}: {}",
+                root.to_sexp()
+            );
+            let start = usize::from(source.starts_with(';'));
+            assert_eq!(identifier.byte_range(), start..source.len());
+        }
+        before.edit(&InputEdit {
+            start_byte: 0,
+            old_end_byte: 1,
+            new_end_byte: 0,
+            start_position: Point::new(0, 0),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 0),
+        });
+        let incremental = parser.parse("is", Some(&before)).unwrap();
+        let fresh = parser.parse("is", None).unwrap();
+        assert_eq!(incremental.root_node().to_sexp(), "(ERROR (identifier))");
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+    }
+}
+
+#[test]
+fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
+    for immediate in [false, true] {
+        for (extra, named) in [("#", false), ("#", true), ("#!", true)] {
+            let comment = if extra == "#" {
+                serde_json::json!({"type": "TOKEN", "content": {"type": "STRING", "value": "#"}})
+            } else {
+                serde_json::json!({"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "comment_text"}
+                ]})
+            };
+            let grammar = serde_json::json!({
+                "name": "immediate_word_named_extra",
+                "word": "identifier",
+                "extras": [if named { serde_json::json!({"type": "SYMBOL", "name": "comment"}) } else { serde_json::json!({"type": "STRING", "value": "#"}) }],
+                "rules": {
+                    "source_file": {"type": "CHOICE", "members": [
+                        {"type": "SYMBOL", "name": "keyword_use"},
+                        {"type": "SYMBOL", "name": "identifier_use"}
+                    ]},
+                    "keyword_use": {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "do"}, {"type": "STRING", "value": "?"}
+                    ]},
+                    "identifier_use": {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": "?"}
+                    ]},
+                    "identifier": {"type": if immediate { "IMMEDIATE_TOKEN" } else { "TOKEN" },
+                        "content": {"type": "PATTERN", "value": "[a-z]+"}},
+                    "comment": comment,
+                    "comment_text": {"type": "TOKEN", "content": {"type": "STRING", "value": "#!"}}
+                }
+            });
+            for mut parser in parsers_for_grammar(&grammar.to_string()) {
+                for (source, has_error, kind) in [
+                    ("do?".to_string(), false, "keyword_use"),
+                    (format!("{extra}do?"), false, "keyword_use"),
+                    (format!("{extra}name?"), immediate, "identifier_use"),
+                    (format!("{extra}dox?"), immediate, "identifier_use"),
+                ] {
+                    let tree = parser.parse(&source, None).unwrap();
+                    let root = tree.root_node();
+                    assert_eq!(
+                        root.has_error(),
+                        has_error,
+                        "{source:?}, immediate={immediate}: {}",
+                        root.to_sexp()
+                    );
+                    assert_eq!(root.end_byte(), source.len());
+                    if !has_error {
+                        assert_eq!(
+                            root.named_children(&mut root.walk()).last().unwrap().kind(),
+                            kind
+                        );
+                    }
+                    if extra == "#!" && source.starts_with(extra) {
+                        let comment = root.named_child(0).unwrap();
+                        assert_eq!(comment.kind(), "comment");
+                        let text = comment.named_child(0).unwrap();
+                        assert_eq!(text.kind(), "comment_text");
+                        assert_eq!(text.utf8_text(source.as_bytes()).unwrap(), extra);
+                    }
+                }
+                let mut before = parser.parse("do?", None).unwrap();
+                before.edit(&InputEdit {
+                    start_byte: 0,
+                    old_end_byte: 0,
+                    new_end_byte: extra.len(),
+                    start_position: Point::new(0, 0),
+                    old_end_position: Point::new(0, 0),
+                    new_end_position: Point::new(0, extra.len()),
+                });
+                let source = format!("{extra}do?");
+                let incremental = parser.parse(&source, Some(&before)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert!(!incremental.root_node().has_error());
+                assert_eq!(
+                    incremental.root_node().to_sexp(),
+                    fresh.root_node().to_sexp()
+                );
+                assert_eq!(
+                    incremental.root_node().byte_range(),
+                    fresh.root_node().byte_range()
+                );
             }
         }
     }
@@ -6639,6 +7369,437 @@ fn test_grammar_that_should_hang_and_not_segfault() {
         Err(mpsc::RecvTimeoutError::Timeout) => {} // Expected
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             panic!("The test thread disconnected unexpectedly")
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_preserves_line_before_error() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery_line",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for source in ["l#a#\nx", "l#a#x"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(source_file (line (comment)) (ERROR))",
+                "{source}"
+            );
+            assert_eq!(tree.root_node().byte_range(), 0..source.len());
+            assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..4);
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_recovers_before_external_eof() {
+    let languages = [
+        get_test_fixture_language("required_extra_eof_recovery"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("required_extra_eof_recovery"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let mut source = "a";
+        let mut tree = parser.parse(source, None).unwrap();
+        for next in ["a", "ab", "a", "abq", "a"] {
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: source.len(),
+                new_end_byte: next.len(),
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, source.len()),
+                new_end_position: Point::new(0, next.len()),
+            });
+            source = next;
+            tree = parser.parse(source, Some(&tree)).unwrap();
+            let fresh = parser.parse(source, None).unwrap();
+            let actual = tree.root_node().to_sexp();
+            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
+            let expected = match source {
+                "a" => "(source_file (prefix (MISSING \"b\")) (comment (marker)))",
+                "ab" => "(source_file (prefix) (comment (marker)))",
+                _ => "(source_file (comment (marker)))",
+            };
+            assert_eq!(actual, expected, "{source}");
+            assert_eq!(tree.root_node().has_error(), source == "a");
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
+fn test_required_nonterminal_extra_recovers_missing_start() {
+    let grammar = serde_json::json!({
+        "name": "required_extra_recovery_missing_start",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "STRING", "value": "x"},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut tree = parser.parse("lx#\n", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(source_file (line (comment (MISSING \"#\"))))"
+        );
+        let comment = tree
+            .root_node()
+            .named_child(0)
+            .unwrap()
+            .named_child(0)
+            .unwrap();
+        assert!(!comment.is_extra());
+        let missing = comment.child(0).unwrap();
+        assert!(missing.is_missing());
+        assert_eq!(missing.byte_range(), 1..1);
+        tree.edit(&InputEdit {
+            start_byte: 1,
+            old_end_byte: 1,
+            new_end_byte: 2,
+            start_position: Point::new(0, 1),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 2),
+        });
+        let repaired = parser.parse("l#x#\n", Some(&tree)).unwrap();
+        let fresh = parser.parse("l#x#\n", None).unwrap();
+        assert!(!repaired.root_node().has_error());
+        assert_eq!(repaired.root_node().to_sexp(), fresh.root_node().to_sexp());
+        assert_eq!(repaired.root_node().byte_range(), 0..5);
+    }
+}
+
+#[test]
+fn test_adjacent_required_and_extra_comments_scale_quadratically() {
+    let grammar = serde_json::json!({
+        "name": "adjacent_comments",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "SYMBOL", "name": "line"}
+            ]}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for error_position in ["none", "before", "middle", "after"] {
+            let measure = |parser: &mut Parser, count: usize| {
+                let mut source = "#a# ".repeat(count);
+                let error_offset = match error_position {
+                    "before" => 0,
+                    "middle" => count * 2,
+                    _ => count * 4,
+                };
+                let has_error = error_position != "none";
+                if has_error {
+                    source.insert_str(error_offset, "x ");
+                }
+                let mut fastest = Duration::MAX;
+                for _ in 0..3 {
+                    let started = cpu_time::ThreadTime::now();
+                    let mut samples = 0;
+                    let elapsed = loop {
+                        let tree = parser.parse(&source, None).unwrap();
+                        let root = tree.root_node();
+                        assert_eq!(root.has_error(), has_error);
+                        assert_eq!(root.end_byte(), source.len());
+                        let mut cursor = root.walk();
+                        let comments = root
+                            .named_children(&mut cursor)
+                            .filter(|node| node.kind() == "comment")
+                            .collect::<Vec<_>>();
+                        assert_eq!(comments.len(), count);
+                        for (index, comment) in comments.into_iter().enumerate() {
+                            let start =
+                                index * 4 + usize::from(has_error && index * 4 >= error_offset) * 2;
+                            assert_eq!(comment.byte_range(), start..start + 3);
+                        }
+                        samples += 1;
+                        let elapsed = started.elapsed();
+                        if elapsed >= Duration::from_millis(100) {
+                            break elapsed;
+                        }
+                    };
+                    fastest = fastest.min(elapsed / samples);
+                }
+                fastest
+            };
+            measure(&mut parser, 40);
+            let small = measure(&mut parser, 40);
+            let large = measure(&mut parser, 160);
+            assert!(large < small * 32, "small: {small:?}, large: {large:?}");
+        }
+    }
+
+    for (index, precedence) in [-1, 0, 1].into_iter().enumerate() {
+        let mut grammar = grammar.clone();
+        grammar["name"] = serde_json::json!(format!("adjacent_comments_precedence_{index}"));
+        grammar["rules"]["line"] = serde_json::json!({
+            "type": "PREC_DYNAMIC", "value": precedence,
+            "content": grammar["rules"]["line"].clone()
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            let source = format!("l{}", "#a# ".repeat(40));
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let line = tree.root_node().named_child(0).unwrap();
+            assert_eq!(line.kind(), "line");
+            assert!(line.named_child_count() > 0);
+            assert!(
+                (0..line.named_child_count())
+                    .any(|index| { !line.named_child(index as u32).unwrap().is_extra() })
+            );
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: 5,
+                new_end_byte: 1,
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, 5),
+                new_end_position: Point::new(0, 1),
+            });
+            let edited = format!("l{}", "#a# ".repeat(39));
+            let incremental = parser.parse(&edited, Some(&tree)).unwrap();
+            let fresh = parser.parse(&edited, None).unwrap();
+            assert!(!incremental.root_node().has_error());
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            assert_eq!(incremental.root_node().byte_range(), 0..edited.len());
+        }
+    }
+}
+
+#[test]
+fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
+    let grammar = serde_json::json!({
+        "name": "explicit_nonterminal_extra",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "comment"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "line"}},
+            "line": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "l"},
+                {"type": "SYMBOL", "name": "comment"},
+                {"type": "IMMEDIATE_TOKEN", "content": {"type": "STRING", "value": "\n"}}
+            ]},
+            "comment": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "REPEAT", "content": {"type": "PATTERN", "value": "[a-z]"}},
+                {"type": "STRING", "value": "#"}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, preceding_comments) in [
+            ("l#inside#\n", 0),
+            ("#before#l#inside#\n#after#", 0),
+            ("l#before##inside#\n", 1),
+            ("l#before# #inside#\n", 1),
+            ("l#before##before##inside#\n", 2),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
+            assert_eq!(root.end_byte(), source.len());
+            let mut cursor = root.walk();
+            let line = root
+                .named_children(&mut cursor)
+                .find(|node| node.kind() == "line")
+                .unwrap();
+            assert_eq!(line.named_child_count(), preceding_comments + 1);
+            let comment = line
+                .named_children(&mut cursor)
+                .find(|node| !node.is_extra())
+                .unwrap();
+            assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), "#inside#");
+            for extra in line
+                .named_children(&mut cursor)
+                .filter(tree_sitter::Node::is_extra)
+            {
+                assert_eq!(extra.kind(), "comment");
+                assert_eq!(extra.utf8_text(source.as_bytes()).unwrap(), "#before#");
+            }
+            assert!(!comment.is_extra());
+            let extras = root
+                .named_children(&mut cursor)
+                .filter(|node| node.kind() == "comment")
+                .collect::<Vec<_>>();
+            let expected = if source.starts_with('#') {
+                vec![(0..8, "#before#"), (18..25, "#after#")]
+            } else {
+                vec![]
+            };
+            assert_eq!(extras.len(), expected.len());
+            for (child, (range, text)) in extras.iter().zip(expected) {
+                assert!(child.is_extra());
+                assert_eq!(child.byte_range(), range);
+                assert_eq!(child.utf8_text(source.as_bytes()).unwrap(), text);
+            }
+        }
+        let mut source = "l#inside#\n".to_string();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in ["#before#", "", "#before# #before#", ""] {
+            let end = source.find("#inside#").unwrap();
+            tree.edit(&InputEdit {
+                start_byte: 1,
+                old_end_byte: end,
+                new_end_byte: 1 + replacement.len(),
+                start_position: Point::new(0, 1),
+                old_end_position: Point::new(0, end),
+                new_end_position: Point::new(0, 1 + replacement.len()),
+            });
+            source.replace_range(1..end, replacement);
+            let incremental = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!fresh.root_node().has_error(), "{source:?}");
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            for tree in [&incremental, &fresh] {
+                let line = tree.root_node().named_child(0).unwrap();
+                let mut cursor = line.walk();
+                let required = line
+                    .named_children(&mut cursor)
+                    .filter(|node| !node.is_extra())
+                    .collect::<Vec<_>>();
+                assert_eq!(required.len(), 1);
+                assert_eq!(
+                    required[0].utf8_text(source.as_bytes()).unwrap(),
+                    "#inside#"
+                );
+                assert_eq!(required[0].start_byte(), 1 + replacement.len());
+                assert_eq!(tree.root_node().end_byte(), source.len());
+            }
+            tree = incremental;
+        }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in *b"\nl\nl" {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 6,
+                    deleted_length: 1,
+                    inserted_text: vec![replacement],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert!(!fresh.root_node().has_error());
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (position, inserted_text) in [(2, b"#".as_slice()), (1, b""), (5, b"\n")] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position,
+                    deleted_length: 1,
+                    inserted_text: inserted_text.to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let mut pending = vec![(tree.root_node(), fresh.root_node())];
+            while let Some((incremental_node, fresh_node)) = pending.pop() {
+                assert_eq!(incremental_node.kind(), fresh_node.kind());
+                assert_eq!(incremental_node.range(), fresh_node.range());
+                assert_eq!(incremental_node.is_extra(), fresh_node.is_extra());
+                assert_eq!(incremental_node.child_count(), fresh_node.child_count());
+                for index in 0..incremental_node.child_count() {
+                    pending.push((
+                        incremental_node.child(index).unwrap(),
+                        fresh_node.child(index).unwrap(),
+                    ));
+                }
+            }
+        }
+        assert!(!tree.root_node().has_error());
+        let line = tree.root_node().named_child(0).unwrap();
+        assert_eq!(line.byte_range(), 0..10);
+        assert!(line.named_child(0).unwrap().is_extra());
+        assert!(!line.named_child(1).unwrap().is_extra());
+        let mut source = b"l#a#\n l#a#\n".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (position, deleted_length, inserted_text) in [
+            (11, 0, "\n\n"),
+            (1, 3, "#"),
+            (11, 0, " "),
+            (1, 3, "a"),
+            (4, 0, " "),
+            (1, 0, "\n"),
+            (5, 3, "\n\n"),
+            (7, 0, "a"),
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position,
+                    deleted_length,
+                    inserted_text: inserted_text.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        }
+        for source in ["l\n", "l#inside# \n"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{source:?}: {}",
+                tree.root_node().to_sexp()
+            );
+            assert_eq!(tree.root_node().end_byte(), source.len());
         }
     }
 }
