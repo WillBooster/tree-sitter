@@ -348,6 +348,13 @@ static inline uint32_t ts_subtree_visible_child_count(Subtree self) {
   }
 }
 
+static inline uint32_t ts_subtree__error_extent_cost(Length size) {
+  return
+    ERROR_COST_PER_RECOVERY +
+    ERROR_COST_PER_SKIPPED_CHAR * size.bytes +
+    ERROR_COST_PER_SKIPPED_LINE * size.extent.row;
+}
+
 static inline uint32_t ts_subtree_error_cost(Subtree self) {
   if (ts_subtree_missing(self)) {
     return ERROR_COST_PER_MISSING_TREE + ERROR_COST_PER_RECOVERY;
