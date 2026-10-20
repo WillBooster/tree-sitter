@@ -880,8 +880,42 @@ fn test_query_errors_on_invalid_predicates() {
 fn test_query_errors_on_impossible_patterns() {
     let js_lang = get_language("javascript");
     let rb_lang = get_language("ruby");
+    let bash_lang = get_language("bash");
 
     allocations::record(|| {
+        for (language, pattern) in [
+            (
+                &js_lang,
+                "(jsx_opening_element (jsx_expression) (_) . (jsx_attribute) (jsx_namespace_name))",
+            ),
+            (&bash_lang, "(file_redirect (_) (file_descriptor))"),
+        ] {
+            assert_eq!(
+                Query::new(language, pattern).unwrap_err().kind,
+                QueryErrorKind::Structure,
+            );
+        }
+        for kind in ["number", "identifier", "string"] {
+            Query::new(&js_lang, &format!("(binary_expression ({kind}) ({kind}))")).unwrap();
+            assert_eq!(
+                Query::new(
+                    &js_lang,
+                    &format!("(binary_expression ({kind}) ({kind}) ({kind}))")
+                )
+                .unwrap_err()
+                .kind,
+                QueryErrorKind::Structure,
+            );
+        }
+        assert_eq!(
+            Query::new(
+                &js_lang,
+                "(binary_expression left: (number) right: (number) (number))"
+            )
+            .unwrap_err()
+            .kind,
+            QueryErrorKind::Structure,
+        );
         assert_eq!(
             Query::new(
                 &js_lang,
@@ -6824,6 +6858,24 @@ fn test_query_is_pattern_non_local() {
             is_non_local: true,
         },
         Row {
+            description: "comments before Ruby pair in repeated command arguments",
+            pattern: r"((comment)* @doc (pair) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby hash_splat_argument in repeated command arguments",
+            pattern: r"((comment)* @doc (hash_splat_argument) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
+            description: "comments before Ruby block_argument in repeated command arguments",
+            pattern: r"((comment)* @doc (block_argument) @argument)",
+            language: get_language("ruby"),
+            is_non_local: true,
+        },
+        Row {
             description: "siblings that can't occur in any repetition",
             pattern: r#"("{" "}")"#,
             language: get_language("python"),
@@ -8249,6 +8301,48 @@ function foo() {
 }
 
 #[test]
+fn test_query_guarantees_account_for_later_matching_siblings() {
+    allocations::record(|| {
+        let language = get_language("json");
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        for value in [r#""a""#, "1", "true", "null", "[1,2]", "{}"] {
+            let source = format!(r#"{{"k":{value}}}"#);
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for pattern in [
+                "(pair (string) @key (_))",
+                "(pair (_) @key (_))",
+                "(pair (string) @key . (_))",
+                "(pair key: (string) @key value: (_))",
+            ] {
+                let query = Query::new(&language, pattern).unwrap();
+                let expected = vec![("key", "\"k\"")];
+                let mut cursor = QueryCursor::new();
+                assert_eq!(
+                    collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source,
+                    ),
+                    vec![(0, expected.clone())],
+                    "matches for {pattern} on {source}",
+                );
+                assert_eq!(
+                    collect_captures(
+                        cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        &source,
+                    ),
+                    expected,
+                    "captures for {pattern} on {source}",
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
     allocations::record(|| {
         let language = get_language("json");
@@ -8320,6 +8414,45 @@ fn test_query_wildcard_child_guarantees_do_not_publish_unmatched_captures() {
                 );
             }
         }
+    });
+}
+
+#[test]
+fn test_query_terminal_wildcard_preserves_parent_capture_publication() {
+    allocations::record(|| {
+        let language = get_language("ruby");
+        let source = "(a)";
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let query = Query::new(&language, "(parenthesized_statements _ @child) @parent").unwrap();
+        let mut cursor = QueryCursor::new();
+        assert_eq!(
+            collect_matches(
+                cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                (0, vec![("parent", "(a)"), ("child", "(")]),
+                (0, vec![("parent", "(a)"), ("child", "a")]),
+                (0, vec![("parent", "(a)"), ("child", ")")]),
+            ],
+        );
+        assert_eq!(
+            collect_captures(
+                cursor.captures(&query, tree.root_node(), source.as_bytes()),
+                &query,
+                source
+            ),
+            vec![
+                ("parent", "(a)"),
+                ("child", "("),
+                ("child", "a"),
+                ("child", ")")
+            ],
+        );
     });
 }
 

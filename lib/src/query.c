@@ -259,6 +259,7 @@ typedef struct {
   uint16_t depth;
   uint16_t step_index;
   TSSymbol root_symbol;
+  bool skipped_match;
 } AnalysisState;
 
 typedef Array(AnalysisState *) AnalysisStateSet;
@@ -267,6 +268,7 @@ typedef struct {
   AnalysisStateSet states;
   AnalysisStateSet next_states;
   AnalysisStateSet deeper_states;
+  AnalysisStateSet skipped_states;
   AnalysisStateSet state_pool;
   Array(uint16_t) final_step_indices;
   Array(TSSymbol) finished_parent_symbols;
@@ -1146,13 +1148,12 @@ static inline AnalysisState *analysis_state_pool__clone_or_reuse(
   return new_item;
 }
 
-// Inserts a clone of the passed-in item at the appropriate position to maintain ordering in this
-// set. The set does not contain duplicates, so if the item is already present, it will not be
-// inserted, and no clone will be made.
+// Equivalent positions share failure evidence: an unskipped path must dominate a skipped one.
+// The return value distinguishes a new position from a merge, so visited skip paths stay bounded.
 //
 // The caller retains ownership of the passed-in memory. However, the clone that is created by this
 // function will be managed by the state set.
-static inline void analysis_state_set__insert_sorted(
+static inline bool analysis_state_set__insert_sorted(
   AnalysisStateSet *self,
   AnalysisStateSet *pool,
   AnalysisState *borrowed_item
@@ -1162,7 +1163,10 @@ static inline void analysis_state_set__insert_sorted(
   if (!exists) {
     AnalysisState *new_item = analysis_state_pool__clone_or_reuse(pool, borrowed_item);
     array_insert(self, index, new_item);
+  } else {
+    (*array_get(self, index))->skipped_match &= borrowed_item->skipped_match;
   }
+  return !exists;
 }
 
 // Inserts a clone of the passed-in item at the end position of this list.
@@ -1206,6 +1210,7 @@ static inline QueryAnalysis query_analysis__new(void) {
     .states = array_new(),
     .next_states = array_new(),
     .deeper_states = array_new(),
+    .skipped_states = array_new(),
     .state_pool = array_new(),
     .final_step_indices = array_new(),
     .finished_parent_symbols = array_new(),
@@ -1217,6 +1222,7 @@ static inline void query_analysis__delete(QueryAnalysis *self) {
   analysis_state_set__delete(&self->states);
   analysis_state_set__delete(&self->next_states);
   analysis_state_set__delete(&self->deeper_states);
+  analysis_state_set__delete(&self->skipped_states);
   analysis_state_set__delete(&self->state_pool);
   array_delete(&self->final_step_indices);
   array_delete(&self->finished_parent_symbols);
@@ -1331,13 +1337,15 @@ static inline void ts_query__pattern_map_insert(
 static void ts_query__perform_analysis(
   TSQuery *self,
   const AnalysisSubgraphArray *subgraphs,
-  QueryAnalysis *analysis
+  QueryAnalysis *analysis,
+  bool analyze_later_siblings
 ) {
   unsigned recursion_depth_limit = 0;
   unsigned prev_final_step_count = 0;
   QueryStepIndexArray transition_steps = array_new();
   array_clear(&analysis->final_step_indices);
   array_clear(&analysis->finished_parent_symbols);
+  analysis_state_set__clear(&analysis->skipped_states, &analysis->state_pool);
 
   for (unsigned iteration = 0;; iteration++) {
     if (iteration == MAX_ANALYSIS_ITERATION_COUNT) {
@@ -1576,14 +1584,24 @@ static void ts_query__perform_analysis(
           // over any descendant steps of the current child.
           const QueryStep *next_step = step;
           if (does_match) {
+            uint16_t next_step_index = next_state.step_index;
             for (;;) {
-              next_state.step_index++;
-              next_step = array_get(&self->steps, next_state.step_index);
+              next_step_index++;
+              next_step = array_get(&self->steps, next_step_index);
               if (
                 next_step->depth == PATTERN_DONE_MARKER ||
                 next_step->depth <= step->depth
               ) break;
             }
+            if (analyze_later_siblings && next_state.depth > 0 && next_step->depth == step->depth) {
+              AnalysisState skipped = next_state;
+              skipped.skipped_match = true;
+              if (analysis_state_set__insert_sorted(&analysis->skipped_states, &analysis->state_pool, &skipped)) {
+                analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &skipped);
+              }
+            }
+            next_state.skipped_match = false;
+            next_state.step_index = next_step_index;
           } else if (successor.state == parse_state) {
             continue;
           }
@@ -1617,7 +1635,9 @@ static void ts_query__perform_analysis(
               if (did_finish_pattern) {
                 array_insert_sorted_by(&analysis->finished_parent_symbols, , state->root_symbol);
               } else if (next_state.depth == 0) {
-                array_insert_sorted_by(&analysis->final_step_indices, , next_state.step_index);
+                if (!next_state.skipped_match) {
+                  array_insert_sorted_by(&analysis->final_step_indices, , next_state.step_index);
+                }
               } else {
                 analysis_state_set__insert_sorted(&analysis->next_states, &analysis->state_pool, &next_state);
               }
@@ -1632,6 +1652,38 @@ static void ts_query__perform_analysis(
     analysis->next_states = _states;
   }
   array_delete(&transition_steps);
+}
+
+static void ts_query__analyze_pattern(
+  TSQuery *self,
+  const AnalysisSubgraphArray *subgraphs,
+  QueryAnalysis *analysis
+) {
+  Array(AnalysisState) initial_states = array_new();
+  array_reserve(&initial_states, analysis->states.size);
+  for (unsigned i = 0; i < analysis->states.size; i++) {
+    array_push(&initial_states, **array_get(&analysis->states, i));
+  }
+  ts_query__perform_analysis(self, subgraphs, analysis, true);
+
+  if (analysis->did_abort) {
+    QueryAnalysis structural_analysis = query_analysis__new();
+    for (unsigned i = 0; i < initial_states.size; i++) {
+      analysis_state_set__push(
+        &structural_analysis.states,
+        &structural_analysis.state_pool,
+        array_get(&initial_states, i)
+      );
+    }
+    ts_query__perform_analysis(self, subgraphs, &structural_analysis, false);
+    if (!structural_analysis.did_abort && structural_analysis.finished_parent_symbols.size == 0) {
+      analysis->did_abort = false;
+      array_clear(&analysis->finished_parent_symbols);
+      array_assign(&analysis->final_step_indices, &structural_analysis.final_step_indices);
+    }
+    query_analysis__delete(&structural_analysis);
+  }
+  array_delete(&initial_states);
 }
 
 #ifdef DEBUG_DUMP_STEPS
@@ -2004,9 +2056,11 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     #endif
 
     analysis.did_abort = false;
-    ts_query__perform_analysis(self, &subgraphs, &analysis);
     if (initial_path_finishes_parent) {
+      ts_query__perform_analysis(self, &subgraphs, &analysis, true);
       array_insert_sorted_by(&analysis.finished_parent_symbols, , parent_symbol);
+    } else {
+      ts_query__analyze_pattern(self, &subgraphs, &analysis);
     }
 
     // If this pattern could not be fully analyzed, then every step should
@@ -2187,7 +2241,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     ts_query__perform_analysis(
       self,
       &subgraphs,
-      &analysis
+      &analysis,
+      false
     );
 
     if (analysis.finished_parent_symbols.size > 0) {
