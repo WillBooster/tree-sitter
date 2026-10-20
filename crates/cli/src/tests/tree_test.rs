@@ -18,10 +18,7 @@ fn test_incremental_external_boundaries_match_fresh_ranges() {
                 (expected.kind(), expected.range(), expected.child_count())
             );
             for index in 0..actual.child_count() {
-                pending.push((
-                    actual.child(index as u32).unwrap(),
-                    expected.child(index as u32).unwrap(),
-                ));
+                pending.push((actual.child(index).unwrap(), expected.child(index).unwrap()));
             }
         }
     };
