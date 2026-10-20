@@ -1584,6 +1584,7 @@ static void ts_parser__recover(
   bool recovered_root = false;
   unsigned previous_version_count = ts_stack_version_count(self->stack);
   Length position = ts_stack_position(self->stack, version);
+  ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
   StackSummary *summary = ts_stack_get_summary(self->stack, version);
   unsigned node_count_since_error = ts_stack_node_count_since_error(self->stack, version);
   unsigned current_error_cost = ts_stack_error_cost(self->stack, version);
@@ -1608,7 +1609,6 @@ static void ts_parser__recover(
         if (entry.state == ERROR_STATE) continue;
         if (entry.position.bytes == position.bytes) continue;
         unsigned depth = entry.depth;
-        if (node_count_since_error > 0) depth++;
 
         bool would_merge = false;
         for (unsigned j = 0; j < previous_version_count; j++) {
