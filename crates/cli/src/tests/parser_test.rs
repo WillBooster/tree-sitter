@@ -5158,6 +5158,44 @@ fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
 }
 
 #[test]
+fn test_retained_keyword_after_named_extra_with_immediate_word_stays_unguarded() {
+    let grammar = serde_json::json!({
+        "name": "retained_keyword_after_named_extra",
+        "word": "identifier",
+        "extras": [{"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "keyword_use"},
+                {"type": "SYMBOL", "name": "exclaim"}
+            ]},
+            "keyword_use": {"type": "SEQ", "members": [
+                {"type": "TOKEN", "content": {"type": "PREC", "value": 1,
+                    "content": {"type": "STRING", "value": "iffy"}}},
+                {"type": "SYMBOL", "name": "exclaim"},
+                {"type": "STRING", "value": "?"}
+            ]},
+            "identifier": {"type": "IMMEDIATE_TOKEN", "content": {
+                "type": "PATTERN", "value": "[a-z]+"
+            }},
+            "exclaim": {"type": "PATTERN", "value": "[a-z]+!"},
+            "comment": {"type": "STRING", "value": "#"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected) in [
+            ("iffyname!?", "(source_file (keyword_use (exclaim)))"),
+            (
+                "#iffyname!?",
+                "(source_file (comment) (keyword_use (exclaim)))",
+            ),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected, "{source}");
+        }
+    }
+}
+
+#[test]
 fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
     let grammar = r"
         module.exports = grammar({
