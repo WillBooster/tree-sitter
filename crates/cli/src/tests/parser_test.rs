@@ -1934,6 +1934,95 @@ fn test_anonymous_external_pattern_used_as_extra() {
 }
 
 #[test]
+fn test_incremental_reuse_with_immediate_token_alternatives() {
+    let grammar = serde_json::json!({
+        "name": "incremental_immediate_alternatives",
+        "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "item"}},
+            "item": {"type": "SEQ", "members": [
+                {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "word"},
+                    {"type": "SYMBOL", "name": "joined"}
+                ]},
+                {"type": "STRING", "value": ";"}
+            ]},
+            "word": {"type": "PATTERN", "value": "[a-z]+"},
+            "joined": {"type": "IMMEDIATE_TOKEN", "content": {"type": "PATTERN", "value": "[a-z]+!"}},
+            "comment": {"type": "CHOICE", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "["},
+                    {"type": "STRING", "value": "]"}
+                ]}
+            ]}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for suffix in [" b;", " # b;", " [] b;"] {
+            let mut source = format!("a;{}", suffix.repeat(64)).into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            let ids = tree
+                .root_node()
+                .named_children(&mut tree.walk())
+                .filter(|node| node.kind() == "item")
+                .skip(1)
+                .map(|node| node.named_child(0).unwrap().id())
+                .collect::<Vec<_>>();
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length: 1,
+                    inserted_text: b"z".to_vec(),
+                },
+            )
+            .unwrap();
+            let next = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!next.root_node().has_error());
+            assert_eq!(next.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let reused = next
+                .root_node()
+                .named_children(&mut next.walk())
+                .filter(|node| node.kind() == "item")
+                .skip(1)
+                .filter(|node| ids.contains(&node.named_child(0).unwrap().id()))
+                .count();
+            assert!(
+                reused > 32,
+                "{suffix:?}: only {reused} of 64 unchanged items reused"
+            );
+        }
+
+        let mut source = b"x!; b;".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for replacement in ["#", "", "##", "", "[]", "", "[][]", "", " ", "", "# ", ""] {
+            let prefix_length = source.iter().position(|&byte| byte == b'x').unwrap();
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length: prefix_length,
+                    inserted_text: replacement.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                fresh.root_node().to_sexp(),
+                "{replacement:?}"
+            );
+            assert_eq!(tree.root_node().has_error(), !replacement.is_empty());
+        }
+    }
+}
+
+#[test]
 fn test_shared_extra_with_mixed_immediate_syntax() {
     let grammar = serde_json::json!({
         "name": "shared_extra_with_mixed_immediate_syntax",
