@@ -1459,17 +1459,17 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
 
 #[test]
 fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
-    let keywords = (0..64)
-        .map(|i| format!("keyword_{i:04}_{}", "x".repeat(80)))
-        .collect::<Vec<_>>();
-    for separate_keywords in [false, true] {
+    for (suffix_length, separate_keywords) in [(40, false), (80, false), (80, true)] {
+        let keywords = (0..64)
+            .map(|i| format!("keyword_{i:04}_{}", "x".repeat(suffix_length)))
+            .collect::<Vec<_>>();
         let mut members = keywords
             .iter()
             .map(|word| serde_json::json!({"type": "STRING", "value": word}))
             .collect::<Vec<_>>();
         members.push(serde_json::json!({"type": "SYMBOL", "name": "identifier"}));
         let mut grammar = serde_json::json!({
-            "name": format!("large_lexer_{separate_keywords}"),
+            "name": format!("large_lexer_{suffix_length}_{separate_keywords}"),
             "extras": [{"type": "PATTERN", "value": "\\s"}],
             "rules": {
                 "source_file": {"type": "REPEAT", "content": {"type": "CHOICE", "members": members}},
@@ -1483,6 +1483,15 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                 .insert("word".into(), serde_json::json!("identifier"));
         }
         let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        for function in code.split("\nstatic ").filter(|definition| {
+            definition.starts_with("bool ts_lex(") || definition.starts_with("uint8_t ts_lex_")
+        }) {
+            assert!(
+                function.len() <= 512 * 1024,
+                "generated lexer function is too large: {} bytes",
+                function.len()
+            );
+        }
         let languages = [
             get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
             #[cfg(feature = "wasm")]
@@ -5144,6 +5153,44 @@ fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
                     fresh.root_node().byte_range()
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn test_retained_keyword_after_named_extra_with_immediate_word_stays_unguarded() {
+    let grammar = serde_json::json!({
+        "name": "retained_keyword_after_named_extra",
+        "word": "identifier",
+        "extras": [{"type": "SYMBOL", "name": "comment"}],
+        "rules": {
+            "source_file": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "keyword_use"},
+                {"type": "SYMBOL", "name": "exclaim"}
+            ]},
+            "keyword_use": {"type": "SEQ", "members": [
+                {"type": "TOKEN", "content": {"type": "PREC", "value": 1,
+                    "content": {"type": "STRING", "value": "iffy"}}},
+                {"type": "SYMBOL", "name": "exclaim"},
+                {"type": "STRING", "value": "?"}
+            ]},
+            "identifier": {"type": "IMMEDIATE_TOKEN", "content": {
+                "type": "PATTERN", "value": "[a-z]+"
+            }},
+            "exclaim": {"type": "PATTERN", "value": "[a-z]+!"},
+            "comment": {"type": "STRING", "value": "#"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        for (source, expected) in [
+            ("iffyname!?", "(source_file (keyword_use (exclaim)))"),
+            (
+                "#iffyname!?",
+                "(source_file (comment) (keyword_use (exclaim)))",
+            ),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), expected, "{source}");
         }
     }
 }

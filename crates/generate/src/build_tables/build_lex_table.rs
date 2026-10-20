@@ -253,6 +253,7 @@ pub fn build_lex_table(
                 .iter()
                 .filter(|keyword| {
                     has_entry(*keyword)
+                        && !retained.contains(keyword)
                         && !lexical_grammar.variables[keyword.index as usize].is_immediate
                 })
                 .collect::<TokenSet>()
