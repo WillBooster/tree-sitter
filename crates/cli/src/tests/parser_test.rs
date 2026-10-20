@@ -6787,9 +6787,18 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        for prefix in ["", "x "] {
+        for error_position in ["none", "before", "middle", "after"] {
             let measure = |parser: &mut Parser, count: usize| {
-                let source = format!("{prefix}{}", "#a# ".repeat(count));
+                let mut source = "#a# ".repeat(count);
+                let error_offset = match error_position {
+                    "before" => 0,
+                    "middle" => count * 2,
+                    _ => count * 4,
+                };
+                let has_error = error_position != "none";
+                if has_error {
+                    source.insert_str(error_offset, "x ");
+                }
                 let mut fastest = Duration::MAX;
                 for _ in 0..3 {
                     let started = cpu_time::ThreadTime::now();
@@ -6797,7 +6806,7 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
                     let elapsed = loop {
                         let tree = parser.parse(&source, None).unwrap();
                         let root = tree.root_node();
-                        assert_eq!(root.has_error(), !prefix.is_empty());
+                        assert_eq!(root.has_error(), has_error);
                         assert_eq!(root.end_byte(), source.len());
                         let mut cursor = root.walk();
                         let comments = root
@@ -6806,7 +6815,8 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
                             .collect::<Vec<_>>();
                         assert_eq!(comments.len(), count);
                         for (index, comment) in comments.into_iter().enumerate() {
-                            let start = prefix.len() + index * 4;
+                            let start =
+                                index * 4 + usize::from(has_error && index * 4 >= error_offset) * 2;
                             assert_eq!(comment.byte_range(), start..start + 3);
                         }
                         samples += 1;
