@@ -2278,19 +2278,19 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
 
   if (ts_stack_version_count(self->stack) > 0) {
     unsigned active_cost = UINT_MAX;
-    bool has_unpaused_version = false;
+    bool has_active_version = false;
     bool resumed_paused_version = false;
     for (StackVersion i = 0, n = ts_stack_version_count(self->stack); i < n; i++) {
       if (!ts_stack_is_paused(self->stack, i)) {
         unsigned cost = ts_stack_error_cost(self->stack, i);
         if (cost < active_cost) active_cost = cost;
-        has_unpaused_version |= !ts_stack_unconfirmed_recovery(self->stack, i);
+        has_active_version = true;
         continue;
       }
       bool can_resume_recovery = !resumed_paused_version &&
         (ts_stack_unconfirmed_recovery(self->stack, i) ||
          ts_parser__version_status(self, i).cost < active_cost);
-      if ((has_unpaused_version && !can_resume_recovery) || self->accept_count >= MAX_VERSION_COUNT) {
+      if ((has_active_version && !can_resume_recovery) || self->accept_count >= MAX_VERSION_COUNT) {
         ts_stack_remove_version(self->stack, i);
         made_changes = true;
         i--;
@@ -2303,7 +2303,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
       Subtree lookahead = ts_stack_resume(self->stack, i);
       ts_parser__handle_error(self, i, lookahead);
       resumed_paused_version = true;
-      has_unpaused_version = true;
+      has_active_version = true;
     }
   }
 
