@@ -107,12 +107,12 @@ int ts_stack_dynamic_precedence(Stack *self, StackVersion version);
 
 bool ts_stack_has_advanced_since_error(const Stack *self, StackVersion version);
 
-// Compute a summary of all the parse states near the top of the given
-// version of the stack and store the summary for later retrieval.
+// The caller owns the returned array.
+StackSummary ts_stack_current_summary(Stack *self, StackVersion version, unsigned max_depth);
+
 void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_depth);
 
-// Retrieve a summary of all the parse states near the top of the
-// given version of the stack.
+// Borrowed until the stack or its recorded summary changes.
 StackSummary *ts_stack_get_summary(Stack *self, StackVersion version);
 
 // Get the total cost of all errors on the given version of the stack.

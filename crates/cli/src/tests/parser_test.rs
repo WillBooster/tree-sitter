@@ -954,6 +954,21 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
             ],
         ),
         (
+            "javascript",
+            "function before() {}\nclass C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
+            vec![
+                "function before() {}",
+                ";",
+                "export function following() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+        (
+            "javascript",
+            "class C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
+            vec![";", "export function following() {}", "const sentinel = 1;"],
+        ),
+        (
             "c-sharp",
             "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
             vec!["class Following { int Value => 1; }"],

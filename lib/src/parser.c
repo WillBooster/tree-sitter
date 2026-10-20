@@ -1572,6 +1572,26 @@ static bool ts_parser__recover_to_state(
   return previous_version != STACK_VERSION_NONE;
 }
 
+static bool ts_parser__recover_to_entry(
+  TSParser *self, StackVersion version, StackSummaryEntry *entry
+) {
+  if (ts_parser__recover_to_state(self, version, entry->depth, entry->state)) return true;
+  StackSummary current = ts_stack_current_summary(self->stack, version, MAX_SUMMARY_DEPTH + 1);
+  bool recovered = false;
+  for (unsigned i = 0; i < current.size; i++) {
+    StackSummaryEntry candidate = *array_get(&current, i);
+    if (candidate.state == entry->state && candidate.position.bytes >= entry->position.bytes &&
+        (!entry->has_root_subtree || candidate.has_root_subtree) && candidate.depth != entry->depth &&
+        ts_parser__recover_to_state(self, version, candidate.depth, candidate.state)) {
+      entry->depth = candidate.depth;
+      recovered = true;
+      break;
+    }
+  }
+  array_delete(&current);
+  return recovered;
+}
+
 static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state);
 
 static void ts_parser__recover(
@@ -1584,7 +1604,6 @@ static void ts_parser__recover(
   bool recovered_root = false;
   unsigned previous_version_count = ts_stack_version_count(self->stack);
   Length position = ts_stack_position(self->stack, version);
-  ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
   StackSummary *summary = ts_stack_get_summary(self->stack, version);
   unsigned node_count_since_error = ts_stack_node_count_since_error(self->stack, version);
   unsigned current_error_cost = ts_stack_error_cost(self->stack, version);
@@ -1609,6 +1628,7 @@ static void ts_parser__recover(
         if (entry.state == ERROR_STATE) continue;
         if (entry.position.bytes == position.bytes) continue;
         unsigned depth = entry.depth;
+        if (node_count_since_error > 0) depth++;
 
         bool would_merge = false;
         for (unsigned j = 0; j < previous_version_count; j++) {
@@ -1649,7 +1669,7 @@ static void ts_parser__recover(
       }
       for (unsigned i = 0; i < recovery_entry_count; i++) {
         StackSummaryEntry entry = recovery_entries[i];
-        if (ts_parser__recover_to_state(self, version, entry.depth, entry.state)) {
+        if (ts_parser__recover_to_entry(self, version, &entry)) {
           did_recover = true;
           recovered_root |= recovery_pass == 0 &&
             (entry.state == 1 || ts_parser__state_finishes_root(self, entry.state));

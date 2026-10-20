@@ -1015,19 +1015,25 @@ static bool subtree_has_completed_prefix(Subtree subtree) {
 }
 
 void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_depth) {
-  SummarizeStackSession session = {
-    .stack = self,
-    .summary = ts_malloc(sizeof(StackSummary)),
-    .max_depth = max_depth
-  };
-  array_init(session.summary);
-  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL);
+  StackSummary summary = ts_stack_current_summary(self, version, max_depth);
   StackHead *head = array_get(&self->heads, version);
   if (head->summary) {
     array_delete(head->summary);
-    ts_free(head->summary);
+  } else {
+    head->summary = ts_malloc(sizeof(StackSummary));
   }
-  head->summary = session.summary;
+  *head->summary = summary;
+}
+
+StackSummary ts_stack_current_summary(Stack *self, StackVersion version, unsigned max_depth) {
+  StackSummary summary = array_new();
+  SummarizeStackSession session = {
+    .stack = self,
+    .summary = &summary,
+    .max_depth = max_depth
+  };
+  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL);
+  return summary;
 }
 
 StackSummary *ts_stack_get_summary(Stack *self, StackVersion version) {
