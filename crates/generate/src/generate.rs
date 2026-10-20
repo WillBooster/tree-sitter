@@ -276,11 +276,10 @@ impl std::fmt::Display for Diagnostic {
                 writeln!(f, "unnecessary conflicts:")?;
                 for (i, conflict) in conflicts.iter().enumerate() {
                     write!(f, "  ")?;
-                    for (j, symbol) in conflict.iter().enumerate() {
-                        write!(f, "`{symbol}`")?;
-                        if j < conflict.len() - 1 {
-                            write!(f, ", ")?;
-                        }
+                    if conflict.is_empty() {
+                        write!(f, "an empty set `[]`")?;
+                    } else {
+                        write!(f, "`{}`", conflict.join("`, `"))?;
                     }
                     if i < conflicts.len() - 1 {
                         writeln!(f)?;
