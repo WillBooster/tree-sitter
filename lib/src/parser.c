@@ -1586,6 +1586,10 @@ static void ts_parser__recover(
       symbol != self->language->keyword_capture_token ? 2 : 1;
     for (unsigned recovery_pass = 0; recovery_pass < recovery_pass_count && !did_recover; recovery_pass++) {
       TSSymbol recovery_symbol = recovery_pass == 0 ? symbol : self->language->keyword_capture_token;
+      // Keep the nearest and outermost compatible states: nearest-only recovery loses following
+      // declarations, and keeping every candidate multiplies stack versions. The search stops
+      // below a completed root prefix so recovery never discards a finished declaration, except
+      // that an exact keyword with no candidate yet may search past a prefix that cannot accept it.
       StackSummaryEntry recovery_entries[2];
       unsigned recovery_entry_count = 0;
       bool reached_prefix = false;
@@ -2276,6 +2280,10 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
     made_changes = true;
   }
 
+  // While any version is active, resume at most one paused version, and only if its recovery is
+  // still provisional or its penalized cost beats every active version; remove the others.
+  // Resuming every paused version absorbs preceding valid declarations into ERROR nodes, and
+  // resuming none loses declarations that only a paused path keeps.
   if (ts_stack_version_count(self->stack) > 0) {
     unsigned active_cost = UINT_MAX;
     bool has_active_version = false;
