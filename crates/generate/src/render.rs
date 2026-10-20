@@ -30,6 +30,7 @@ const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
+const MAX_SINGLE_LEXER_BYTES: usize = 512 * 1024;
 const LEXER_CHUNK_SIZE: usize = 256;
 const KEYWORD_SKIP_FLAG: usize = 1 << 15;
 
@@ -1342,13 +1343,22 @@ impl Generator {
             self.add_chunked_lex_function(name, &lex_table, has_fallback);
             return;
         }
+        let function_start = self.buffer.len();
+        self.add_single_lex_function(name, &lex_table, has_fallback);
+        if self.buffer.len() - function_start > MAX_SINGLE_LEXER_BYTES {
+            self.buffer.truncate(function_start);
+            self.add_chunked_lex_function(name, &lex_table, has_fallback);
+        }
+    }
+
+    fn add_single_lex_function(&mut self, name: &str, lex_table: &LexTable, has_fallback: bool) {
         add_line!(
             self,
             "static bool {name}(TSLexer *lexer, TSStateId state) {{",
         );
         indent!(self);
 
-        let tag_count = Self::start_tag_count(&lex_table);
+        let tag_count = Self::start_tag_count(lex_table);
         add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
         if has_fallback {
             add_line!(
@@ -1361,10 +1371,10 @@ impl Generator {
         add_line!(self, "switch (state) {{");
 
         indent!(self);
-        for (i, state) in lex_table.states.into_iter().enumerate() {
+        for (i, state) in lex_table.states.iter().enumerate() {
             add_line!(self, "case {i}:");
             indent!(self);
-            self.add_lex_state(i as u32, &state);
+            self.add_lex_state(i as u32, state);
             dedent!(self);
         }
 
