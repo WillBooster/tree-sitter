@@ -1782,6 +1782,26 @@ fn test_query_matches_with_last_child_anchor_after_optional() {
 ",
             &[(0, vec![("def", "#define A\n")])],
         );
+
+        let language = get_language("python");
+        for quantifier in ["?", "*"] {
+            let query = Query::new(
+                &language,
+                &format!(
+                    "(list (call function: (identifier) @function) (string){quantifier} @string .)"
+                ),
+            )
+            .unwrap();
+            assert_query_matches(&language, &query, "[f()]", &[(0, vec![("function", "f")])]);
+            assert_query_matches(&language, &query, "[f(), x]", &[]);
+            assert_query_matches(
+                &language,
+                &query,
+                "[f(), 'x']",
+                &[(0, vec![("function", "f"), ("string", "'x'")])],
+            );
+            assert_query_matches(&language, &query, "[f(), 'x', y]", &[]);
+        }
     });
 }
 
@@ -3774,6 +3794,7 @@ fn test_query_wildcard_parent_optional_children_preserve_siblings() {
         parser.set_language(&language).unwrap();
         for (source, expected_captures) in [
             ("f()", vec![]),
+            ("f(x)", vec![]),
             ("f();g()", vec![]),
             ("f('x')", vec!["'x'"]),
         ] {
@@ -3786,23 +3807,25 @@ fn test_query_wildcard_parent_optional_children_preserve_siblings() {
                 nodes.extend(node.children(&mut node.walk()));
             }
             for quantifier in ["?", "*"] {
-                let query =
-                    Query::new(&language, &format!("(_ (string){quantifier} @child)")).unwrap();
-                let mut cursor = QueryCursor::new();
-                let matches = collect_matches(
-                    cursor.matches(&query, tree.root_node(), source.as_bytes()),
-                    &query,
-                    source,
-                );
-                assert_eq!(matches.len(), named_count, "{source}: {quantifier}");
-                assert_eq!(
-                    matches
-                        .iter()
-                        .flat_map(|(_, captures)| captures.iter().map(|(_, text)| *text))
-                        .collect::<Vec<_>>(),
-                    expected_captures,
-                    "{source}: {quantifier}",
-                );
+                for (leading, trailing) in [("", ""), (".", ""), ("", "."), (".", ".")] {
+                    let pattern = format!("(_ {leading} (string){quantifier} @child {trailing})");
+                    let query = Query::new(&language, &pattern).unwrap();
+                    let mut cursor = QueryCursor::new();
+                    let matches = collect_matches(
+                        cursor.matches(&query, tree.root_node(), source.as_bytes()),
+                        &query,
+                        source,
+                    );
+                    assert_eq!(matches.len(), named_count, "{source}: {pattern}");
+                    assert_eq!(
+                        matches
+                            .iter()
+                            .flat_map(|(_, captures)| captures.iter().map(|(_, text)| *text))
+                            .collect::<Vec<_>>(),
+                        expected_captures,
+                        "{source}: {pattern}",
+                    );
+                }
             }
         }
     });
