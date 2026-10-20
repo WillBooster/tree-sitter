@@ -54,27 +54,36 @@ impl AuxiliaryContextId {
 struct AuxiliaryParentSetId(u32);
 
 /// For conflict reporting, each parse state is associated with the auxiliary (repeat)
-/// symbols in progress along the path to that state, and their parents: the non-auxiliary
-/// rules that were using them. Auxiliary symbols can't be named in the grammar's
+/// symbols in progress along the path to that state, and the rules using them.
+/// Auxiliary symbols can't be named in the grammar's
 /// `conflicts`, so a conflict inside a repeat rule is reported in terms of its parents.
 ///
 /// A state's context only holds the auxiliary symbols at a dot in that state, and links
 /// to its predecessor: the context of the state that first led to it. Successor states
-/// share a context, and a lookup follows the predecessors back to the most recent state
-/// that used the symbol.
+/// share a context. Conflict resolution uses the nearest entry, including empty sets,
+/// after filtering auxiliary parents, because those entries determine expected-conflict
+/// matching. Diagnostic ownership follows each parent at its item origin and resumes in an
+/// older context when a zero-step cycle would otherwise hide a source owner.
 #[derive(Default)]
 struct AuxiliarySymbolContexts {
     contexts: Vec<AuxiliaryContext>,
     entries: Vec<(usize, AuxiliaryParentSetId)>,
-    parent_symbols: Vec<Symbol>,
+    parent_uses: Vec<AuxiliaryParentUse>,
     parent_sets: Vec<AuxiliaryParentSet>,
     parent_set_ids: HashTable<AuxiliaryParentSetId>,
 }
 
 struct AuxiliaryContext {
+    path_length: usize,
     predecessor: Option<AuxiliaryContextId>,
     start: u32,
     len: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct AuxiliaryParentUse {
+    symbol: Symbol,
+    step_index: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -84,15 +93,15 @@ struct AuxiliaryParentSet {
 }
 
 impl AuxiliarySymbolContexts {
-    /// Adds the context of a state whose predecessor is `predecessor`. `uses` pairs each
-    /// auxiliary symbol at a dot in the state with the rule of an item using it. Auxiliary
-    /// rules aren't parents, but a symbol used only by auxiliary rules still gets an (empty)
-    /// entry, which hides any earlier one.
+    /// Adds the context of a state whose predecessor is `predecessor`. `uses` records each
+    /// auxiliary symbol at a dot, the containing rule, and its consumed steps. Auxiliary
+    /// parents must remain available for diagnostic ownership, even when conflict
+    /// resolution filters them out and the resulting empty set hides an earlier entry.
     fn push(
         &mut self,
-        grammar: &SyntaxGrammar,
         predecessor: Option<AuxiliaryContextId>,
-        mut uses: Vec<(usize, usize)>,
+        path_length: usize,
+        mut uses: Vec<(usize, usize, u32)>,
     ) -> Option<AuxiliaryContextId> {
         if uses.is_empty() {
             return predecessor;
@@ -106,8 +115,10 @@ impl AuxiliarySymbolContexts {
             parents.extend(
                 group
                     .iter()
-                    .filter(|(_, parent)| !grammar.variables[*parent].is_auxiliary())
-                    .map(|&(_, parent)| Symbol::non_terminal(parent)),
+                    .map(|&(_, parent, step_index)| AuxiliaryParentUse {
+                        symbol: Symbol::non_terminal(parent),
+                        step_index,
+                    }),
             );
             let parent_set = self.intern(&parents);
             let symbol = group[0].0;
@@ -115,6 +126,7 @@ impl AuxiliarySymbolContexts {
         }
         let id = AuxiliaryContextId::from_index(self.contexts.len());
         self.contexts.push(AuxiliaryContext {
+            path_length,
             predecessor,
             start,
             len: self.entries.len() as u32 - start,
@@ -124,29 +136,58 @@ impl AuxiliarySymbolContexts {
 
     /// Returns the parents of `symbol` in the most recent state that had it at a dot, along
     /// the path to the state whose context is `context`.
-    fn parents(&self, mut context: Option<AuxiliaryContextId>, symbol: usize) -> Option<&[Symbol]> {
+    fn parents(
+        &self,
+        context: Option<AuxiliaryContextId>,
+        symbol: usize,
+    ) -> Option<&[AuxiliaryParentUse]> {
+        self.find_parents(context, symbol, |_| true)
+            .map(|(_, parents)| parents)
+    }
+
+    fn find_parents(
+        &self,
+        mut context: Option<AuxiliaryContextId>,
+        symbol: usize,
+        accept: impl Fn(&[AuxiliaryParentUse]) -> bool,
+    ) -> Option<(AuxiliaryContextId, &[AuxiliaryParentUse])> {
         while let Some(id) = context {
             let AuxiliaryContext {
                 predecessor,
                 start,
                 len,
+                ..
             } = self.contexts[id.index()];
             let entries = &self.entries[start as usize..(start + len) as usize];
             if let Some(&(_, parent_set)) = entries.iter().find(|(s, _)| *s == symbol) {
-                return Some(Self::parent_set(
-                    &self.parent_symbols,
-                    &self.parent_sets,
-                    parent_set,
-                ));
+                let parents = Self::parent_set(&self.parent_uses, &self.parent_sets, parent_set);
+                if accept(parents) {
+                    return Some((id, parents));
+                }
             }
             context = predecessor;
         }
         None
     }
 
-    fn intern(&mut self, parents: &[Symbol]) -> AuxiliaryParentSetId {
+    fn at_position(
+        &self,
+        mut context: Option<AuxiliaryContextId>,
+        position: usize,
+    ) -> Option<AuxiliaryContextId> {
+        while let Some(id) = context {
+            let entry = &self.contexts[id.index()];
+            if entry.path_length <= position {
+                break;
+            }
+            context = entry.predecessor;
+        }
+        context
+    }
+
+    fn intern(&mut self, parents: &[AuxiliaryParentUse]) -> AuxiliaryParentSetId {
         let Self {
-            parent_symbols,
+            parent_uses,
             parent_sets,
             parent_set_ids,
             ..
@@ -154,17 +195,17 @@ impl AuxiliarySymbolContexts {
         let hash = FxBuildHasher.hash_one(parents);
         match parent_set_ids.entry(
             hash,
-            |&id| Self::parent_set(parent_symbols, parent_sets, id) == parents,
-            |&id| FxBuildHasher.hash_one(Self::parent_set(parent_symbols, parent_sets, id)),
+            |&id| Self::parent_set(parent_uses, parent_sets, id) == parents,
+            |&id| FxBuildHasher.hash_one(Self::parent_set(parent_uses, parent_sets, id)),
         ) {
             hash_table::Entry::Occupied(entry) => *entry.get(),
             hash_table::Entry::Vacant(entry) => {
                 let id = AuxiliaryParentSetId(parent_sets.len() as u32);
                 parent_sets.push(AuxiliaryParentSet {
-                    start: parent_symbols.len() as u32,
+                    start: parent_uses.len() as u32,
                     len: parents.len() as u32,
                 });
-                parent_symbols.extend_from_slice(parents);
+                parent_uses.extend_from_slice(parents);
                 entry.insert(id);
                 id
             }
@@ -172,12 +213,12 @@ impl AuxiliarySymbolContexts {
     }
 
     fn parent_set<'a>(
-        parent_symbols: &'a [Symbol],
+        parent_uses: &'a [AuxiliaryParentUse],
         parent_sets: &[AuxiliaryParentSet],
         id: AuxiliaryParentSetId,
-    ) -> &'a [Symbol] {
+    ) -> &'a [AuxiliaryParentUse] {
         let AuxiliaryParentSet { start, len } = parent_sets[id.0 as usize];
-        &parent_symbols[start as usize..(start + len) as usize]
+        &parent_uses[start as usize..(start + len) as usize]
     }
 }
 
@@ -419,6 +460,7 @@ pub struct ConflictError {
     pub conflicting_lookahead: String,
     pub possible_interpretations: Vec<Interpretation>,
     pub possible_resolutions: Vec<Resolution>,
+    pub repetition_rules: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Default, Debug, Serialize, Error, Deserialize)]
@@ -498,6 +540,17 @@ impl std::fmt::Display for ConflictError {
                 write!(f, "{prec_suffix}")?;
             }
             writeln!(f)?;
+        }
+
+        if !self.repetition_rules.is_empty() {
+            writeln!(f, "\nRepetition rules used in this conflict:\n")?;
+            for (name, parents) in &self.repetition_rules {
+                if parents.is_empty() {
+                    writeln!(f, "  {name}: repetition rule")?;
+                } else {
+                    writeln!(f, "  {name}: used by {}", parents.join(", "))?;
+                }
+            }
         }
 
         writeln!(f, "\nPossible resolutions:\n")?;
@@ -690,9 +743,7 @@ impl<'a> ParseTableBuilder<'a> {
                 ))?;
             }
 
-            // Add the parse state, and *then* push the terminal and the state id into the
-            // list of nonterminal extra states
-            let state_id = self.add_parse_state(&Vec::new(), None, &item_set);
+            let state_id = self.add_parse_state(&vec![terminal], None, &item_set);
             self.non_terminal_extra_states.push((terminal, state_id));
         }
 
@@ -816,7 +867,7 @@ impl<'a> ParseTableBuilder<'a> {
                     // for conflict resolution.
                     if variable.is_auxiliary() {
                         let parent = item.variable_index as usize;
-                        auxiliary_uses.push((non_terminal_index, parent));
+                        auxiliary_uses.push((non_terminal_index, parent, item.step_index));
                     }
 
                     // For most parse items, the symbols associated with the preceding children
@@ -944,8 +995,8 @@ impl<'a> ParseTableBuilder<'a> {
         }
 
         let auxiliary_context = self.auxiliary_contexts.push(
-            self.syntax_grammar,
             preceding_auxiliary_context,
+            preceding_symbols.len(),
             auxiliary_uses,
         );
 
@@ -1069,15 +1120,14 @@ impl<'a> ParseTableBuilder<'a> {
                     });
             }
 
-            // Add ShiftExtra actions for the terminal extra tokens. These actions
-            // are added to every state except for those at the ends of non-terminal
-            // extras.
             for extra_token in &self.syntax_grammar.extra_symbols {
                 match extra_token.kind {
                     SymbolType::NonTerminal => {
-                        state
-                            .nonterminal_entries
-                            .insert(*extra_token, GotoAction::ShiftExtra);
+                        if !state.nonterminal_entries.contains_key(extra_token) {
+                            state
+                                .nonterminal_entries
+                                .insert(*extra_token, GotoAction::ShiftExtra);
+                        }
                     }
                     SymbolType::Terminal | SymbolType::External => {
                         self.terminal_entries.get_or_insert_with(*extra_token, || {
@@ -1312,7 +1362,14 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
-        let mut conflict_error = ConflictError::default();
+        let mut conflict_error = ConflictError {
+            repetition_rules: self.repetition_owners(
+                preceding_symbols,
+                &conflicting_items,
+                auxiliary_context,
+            ),
+            ..ConflictError::default()
+        };
         for &symbol in preceding_symbols {
             conflict_error
                 .symbol_sequence
@@ -1435,6 +1492,160 @@ impl<'a> ParseTableBuilder<'a> {
         Err(conflict_error)?
     }
 
+    fn repetition_owners(
+        &self,
+        preceding_symbols: &[Symbol],
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+    ) -> Vec<(String, Vec<String>)> {
+        let contextual_symbols = items
+            .iter()
+            .map(|item| Symbol::non_terminal(item.variable_index as usize))
+            .collect::<BTreeSet<_>>();
+        preceding_symbols
+            .iter()
+            .copied()
+            .chain(contextual_symbols.iter().copied())
+            .chain(items.iter().flat_map(|item| {
+                item.production(self.syntax_grammar)
+                    .steps
+                    .iter()
+                    .map(|step| step.symbol())
+            }))
+            .filter(|symbol| {
+                symbol.kind == SymbolType::NonTerminal
+                    && self.syntax_grammar.variables[symbol.index as usize].is_auxiliary()
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|symbol| {
+                let mut parents = self.repetition_parents(
+                    symbol,
+                    items,
+                    auxiliary_context,
+                    preceding_symbols.len(),
+                    false,
+                );
+                let positions = preceding_symbols
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, preceding)| (*preceding == symbol).then_some(position))
+                    .chain(items.iter().filter_map(|item| {
+                        (item.variable_index == symbol.index)
+                            .then_some(preceding_symbols.len() - item.step_index as usize)
+                    }))
+                    .collect::<BTreeSet<_>>();
+                for position in positions {
+                    parents.extend(
+                        self.repetition_parents(
+                            symbol,
+                            &BTreeSet::new(),
+                            self.auxiliary_contexts
+                                .at_position(auxiliary_context, position),
+                            preceding_symbols.len(),
+                            true,
+                        ),
+                    );
+                }
+                (
+                    self.symbol_name(symbol),
+                    parents
+                        .into_iter()
+                        .map(|parent| self.symbol_name(parent))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    fn repetition_parents(
+        &self,
+        symbol: Symbol,
+        items: &BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+        has_contextual_occurrence: bool,
+    ) -> BTreeSet<Symbol> {
+        let mut pending = self
+            .containing_rules(symbol, items, auxiliary_context, path_length)
+            .map(|(parent, context)| (parent, context, Vec::new()))
+            .collect::<Vec<_>>();
+        if has_contextual_occurrence {
+            pending.push((symbol, auxiliary_context, Vec::new()));
+        }
+        let mut visited = BTreeSet::new();
+        let mut parents = BTreeSet::new();
+        while let Some((symbol, context, mut ancestors)) = pending.pop() {
+            let position = (symbol, context.map(AuxiliaryContextId::index));
+            if let Some(start) = ancestors.iter().position(|ancestor| *ancestor == position) {
+                pending.extend(ancestors[start..].iter().filter_map(|&(member, index)| {
+                    index.map(|index| {
+                        (
+                            member,
+                            self.auxiliary_contexts.contexts[index].predecessor,
+                            Vec::new(),
+                        )
+                    })
+                }));
+                continue;
+            }
+            if !visited.insert(position) {
+                continue;
+            }
+            if !self.syntax_grammar.variables[symbol.index as usize].is_auxiliary() {
+                parents.insert(symbol);
+                continue;
+            }
+            ancestors.push(position);
+            if let Some((id, enclosing)) =
+                self.auxiliary_contexts
+                    .find_parents(context, symbol.index as usize, |parents| {
+                        parents.iter().any(|parent| parent.symbol != symbol)
+                    })
+            {
+                pending.extend(
+                    enclosing
+                        .iter()
+                        .filter(|parent| parent.symbol != symbol)
+                        .map(|parent| {
+                            let origin = self.auxiliary_contexts.at_position(
+                                Some(id),
+                                self.auxiliary_contexts.contexts[id.index()].path_length
+                                    - parent.step_index as usize,
+                            );
+                            (parent.symbol, origin, ancestors.clone())
+                        }),
+                );
+            }
+        }
+        parents
+    }
+
+    fn containing_rules<'b>(
+        &'b self,
+        symbol: Symbol,
+        items: &'b BTreeSet<&ParseItem>,
+        auxiliary_context: Option<AuxiliaryContextId>,
+        path_length: usize,
+    ) -> impl Iterator<Item = (Symbol, Option<AuxiliaryContextId>)> + 'b {
+        items.iter().filter_map(move |item| {
+            let parent = Symbol::non_terminal(item.variable_index as usize);
+            (parent != symbol
+                && item
+                    .production(self.syntax_grammar)
+                    .steps
+                    .iter()
+                    .any(|step| step.symbol() == symbol))
+            .then(|| {
+                (
+                    parent,
+                    self.auxiliary_contexts
+                        .at_position(auxiliary_context, path_length - item.step_index as usize),
+                )
+            })
+        })
+    }
+
     fn conflict_symbols(
         &self,
         items: &BTreeSet<&ParseItem>,
@@ -1447,7 +1658,12 @@ impl<'a> ParseTableBuilder<'a> {
                 symbols.extend(
                     self.auxiliary_contexts
                         .parents(auxiliary_context, item.variable_index as usize)
-                        .unwrap(),
+                        .unwrap()
+                        .iter()
+                        .map(|parent| parent.symbol)
+                        .filter(|parent| {
+                            !self.syntax_grammar.variables[parent.index as usize].is_auxiliary()
+                        }),
                 );
             } else {
                 symbols.push(symbol);
