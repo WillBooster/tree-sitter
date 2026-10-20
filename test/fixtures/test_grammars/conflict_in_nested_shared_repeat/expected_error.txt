@@ -14,5 +14,7 @@ Repetition rules used in this conflict:
 
 Possible resolutions:
 
-  1:  Specify a left or right associativity in `first_repeat1`
-  2:  Add a conflict for these rules: `third`
+  1:  Specify a higher precedence in `third_repeat1` than in the other rules.
+  2:  Specify a higher precedence in `first_repeat1` than in the other rules.
+  3:  Specify a left or right associativity in `first_repeat1`
+  4:  Add a conflict for these rules: `second`, `third`
