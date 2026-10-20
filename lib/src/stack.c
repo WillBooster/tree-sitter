@@ -490,7 +490,7 @@ static StackSliceArray stack__iter(
   array_clear(&self->iterators);
 
   StackHead *head = array_get(&self->heads, version);
-  bool compact = is_ambiguous && self->has_ambiguous_extras && head->node->error_cost == 0;
+  bool compact = is_ambiguous && self->has_ambiguous_extras;
   // The original head pins every borrowed path until the selected arrays retain it.
   uint32_t pop_count = 0;
   bool invalid_path = false;
@@ -590,10 +590,10 @@ static StackSliceArray stack__iter(
             if (compact) next_iterator->total_precedence += ts_subtree_dynamic_precedence(link.subtree);
             if (compact && (next_iterator->subtree_count > 0 || !ts_subtree_extra(link.subtree))) {
               next_iterator->precedence += ts_subtree_dynamic_precedence(link.subtree);
-              next_iterator->error_free &= ts_subtree_error_cost(link.subtree) == 0 && !ts_subtree_is_error(link.subtree);
               next_iterator->trimmed_count++;
             }
             if (compact) {
+              next_iterator->error_free &= ts_subtree_error_cost(link.subtree) == 0 && !ts_subtree_is_error(link.subtree);
               array_push(&paths, ((ReductionPath) {link.subtree, next_iterator->path}));
               next_iterator->path = paths.size - 1;
               if (!next_iterator->error_free) invalid_path = true;
