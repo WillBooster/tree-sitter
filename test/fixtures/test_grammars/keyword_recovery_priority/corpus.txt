@@ -1,0 +1,18 @@
+==================================================
+Recover declarations after an incomplete generic header
+==================================================
+
+class C implements A, number<B;
+export function f() {}
+const sentinel = 1;
+
+---
+
+(program
+  (ERROR
+    (identifier)
+    (entry (type (type_identifier (identifier))))
+    (type_identifier (identifier))
+    (type_identifier (identifier)))
+  (export_statement (function_declaration (identifier) (block)))
+  (lexical_declaration (identifier) (number)))
