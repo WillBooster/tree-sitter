@@ -1,0 +1,36 @@
+===========================
+Nested attributed labels
+===========================
+
+i(x){if(x){case 1:[[a]]e:[[a]];;}e k;}
+
+---
+
+(translation_unit
+  (function_definition
+    (type_identifier)
+    (parenthesized_declarator
+      (identifier))
+    (compound_statement
+      (function_definition
+        (type_identifier)
+        (parenthesized_declarator
+          (identifier))
+        (compound_statement
+          (case_statement
+            (number_literal)
+            (attributed_statement
+              (attribute_declaration
+                (attribute
+                  (identifier)))
+              (labeled_statement
+                (statement_identifier)
+                (attributed_statement
+                  (attribute_declaration
+                    (attribute
+                      (identifier)))
+                  (expression_statement))))
+            (expression_statement))))
+      (declaration
+        (type_identifier)
+        (identifier)))))
