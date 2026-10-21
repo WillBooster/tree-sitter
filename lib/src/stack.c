@@ -876,10 +876,11 @@ void ts_stack_push_recovery(
     extra_count++;
   }
   if (extra_count > 1) {
+    StackLink old_link = head->node->links[0];
     stack_node_retain(node);
-    stack_node_release(head->node, &self->node_pool, self->subtree_pool);
-    head->node = node;
-    ts_stack_push(self, version, prefix, false, state);
+    head->node->links[0] = (StackLink) {.node = node, .subtree = prefix};
+    ts_subtree_release(self->subtree_pool, old_link.subtree);
+    stack_node_release(old_link.node, &self->node_pool, self->subtree_pool);
   } else if (prefix.ptr) {
     ts_subtree_release(self->subtree_pool, prefix);
   }
