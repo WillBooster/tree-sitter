@@ -221,6 +221,57 @@ fn test_lexer_preserves_lower_precedence_comment_continuations() {
 }
 
 #[test]
+fn test_lexer_preserves_precedence_before_speculative_continuations() {
+    let path = fixtures_dir().join("test_grammars/lexical_precedence_continuations/grammar.js");
+    let grammar = load_grammar_file(&path, None).unwrap();
+    for mut parser in parsers_for_grammar(&grammar) {
+        for quote in ['"', '\''] {
+            let mut source = format!("{quote}&amp;{quote}; following").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            let mut previous_length = 0;
+            for gap in [" ", "\t", "\r\n", "\u{a0}", "\u{2028}", " text ", ""] {
+                perform_edit(
+                    &mut tree,
+                    &mut source,
+                    &Edit {
+                        position: 1,
+                        deleted_length: previous_length,
+                        inserted_text: gap.as_bytes().to_vec(),
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                for parsed in [&tree, &fresh] {
+                    let root = parsed.root_node();
+                    assert!(!root.has_error(), "{}", root.to_sexp());
+                    let string = root.named_child(0).unwrap();
+                    let entity_index = usize::from(!gap.is_empty());
+                    assert_eq!(string.named_child_count(), entity_index + 1);
+                    if !gap.is_empty() {
+                        let fragment = string.named_child(0).unwrap();
+                        assert_eq!(fragment.utf8_text(&source).unwrap(), gap);
+                        assert_eq!(fragment.byte_range(), 1..1 + gap.len());
+                    }
+                    let entity = string
+                        .named_child(entity_index.try_into().unwrap())
+                        .unwrap();
+                    assert_eq!(entity.kind(), "entity");
+                    assert_eq!(entity.utf8_text(&source).unwrap(), "&amp;");
+                    assert_eq!(entity.byte_range(), 1 + gap.len()..6 + gap.len());
+                    assert_eq!(
+                        root.named_child(1).unwrap().utf8_text(&source).unwrap(),
+                        "following"
+                    );
+                }
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                previous_length = gap.len();
+            }
+        }
+    }
+}
+
+#[test]
 fn test_lexer_minimization_preserves_distinct_eof_tokens() {
     let grammar = serde_json::json!({
         "name": "distinct_eof_tokens",

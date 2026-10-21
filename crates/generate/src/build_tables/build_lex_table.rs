@@ -667,9 +667,9 @@ impl<'a> LexTableBuilder<'a> {
         let transition_completion = if self.word_guards[guard_id].1
             && completion.is_some_and(|(id, _)| self.word_token == Some(Symbol::terminal(id)))
         {
-            fallback_completion.map(|candidate| (candidate.variable, candidate.precedence))
+            fallback_completion
         } else {
-            completion
+            selected_completion
         };
 
         let shadow_word_complete = self.word_guards[guard_id].1
@@ -734,7 +734,11 @@ impl<'a> LexTableBuilder<'a> {
                             .any(|index| index == word.index as usize)
                     })
             });
-            if let Some((completed_id, completed_precedence)) = transition_completion
+            if let Some(LexCompletion {
+                variable: completed_id,
+                precedence: completed_precedence,
+                ..
+            }) = transition_completion
                 && !preserve_word
                 && !TokenConflictMap::prefer_transition(
                     self.lexical_grammar,
@@ -750,14 +754,20 @@ impl<'a> LexTableBuilder<'a> {
             let Some(TaggedAdvance {
                 states: next_tags,
                 start_tags,
-            }) = self.advance_start_tags(nfa_states, &transition)
+            }) = self.advance_start_tags(nfa_states, &transition, transition_completion)
             else {
                 continue;
             };
             let (next_state_id, _) =
                 self.add_state(next_tags, eof_valid && transition.is_separator, guard_id);
             if !eof_valid && transition.characters.contains('\0') {
-                self.add_standalone_nul_eof(state_id, nfa_states, &transition, guard_id);
+                self.add_standalone_nul_eof(
+                    state_id,
+                    nfa_states,
+                    &transition,
+                    guard_id,
+                    transition_completion,
+                );
             }
             self.table.states[state_id as usize].advance_actions.push((
                 transition.characters,
@@ -799,6 +809,7 @@ impl<'a> LexTableBuilder<'a> {
         nfa_states: &[TaggedState],
         transition: &NfaTransition,
         guard_id: usize,
+        completion: Option<LexCompletion>,
     ) {
         let unstarted = nfa_states
             .iter()
@@ -811,7 +822,7 @@ impl<'a> LexTableBuilder<'a> {
                     )
             })
             .collect::<Vec<_>>();
-        let Some(mut advance) = self.advance_start_tags(&unstarted, transition) else {
+        let Some(mut advance) = self.advance_start_tags(&unstarted, transition, completion) else {
             return;
         };
         advance.states.retain(|&(id, _)| {
@@ -891,7 +902,10 @@ impl<'a> LexTableBuilder<'a> {
         &self,
         nfa_states: &[TaggedState],
         transition: &NfaTransition,
+        completion: Option<LexCompletion>,
     ) -> Option<TaggedAdvance> {
+        let earlier_completion = completion
+            .and_then(|complete| complete.start_tag.map(|start| (start, complete.precedence)));
         let new_tag = nfa_states
             .iter()
             .filter_map(|&(_, tag)| tag)
@@ -903,7 +917,7 @@ impl<'a> LexTableBuilder<'a> {
                 chars,
                 state_id,
                 is_sep,
-                ..
+                precedence,
             } = &self.lexical_grammar.nfa.states[id as usize]
                 && transition.states.contains(state_id)
                 && chars.does_intersect(&transition.characters)
@@ -913,6 +927,12 @@ impl<'a> LexTableBuilder<'a> {
                 } else {
                     Some(tag.unwrap_or(new_tag))
                 };
+                if let Some((start, completed_precedence)) = earlier_completion
+                    && *precedence < completed_precedence
+                    && tag.is_none_or(|tag| tag > start)
+                {
+                    continue;
+                }
                 next_tags.push((*state_id, tag));
             }
         }
