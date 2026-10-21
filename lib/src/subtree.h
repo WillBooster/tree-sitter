@@ -140,6 +140,7 @@ typedef struct {
       uint32_t named_child_count;
       uint32_t visible_descendant_count;
       int32_t dynamic_precedence;
+      uint32_t stack_link_count;
       uint16_t repeat_depth;
       uint16_t production_id;
       struct {
@@ -200,6 +201,7 @@ Subtree ts_subtree_new_error(
   SubtreePool *pool, int32_t lookahead_char, Length padding, Length size,
   uint32_t bytes_scanned, TSStateId parse_state, const TSLanguage *language
 );
+Subtree ts_subtree_new_extra_group(Subtree left, Subtree right, const TSLanguage *language);
 MutableSubtree ts_subtree_new_node(
   TSSymbol symbol,
   SubtreeArray *chiildren,
@@ -323,6 +325,10 @@ static inline uint32_t ts_subtree_total_bytes(Subtree self) {
 
 static inline uint32_t ts_subtree_child_count(Subtree self) {
   return self.data.is_inline ? 0 : self.ptr->child_count;
+}
+
+static inline uint32_t ts_subtree_stack_link_count(Subtree self) {
+  return self.ptr && ts_subtree_child_count(self) && self.ptr->stack_link_count ? self.ptr->stack_link_count : 1;
 }
 
 static inline uint32_t ts_subtree_repeat_depth(Subtree self) {
