@@ -561,6 +561,34 @@ impl<'a> ParseItemSetBuilder<'a> {
         &self.last_sets[&symbol]
     }
 
+    #[cfg(feature = "load")]
+    pub fn equivalent_productions(&self, reduction_keys: &FxHashSet<(u32, u32)>) -> FxHashSet<u32> {
+        let mut result = FxHashSet::default();
+        for variable in 0..self.syntax_grammar.variables.len() {
+            let mut pending = self
+                .syntax_grammar
+                .variable_prod_ids(variable)
+                .collect::<Vec<_>>();
+            let mut seen = FxHashSet::default();
+            while let Some(id) = pending.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                let keys = self.key_map.keys_for(id);
+                if reduction_keys.contains(&(variable as u32, keys.last().unwrap().cmp)) {
+                    result.insert(id);
+                }
+                pending.extend(
+                    (0..self.syntax_grammar.production(id).steps.len())
+                        .filter_map(|step| self.inlines.inlined_prod_ids(id, step as u32))
+                        .flatten()
+                        .copied(),
+                );
+            }
+        }
+        result
+    }
+
     fn accumulate_follow_context(&mut self, entry: &ParseItemSetEntry<'a>) {
         if let Some(index) = entry
             .item
