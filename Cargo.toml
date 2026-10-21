@@ -20,7 +20,7 @@ homepage = "https://tree-sitter.github.io/tree-sitter"
 keywords = [ "incremental", "parsing" ]
 license = "MIT"
 repository = "https://github.com/WillBooster/tree-sitter"
-rust-version = "1.90"
+rust-version = "1.93"
 version = "0.27.0"
 
 [workspace.lints.clippy]
@@ -29,13 +29,6 @@ dbg_macro = "deny"
 nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 todo = "deny"
-
-# The lints below are a specific subset of the pedantic+nursery lints
-# that we explicitly allow in the tree-sitter codebase because they either:
-#
-# 1. Contain false positives,
-# 2. Are unnecessary, or
-# 3. Worsen the code
 
 cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
@@ -56,16 +49,17 @@ tuple_array_conversions = "allow"
 [workspace.lints.rust]
 mismatched_lifetime_syntaxes = "allow"
 
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true
+
 [profile.optimize]
 inherits = "release"
-codegen-units = 1    # Maximum size reduction optimizations.
-lto = true           # Link-time optimization.
-opt-level = 3        # Optimization level 3.
-strip = true         # Automatically strip symbols from the binary.
 
 [profile.size]
 inherits = "optimize"
-opt-level = "s"       # Optimize for size.
+opt-level = "s"
 
 [profile.release-dev]
 inherits = "release"
@@ -75,6 +69,7 @@ debug-assertions = true
 incremental = true
 lto = false
 overflow-checks = true
+strip = false
 
 [workspace.dependencies]
 ansi_colours = "1.2.3"
