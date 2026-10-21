@@ -2932,28 +2932,47 @@ fn test_completed_nodes_before_unfinished_nonterminal_extras() {
 
 #[test]
 fn test_recovery_allocation_growth_with_repeated_errors() {
-    let language = get_test_fixture_language("recovery_extra_groups");
-    let mut sizes = Vec::new();
-    for repetitions in [200, 2_000] {
-        let source = format!("a{{{}}}tail;", "b:/*{*/?".repeat(repetitions));
-        let ((), bytes) = allocations::record_allocated_bytes(|| {
-            let mut parser = Parser::new();
-            parser.set_language(&language).unwrap();
-            let tree = parser.parse(&source, None).unwrap();
-            let root = tree.root_node();
-            assert!(root.has_error());
-            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
-            let mut cursor = root.walk();
-            let tail = root
-                .named_children(&mut cursor)
-                .find(|node| node.kind() == "tail")
-                .unwrap_or_else(|| panic!("{}", root.to_sexp()));
-            assert_eq!(tail.utf8_text(source.as_bytes()).unwrap(), "tail;");
-            assert!(!tail.has_error());
-        });
-        sizes.push(bytes);
+    let cases = [
+        (
+            get_test_fixture_language("recovery_extra_groups"),
+            "a{",
+            "b:/*{*/?",
+            "}tail;",
+            "tail",
+            "tail;",
+        ),
+        (
+            get_language("c-sharp"),
+            "",
+            "#pragma warning disable X #:x\n",
+            "class C {}",
+            "class_declaration",
+            "class C {}",
+        ),
+    ];
+    for (language, prefix, fragment, suffix, kind, text) in cases {
+        let mut sizes = Vec::new();
+        for repetitions in [200, 2_000] {
+            let source = format!("{prefix}{}{suffix}", fragment.repeat(repetitions));
+            let ((), bytes) = allocations::record_allocated_bytes(|| {
+                let mut parser = Parser::new();
+                parser.set_language(&language).unwrap();
+                let tree = parser.parse(&source, None).unwrap();
+                let root = tree.root_node();
+                assert!(root.has_error());
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+                let mut cursor = root.walk();
+                let sentinel = root
+                    .named_children(&mut cursor)
+                    .find(|node| node.kind() == kind)
+                    .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+                assert_eq!(sentinel.utf8_text(source.as_bytes()).unwrap(), text);
+                assert!(!sentinel.has_error());
+            });
+            sizes.push(bytes);
+        }
+        assert!(sizes[1] < sizes[0] * 20, "allocation sizes: {sizes:?}");
     }
-    assert!(sizes[1] < sizes[0] * 20, "allocation sizes: {sizes:?}");
 }
 
 #[test]
