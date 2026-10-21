@@ -1,0 +1,49 @@
+==================
+Whitespace before a double-quoted entity
+==================
+
+" &amp;"; following
+
+---
+
+(source (double (double_fragment) (entity)) (identifier))
+
+==================
+Whitespace before a single-quoted entity
+==================
+
+' &amp;'; following
+
+---
+
+(source (single (single_fragment) (entity)) (identifier))
+
+==================
+An entity without a preceding fragment
+==================
+
+"&amp;"; following
+
+---
+
+(source (double (entity)) (identifier))
+
+==================
+Text before an entity
+==================
+
+"text &amp;"; following
+
+---
+
+(source (double (double_fragment) (entity)) (identifier))
+
+==================
+A literal ampersand continues the fragment
+==================
+
+" &? "; following
+
+---
+
+(source (double (double_fragment)) (identifier))
