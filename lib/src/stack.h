@@ -24,6 +24,7 @@ typedef struct {
   Length position;
   unsigned depth;
   TSStateId state;
+  bool has_root_subtree;
 } StackSummaryEntry;
 typedef Array(StackSummaryEntry) StackSummary;
 
@@ -88,6 +89,13 @@ StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version);
 // since the last error was detected.
 unsigned ts_stack_node_count_since_error(const Stack *self, StackVersion version);
 
+// A nonzero generation identifying the error recovery this version resumed from, until an
+// error-containing reduction returns the version to the root state; zero otherwise. Setting it
+// assigns a fresh generation, copies inherit it, and merging with a confirmed version clears it.
+uint64_t ts_stack_unconfirmed_recovery(const Stack *self, StackVersion version);
+
+void ts_stack_set_unconfirmed_recovery(Stack *self, StackVersion version, bool value);
+
 // Whether the version holds a missing token that error recovery inserted although the lookahead
 // is then shifted rather than reduced, and that neither a reduction nor an ERROR has incorporated
 // yet.
@@ -99,12 +107,12 @@ int ts_stack_dynamic_precedence(Stack *self, StackVersion version);
 
 bool ts_stack_has_advanced_since_error(const Stack *self, StackVersion version);
 
-// Compute a summary of all the parse states near the top of the given
-// version of the stack and store the summary for later retrieval.
+// The caller owns the returned array.
+StackSummary ts_stack_current_summary(Stack *self, StackVersion version, unsigned max_depth);
+
 void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_depth);
 
-// Retrieve a summary of all the parse states near the top of the
-// given version of the stack.
+// Borrowed until the stack or its recorded summary changes.
 StackSummary *ts_stack_get_summary(Stack *self, StackVersion version);
 
 // Get the total cost of all errors on the given version of the stack.
