@@ -137,7 +137,7 @@ pub unsafe extern "C" fn ts_record_malloc(size: usize) -> *mut c_void {
 /// freed by calling `ts_record_free`.
 #[must_use]
 pub unsafe extern "C" fn ts_record_calloc(count: usize, size: usize) -> *mut c_void {
-    record_allocated_size(count * size);
+    record_allocated_size(count.saturating_mul(size));
     unsafe {
         let result = calloc(count, size);
         record_alloc(result);

@@ -530,6 +530,7 @@ Subtree ts_subtree_new_extra_group(Subtree left, Subtree right, const TSLanguage
   array_push(&children, right);
   MutableSubtree result = ts_subtree_new_node(ts_builtin_sym_error_repeat, &children, 0, language);
   result.ptr->extra = true;
+  result.ptr->stack_link_count = ts_subtree_stack_link_count(left) + ts_subtree_stack_link_count(right);
   ts_subtree_summarize_children(result, language);
   return ts_subtree_from_mut(result);
 }

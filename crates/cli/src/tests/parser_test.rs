@@ -2432,6 +2432,38 @@ fn test_recovery_allocation_growth_with_repeated_errors() {
 }
 
 #[test]
+fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
+    use tree_sitter::StreamingIterator;
+    let languages = [
+        get_test_fixture_language("recovery_extra_groups"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_extra_groups"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for (source, query_source, expected) in [
+            ("ab:?/**/:/**/", r#"(ERROR (ERROR ":" @token))"#, vec![8..9]),
+            ("a{?/**/{bx;}tail;", r#"(ERROR "{" @token)"#, vec![7..8]),
+            (
+                "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
+                r#"(ERROR (ERROR "a" @token))"#,
+                vec![13..14, 33..34, 39..40],
+            ),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let query = Query::new(&parser.language().unwrap(), query_source).unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+            let mut ranges = Vec::new();
+            while let Some((query_match, index)) = captures.next() {
+                ranges.push(query_match.captures()[*index].node.byte_range());
+            }
+            assert_eq!(ranges, expected, "{}", tree.root_node().to_sexp());
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
 fn test_recovery_extra_groups_preserve_edits_and_node_metadata() {
     let languages = [
         get_test_fixture_language("recovery_extra_groups"),
