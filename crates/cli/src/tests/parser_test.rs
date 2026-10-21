@@ -1027,9 +1027,7 @@ fn test_incremental_recovery_after_replacing_generic_arguments() {
         #[cfg(feature = "wasm")]
         super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
     ];
-    for language in languages {
-        let mut parser = Parser::new();
-        parser.set_language(&language).unwrap();
+    for mut parser in parsers_for_languages(languages) {
         let mut source = b"class C implements Box<const> {}".to_vec();
         let mut tree = parser.parse(&source, None).unwrap();
         assert!(!tree.root_node().has_error());
