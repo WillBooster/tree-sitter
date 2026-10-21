@@ -2954,7 +2954,7 @@ fn test_incremental_edits_around_reused_nonterminal_extras() {
         let mut source = b"a& #x\n a#\n&\n!\na".to_vec();
         let mut tree = parser.parse(&source, None).unwrap();
         assert!(!tree.root_node().has_error());
-        for inserted in [b'a', b'&', b'a', b'&'] {
+        for inserted in *b"a&a&" {
             perform_edit(
                 &mut tree,
                 &mut source,
