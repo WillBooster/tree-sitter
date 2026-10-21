@@ -10,7 +10,7 @@ use std::{
 
 use tree_sitter::{
     Decode, IncludedRangesError, InputEdit, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
-    ParseState, Parser, Point, Query, QueryErrorKind, Range,
+    ParseState, Parser, Point, Query, QueryErrorKind, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -683,15 +683,12 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 
 #[test]
 fn test_missing_token_recovery_preserves_following_declarations() {
-    let alias_with_error = ("type_alias_declaration", true);
     let (alias, export) = (
         ("type_alias_declaration", false),
         ("export_statement", false),
     );
     let for_in = ("for_in_statement", false);
-    let exports = [export; 7];
-    // Recovery absorbs the seven exports right after `export[` into the erroneous statement; the
-    // seven exports after the blank line must stay separate.
+    let exports = [export; 14];
     let after_invalid_export = [
         &[export, export, ("expression_statement", true)][..],
         &exports,
@@ -701,12 +698,12 @@ fn test_missing_token_recovery_preserves_following_declarations() {
         (
             "typescript/typescript",
             "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[alias_with_error, export, alias][..],
+            &[("expression_statement", true), export, alias][..],
         ),
         (
             "typescript/typescript",
             "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[alias_with_error, export, alias],
+            &[("type_alias_declaration", true), export, alias],
         ),
         (
             "typescript/typescript",
@@ -721,6 +718,7 @@ fn test_missing_token_recovery_preserves_following_declarations() {
             "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
             &[
                 ("ERROR", true),
+                ("expression_statement", false),
                 for_in,
                 for_in,
                 for_in,
@@ -829,6 +827,518 @@ fn test_incremental_parse_restores_missing_opening_delimiter() {
     perform_edit(&mut tree, &mut source, &undo).unwrap();
     let restored = parser.parse(&source, Some(&tree)).unwrap();
     assert_eq!(restored.root_node().to_sexp(), expected);
+}
+
+#[test]
+fn test_recovery_respects_completed_prefixes() {
+    for (language, source, kind, text) in [
+        (
+            "go",
+            "\npackage ma>  ByfX5iEk\nconst (\n  zero = 0\n  one = 1\n)\n",
+            "const_declaration",
+            "const (\n  zero = 0\n  one = 1\n)",
+        ),
+        ("c", "> T x; bad\n", "declaration", "T x;"),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let declaration = root
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == kind)
+            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+        assert_eq!(declaration.utf8_text(source.as_bytes()).unwrap(), text);
+        assert!(!declaration.has_error());
+    }
+}
+
+#[test]
+fn test_recovery_isolates_malformed_prefix_from_following_struct() {
+    for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language("c")).unwrap();
+        let following = "struct b c;";
+        let mut source = format!("{before}{following}{after}").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 0;
+        for prefix in [
+            "class C implements A, B<C\n",
+            "",
+            "class C implements A, B<C\n",
+            "",
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: before.len(),
+                    deleted_length: previous_length,
+                    inserted_text: prefix.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let declarations = root
+                .named_children(&mut cursor)
+                .filter(|node| !node.has_error())
+                .map(|node| (node.kind(), node.utf8_text(&source).unwrap()))
+                .collect::<Vec<_>>();
+            let mut expected = Vec::new();
+            if !before.is_empty() {
+                expected.push(("declaration", before.trim()));
+            }
+            expected.push(("declaration", following));
+            if !after.is_empty() {
+                expected.push(("declaration", after.trim()));
+            }
+            assert_eq!(declarations, expected, "{}", root.to_sexp());
+            previous_length = prefix.len();
+        }
+    }
+}
+
+#[test]
+fn test_recovery_preserves_declarations_after_incomplete_generics() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for following in [
+            "export function f() {}\nconst sentinel = 1;",
+            "function f() {}\nconst sentinel = 1;",
+            "const sentinel = 1;",
+        ] {
+            let prefix = "class C implements A, number<B";
+            let mut source = format!("{prefix}> {{}}\n{following}").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            let mut previous_length = 4;
+            for ending in [";", "> {}", "", "> {}", " {}", "> {}"] {
+                let edit = Edit {
+                    position: prefix.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                };
+                edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
+                assert_eq!(tree.root_node().has_error(), ending != "> {}");
+                let root = tree.root_node();
+                let mut cursor = root.walk();
+                let declarations = root
+                    .named_children(&mut cursor)
+                    .filter(|node| {
+                        matches!(
+                            node.kind(),
+                            "export_statement" | "function_declaration" | "lexical_declaration"
+                        )
+                    })
+                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    declarations,
+                    following
+                        .lines()
+                        .map(|line| (line, false))
+                        .collect::<Vec<_>>(),
+                    "{}",
+                    root.to_sexp()
+                );
+                previous_length = ending.len();
+            }
+        }
+        let source = "class C \n implements number<B; \n export function f() {} const x = export";
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        let exported = root
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == "export_statement")
+            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+        assert_eq!(
+            exported.utf8_text(source.as_bytes()).unwrap(),
+            "export function f() {}"
+        );
+        assert!(!exported.has_error());
+
+        for name in ["const", "function", "export"] {
+            let source = format!("class C implements Box<{name}> {{}}");
+            let tree = parser.parse(&source, None).unwrap();
+            assert!(
+                !tree.root_node().has_error(),
+                "{}",
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_language("typescript/typescript"))
+        .unwrap();
+    for prefix in ["", "export = Linter;\n", "const first = 0;\n"] {
+        let annotation = format!("{prefix}const a: Foo<Bar");
+        let mut source =
+            format!("{annotation}>;\nexport = {{}};\nconst sentinel = 1;").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 2;
+        for ending in ["", ">;", "", ">;"] {
+            edit_and_assert_fresh(
+                &mut parser,
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: annotation.len(),
+                    deleted_length: previous_length,
+                    inserted_text: ending.as_bytes().to_vec(),
+                },
+            );
+            assert_eq!(tree.root_node().has_error(), ending.is_empty());
+            let root = tree.root_node();
+            let mut cursor = tree.walk();
+            let following = root
+                .named_children(&mut cursor)
+                .filter(|node| node.start_byte() > annotation.len())
+                .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                following,
+                [("export = {};", false), ("const sentinel = 1;", false)]
+            );
+            previous_length = ending.len();
+        }
+    }
+}
+
+#[test]
+fn test_recovery_keeps_declarations_after_restarting_an_error() {
+    for (language, source, expected) in [
+        (
+            "javascript",
+            "const before = 0;\n=a=]\nexport function following() {}\nconst sentinel = 1;",
+            vec![
+                "const before = 0;",
+                "export function following() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+        (
+            "javascript",
+            "function before() {}\nimport> const ( const ?)\nexport function following() {}\nconst sentinel = 1;",
+            vec![
+                "function before() {}",
+                "export function following() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+        (
+            "javascript",
+            "function before() {}\nclass C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
+            vec![
+                "function before() {}",
+                ";",
+                "export function following() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+        (
+            "javascript",
+            "class C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
+            vec![";", "export function following() {}", "const sentinel = 1;"],
+        ),
+        (
+            "c-sharp",
+            "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
+            vec!["class Following { int Value => 1; }"],
+        ),
+        (
+            "c-sharp",
+            "var r = () => {\nx?o;}\nclass Following { int Value => 1; }",
+            vec!["class Following { int Value => 1; }"],
+        ),
+        (
+            "c-sharp",
+            "void b()\n  var z = __refvalue(g, int);\n}",
+            vec!["var z = __refvalue(g, int);"],
+        ),
+        (
+            "c-sharp",
+            "int b()\n  var z = F(g, 1);\n}",
+            vec!["var z = F(g, 1);"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\nclass Example { }",
+            vec!["class Example { }"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\n[B]\nusing System.Linq;",
+            vec!["using System.Linq;"],
+        ),
+        (
+            "c-sharp",
+            "class Before {}\nclass C implements A, number<B\n[A]\nnamespace Example { }",
+            vec!["class Before {}", "namespace Example { }"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
+            vec!["interface I2 {}", "declare function g(): void;"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nlet v = 1;\nexport default function q() {}\nnamespace M {}",
+            vec!["export default function q() {}", "namespace M {}"],
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
+            vec![
+                "using System.Linq;",
+                "namespace M { }",
+                "public enum F { A, B }",
+            ],
+        ),
+        (
+            "javascript",
+            "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
+            vec!["export const k = 2;"],
+        ),
+        (
+            "javascript",
+            "class C extends B<\nexport default function q() {}",
+            vec!["function q() {}"],
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nexport default class A {}\nexport function f() {}\nconst sentinel = 1;",
+            vec![
+                "class A {}",
+                "export function f() {}",
+                "const sentinel = 1;",
+            ],
+        ),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(language)).unwrap();
+        let mut source = source.as_bytes().to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 0;
+        for prefix in ["\n", "", "\n\n", ""] {
+            edit_and_assert_fresh(
+                &mut parser,
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length: previous_length,
+                    inserted_text: prefix.as_bytes().to_vec(),
+                },
+            );
+            let mut cursor = tree.walk();
+            let declarations = tree
+                .root_node()
+                .named_children(&mut cursor)
+                .filter(|node| !node.has_error())
+                .map(|node| node.utf8_text(&source).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(declarations, expected);
+            previous_length = prefix.len();
+        }
+    }
+}
+
+#[test]
+fn test_recovery_reconsiders_errors_after_edits() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for edit in [
+        Edit {
+            position: 9,
+            deleted_length: 2,
+            inserted_text: Vec::new(),
+        },
+        Edit {
+            position: 16,
+            deleted_length: 0,
+            inserted_text: b";".to_vec(),
+        },
+    ] {
+        let mut source = b"export default grammar({s:{,),)x}});".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(tree.root_node().has_error());
+        let undo = invert_edit(&source, &edit);
+        edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
+        edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &undo);
+    }
+}
+
+#[test]
+fn test_recovery_reconsiders_reused_nodes_across_edits() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    for (initial_source, edits) in [
+        (
+            "import t from\"t\";\nimport\"\"\n{r={t ult:e} =w;arse)\n",
+            [
+                (32, 4, ""),
+                (14, 3, "type "),
+                (43, 1, "interface "),
+                (46, 2, ","),
+            ]
+            .as_slice(),
+        ),
+        (
+            "({e:''>['',pe: $=>[+/,\n//\na;\n",
+            [(12, 3, ">"), (16, 0, "interface "), (11, 0, "=")].as_slice(),
+        ),
+        (
+            "({e:'',,:s$=p $ =>[+/,\n//\nd:};\n",
+            [(13, 3, ">"), (16, 0, "interface "), (10, 0, "=")].as_slice(),
+        ),
+    ] {
+        let mut source = initial_source.as_bytes().to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut undos = Vec::new();
+        for &(position, deleted_length, inserted_text) in edits {
+            let edit = Edit {
+                position,
+                deleted_length,
+                inserted_text: inserted_text.as_bytes().to_vec(),
+            };
+            undos.push(invert_edit(&source, &edit));
+            edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
+        }
+        for undo in undos.into_iter().rev() {
+            edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &undo);
+        }
+    }
+}
+
+#[test]
+fn test_recovery_keeps_visibility_after_missing_token() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("rust")).unwrap();
+    let prefix = "fn f() {}\n\nimpl<T> A for B<T>\n    where for<'a> D<T>: E<'a>,\nstruct S<T> { x: T\n{\n}\n\n";
+    let declaration = "pub trait A<B> where B: C, {}";
+    for suffix in ["", "\nfn g() {}", "\nstruct Following { value: i32 }"] {
+        let source = format!("{prefix}{declaration}{suffix}");
+        let tree = parser.parse(&source, None).unwrap();
+        let mut cursor = tree.walk();
+        let item = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .find(|node| node.kind() == "trait_item")
+            .unwrap();
+        assert!(!item.has_error());
+        assert_eq!(item.utf8_text(source.as_bytes()).unwrap(), declaration);
+        if !suffix.is_empty() {
+            let root = tree.root_node();
+            let following = root.named_children(&mut cursor).last().unwrap();
+            assert!(!following.has_error());
+            assert_eq!(
+                following.utf8_text(source.as_bytes()).unwrap(),
+                suffix.trim()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_retains_following_declaration_keywords() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    let prefix = "typedef int my_int;\n\nint f(int a";
+    let mut source = format!("{prefix}\n\ntypedef unsigned long ulong_t;\n").into_bytes();
+    let mut tree = parser.parse(&source, None).unwrap();
+    for newline_count in [2, 1, 3, 2] {
+        let current_count = source[prefix.len()..]
+            .iter()
+            .take_while(|&&byte| byte == b'\n')
+            .count();
+        edit_and_assert_fresh(
+            &mut parser,
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: prefix.len(),
+                deleted_length: current_count,
+                inserted_text: vec![b'\n'; newline_count],
+            },
+        );
+        let mut cursor = tree.walk();
+        let declarations = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() == "type_definition" && !node.has_error())
+            .map(|node| node.utf8_text(&source).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declarations,
+            ["typedef int my_int;", "typedef unsigned long ulong_t;"]
+        );
+    }
+}
+
+#[test]
+fn test_recovery_preserves_prefixes_in_statement_lists() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for prefix in ["function f() {}", "const a = 1;"] {
+            let before_edit = format!("{prefix}\nnumber<B;\nclass E");
+            let mut source =
+                format!("{before_edit} implements A {{}}\nconst sentinel = 1;").into_bytes();
+            let mut tree = parser.parse(&source, None).unwrap();
+            for remove in [true, false, true, false] {
+                let edit = Edit {
+                    position: before_edit.len(),
+                    deleted_length: if remove { " implements A".len() } else { 0 },
+                    inserted_text: if remove {
+                        Vec::new()
+                    } else {
+                        b" implements A".to_vec()
+                    },
+                };
+                edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
+                let root = tree.root_node();
+                let mut cursor = root.walk();
+                let declarations = root
+                    .named_children(&mut cursor)
+                    .filter(|node| {
+                        matches!(node.kind(), "function_declaration" | "lexical_declaration")
+                    })
+                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    declarations,
+                    [(prefix, false), ("const sentinel = 1;", false)],
+                    "{}",
+                    root.to_sexp()
+                );
+            }
+        }
+    }
+}
+
+fn edit_and_assert_fresh(parser: &mut Parser, tree: &mut Tree, source: &mut Vec<u8>, edit: &Edit) {
+    perform_edit(tree, source, edit).unwrap();
+    *tree = parser.parse(&*source, Some(tree)).unwrap();
+    let fresh = parser.parse(&*source, None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
 }
 
 #[test]
@@ -2446,7 +2956,7 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
             (
                 "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
                 r#"(ERROR (ERROR "a" @token))"#,
-                vec![13..14, 33..34, 39..40],
+                vec![6..7, 13..14, 39..40],
             ),
         ] {
             let tree = parser.parse(source, None).unwrap();
@@ -3741,60 +4251,44 @@ fn test_parsing_cancelled_by_another_thread() {
 // Timeouts
 
 #[test]
-#[retry(10)]
 fn test_parsing_with_a_timeout() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
+    let mut read_end = 0;
+    let mut read = |offset: usize, _| {
+        let chunk = match offset {
+            0 => b" [".as_slice(),
+            1 => b"[".as_slice(),
+            _ if offset.is_multiple_of(2) => b",0".as_slice(),
+            _ => b"0,".as_slice(),
+        };
+        read_end = read_end.max(offset + chunk.len());
+        chunk
+    };
 
-    // Parse an infinitely-long array, but pause after 1ms of processing.
-    let start_time = time::Instant::now();
-    let tree = parser.parse_with_options(
-        &mut |offset, _| {
-            if offset == 0 { b" [" } else { b",0" }
-        },
-        None,
-        Some(ParseOptions::new().progress_callback(&mut |_| {
-            if start_time.elapsed().as_micros() > 1000 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })),
-    );
-    assert!(tree.is_none());
-    assert!(start_time.elapsed().as_micros() < 2000);
-
-    // Continue parsing, but pause after 1 ms of processing.
-    let start_time = time::Instant::now();
-    let tree = parser.parse_with_options(
-        &mut |offset, _| {
-            if offset == 0 { b" [" } else { b",0" }
-        },
-        None,
-        Some(ParseOptions::new().progress_callback(&mut |_| {
-            if start_time.elapsed().as_micros() > 5000 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })),
-    );
-    assert!(tree.is_none());
-    assert!(start_time.elapsed().as_micros() > 100);
-    assert!(start_time.elapsed().as_micros() < 10000);
-
-    // Finish parsing
-    let tree = parser
-        .parse_with_options(
-            &mut |offset, _| match offset {
-                5001.. => "".as_bytes(),
-                5000 => "]".as_bytes(),
-                _ => ",0".as_bytes(),
-            },
+    for timeout_micros in [1000, 5000] {
+        let start_time = time::Instant::now();
+        let tree = parser.parse_with_options(
+            &mut read,
             None,
-            None,
-        )
-        .unwrap();
+            Some(ParseOptions::new().progress_callback(&mut |_| {
+                if start_time.elapsed().as_micros() > timeout_micros {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })),
+        );
+        assert!(tree.is_none());
+        let elapsed = start_time.elapsed();
+        assert!(elapsed.as_micros() > timeout_micros);
+        assert!(elapsed < time::Duration::from_secs(1));
+    }
+
+    let source = format!(" [{}]", ",0".repeat(read_end / 2 + 1));
+    let tree = parser.parse(source.as_bytes(), None).unwrap();
+    let fresh = parser.parse(source.as_bytes(), None).unwrap();
+    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
     assert_eq!(tree.root_node().child(0).unwrap().kind(), "array");
 }
 

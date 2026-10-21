@@ -1,0 +1,11 @@
+==================
+Leaf and composite aliases
+==================
+style; @func; plain; [name] [ns|name]
+---
+(source_file
+  (tag (tag_name))
+  (tag (tag_name))
+  (tag (tag_name))
+  (attribute (attribute_name))
+  (attribute (attribute_name (identifier) (identifier))))

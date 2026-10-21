@@ -2985,16 +2985,6 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         )
         .unwrap();
 
-        // Most of the document will fail to parse, resulting in a
-        // large number of tokens that are *direct* children of an
-        // ERROR node.
-        //
-        // These children should still match, unless they are part
-        // of a "non-rooted" pattern, in which there are multiple
-        // top-level sibling nodes. Those patterns should not match
-        // directly inside of an error node, because the contents of
-        // an error node are not syntactically well-structured, so we
-        // would get many spurious matches.
         let source = "
             fn a() {}
 
@@ -3013,14 +3003,26 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         parser.set_language(&language).unwrap();
         let tree = parser.parse(source, None).unwrap();
         let mut cursor = QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        while let Some(found) = matches.next() {
+            if found.pattern_index == 0 {
+                let captures = found.captures();
+                let parent = captures[0].node.parent().unwrap();
+                assert_eq!(parent, captures[1].node.parent().unwrap());
+                assert_ne!(parent.kind(), "ERROR");
+            }
+        }
         let matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
         assert_eq!(
             collect_matches(matches, &query, source),
             &[
                 (0, vec![("open", "{"), ("close", "}")]),
+                (0, vec![("open", "{"), ("close", "}")]),
                 (1, vec![("comment", "// comment 1")]),
                 (1, vec![("comment", "/* comment 2 */")]),
                 (1, vec![("comment", "// comment 3")]),
+                (0, vec![("open", "{"), ("close", "}")]),
+                (0, vec![("open", "{"), ("close", "}")]),
             ],
         );
     });
@@ -3142,28 +3144,7 @@ fn test_query_matches_with_anonymous_tokens() {
 
 #[test]
 fn test_supertype_field_node_schema() {
-    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-    std::fs::create_dir_all(&scratch).unwrap();
-    let directory = tempfile::tempdir_in(scratch).unwrap();
-    let grammar =
-        super::helpers::fixtures::fixtures_dir().join("test_grammars/supertype_fields/grammar.js");
-    std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
-    tree_sitter_generate::generate_parser_in_directory(
-        directory.path(),
-        None::<std::path::PathBuf>,
-        None::<std::path::PathBuf>,
-        None,
-        None,
-        false,
-        tree_sitter_generate::OptLevel::default(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-    )
-    .unwrap();
-    let entries = schema.as_array().unwrap();
+    let entries = super::helpers::fixtures::fixture_node_types("supertype_fields");
     for (kind, required, multiple, field_type) in [
         ("list", false, true, "spread"),
         ("assigned", true, false, "item"),
@@ -3212,11 +3193,7 @@ fn test_supertype_field_node_schema() {
 
 #[test]
 fn test_hidden_child_requiredness_in_node_schema() {
-    let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-    std::fs::create_dir_all(&scratch).unwrap();
-    let directory = tempfile::tempdir_in(scratch).unwrap();
-    std::fs::write(
-        directory.path().join("grammar.js"),
+    let entries = super::helpers::fixtures::generate_node_types(
         r"
         module.exports = grammar({
             name: 'hidden_child_cardinality',
@@ -3231,30 +3208,9 @@ fn test_hidden_child_requiredness_in_node_schema() {
             },
         });
     ",
-    )
-    .unwrap();
-    tree_sitter_generate::generate_parser_in_directory(
-        directory.path(),
-        None::<std::path::PathBuf>,
-        None::<std::path::PathBuf>,
-        None,
-        None,
-        false,
-        tree_sitter_generate::OptLevel::default(),
-        &mut Vec::new(),
-    )
-    .unwrap();
-    let schema: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-    )
-    .unwrap();
+    );
     for (kind, required) in [("required_children", true), ("optional_children", false)] {
-        let node = schema
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|node| node["type"] == kind)
-            .unwrap();
+        let node = entries.iter().find(|node| node["type"] == kind).unwrap();
         assert_eq!(
             node["children"],
             serde_json::json!({
@@ -3299,28 +3255,7 @@ fn test_query_fields_inside_supertypes() {
 #[test]
 fn test_transparent_supertype_alias_node_schema() {
     for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
-        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
-        std::fs::create_dir_all(&scratch).unwrap();
-        let directory = tempfile::tempdir_in(scratch).unwrap();
-        let grammar = super::helpers::fixtures::fixtures_dir()
-            .join(format!("test_grammars/{fixture}/grammar.js"));
-        std::fs::copy(grammar, directory.path().join("grammar.js")).unwrap();
-        tree_sitter_generate::generate_parser_in_directory(
-            directory.path(),
-            None::<std::path::PathBuf>,
-            None::<std::path::PathBuf>,
-            None,
-            None,
-            false,
-            tree_sitter_generate::OptLevel::default(),
-            &mut Vec::new(),
-        )
-        .unwrap();
-        let schema: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(directory.path().join("src/node-types.json")).unwrap(),
-        )
-        .unwrap();
-        let entries = schema.as_array().unwrap();
+        let entries = super::helpers::fixtures::fixture_node_types(fixture);
         let expressions: Vec<_> = entries
             .iter()
             .filter(|entry| entry["type"] == "expression")
@@ -6425,13 +6360,8 @@ fn test_query_alternative_predicate_prefix() {
         )
         .unwrap();
         let source = r#"
-            DEFUN ("identity", Fidentity, Sidentity, 1, 1, 0,
-                   doc: /* Return the argument unchanged.  */
-                   attributes: const)
-              (Lisp_Object arg)
-            {
-              return arg;
-            }
+            DEFUN("identity", Fidentity, Sidentity, 1, 1, 0);
+            OTHER("ignored");
         "#;
         assert_query_matches(
             &language,

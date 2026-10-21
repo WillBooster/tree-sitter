@@ -131,6 +131,7 @@ typedef struct {
   bool first_leaf_is_keyword : 1;
   bool trailing_extra : 1;
   bool has_ambiguous_extra : 1;
+  bool first_child_has_completed_prefix : 1;
 
   union {
     // Non-terminal subtrees (`child_count > 0`)
@@ -367,6 +368,15 @@ static inline uint32_t ts_subtree_error_cost(Subtree self) {
   } else {
     return self.data.is_inline ? 0 : self.ptr->error_cost;
   }
+}
+
+// Whether this subtree, or a node on its hidden left spine, is an error-free parent: a completed
+// prefix that later errors cannot hide. The spine result is cached per node because recovery asks
+// this of growing hidden repetitions, whose left spines would otherwise be walked repeatedly.
+static inline bool ts_subtree_has_completed_prefix(Subtree self) {
+  if (ts_subtree_child_count(self) == 0) return false;
+  return ts_subtree_error_cost(self) == 0 ||
+    (!self.ptr->visible && self.ptr->first_child_has_completed_prefix);
 }
 
 static inline int32_t ts_subtree_dynamic_precedence(Subtree self) {

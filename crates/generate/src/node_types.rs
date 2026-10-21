@@ -10,7 +10,7 @@ use thiserror::Error;
 use crate::strpool::StrPool;
 
 use super::{
-    grammars::{LexicalGrammar, SyntaxGrammar, VariableType},
+    grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar, VariableType},
     rules::{Alias, AliasMap, Symbol, SymbolType},
     strpool::StrId,
 };
@@ -196,11 +196,12 @@ impl std::fmt::Display for InvalidSupertypeError {
 ///    *appear* to have type `N` may have internal structure based on `M`.
 pub fn get_variable_info(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
     str_pool: &StrPool,
 ) -> VariableInfoResult<Vec<VariableInfo>> {
-    validate_supertype_aliases(syntax_grammar, default_aliases, str_pool)?;
+    validate_supertype_aliases(syntax_grammar, inlines, default_aliases, str_pool)?;
     let mut result =
         compute_variable_info_fixed_point(syntax_grammar, lexical_grammar, default_aliases);
     validate_supertype_structure(
@@ -219,10 +220,11 @@ pub fn get_variable_info(
 /// and a concrete aliased node.
 fn validate_supertype_aliases(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     default_aliases: &AliasMap,
     str_pool: &StrPool,
 ) -> VariableInfoResult<()> {
-    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, default_aliases);
+    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, inlines, default_aliases);
     for supertype_symbol in &syntax_grammar.supertype_symbols {
         let supertype = &syntax_grammar.variables[supertype_symbol.index as usize];
         let collision = Alias {
@@ -614,6 +616,7 @@ fn strip_hidden_child_types(
 
 fn get_aliases_by_symbol(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     default_aliases: &AliasMap,
 ) -> FxHashMap<Symbol, BTreeSet<Option<Alias>>> {
     let mut aliases_by_symbol = FxHashMap::default();
@@ -632,26 +635,72 @@ fn get_aliases_by_symbol(
                 .insert(None);
         }
     }
-    for i in 0..syntax_grammar.variables.len() {
-        for prod_id in syntax_grammar.variable_prod_ids(i) {
-            for step in syntax_grammar.production(prod_id).steps {
-                aliases_by_symbol
-                    .entry(step.symbol())
-                    .or_insert_with(BTreeSet::new)
-                    .insert(
-                        step.alias()
-                            .as_ref()
-                            .or_else(|| default_aliases.get(&step.symbol()))
-                            .copied(),
-                    );
-            }
-        }
+    let original_productions = (0..syntax_grammar.variables.len())
+        .flat_map(|i| syntax_grammar.variable_prod_ids(i))
+        .map(|id| syntax_grammar.production(id).steps);
+    let expanded_ids = reachable_expanded_productions(syntax_grammar, inlines);
+    let fully_expanded_productions = expanded_ids
+        .into_iter()
+        .map(|id| syntax_grammar.production(id).steps);
+    for step in original_productions
+        .chain(fully_expanded_productions)
+        .flatten()
+    {
+        aliases_by_symbol
+            .entry(step.symbol())
+            .or_insert_with(BTreeSet::new)
+            .insert(
+                step.alias()
+                    .as_ref()
+                    .or_else(|| default_aliases.get(&step.symbol()))
+                    .copied(),
+            );
     }
     aliases_by_symbol.insert(
         Symbol::non_terminal(0),
         std::iter::once(&None).copied().collect(),
     );
     aliases_by_symbol
+}
+
+fn reachable_expanded_productions(
+    grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
+) -> Vec<u32> {
+    let mut pending = std::iter::once(Symbol::non_terminal(0))
+        .chain(
+            grammar
+                .extra_symbols
+                .iter()
+                .copied()
+                .filter(|s| s.is_non_terminal()),
+        )
+        .flat_map(|symbol| grammar.variable_prod_ids(symbol.index as usize))
+        .collect::<Vec<_>>();
+    let mut seen = FxHashSet::default();
+    let mut completed = Vec::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(expansions) = (0..grammar.production(id).steps.len())
+            .find_map(|index| inlines.inlined_prod_ids(id, index as u32))
+        {
+            pending.extend_from_slice(expansions);
+        } else {
+            pending.extend(
+                grammar
+                    .production(id)
+                    .steps
+                    .iter()
+                    .map(|step| step.symbol())
+                    .filter(|symbol| symbol.is_non_terminal())
+                    .flat_map(|symbol| grammar.variable_prod_ids(symbol.index as usize)),
+            );
+            completed.push(id);
+        }
+    }
+    completed
 }
 
 pub fn get_supertype_symbol_map(
@@ -764,6 +813,7 @@ impl std::fmt::Display for SuperTypeCycleError {
 #[cfg(feature = "load")]
 pub fn generate_node_types_json(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
     variable_info: &[VariableInfo],
@@ -771,6 +821,7 @@ pub fn generate_node_types_json(
 ) -> SuperTypeCycleResult<String> {
     let nodes = generate_node_types(
         syntax_grammar,
+        inlines,
         lexical_grammar,
         default_aliases,
         variable_info,
@@ -787,12 +838,13 @@ pub fn generate_node_types_json(
 #[cfg(feature = "load")]
 fn generate_node_types(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
     variable_info: &[VariableInfo],
     str_pool: &StrPool,
 ) -> SuperTypeCycleResult<Vec<NodeInfoJSON>> {
-    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, default_aliases);
+    let aliases_by_symbol = get_aliases_by_symbol(syntax_grammar, inlines, default_aliases);
     let extra_node_types =
         collect_extra_node_types(syntax_grammar, lexical_grammar, &aliases_by_symbol);
 
@@ -2280,10 +2332,11 @@ mod tests {
             lexical_grammar,
             default_aliases,
             str_pool,
-            ..
+            inlines,
         } = prepare_grammar(grammar, &mut Vec::new()).unwrap();
         let error = get_variable_info(
             &syntax_grammar,
+            &inlines,
             &lexical_grammar,
             &default_aliases,
             &str_pool,
@@ -3014,8 +3067,14 @@ mod tests {
             ],
             vec![],
         );
-        let variable_info =
-            get_variable_info(&grammar, &lexical_grammar, &AliasMap::new(), &interner).unwrap();
+        let variable_info = get_variable_info(
+            &grammar,
+            &InlinedProductionMap::default(),
+            &lexical_grammar,
+            &AliasMap::new(),
+            &interner,
+        )
+        .unwrap();
 
         assert_eq!(
             variable_info[0].fields,
@@ -3082,8 +3141,14 @@ mod tests {
             ],
             vec![],
         );
-        let variable_info =
-            get_variable_info(&grammar, &lexical_grammar, &AliasMap::new(), &interner).unwrap();
+        let variable_info = get_variable_info(
+            &grammar,
+            &InlinedProductionMap::default(),
+            &lexical_grammar,
+            &AliasMap::new(),
+            &interner,
+        )
+        .unwrap();
 
         assert_eq!(
             variable_info[0].fields,
@@ -3146,8 +3211,14 @@ mod tests {
             ],
             vec![],
         );
-        let variable_info =
-            get_variable_info(&grammar, &lexical_grammar, &AliasMap::new(), &interner).unwrap();
+        let variable_info = get_variable_info(
+            &grammar,
+            &InlinedProductionMap::default(),
+            &lexical_grammar,
+            &AliasMap::new(),
+            &interner,
+        )
+        .unwrap();
 
         assert_eq!(
             variable_info[0].fields,
@@ -3210,8 +3281,14 @@ mod tests {
             // _rule1 is a supertype
             vec![Symbol::non_terminal(1)],
         );
-        let variable_info =
-            get_variable_info(&grammar, &lexical_grammar, &AliasMap::new(), &interner).unwrap();
+        let variable_info = get_variable_info(
+            &grammar,
+            &InlinedProductionMap::default(),
+            &lexical_grammar,
+            &AliasMap::new(),
+            &interner,
+        )
+        .unwrap();
 
         assert_eq!(
             variable_info[0].fields,
@@ -3307,10 +3384,11 @@ mod tests {
             lexical_grammar,
             default_aliases,
             str_pool,
-            ..
+            inlines,
         } = prepare_grammar(grammar, &mut Vec::new()).unwrap();
         let variable_info = get_variable_info(
             &syntax_grammar,
+            &inlines,
             &lexical_grammar,
             &default_aliases,
             &str_pool,
@@ -3318,6 +3396,7 @@ mod tests {
         .unwrap();
         generate_node_types(
             &syntax_grammar,
+            &inlines,
             &lexical_grammar,
             &default_aliases,
             &variable_info,
