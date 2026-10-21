@@ -123,7 +123,9 @@ typedef struct {
   unsigned node_count;
   int dynamic_precedence;
   bool is_in_error;
+  bool is_paused;
   bool is_unconfirmed;
+  uint64_t unconfirmed_recovery;
 } ErrorStatus;
 
 typedef enum {
@@ -296,6 +298,10 @@ static ErrorComparison ts_parser__compare_versions(
   return ErrorComparisonNone;
 }
 
+// A recovery can resume inside a construct the input never closes. Until it reaches the
+// root state, its lower error cost must not discard another resumed parse.
+// Paused heads have not tried recovery for their lookahead yet; an active head
+// alone is not evidence that their continuation cannot finish the construct.
 static ErrorComparison ts_parser__compare_ranked_versions(
   TSParser *self,
   ErrorStatus higher,
@@ -303,7 +309,19 @@ static ErrorComparison ts_parser__compare_ranked_versions(
 ) {
   ErrorComparison comparison = ts_parser__compare_versions(self, higher, lower);
   bool displaces_higher = comparison == ErrorComparisonPreferRight || comparison == ErrorComparisonTakeRight;
-  if (displaces_higher && lower.is_unconfirmed && !higher.is_in_error) return ErrorComparisonNone;
+  bool paused_recovery = higher.is_paused && higher.unconfirmed_recovery;
+  bool has_unconfirmed_recovery = lower.unconfirmed_recovery &&
+    lower.unconfirmed_recovery != higher.unconfirmed_recovery;
+  if (comparison == ErrorComparisonTakeLeft && higher.unconfirmed_recovery &&
+      higher.unconfirmed_recovery != lower.unconfirmed_recovery &&
+      (!lower.is_in_error || lower.is_paused)) {
+    return ErrorComparisonPreferLeft;
+  }
+  if (displaces_higher &&
+      (lower.is_unconfirmed || has_unconfirmed_recovery || paused_recovery) &&
+      (!higher.is_in_error || paused_recovery || (has_unconfirmed_recovery && higher.is_paused))) {
+    return lower.is_unconfirmed ? ErrorComparisonNone : ErrorComparisonPreferRight;
+  }
   return comparison;
 }
 
@@ -319,7 +337,9 @@ static ErrorStatus ts_parser__version_status(
     .node_count = ts_stack_node_count_since_error(self->stack, version),
     .dynamic_precedence = ts_stack_dynamic_precedence(self->stack, version),
     .is_in_error = is_paused || ts_stack_state(self->stack, version) == ERROR_STATE,
+    .is_paused = is_paused,
     .is_unconfirmed = ts_stack_has_unconfirmed_missing_token(self->stack, version),
+    .unconfirmed_recovery = ts_stack_unconfirmed_recovery(self->stack, version),
   };
 }
 
@@ -346,7 +366,7 @@ static bool ts_parser__better_version_exists(
         !ts_stack_is_active(self->stack, i) ||
         ts_stack_position(self->stack, i).bytes < position.bytes) continue;
     ErrorStatus status_i = ts_parser__version_status(self, i);
-    if (status_i.is_unconfirmed) continue;
+    if (status_i.is_unconfirmed || status_i.unconfirmed_recovery) continue;
     switch (ts_parser__compare_versions(self, status, status_i)) {
       case ErrorComparisonTakeRight:
         return true;
@@ -1291,7 +1311,7 @@ static void ts_parser__confirm_incorporated_recovery(
   bool normal_reduction
 ) {
   if (!ts_stack_has_unconfirmed_missing_token(self->stack, version) &&
-      !ts_stack_has_unconfirmed_recovery(self->stack, version)) return;
+      !ts_stack_unconfirmed_recovery(self->stack, version)) return;
   for (uint32_t i = 0; i < children->size; i++) {
     Subtree child = *array_get(children, i);
     if (ts_subtree_missing(child)) {
@@ -1863,7 +1883,7 @@ static bool ts_parser__missing_token_completes_recovery(
   StackVersion version,
   StackVersion first_candidate
 ) {
-  if (!ts_stack_has_unconfirmed_recovery(self->stack, version)) return false;
+  if (!ts_stack_unconfirmed_recovery(self->stack, version)) return false;
   for (StackVersion v = first_candidate; v < ts_stack_version_count(self->stack); v++) {
     if (ts_stack_is_active(self->stack, v) &&
         ts_parser__state_finishes_root(self, ts_stack_state(self->stack, v))) return true;
@@ -2294,7 +2314,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
         continue;
       }
       bool can_resume_recovery = !resumed_paused_version &&
-        (ts_stack_has_unconfirmed_recovery(self->stack, i) ||
+        (ts_stack_unconfirmed_recovery(self->stack, i) ||
          ts_parser__version_status(self, i).cost < active_cost);
       if ((has_active_version && !can_resume_recovery) || self->accept_count >= MAX_VERSION_COUNT) {
         ts_stack_remove_version(self->stack, i);

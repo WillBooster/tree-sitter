@@ -1020,6 +1020,34 @@ fn test_incremental_recovery_after_restarting_an_error() {
     }
 }
 
+#[test]
+fn test_incremental_recovery_after_replacing_generic_arguments() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for language in languages {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let mut source = b"class C implements Box<const> {}".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        edit_and_assert_fresh(
+            &mut parser,
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: 22,
+                deleted_length: 5,
+                inserted_text: b"(".to_vec(),
+            },
+        );
+        assert!(tree.root_node().has_error());
+        crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+    }
+}
+
 fn assert_prefix_edits_match_fresh(language: &str, source: &str) {
     let mut parser = Parser::new();
     parser.set_language(&get_language(language)).unwrap();
@@ -2850,7 +2878,7 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
             (
                 "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
                 r#"(ERROR (ERROR "a" @token))"#,
-                vec![(13, 14), (33, 34), (39, 40)],
+                vec![(6, 7), (13, 14), (39, 40)],
             ),
         ] {
             let tree = parser.parse(source, None).unwrap();
