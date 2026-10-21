@@ -20,7 +20,7 @@ homepage = "https://tree-sitter.github.io/tree-sitter"
 keywords = [ "incremental", "parsing" ]
 license = "MIT"
 repository = "https://github.com/WillBooster/tree-sitter"
-rust-version = "1.90"
+rust-version = "1.93"
 version = "0.27.0"
 
 [workspace.lints.clippy]
