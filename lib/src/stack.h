@@ -54,6 +54,8 @@ void ts_stack_set_last_external_token(Stack *self, StackVersion version, Subtree
 // Get the position of the given version of the stack within the document.
 Length ts_stack_position(const Stack *, StackVersion);
 
+void ts_stack_push_recovery(Stack *self, StackVersion version, Subtree subtree, TSStateId state, const TSLanguage *language);
+
 // Push a tree and state onto the given version of the stack.
 //
 // This transfers ownership of the tree to the Stack. Callers that

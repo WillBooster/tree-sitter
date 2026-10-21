@@ -28,6 +28,7 @@ unsafe impl Sync for Allocation {}
 struct AllocationRecorder {
     enabled: AtomicBool,
     allocation_count: AtomicUsize,
+    allocated_bytes: AtomicUsize,
     outstanding_allocations: Mutex<HashMap<Allocation, usize>>,
 }
 
@@ -42,6 +43,14 @@ unsafe extern "C" {
     fn free(ptr: *mut c_void);
 }
 
+pub fn record_allocated_bytes<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    record(|| {
+        let result = f();
+        let bytes = RECORDER.with(|recorder| recorder.allocated_bytes.load(SeqCst));
+        (result, bytes)
+    })
+}
+
 pub fn record<T>(f: impl FnOnce() -> T) -> T {
     record_checked(f).unwrap()
 }
@@ -50,6 +59,7 @@ pub fn record_checked<T>(f: impl FnOnce() -> T) -> Result<T, String> {
     RECORDER.with(|recorder| {
         recorder.enabled.store(true, SeqCst);
         recorder.allocation_count.store(0, SeqCst);
+        recorder.allocated_bytes.store(0, SeqCst);
         recorder.outstanding_allocations.lock().unwrap().clear();
     });
 
@@ -72,6 +82,14 @@ pub fn record_checked<T>(f: impl FnOnce() -> T) -> Result<T, String> {
         ));
     }
     Ok(value)
+}
+
+fn record_allocated_size(size: usize) {
+    RECORDER.with(|recorder| {
+        if recorder.enabled.load(SeqCst) {
+            recorder.allocated_bytes.fetch_add(size, SeqCst);
+        }
+    });
 }
 
 fn record_alloc(ptr: *mut c_void) {
@@ -105,6 +123,7 @@ fn record_dealloc(ptr: *mut c_void) {
 /// freed by calling `ts_record_free`.
 #[must_use]
 pub unsafe extern "C" fn ts_record_malloc(size: usize) -> *mut c_void {
+    record_allocated_size(size);
     unsafe {
         let result = malloc(size);
         record_alloc(result);
@@ -118,6 +137,7 @@ pub unsafe extern "C" fn ts_record_malloc(size: usize) -> *mut c_void {
 /// freed by calling `ts_record_free`.
 #[must_use]
 pub unsafe extern "C" fn ts_record_calloc(count: usize, size: usize) -> *mut c_void {
+    record_allocated_size(count.saturating_mul(size));
     unsafe {
         let result = calloc(count, size);
         record_alloc(result);
@@ -131,6 +151,7 @@ pub unsafe extern "C" fn ts_record_calloc(count: usize, size: usize) -> *mut c_v
 /// freed by calling `ts_record_free`.
 #[must_use]
 pub unsafe extern "C" fn ts_record_realloc(ptr: *mut c_void, size: usize) -> *mut c_void {
+    record_allocated_size(size);
     unsafe {
         let result = realloc(ptr, size);
         if ptr.is_null() {
