@@ -635,26 +635,27 @@ fn get_aliases_by_symbol(
                 .insert(None);
         }
     }
-    let original_productions = (0..syntax_grammar.variables.len())
-        .flat_map(|i| syntax_grammar.variable_prod_ids(i))
-        .map(|id| syntax_grammar.production(id).steps);
+    let original_productions = (0..syntax_grammar.variables.len()).flat_map(|i| {
+        let retain_aliases = !syntax_grammar
+            .variables_to_inline
+            .contains(&Symbol::non_terminal(i));
+        syntax_grammar
+            .variable_prod_ids(i)
+            .map(move |id| (id, retain_aliases))
+    });
     let expanded_ids = reachable_expanded_productions(syntax_grammar, inlines);
-    let fully_expanded_productions = expanded_ids
-        .into_iter()
-        .map(|id| syntax_grammar.production(id).steps);
-    for step in original_productions
-        .chain(fully_expanded_productions)
-        .flatten()
-    {
-        aliases_by_symbol
-            .entry(step.symbol())
-            .or_insert_with(BTreeSet::new)
-            .insert(
-                step.alias()
-                    .as_ref()
-                    .or_else(|| default_aliases.get(&step.symbol()))
-                    .copied(),
-            );
+    let fully_expanded_productions = expanded_ids.into_iter().map(|id| (id, true));
+    for (id, retain_aliases) in original_productions.chain(fully_expanded_productions) {
+        for step in syntax_grammar.production(id).steps {
+            aliases_by_symbol
+                .entry(step.symbol())
+                .or_insert_with(BTreeSet::new)
+                .insert(
+                    step.alias()
+                        .filter(|_| retain_aliases)
+                        .or_else(|| default_aliases.get(&step.symbol()).copied()),
+                );
+        }
     }
     aliases_by_symbol.insert(
         Symbol::non_terminal(0),
