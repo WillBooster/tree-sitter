@@ -121,7 +121,7 @@ struct Generate {
     /// Show debug log during generation
     #[arg(long, short)]
     pub log: bool,
-    /// Only generate `grammar.json` and `node-types.json`
+    /// Generate `grammar.json` and `node-types.json`, including parse-table validation, without C output
     #[arg(long)]
     pub no_parser: bool,
     /// Deprecated: use the `build` command

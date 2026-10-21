@@ -128,10 +128,10 @@ fn generate_resolves_repeat_conflicts_with_named_rules() {
         )
         .unwrap();
         let output = generate(directory.path(), &["grammar.js", "--no-parser"]);
+        let diagnostic = String::from_utf8(output.stderr).unwrap();
         assert!(
-            output.status.success(),
-            "{fixture}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            !output.status.success() && diagnostic.contains("Unresolved conflict"),
+            "{fixture}: {diagnostic}"
         );
         let grammar_path = directory.path().join("src/grammar.json");
         let mut grammar: serde_json::Value =

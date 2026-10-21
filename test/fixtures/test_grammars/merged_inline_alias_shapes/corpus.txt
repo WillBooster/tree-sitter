@@ -1,0 +1,13 @@
+==================
+First alias shape
+==================
+a(value)
+---
+(source_file (node (identifier)))
+
+==================
+Second alias shape
+==================
+b[value]
+---
+(source_file (node (identifier)))

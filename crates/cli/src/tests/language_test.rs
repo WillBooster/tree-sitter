@@ -285,6 +285,89 @@ fn test_supertypes() {
 }
 
 #[test]
+fn test_unreducible_inline_aliases_preserve_required_fields() {
+    use super::helpers::fixtures::{
+        fixtures_dir, generate_node_types_with_parser, get_test_fixture_language,
+    };
+
+    for name in ["eof_reference_alias", "shadowed_reduction_alias"] {
+        let grammar = std::fs::read_to_string(
+            fixtures_dir()
+                .join("test_grammars")
+                .join(name)
+                .join("grammar.js"),
+        )
+        .unwrap();
+        let metadata_only = generate_node_types_with_parser(&grammar, false);
+        let with_parser = generate_node_types_with_parser(&grammar, true);
+        assert_eq!(metadata_only, with_parser, "{name}");
+        let node_entry = metadata_only
+            .iter()
+            .find(|entry| entry["type"] == "node")
+            .unwrap();
+        assert_eq!(node_entry["fields"]["value"]["required"], true, "{name}");
+
+        let language = get_test_fixture_language(name);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse("(value)", None).unwrap();
+        assert!(!tree.root_node().has_error(), "{name}");
+        let node = tree.root_node().named_child(0).unwrap();
+        assert_eq!(node.kind(), "node");
+        assert_eq!(
+            node.child_by_field_name("value").unwrap().kind(),
+            "identifier"
+        );
+        if name == "shadowed_reduction_alias" {
+            let tree = parser.parse("!?", None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().named_child(0).unwrap().kind(), "winner");
+        } else {
+            assert!(parser.parse("y!", None).unwrap().root_node().has_error());
+        }
+    }
+}
+
+#[test]
+fn test_merged_inline_alias_shapes_preserve_fields() {
+    use super::helpers::fixtures::{
+        fixtures_dir, generate_node_types_with_parser, get_test_fixture_language,
+    };
+    let name = "merged_inline_alias_shapes";
+    let grammar = std::fs::read_to_string(
+        fixtures_dir()
+            .join("test_grammars")
+            .join(name)
+            .join("grammar.js"),
+    )
+    .unwrap();
+    let metadata_only = generate_node_types_with_parser(&grammar, false);
+    assert_eq!(
+        metadata_only,
+        generate_node_types_with_parser(&grammar, true)
+    );
+    let node = metadata_only
+        .iter()
+        .find(|entry| entry["type"] == "node")
+        .unwrap();
+    let language = get_test_fixture_language(name);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, field) in [("a(value)", "a"), ("b[value]", "b")] {
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        let parsed = tree.root_node().named_child(0).unwrap();
+        assert_eq!(parsed.kind(), "node");
+        assert_eq!(
+            parsed.child_by_field_name(field).unwrap().kind(),
+            "identifier"
+        );
+        assert_eq!(node["fields"][field]["required"], false);
+        assert_eq!(node["fields"][field]["types"][0]["type"], "identifier");
+    }
+}
+
+#[test]
 fn test_nested_inline_alias_metadata_matches_visible_nodes() {
     let entries = super::helpers::fixtures::fixture_node_types("nested_inline_alias_metadata");
     let node_entry = entries
