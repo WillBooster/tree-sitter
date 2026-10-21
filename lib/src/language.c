@@ -181,11 +181,17 @@ void ts_language_table_entry(
   }
 }
 
+static uint16_t ts_language_lookup_shared_set(const TSLanguage *self, uint32_t index, TSSymbol symbol);
+static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol);
+
 uint16_t ts_language_lookup_small_compact(
   const TSLanguage *self,
   uint32_t index,
   TSSymbol symbol
 ) {
+  if ((index & SMALL_STATE_SET_FLAG) == SMALL_STATE_SET_FLAG) {
+    return ts_language_lookup_shared_set(self, index, symbol);
+  }
   if (index & SMALL_STATE_BITMAP_FLAG) {
     if (symbol >= self->symbol_count) return 0;
     const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG];
@@ -208,7 +214,10 @@ uint16_t ts_language_lookup_small_compact(
     }
     return 0;
   }
-  const uint16_t *data = &self->small_parse_table[index];
+  return ts_language_lookup_grouped(&self->small_parse_table[index], symbol);
+}
+
+static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol) {
   uint16_t group_count = *(data++);
   for (unsigned i = 0; i < group_count; i++) {
     uint16_t section_value = *(data++);
@@ -236,6 +245,20 @@ uint16_t ts_language_lookup_small_compact(
     for (unsigned j = 0; j < symbol_count; j++) {
       if (*(data++) == symbol) return section_value;
     }
+  }
+  return 0;
+}
+
+static uint16_t ts_language_lookup_shared_set(const TSLanguage *self, uint32_t index, TSSymbol symbol) {
+  const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_SET_FLAG];
+  uint32_t count = *(data++);
+  uint32_t block = symbol / 16;
+  uint32_t bit = 1u << (symbol % 16);
+  for (uint32_t i = 0; i < count; i++, data += 3) {
+    uint32_t offset = data[1] | ((uint32_t)data[2] << 16);
+    const uint16_t *set = &self->small_parse_table[offset];
+    uint32_t word = block - set[0];
+    if (word < set[1] && (set[word + 2] & bit)) return data[0];
   }
   return 0;
 }

@@ -1,6 +1,55 @@
 use tree_sitter::{self, Parser};
 
-use super::helpers::fixtures::get_language;
+use super::helpers::fixtures::{get_language, get_test_fixture_language};
+
+#[test]
+fn test_lookaheads_after_identifier_with_many_following_keywords() {
+    let language = get_test_fixture_language("shared_lookahead_sets");
+    let mut parser = Parser::new();
+    assert_keyword_lookaheads(&mut parser, &language);
+}
+
+#[cfg(feature = "wasm")]
+#[test]
+fn test_wasm_lookaheads_after_identifier_with_many_following_keywords() {
+    use tree_sitter::WasmStore;
+
+    use super::helpers::fixtures::{ENGINE, get_test_fixture_language_wasm};
+
+    let language = get_test_fixture_language_wasm("shared_lookahead_sets");
+    let mut parser = Parser::new();
+    parser
+        .set_wasm_store(WasmStore::new(&ENGINE).unwrap())
+        .unwrap();
+    assert_keyword_lookaheads(&mut parser, &language);
+}
+
+fn assert_keyword_lookaheads(parser: &mut Parser, language: &tree_sitter::Language) {
+    parser.set_language(language).unwrap();
+    for keyword in 0..80 {
+        let source = format!("name k{keyword};");
+        let tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{source}");
+        let identifier = tree
+            .root_node()
+            .named_child(0)
+            .unwrap()
+            .named_child(0)
+            .unwrap();
+        assert_eq!(identifier.kind(), "identifier");
+        let state = identifier.next_parse_state();
+        let mut lookahead = language.lookahead_iterator(state).unwrap();
+        let mut symbols = lookahead.iter_names().collect::<Vec<_>>();
+        symbols.sort_unstable();
+        let mut expected = (0..80).map(|i| format!("k{i}")).collect::<Vec<_>>();
+        expected.sort_unstable();
+        assert_eq!(symbols, expected);
+        assert_eq!(lookahead.current_symbol(), None);
+        assert!(lookahead.next().is_none());
+        assert!(lookahead.reset_state(state));
+        assert_eq!(lookahead.count(), 80);
+    }
+}
 
 #[test]
 fn test_lookahead_iterator() {
