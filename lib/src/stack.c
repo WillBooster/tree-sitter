@@ -970,11 +970,10 @@ StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version) {
 }
 
 typedef struct {
+  Stack *stack;
   StackSummary *summary;
   unsigned max_depth;
 } SummarizeStackSession;
-
-static bool subtree_has_completed_prefix(Subtree subtree);
 
 forceinline StackAction summarize_stack_callback(void *payload, const StackIterator *iterator) {
   SummarizeStackSession *session = payload;
@@ -987,10 +986,11 @@ forceinline StackAction summarize_stack_callback(void *payload, const StackItera
     if (entry.depth == depth && entry.state == state) return StackActionNone;
   }
   bool has_root_subtree = false;
-  for (unsigned i = 0; i < iterator->node->link_count; i++) {
-    StackLink link = iterator->node->links[i];
+  StackNode *node = stack__skip_extra_chains(session->stack, iterator->node);
+  for (unsigned i = 0; i < node->link_count; i++) {
+    StackLink link = node->links[i];
     if (link.subtree.ptr && link.node->state == 1 &&
-        subtree_has_completed_prefix(link.subtree)) {
+        ts_subtree_has_completed_prefix(link.subtree)) {
       has_root_subtree = true;
     }
   }
@@ -1003,28 +1003,26 @@ forceinline StackAction summarize_stack_callback(void *payload, const StackItera
   return StackActionNone;
 }
 
-static bool subtree_has_completed_prefix(Subtree subtree) {
-  while (ts_subtree_child_count(subtree) > 0) {
-    if (ts_subtree_error_cost(subtree) == 0) return true;
-    if (ts_subtree_visible(subtree)) return false;
-    subtree = ts_subtree_children(subtree)[0];
-  }
-  return false;
-}
-
 void ts_stack_record_summary(Stack *self, StackVersion version, unsigned max_depth) {
-  SummarizeStackSession session = {
-    .summary = ts_malloc(sizeof(StackSummary)),
-    .max_depth = max_depth
-  };
-  array_init(session.summary);
-  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL);
+  StackSummary summary = ts_stack_current_summary(self, version, max_depth);
   StackHead *head = array_get(&self->heads, version);
   if (head->summary) {
     array_delete(head->summary);
-    ts_free(head->summary);
+  } else {
+    head->summary = ts_malloc(sizeof(StackSummary));
   }
-  head->summary = session.summary;
+  *head->summary = summary;
+}
+
+StackSummary ts_stack_current_summary(Stack *self, StackVersion version, unsigned max_depth) {
+  StackSummary summary = array_new();
+  SummarizeStackSession session = {
+    .stack = self,
+    .summary = &summary,
+    .max_depth = max_depth
+  };
+  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL);
+  return summary;
 }
 
 StackSummary *ts_stack_get_summary(Stack *self, StackVersion version) {

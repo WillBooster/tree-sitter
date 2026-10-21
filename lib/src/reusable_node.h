@@ -9,15 +9,17 @@ typedef struct {
 typedef struct {
   Array(StackEntry) stack;
   Subtree last_external_token;
+  bool after_extra;
 } ReusableNode;
 
 static inline ReusableNode reusable_node_new(void) {
-  return (ReusableNode) {array_new(), NULL_SUBTREE};
+  return (ReusableNode) {.stack = array_new(), .last_external_token = NULL_SUBTREE};
 }
 
 static inline void reusable_node_clear(ReusableNode *self) {
   array_clear(&self->stack);
   self->last_external_token = NULL_SUBTREE;
+  self->after_extra = false;
 }
 
 static inline Subtree reusable_node_tree(ReusableNode *self) {
@@ -63,6 +65,9 @@ static inline void reusable_node_advance(ReusableNode *self) {
   uint32_t next_index;
   do {
     StackEntry popped_entry = array_pop(&self->stack);
+    if (ts_subtree_total_bytes(popped_entry.tree) || ts_subtree_has_external_tokens(popped_entry.tree) || ts_subtree_extra(popped_entry.tree)) {
+      self->after_extra = ts_subtree_trailing_extra(popped_entry.tree);
+    }
     next_index = popped_entry.child_index + 1;
     if (self->stack.size == 0) return;
     tree = array_back(&self->stack)->tree;

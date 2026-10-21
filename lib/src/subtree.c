@@ -223,6 +223,7 @@ Subtree ts_subtree_new_leaf(
       .first_leaf_is_keyword = is_keyword_exact,
       .trailing_extra = false,
       .has_ambiguous_extra = false,
+      .first_child_has_completed_prefix = false,
       {{.first_leaf = {.symbol = 0, .parse_state = 0}}}
     };
     return (Subtree) {.ptr = data};
@@ -505,6 +506,7 @@ void ts_subtree_summarize_children(
     self.ptr->first_leaf.symbol = ts_subtree_leaf_symbol(first_child);
     self.ptr->first_leaf.parse_state = ts_subtree_leaf_parse_state(first_child);
     self.ptr->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
+    self.ptr->first_child_has_completed_prefix = ts_subtree_has_completed_prefix(first_child);
 
     if (ts_subtree_fragile_left(first_child) || ts_subtree_missing(first_child)) {
       self.ptr->fragile_left = true;
@@ -560,6 +562,7 @@ MutableSubtree ts_subtree_new_node(
     .first_leaf_is_keyword = false,
     .trailing_extra = false,
     .has_ambiguous_extra = false,
+    .first_child_has_completed_prefix = false,
     {{
       .visible_descendant_count = 0,
       .production_id = production_id,
