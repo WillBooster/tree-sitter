@@ -2921,7 +2921,7 @@ fn test_recovery_allocation_growth_with_repeated_errors() {
     let mut sizes = Vec::new();
     for repetitions in [200, 2_000] {
         let source = format!("a{{{}}}tail;", "b:/*{*/?".repeat(repetitions));
-        let (_, bytes) = allocations::record_allocated_bytes(|| {
+        let ((), bytes) = allocations::record_allocated_bytes(|| {
             let mut parser = Parser::new();
             parser.set_language(&language).unwrap();
             let tree = parser.parse(&source, None).unwrap();
@@ -2951,12 +2951,16 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
     ];
     for mut parser in parsers_for_languages(languages) {
         for (source, query_source, expected) in [
-            ("ab:?/**/:/**/", r#"(ERROR (ERROR ":" @token))"#, vec![8..9]),
-            ("a{?/**/{bx;}tail;", r#"(ERROR "{" @token)"#, vec![7..8]),
+            (
+                "ab:?/**/:/**/",
+                r#"(ERROR (ERROR ":" @token))"#,
+                vec![(8, 9)],
+            ),
+            ("a{?/**/{bx;}tail;", r#"(ERROR "{" @token)"#, vec![(7, 8)]),
             (
                 "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
                 r#"(ERROR (ERROR "a" @token))"#,
-                vec![6..7, 13..14, 39..40],
+                vec![(6, 7), (13, 14), (39, 40)],
             ),
         ] {
             let tree = parser.parse(source, None).unwrap();
@@ -2965,7 +2969,8 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
             let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
             let mut ranges = Vec::new();
             while let Some((query_match, index)) = captures.next() {
-                ranges.push(query_match.captures()[*index].node.byte_range());
+                let node = query_match.captures()[*index].node;
+                ranges.push((node.start_byte(), node.end_byte()));
             }
             assert_eq!(ranges, expected, "{}", tree.root_node().to_sexp());
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
@@ -3004,23 +3009,33 @@ fn test_recovery_extra_groups_preserve_edits_and_node_metadata() {
         }
     }
 
-    fn snapshot(
-        tree: &tree_sitter::Tree,
-    ) -> Vec<(String, Range, bool, bool, bool, bool, u32, Option<String>)> {
+    #[derive(Debug, PartialEq, Eq)]
+    struct NodeSnapshot {
+        kind: String,
+        range: Range,
+        named: bool,
+        extra: bool,
+        missing: bool,
+        has_error: bool,
+        child_count: u32,
+        field: Option<String>,
+    }
+
+    fn snapshot(tree: &tree_sitter::Tree) -> Vec<NodeSnapshot> {
         let mut cursor = tree.walk();
         let mut result = Vec::new();
         loop {
             let node = cursor.node();
-            result.push((
-                node.kind().to_owned(),
-                node.range(),
-                node.is_named(),
-                node.is_extra(),
-                node.is_missing(),
-                node.has_error(),
-                node.child_count(),
-                cursor.field_name().map(str::to_owned),
-            ));
+            result.push(NodeSnapshot {
+                kind: node.kind().to_owned(),
+                range: node.range(),
+                named: node.is_named(),
+                extra: node.is_extra(),
+                missing: node.is_missing(),
+                has_error: node.has_error(),
+                child_count: node.child_count(),
+                field: cursor.field_name().map(str::to_owned),
+            });
             if cursor.goto_first_child() {
                 continue;
             }
