@@ -1,0 +1,13 @@
+==================
+Boundary consumes whitespace
+==================
+(x  )ab
+---
+(document (container (content)) (suffix))
+
+==================
+Boundary leaves whitespace as an extra
+==================
+(x )b
+---
+(document (container (content)) (suffix))
