@@ -3067,6 +3067,98 @@ fn test_recovery_extra_groups_preserve_edits_and_node_metadata() {
 }
 
 #[test]
+fn test_incremental_edits_around_reused_nonterminal_extras() {
+    let languages = [
+        get_test_fixture_language("nonterminal_extra_append"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("nonterminal_extra_append"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for initial in ["c&#\n", "c&!hé\n", "c&first&#\n", "c&!one\n#two\n"] {
+            let mut source = initial.as_bytes().to_vec();
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for inserted in ["e", "&f", "&!漢\ng"] {
+                let position = source.len();
+                perform_edit(
+                    &mut tree,
+                    &mut source,
+                    &Edit {
+                        position,
+                        deleted_length: 0,
+                        inserted_text: inserted.as_bytes().to_vec(),
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{}",
+                    tree.root_node().to_sexp()
+                );
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(nodes(&tree), nodes(&fresh));
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+            }
+        }
+        let mut source = b"a& #x\n a#\n&\n!\na".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for inserted in *b"a&a&" {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 10,
+                    deleted_length: 1,
+                    inserted_text: vec![inserted],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(nodes(&tree), nodes(&fresh));
+            let last = tree
+                .root_node()
+                .named_child(tree.root_node().named_child_count() as u32 - 1)
+                .unwrap();
+            assert_eq!(last.kind(), "command");
+            assert!(!last.has_error());
+            assert_eq!(last.utf8_text(&source).unwrap(), "a");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+        }
+    }
+
+    fn nodes(tree: &tree_sitter::Tree) -> Vec<(u16, Range, bool, bool, Option<String>)> {
+        let mut cursor = tree.walk();
+        let mut result = Vec::new();
+        loop {
+            let node = cursor.node();
+            result.push((
+                node.kind_id(),
+                node.range(),
+                node.is_named(),
+                node.is_extra(),
+                cursor.field_name().map(str::to_owned),
+            ));
+            if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return result;
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_recovery_through_many_nonterminal_extras() {
     let language = get_test_fixture_language("recovery_extra_chain");
     let mut parser = Parser::new();
