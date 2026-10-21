@@ -1,0 +1,18 @@
+==================
+Shared keyword choices and independent statements
+==================
+
+name k0;
+name k16;
+name k79;
+(other0)
+(other79)
+
+---
+
+(source_file
+  (statement (identifier))
+  (statement (identifier))
+  (statement (identifier))
+  (other_statement)
+  (other_statement))

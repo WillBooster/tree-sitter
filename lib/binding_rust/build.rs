@@ -25,6 +25,7 @@ fn main() {
 
     let manifest_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let include_path = manifest_path.join("include");
+    println!("cargo:rerun-if-changed={}", include_path.display());
     let src_path = manifest_path.join("src");
     let wasm_path = src_path.join("wasm");
 

@@ -29,6 +29,7 @@ const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
+const SMALL_STATE_SET_FLAG: usize = SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG;
 const MAX_SINGLE_LEXER_STATES: usize = 4096;
 const MAX_SINGLE_LEXER_BYTES: usize = 512 * 1024;
 const LEXER_CHUNK_SIZE: usize = 256;
@@ -105,6 +106,16 @@ macro_rules! dedent {
         assert_ne!($this.indent_level, 0);
         $this.indent_level -= 1;
     };
+}
+
+struct SmallParseRow {
+    index: usize,
+    values: Vec<u16>,
+}
+
+struct SharedParseRows {
+    offset: usize,
+    rows: Vec<SmallParseRow>,
 }
 
 #[derive(Default)]
@@ -2348,6 +2359,29 @@ impl Generator {
             &mut next_parse_action_list_index,
         );
 
+        self.add_dense_parse_table(&mut parse_table_entries, &mut next_parse_action_list_index);
+        self.add_small_parse_table(&mut parse_table_entries, &mut next_parse_action_list_index)?;
+        if next_parse_action_list_index >= u32::from(u16::MAX) {
+            Err(RenderError::ParseTable(
+                next_parse_action_list_index as usize,
+            ))?;
+        }
+
+        let mut parse_table_entries = parse_table_entries
+            .into_iter()
+            .map(|(id, i)| (i, id))
+            .collect::<Vec<_>>();
+        parse_table_entries.sort_by_key(|(index, _)| *index);
+        self.add_parse_action_list(parse_table_entries);
+
+        Ok(())
+    }
+
+    fn add_dense_parse_table(
+        &mut self,
+        parse_table_entries: &mut FxHashMap<ActionListId, u32>,
+        next_parse_action_list_index: &mut u32,
+    ) {
         add_line!(
             self,
             "static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {{",
@@ -2390,8 +2424,8 @@ impl Generator {
                 let entry_id = Self::get_parse_action_list_id(
                     **id,
                     &self.parse_table.action_lists,
-                    &mut parse_table_entries,
-                    &mut next_parse_action_list_index,
+                    parse_table_entries,
+                    next_parse_action_list_index,
                 );
                 add_line!(self, "[{}] = ACTIONS({entry_id}),", self.symbol_ids[symbol]);
             }
@@ -2403,211 +2437,261 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}};");
         add_line!(self, "");
+    }
 
-        if self.large_state_count < self.parse_table.states.len() {
-            add_line!(self, "static const uint16_t ts_small_parse_table[] = {{");
-            indent!(self);
-
-            let mut next_table_index = 0;
-            let mut small_state_indices = Vec::with_capacity(
-                self.parse_table
-                    .states
-                    .len()
-                    .saturating_sub(self.large_state_count),
-            );
-            let mut symbols_by_value = FxHashMap::<(u32, SymbolType), Vec<Symbol>>::default();
-            let mut row_offsets = FxHashMap::default();
-            let has_profile_samples = self
-                .profile
-                .as_ref()
-                .is_some_and(|profile| profile.parse_states.iter().any(|&count| count > 0));
-            for (state_id, state) in self
-                .parse_table
-                .states
-                .iter()
-                .enumerate()
-                .skip(self.large_state_count)
-            {
-                symbols_by_value.clear();
-
-                terminal_entries.clear();
-                terminal_entries.extend(state.terminal_entries.iter());
-                terminal_entries.sort_unstable_by_key(|e| self.symbol_order.get(e.0));
-
-                for (symbol, entry) in &terminal_entries {
-                    let entry_id = Self::get_parse_action_list_id(
-                        **entry,
-                        &self.parse_table.action_lists,
-                        &mut parse_table_entries,
-                        &mut next_parse_action_list_index,
-                    );
-                    symbols_by_value
-                        .entry((entry_id, SymbolType::Terminal))
-                        .or_default()
-                        .push(**symbol);
-                }
-                for (symbol, action) in state.nonterminal_entries.iter() {
-                    let state_id = self.small_goto_value(*action, state_id);
-                    symbols_by_value
-                        .entry((state_id, SymbolType::NonTerminal))
-                        .or_default()
-                        .push(*symbol);
-                }
-
-                let mut values_with_symbols = symbols_by_value.drain().collect::<Vec<_>>();
-                values_with_symbols.sort_unstable_by_key(|((value, kind), symbols)| {
-                    (symbols.len(), *kind, *value, symbols[0])
-                });
-
-                let mut row = vec![values_with_symbols.len() as u32];
-                for ((value, _), symbols) in &mut values_with_symbols {
-                    symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
-                    row.extend([*value, symbols.len() as u32]);
-                    row.extend(
-                        symbols
-                            .iter()
-                            .map(|symbol| self.symbol_order[symbol] as u32),
-                    );
-                }
-                // Observed states come first in profile order; shared rows retain their encoding.
-                if let Some(&offset) = row_offsets.get(&row) {
-                    small_state_indices.push(offset);
-                    continue;
-                }
-                let row_key = row;
-                let entry_count = values_with_symbols
-                    .iter()
-                    .map(|(_, symbols)| symbols.len())
-                    .sum::<usize>();
-                let minimize = has_profile_samples
-                    && self
-                        .profile
-                        .as_ref()
-                        .is_some_and(|profile| profile.parse_states[state_id] == 0);
-                let (flag, _) = self.small_state_encoding(
-                    values_with_symbols.iter().map(|(_, symbols)| symbols.len()),
-                    minimize,
-                );
-                let bitmap = flag == SMALL_STATE_BITMAP_FLAG;
-                let pairs = flag == SMALL_STATE_PAIR_FLAG;
-                let mut entries = Vec::new();
-                let mut row = Vec::<u32>::new();
-                if pairs || bitmap {
-                    for ((value, kind), symbols) in &values_with_symbols {
-                        entries.extend(symbols.iter().map(|symbol| (*symbol, *value, *kind)));
-                    }
-                    entries.sort_unstable_by_key(|(symbol, _, _)| self.symbol_order[symbol]);
-                    if bitmap {
-                        let blocks = self.parse_table.symbols.len().div_ceil(16);
-                        row.resize(blocks * 2, 0);
-                        for (symbol, _, _) in &entries {
-                            let symbol = self.symbol_order[symbol];
-                            row[(symbol / 16) * 2] |= 1 << (symbol % 16);
-                        }
-                        let mut rank = 0;
-                        for block in 0..blocks {
-                            row[block * 2 + 1] = rank;
-                            rank += row[block * 2].count_ones();
-                        }
-                        row.extend(entries.iter().map(|(_, value, _)| *value));
-                    }
-                }
-                if next_table_index >= SMALL_STATE_BITMAP_FLAG {
-                    return Err(RenderError::SparseTable(next_table_index));
-                }
-                let offset = next_table_index | flag;
-                small_state_indices.push(offset);
-                row_offsets.insert(row_key, offset);
-                if bitmap {
-                    add_line!(self, "[{next_table_index}] =");
-                    indent!(self);
-                    for chunk in row.chunks(16) {
-                        for value in chunk {
-                            add!(self, "{value}, ");
-                        }
-                        add_line!(self, "");
-                    }
-                    dedent!(self);
-                    next_table_index += row.len();
-                    continue;
-                }
-                if pairs {
-                    add_line!(self, "[{next_table_index}] = {entry_count},");
-                    indent!(self);
-                    next_table_index += 1;
-                    for (symbol, value, kind) in entries {
-                        let macro_name = if kind == SymbolType::Terminal {
-                            "ACTIONS"
-                        } else {
-                            "STATE"
-                        };
-                        add_line!(self, "{}, {macro_name}({value}),", self.symbol_ids[&symbol]);
-                        next_table_index += 2;
-                    }
-                    dedent!(self);
-                    continue;
-                }
-
-                add_line!(
-                    self,
-                    "[{next_table_index}] = {},",
-                    values_with_symbols.len()
-                );
-                indent!(self);
-                next_table_index += 1;
-
-                for ((value, kind), symbols) in &mut values_with_symbols {
-                    next_table_index += 2 + symbols.len();
-                    if *kind == SymbolType::NonTerminal {
-                        add_line!(self, "STATE({value}), {},", symbols.len());
-                    } else {
-                        add_line!(self, "ACTIONS({value}), {},", symbols.len());
-                    }
-
-                    indent!(self);
-                    for symbol in symbols {
-                        add_line!(self, "{},", self.symbol_ids[symbol]);
-                    }
-                    dedent!(self);
-                }
-
-                dedent!(self);
-            }
-
-            dedent!(self);
-            add_line!(self, "}};");
-            add_line!(self, "");
-
-            add_line!(
-                self,
-                "static const uint32_t ts_small_parse_table_map[] = {{"
-            );
-            indent!(self);
-            for i in self.large_state_count..self.parse_table.states.len() {
-                add_line!(
-                    self,
-                    "[SMALL_STATE({i})] = {},",
-                    small_state_indices[i - self.large_state_count]
-                );
-            }
-            dedent!(self);
-            add_line!(self, "}};");
-            add_line!(self, "");
+    fn add_small_parse_table(
+        &mut self,
+        parse_table_entries: &mut FxHashMap<ActionListId, u32>,
+        next_parse_action_list_index: &mut u32,
+    ) -> RenderResult<()> {
+        if self.large_state_count == self.parse_table.states.len() {
+            return Ok(());
         }
-        if next_parse_action_list_index >= u32::from(u16::MAX) {
-            Err(RenderError::ParseTable(
-                next_parse_action_list_index as usize,
-            ))?;
+        add_line!(self, "static const uint16_t ts_small_parse_table[] = {{");
+        indent!(self);
+        let mut next_index = 0;
+        let mut indices = Vec::new();
+        let mut row_offsets = FxHashMap::default();
+        let mut symbol_sets = FxHashMap::default();
+        let has_samples = self
+            .profile
+            .as_ref()
+            .is_some_and(|profile| profile.parse_states.iter().any(|&count| count > 0));
+        for state_id in self.large_state_count..self.parse_table.states.len() {
+            let groups = self.small_state_groups(
+                state_id,
+                parse_table_entries,
+                next_parse_action_list_index,
+            );
+            let key = self.encode_small_parse_row(&groups, 0);
+            if let Some(&offset) = row_offsets.get(&key) {
+                indices.push(offset);
+                continue;
+            }
+            let minimize = has_samples
+                && self
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.parse_states[state_id] == 0);
+            let (flag, words) = self
+                .small_state_encoding(groups.iter().map(|(_, symbols)| symbols.len()), minimize);
+            let shared = self.encode_shared_parse_row(
+                &groups,
+                words,
+                minimize || flag == 0,
+                &mut symbol_sets,
+                &mut next_index,
+            )?;
+            let offset = if let Some(shared) = shared {
+                for row in shared.rows {
+                    self.add_small_parse_row(&row);
+                }
+                shared.offset
+            } else {
+                let row = SmallParseRow {
+                    index: next_index,
+                    values: self.encode_small_parse_row(&groups, flag),
+                };
+                self.add_small_parse_row(&row);
+                let offset = next_index | flag;
+                next_index += row.values.len();
+                offset
+            };
+            if next_index >= SMALL_STATE_BITMAP_FLAG {
+                return Err(RenderError::SparseTable(next_index));
+            }
+            indices.push(offset);
+            row_offsets.insert(key, offset);
         }
-
-        let mut parse_table_entries = parse_table_entries
-            .into_iter()
-            .map(|(id, i)| (i, id))
-            .collect::<Vec<_>>();
-        parse_table_entries.sort_by_key(|(index, _)| *index);
-        self.add_parse_action_list(parse_table_entries);
-
+        dedent!(self);
+        add_line!(self, "}};\n");
+        add_line!(
+            self,
+            "static const uint32_t ts_small_parse_table_map[] = {{"
+        );
+        indent!(self);
+        for (state, offset) in (self.large_state_count..).zip(indices) {
+            add_line!(self, "[SMALL_STATE({state})] = {offset},");
+        }
+        dedent!(self);
+        add_line!(self, "}};\n");
         Ok(())
+    }
+
+    fn add_small_parse_row(&mut self, row: &SmallParseRow) {
+        add_line!(self, "[{}] =", row.index);
+        indent!(self);
+        for chunk in row.values.chunks(16) {
+            add_whitespace!(self);
+            for value in chunk {
+                add!(self, "{value}, ");
+            }
+            add!(self, "\n");
+        }
+        dedent!(self);
+    }
+
+    fn small_state_groups(
+        &self,
+        state_id: usize,
+        parse_table_entries: &mut FxHashMap<ActionListId, u32>,
+        next_parse_action_list_index: &mut u32,
+    ) -> Vec<((u32, SymbolType), Vec<Symbol>)> {
+        let state = &self.parse_table.states[state_id];
+        let mut groups = FxHashMap::<(u32, SymbolType), Vec<Symbol>>::default();
+        let mut terminals = state.terminal_entries.iter().collect::<Vec<_>>();
+        terminals.sort_unstable_by_key(|(symbol, _)| self.symbol_order[symbol]);
+        for (&symbol, &entry) in terminals {
+            let value = Self::get_parse_action_list_id(
+                entry,
+                &self.parse_table.action_lists,
+                parse_table_entries,
+                next_parse_action_list_index,
+            );
+            groups
+                .entry((value, SymbolType::Terminal))
+                .or_default()
+                .push(symbol);
+        }
+        for (&symbol, &action) in state.nonterminal_entries.iter() {
+            let value = self.small_goto_value(action, state_id);
+            groups
+                .entry((value, SymbolType::NonTerminal))
+                .or_default()
+                .push(symbol);
+        }
+        let mut groups = groups.into_iter().collect::<Vec<_>>();
+        groups.sort_unstable_by_key(|((value, kind), symbols)| {
+            (symbols.len(), *kind, *value, symbols[0])
+        });
+        for (_, symbols) in &mut groups {
+            symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
+        }
+        groups
+    }
+
+    fn encode_small_parse_row(
+        &self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        flag: usize,
+    ) -> Vec<u16> {
+        if flag == 0 {
+            let mut row = vec![groups.len() as u16];
+            for ((value, _), symbols) in groups {
+                row.extend([*value as u16, symbols.len() as u16]);
+                row.extend(
+                    symbols
+                        .iter()
+                        .map(|symbol| self.symbol_order[symbol] as u16),
+                );
+            }
+            return row;
+        }
+        let mut entries = groups
+            .iter()
+            .flat_map(|((value, _), symbols)| {
+                symbols
+                    .iter()
+                    .map(|symbol| (self.symbol_order[symbol], *value as u16))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|&(symbol, _)| symbol);
+        if flag == SMALL_STATE_PAIR_FLAG {
+            let mut row = vec![entries.len() as u16];
+            row.extend(
+                entries
+                    .into_iter()
+                    .flat_map(|(symbol, value)| [symbol as u16, value]),
+            );
+            return row;
+        }
+        let blocks = self.parse_table.symbols.len().div_ceil(16);
+        let mut row = vec![0u16; blocks * 2];
+        for &(symbol, _) in &entries {
+            row[(symbol / 16) * 2] |= 1 << (symbol % 16);
+        }
+        let mut rank = 0;
+        for block in 0..blocks {
+            row[block * 2 + 1] = rank;
+            rank += row[block * 2].count_ones() as u16;
+        }
+        row.extend(entries.into_iter().map(|(_, value)| value));
+        row
+    }
+
+    fn encode_shared_parse_row(
+        &self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        unshared_words: usize,
+        allow_many_groups: bool,
+        symbol_sets: &mut FxHashMap<Vec<u16>, usize>,
+        next_table_index: &mut usize,
+    ) -> RenderResult<Option<SharedParseRows>> {
+        if groups.len() > 4 && !allow_many_groups {
+            return Ok(None);
+        }
+        let sets = groups
+            .iter()
+            .map(|(_, symbols)| self.symbol_set(symbols))
+            .collect::<Vec<_>>();
+        let words = 1
+            + groups.len() * 3
+            + sets
+                .iter()
+                .filter(|set| !symbol_sets.contains_key(*set))
+                .map(Vec::len)
+                .sum::<usize>();
+        if words >= unshared_words {
+            return Ok(None);
+        }
+        if *next_table_index + words >= SMALL_STATE_BITMAP_FLAG {
+            return Err(RenderError::SparseTable(*next_table_index + words));
+        }
+        let mut rows = Vec::new();
+        let mut offsets = Vec::with_capacity(sets.len());
+        for set in sets {
+            let offset = *symbol_sets.entry(set.clone()).or_insert_with(|| {
+                let offset = *next_table_index;
+                rows.push(SmallParseRow {
+                    index: offset,
+                    values: set.clone(),
+                });
+                *next_table_index += set.len();
+                offset
+            });
+            offsets.push(offset);
+        }
+        let offset = *next_table_index;
+        let mut values = vec![groups.len() as u16];
+        for (((value, _), _), set_offset) in groups.iter().zip(offsets) {
+            values.extend([
+                *value as u16,
+                (set_offset & 0xffff) as u16,
+                (set_offset >> 16) as u16,
+            ]);
+        }
+        *next_table_index += values.len();
+        rows.push(SmallParseRow {
+            index: offset,
+            values,
+        });
+        Ok(Some(SharedParseRows {
+            offset: offset | SMALL_STATE_SET_FLAG,
+            rows,
+        }))
+    }
+
+    fn symbol_set(&self, symbols: &[Symbol]) -> Vec<u16> {
+        let first = self.symbol_order[&symbols[0]] / 16;
+        let last = self.symbol_order[symbols.last().unwrap()] / 16;
+        let mut set = vec![0u16; 2 + last - first + 1];
+        set[0] = first as u16;
+        set[1] = (last - first + 1) as u16;
+        for symbol in symbols {
+            let id = self.symbol_order[symbol];
+            set[2 + id / 16 - first] |= 1 << (id % 16);
+        }
+        set
     }
 
     fn small_state_encoding(

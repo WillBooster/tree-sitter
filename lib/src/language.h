@@ -12,6 +12,7 @@ extern "C" {
 
 #define SMALL_STATE_BITMAP_FLAG 0x40000000u
 #define SMALL_STATE_PAIR_FLAG 0x80000000u
+#define SMALL_STATE_SET_FLAG (SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG)
 
 typedef struct {
   const TSParseAction *actions;
@@ -29,11 +30,15 @@ typedef struct {
   const TSLanguage *language;
   const uint16_t *data;
   const uint16_t *group_end;
+  const uint16_t *set_data;
+  uint32_t set_bits;
+  uint32_t set_symbol;
   uint16_t table_value;
   uint16_t group_count;
   bool is_small_state;
   bool is_pair_state;
   bool is_bitmap_state;
+  bool is_set_state;
   TSStateId state;
   LookaheadPhase phase;
 
@@ -139,15 +144,19 @@ static inline LookaheadIterator ts_language_lookaheads(
   uint16_t group_count = 0;
   bool is_pair_state = false;
   bool is_bitmap_state = false;
+  bool is_set_state = false;
   if (is_small_state) {
     uint32_t index = self->small_parse_table_map[state - self->large_state_count];
-    is_pair_state = index & SMALL_STATE_PAIR_FLAG;
-    is_bitmap_state = index & SMALL_STATE_BITMAP_FLAG;
+    uint32_t encoding = index & SMALL_STATE_SET_FLAG;
+    is_pair_state = encoding == SMALL_STATE_PAIR_FLAG;
+    is_bitmap_state = encoding == SMALL_STATE_BITMAP_FLAG;
+    is_set_state = encoding == SMALL_STATE_SET_FLAG;
     uint32_t offset = index & ~(SMALL_STATE_PAIR_FLAG | SMALL_STATE_BITMAP_FLAG);
     data = &self->small_parse_table[offset];
     group_end = data + 1;
     group_count = *data;
-    if (is_pair_state) data++;
+    if (is_pair_state || is_set_state) data++;
+    if (is_set_state) group_end = NULL;
   } else {
     data = &self->parse_table[state * self->symbol_count];
   }
@@ -159,6 +168,7 @@ static inline LookaheadIterator ts_language_lookaheads(
     .is_small_state = is_small_state,
     .is_pair_state = is_pair_state,
     .is_bitmap_state = is_bitmap_state,
+    .is_set_state = is_set_state,
     .state = state,
     .phase = LookaheadFresh,
     .symbol = UINT16_MAX,
@@ -166,69 +176,45 @@ static inline LookaheadIterator ts_language_lookaheads(
   };
 }
 
+static inline bool ts_lookahead_iterator__next_set(LookaheadIterator *self);
+static inline bool ts_lookahead_iterator__next_bitmap(LookaheadIterator *self);
+static inline bool ts_lookahead_iterator__next_group(LookaheadIterator *self);
+
 static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
   if (self->phase == LookaheadDone) return false;
 
-  if (self->is_small_state) {
-    if (self->is_bitmap_state) {
-      uint32_t symbol = self->phase == LookaheadFresh ? 0 : self->symbol + 1;
-      uint32_t blocks = (self->language->symbol_count + 15) / 16;
-      uint32_t block = symbol / 16;
-      uint32_t bits = block < blocks ? self->data[block * 2] & (0xffffu << (symbol % 16)) : 0;
-      while (!bits && ++block < blocks) bits = self->data[block * 2];
-      if (block >= blocks) {
-        self->phase = LookaheadDone;
-        return false;
-      }
-      self->symbol = block * 16 + ts_language__trailing_zeros(bits);
-      uint32_t rank = self->data[block * 2 + 1] + ts_language__count_ones(
-        self->data[block * 2] & ((1u << (self->symbol % 16)) - 1)
-      );
-      self->table_value = self->data[blocks * 2 + rank];
-    } else if (self->is_pair_state) {
-      if (self->group_count == 0) {
-        self->phase = LookaheadDone;
-        return false;
-      }
+  bool advanced;
+  if (self->is_set_state) {
+    advanced = ts_lookahead_iterator__next_set(self);
+  } else if (self->is_bitmap_state) {
+    advanced = ts_lookahead_iterator__next_bitmap(self);
+  } else if (self->is_pair_state) {
+    advanced = self->group_count != 0;
+    if (advanced) {
       self->group_count--;
       self->symbol = *(self->data++);
       self->table_value = *(self->data++);
-    } else {
-      self->data++;
-      if (self->data == self->group_end) {
-        if (self->group_count == 0) {
-          self->phase = LookaheadDone;
-          return false;
-        }
-        self->group_count--;
-        self->table_value = *(self->data++);
-        unsigned symbol_count = *(self->data++);
-        self->group_end = self->data + symbol_count;
-        self->symbol = *self->data;
-      } else {
-        self->symbol = *self->data;
-        self->phase = LookaheadPositioned;
-        return true;
-      }
+    }
+  } else if (self->is_small_state) {
+    if (self->phase == LookaheadPositioned && self->data + 1 < self->group_end) {
+      self->symbol = *(++self->data);
+      return true;
+    }
+    advanced = ts_lookahead_iterator__next_group(self);
+  } else {
+    uint32_t symbol = self->phase == LookaheadFresh ? 0 : self->symbol + 1;
+    while (symbol < self->language->symbol_count && !self->data[symbol]) symbol++;
+    advanced = symbol < self->language->symbol_count;
+    if (advanced) {
+      self->symbol = symbol;
+      self->table_value = self->data[symbol];
     }
   }
-
-  // For large parse states, iterate through every symbol until one
-  // is found that has valid actions.
-  else {
-    const uint16_t *row = self->data;
-    TSSymbol symbol = self->phase == LookaheadFresh ? 0 : self->symbol + 1;
-    while (symbol < self->language->symbol_count && !row[symbol]) symbol++;
-    if (symbol >= self->language->symbol_count) {
-      self->phase = LookaheadDone;
-      return false;
-    }
-    self->symbol = symbol;
-    self->table_value = row[symbol];
+  if (!advanced) {
+    self->phase = LookaheadDone;
+    return false;
   }
 
-  // Depending on if the symbol is terminal or non-terminal, the table value either
-  // represents a list of actions or a successor state.
   if (self->symbol < self->language->token_count) {
     const TSParseActionEntry *entry = &self->language->parse_actions[self->table_value];
     self->action_count = entry->entry.count;
@@ -243,6 +229,55 @@ static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
     }
   }
   self->phase = LookaheadPositioned;
+  return true;
+}
+
+static inline bool ts_lookahead_iterator__next_set(LookaheadIterator *self) {
+  while (!self->set_bits) {
+    if (self->set_data != self->group_end) {
+      self->set_bits = *(self->set_data++);
+      self->set_symbol += 16;
+    } else if (self->group_count) {
+      self->group_count--;
+      self->table_value = *(self->data++);
+      uint32_t offset = self->data[0] | ((uint32_t)self->data[1] << 16);
+      self->data += 2;
+      const uint16_t *set = &self->language->small_parse_table[offset];
+      self->set_symbol = set[0] * 16u - 16;
+      self->set_data = set + 2;
+      self->group_end = self->set_data + set[1];
+    } else {
+      return false;
+    }
+  }
+  self->symbol = self->set_symbol + ts_language__trailing_zeros(self->set_bits);
+  self->set_bits &= self->set_bits - 1;
+  return true;
+}
+
+static inline bool ts_lookahead_iterator__next_bitmap(LookaheadIterator *self) {
+  uint32_t symbol = self->phase == LookaheadFresh ? 0 : self->symbol + 1;
+  uint32_t blocks = (self->language->symbol_count + 15) / 16;
+  uint32_t block = symbol / 16;
+  uint32_t bits = block < blocks ? self->data[block * 2] & (0xffffu << (symbol % 16)) : 0;
+  while (!bits && ++block < blocks) bits = self->data[block * 2];
+  if (block >= blocks) return false;
+  self->symbol = block * 16 + ts_language__trailing_zeros(bits);
+  uint32_t rank = self->data[block * 2 + 1] + ts_language__count_ones(
+    self->data[block * 2] & ((1u << (self->symbol % 16)) - 1)
+  );
+  self->table_value = self->data[blocks * 2 + rank];
+  return true;
+}
+
+static inline bool ts_lookahead_iterator__next_group(LookaheadIterator *self) {
+  if (self->group_count == 0) return false;
+  self->data++;
+  self->group_count--;
+  self->table_value = *(self->data++);
+  unsigned symbol_count = *(self->data++);
+  self->group_end = self->data + symbol_count;
+  self->symbol = *self->data;
   return true;
 }
 
