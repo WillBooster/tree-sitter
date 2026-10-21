@@ -2916,7 +2916,7 @@ fn test_completed_nodes_before_unfinished_nonterminal_extras() {
 }
 
 #[test]
-fn test_append_after_reused_nonterminal_extra() {
+fn test_incremental_edits_around_reused_nonterminal_extras() {
     let languages = [
         get_test_fixture_language("nonterminal_extra_append"),
         #[cfg(feature = "wasm")]
@@ -2950,6 +2950,33 @@ fn test_append_after_reused_nonterminal_extra() {
                 assert_eq!(nodes(&tree), nodes(&fresh));
                 crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
             }
+        }
+        let mut source = b"a& #x\n a#\n&\n!\na".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for inserted in [b'a', b'&', b'a', b'&'] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 10,
+                    deleted_length: 1,
+                    inserted_text: vec![inserted],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(nodes(&tree), nodes(&fresh));
+            let last = tree
+                .root_node()
+                .named_child(tree.root_node().named_child_count() as u32 - 1)
+                .unwrap();
+            assert_eq!(last.kind(), "command");
+            assert!(!last.has_error());
+            assert_eq!(last.utf8_text(&source).unwrap(), "a");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
         }
     }
 

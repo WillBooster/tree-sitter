@@ -1054,14 +1054,6 @@ static Subtree ts_parser__reuse_node(
       continue;
     }
 
-    if (
-      ts_subtree_extra(result) && ts_subtree_child_count(result) > 0 &&
-      ts_subtree_parse_state(result) != *state &&
-      ts_parser__breakdown_top_of_stack(self, version)
-    ) {
-      *state = ts_stack_state(self->stack, version);
-    }
-
     TSSymbol leaf_symbol = ts_subtree_leaf_symbol(result);
     ts_language_table_entry(self->language, *state, leaf_symbol, table_entry);
     if (

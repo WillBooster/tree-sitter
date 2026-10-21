@@ -35,19 +35,20 @@ static inline uint32_t reusable_node_byte_offset(ReusableNode *self) {
 }
 
 static inline bool reusable_node_precedes_unstable_extra(ReusableNode *self) {
+  bool trailing_nonterminal_extra = false;
   for (uint32_t i = self->stack.size - 1; i > 0; i--) {
     StackEntry entry = self->stack.contents[i];
     Subtree parent = self->stack.contents[i - 1].tree;
     for (uint32_t next_index = entry.child_index + 1; next_index < ts_subtree_child_count(parent); next_index++) {
       Subtree next = ts_subtree_children(parent)[next_index];
       if (!ts_subtree_extra(next)) return false;
-      if (ts_subtree_child_count(next) > 0 &&
-          (ts_subtree_has_changes(next) || ts_subtree_is_fragile(next) || ts_subtree_error_cost(next) > 0)) {
-        return true;
+      if (ts_subtree_child_count(next) > 0) {
+        if (ts_subtree_has_changes(next) || ts_subtree_is_fragile(next) || ts_subtree_error_cost(next) > 0) return true;
+        trailing_nonterminal_extra = true;
       }
     }
   }
-  return false;
+  return trailing_nonterminal_extra;
 }
 
 static inline void reusable_node_delete(ReusableNode *self) {
