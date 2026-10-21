@@ -1,9 +1,18 @@
 #include "./subtree.h"
 
+typedef enum {
+  ExtraLookaheadUnknown,
+  ExtraLookaheadSyntax,
+  ExtraLookaheadUnstable,
+  ExtraLookaheadEnd,
+  ExtraLookaheadTrailing,
+} ExtraLookahead;
+
 typedef struct {
   Subtree tree;
   uint32_t child_index;
   uint32_t byte_offset;
+  ExtraLookahead extra_lookahead;
 } StackEntry;
 
 typedef struct {
@@ -34,20 +43,31 @@ static inline uint32_t reusable_node_byte_offset(ReusableNode *self) {
     : UINT32_MAX;
 }
 
+static inline ExtraLookahead reusable_node_extra_lookahead(StackEntry parent, uint32_t child_index);
+
 static inline bool reusable_node_precedes_unstable_extra(ReusableNode *self) {
-  for (uint32_t i = self->stack.size - 1; i > 0; i--) {
-    StackEntry entry = self->stack.contents[i];
-    Subtree parent = self->stack.contents[i - 1].tree;
-    for (uint32_t next_index = entry.child_index + 1; next_index < ts_subtree_child_count(parent); next_index++) {
-      Subtree next = ts_subtree_children(parent)[next_index];
-      if (!ts_subtree_extra(next)) return false;
-      if (ts_subtree_child_count(next) > 0 &&
-          (ts_subtree_has_changes(next) || ts_subtree_is_fragile(next) || ts_subtree_error_cost(next) > 0)) {
-        return true;
-      }
-    }
+  uint32_t first = self->stack.size - 1;
+  while (self->stack.contents[first].extra_lookahead == ExtraLookaheadUnknown) first--;
+  for (uint32_t i = first + 1; i < self->stack.size; i++) {
+    StackEntry *entry = &self->stack.contents[i];
+    entry->extra_lookahead = reusable_node_extra_lookahead(self->stack.contents[i - 1], entry->child_index);
   }
-  return false;
+  ExtraLookahead result = array_back(&self->stack)->extra_lookahead;
+  return result == ExtraLookaheadUnstable || result == ExtraLookaheadTrailing;
+}
+
+static inline ExtraLookahead reusable_node_extra_lookahead(StackEntry parent, uint32_t child_index) {
+  ExtraLookahead result = parent.extra_lookahead;
+  for (uint32_t next_index = child_index + 1; next_index < ts_subtree_child_count(parent.tree); next_index++) {
+    Subtree next = ts_subtree_children(parent.tree)[next_index];
+    if (!ts_subtree_extra(next)) return ExtraLookaheadSyntax;
+    if (ts_subtree_child_count(next) == 0) continue;
+    if (ts_subtree_has_changes(next) || ts_subtree_is_fragile(next) || ts_subtree_error_cost(next) > 0) {
+      return ExtraLookaheadUnstable;
+    }
+    if (result == ExtraLookaheadEnd) result = ExtraLookaheadTrailing;
+  }
+  return result;
 }
 
 static inline void reusable_node_delete(ReusableNode *self) {
@@ -106,6 +126,7 @@ static inline void reusable_node_reset(ReusableNode *self, Subtree tree) {
     .tree = tree,
     .child_index = 0,
     .byte_offset = 0,
+    .extra_lookahead = ExtraLookaheadEnd,
   }));
 
   // Never reuse the root node, because it has a non-standard internal structure
