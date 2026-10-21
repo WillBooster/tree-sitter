@@ -45,6 +45,7 @@ typedef struct {
   StackNode *node;
   SubtreeArray subtrees;
   uint32_t subtree_count;
+  uint32_t remaining_steps;
   bool is_pending;
   int precedence;
   int total_precedence;
@@ -183,7 +184,7 @@ static uint32_t stack__subtree_node_count(Subtree subtree) {
   // Count intermediate error nodes even though they are not visible,
   // because a stack version's node count is used to check whether it
   // has made any progress since the last time it encountered an error.
-  if (ts_subtree_symbol(subtree) == ts_builtin_sym_error_repeat) count++;
+  if (ts_subtree_symbol(subtree) == ts_builtin_sym_error_repeat && !ts_subtree_extra(subtree)) count++;
 
   return count;
 }
@@ -277,6 +278,8 @@ static void stack__invalidate_extra_chains(Stack *stack, const StackNode *node) 
 
 static void stack_node_update_node_count(StackNode *self);
 
+static void stack_node_expand_extra_groups(Stack *, StackNode *);
+
 static void stack_node_add_link(
   Stack *stack,
   StackNode *self,
@@ -284,6 +287,7 @@ static void stack_node_add_link(
   SubtreePool *subtree_pool
 ) {
   if (link.node == self) return;
+  stack_node_expand_extra_groups(stack, self);
 
   for (int i = 0; i < self->link_count; i++) {
     StackLink *existing_link = &self->links[i];
@@ -307,6 +311,7 @@ static void stack_node_add_link(
       existing_link->subtree = link.subtree;
     }
     if (!same_predecessor) {
+      stack_node_expand_extra_groups(stack, link.node);
       for (int j = 0; j < link.node->link_count; j++) {
         stack_node_add_link(stack, existing_link->node, link.node->links[j], subtree_pool);
       }
@@ -489,6 +494,8 @@ static SubtreeArray stack__materialize_reduction(
   Stack *, const ReductionPaths *, const ReductionCandidates *, const ReductionChoice *
 );
 
+static void stack__skip_idle_steps(Stack *);
+
 static StackSliceArray stack__iter(
   Stack *self,
   StackVersion version,
@@ -527,6 +534,7 @@ static StackSliceArray stack__iter(
   array_push(&self->iterators, new_iterator);
 
   while (self->iterators.size > 0) {
+    stack__skip_idle_steps(self);
     // Coalescing bounds summary-only traversal. The order-dependent summary callback
     // can change candidate selection when duplicate visits are removed.
     if (!include_subtrees) {
@@ -534,7 +542,7 @@ static StackSliceArray stack__iter(
         for (uint32_t j = i + 1; j < self->iterators.size; j++) {
           StackIterator *left = array_get(&self->iterators, i);
           StackIterator *right = array_get(&self->iterators, j);
-          if (left->node == right->node && left->subtree_count == right->subtree_count) {
+          if (left->node == right->node && left->subtree_count == right->subtree_count && left->remaining_steps == right->remaining_steps) {
             array_delete(&right->subtrees);
             array_erase(&self->iterators, j--);
           }
@@ -543,6 +551,10 @@ static StackSliceArray stack__iter(
     }
     for (uint32_t i = 0, size = self->iterators.size; i < size; i++) {
       StackIterator *iterator = array_get(&self->iterators, i);
+      if (iterator->remaining_steps) {
+        iterator->remaining_steps--;
+        continue;
+      }
       StackNode *node = iterator->node;
 
       StackAction action = callback(payload, iterator);
@@ -596,6 +608,7 @@ static StackSliceArray stack__iter(
         }
 
         next_iterator->node = link.node;
+        next_iterator->remaining_steps = ts_subtree_stack_link_count(link.subtree) - 1;
         if (link.subtree.ptr) {
           if (include_subtrees) {
             if (compact) {
@@ -605,7 +618,7 @@ static StackSliceArray stack__iter(
             if (compact && (next_iterator->subtree_count > 0 || !ts_subtree_extra(link.subtree))) {
               next_iterator->precedence += ts_subtree_dynamic_precedence(link.subtree);
               uint32_t error_cost = ts_subtree_error_cost(link.subtree);
-              if (ts_subtree_symbol(link.subtree) == ts_builtin_sym_error_repeat) {
+              if (ts_subtree_symbol(link.subtree) == ts_builtin_sym_error_repeat && !ts_subtree_extra(link.subtree)) {
                 uint32_t extent_cost = ts_subtree__error_extent_cost(ts_subtree_size(link.subtree));
                 error_cost -= extent_cost;
                 next_iterator->total_error_cost -= extent_cost;
@@ -844,6 +857,35 @@ unsigned ts_stack_node_count_since_error(const Stack *self, StackVersion version
   return head->node->node_count - head->node_count_at_last_error;
 }
 
+void ts_stack_push_recovery(
+  Stack *self, StackVersion version, Subtree subtree, TSStateId state,
+  const TSLanguage *language
+) {
+  ts_assert(ts_subtree_is_error(subtree) && ts_subtree_extra(subtree));
+  StackHead *head = array_get(&self->heads, version);
+  StackNode *node = head->node;
+  Subtree prefix = NULL_SUBTREE;
+  unsigned extra_count = 0;
+  while (node->state == state && node->link_count == 1 &&
+         node->links[0].node->state == state && !node->links[0].is_pending &&
+         node->links[0].subtree.ptr && ts_subtree_extra(node->links[0].subtree)) {
+    Subtree extra = node->links[0].subtree;
+    ts_subtree_retain(extra);
+    prefix = prefix.ptr ? ts_subtree_new_extra_group(extra, prefix, language) : extra;
+    node = node->links[0].node;
+    extra_count++;
+  }
+  if (extra_count > 1) {
+    stack_node_retain(node);
+    stack_node_release(head->node, &self->node_pool, self->subtree_pool);
+    head->node = node;
+    ts_stack_push(self, version, prefix, false, state);
+  } else if (prefix.ptr) {
+    ts_subtree_release(self->subtree_pool, prefix);
+  }
+  ts_stack_push(self, version, subtree, false, state);
+}
+
 void ts_stack_push(
   Stack *self,
   StackVersion version,
@@ -945,6 +987,7 @@ forceinline StackAction pop_error_callback(void *payload, const StackIterator *i
 
 SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version) {
   StackNode *node = array_get(&self->heads, version)->node;
+  stack_node_expand_extra_groups(self, node);
   for (unsigned i = 0; i < node->link_count; i++) {
     if (node->links[i].subtree.ptr && ts_subtree_is_error(node->links[i].subtree)) {
       bool found_error = false;
@@ -1099,6 +1142,8 @@ bool ts_stack_merge(Stack *self, StackVersion version1, StackVersion version2) {
   self->pending_generation++;
   StackHead *head1 = array_get(&self->heads, version1);
   StackHead *head2 = array_get(&self->heads, version2);
+  stack_node_expand_extra_groups(self, head1->node);
+  stack_node_expand_extra_groups(self, head2->node);
   if (!head2->unconfirmed_recovery) head1->unconfirmed_recovery = 0;
   for (uint32_t i = 0; i < head2->node->link_count; i++) {
     stack_node_add_link(self, head1->node, head2->node->links[i], self->subtree_pool);
@@ -1311,3 +1356,37 @@ bool ts_stack_print_dot_graph(Stack *self, const TSLanguage *language, FILE *f) 
 }
 
 #undef forceinline
+
+static void stack_node_expand_extra_groups(Stack *stack, StackNode *node) {
+  for (unsigned i = 0; i < node->link_count; i++) {
+    StackLink *link = &node->links[i];
+    while (ts_subtree_stack_link_count(link->subtree) > 1) {
+      ts_assert(ts_subtree_child_count(link->subtree) == 2);
+      ts_assert(!link->is_pending && link->node->state == node->state);
+      stack__invalidate_extra_chains(stack, node);
+      Subtree group = link->subtree;
+      const Subtree *children = ts_subtree_children(group);
+      ts_subtree_retain(children[0]);
+      ts_subtree_retain(children[1]);
+      link->node = stack_node_new(
+        link->node, children[0], false, node->state,
+        &stack->node_pool, stack->pending_generation
+      );
+      link->subtree = children[1];
+      ts_subtree_release(stack->subtree_pool, group);
+    }
+  }
+}
+
+static void stack__skip_idle_steps(Stack *self) {
+  uint32_t skip = UINT32_MAX;
+  for (uint32_t i = 0; i < self->iterators.size; i++) {
+    uint32_t steps = array_get(&self->iterators, i)->remaining_steps;
+    if (steps < skip) skip = steps;
+  }
+  if (skip) {
+    for (uint32_t i = 0; i < self->iterators.size; i++) {
+      array_get(&self->iterators, i)->remaining_steps -= skip;
+    }
+  }
+}
