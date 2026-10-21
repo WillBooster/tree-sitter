@@ -1132,10 +1132,6 @@ fn update_c_makefile(path: &Path, language_name: &str, opts: &GenerateOpts) -> R
         info!("Replacing Makefile");
         generate_file(path, MAKEFILE_TEMPLATE, language_name, opts)?;
     } else {
-        let replaced = indoc! {r"
-            $(PARSER): $(SRC_DIR)/grammar.json
-                    $(TS) generate $^
-            "};
         let abi_versioning = indoc! {r"
             # ABI versioning
             SONAME_MAJOR = $(shell sed -n 's/\#define LANGUAGE_VERSION //p' $(PARSER))
@@ -1152,18 +1148,17 @@ fn update_c_makefile(path: &Path, language_name: &str, opts: &GenerateOpts) -> R
                     "},
             );
         }
-        if contents.contains(replaced) {
-            info!("Adding --no-parser target to Makefile");
-            contents = contents.replace(
-                replaced,
-                indoc! {r"
-                    $(SRC_DIR)/grammar.json: grammar.js
-                            $(TS) generate --no-parser $^
-
-                    $(PARSER): $(SRC_DIR)/grammar.json
-                            $(TS) generate $^
-                    "},
-            );
+        // Older templates derive parser.c from src/grammar.json. Generating that file with
+        // `--no-parser` also builds the parse table, so one step from grammar.js is cheaper.
+        if let Some(rule) = [
+            "$(SRC_DIR)/grammar.json: grammar.js\n\t$(TS) generate --no-parser $^\n\n$(PARSER): $(SRC_DIR)/grammar.json\n\t$(TS) generate $^\n",
+            "$(PARSER): $(SRC_DIR)/grammar.json\n\t$(TS) generate $^\n",
+        ]
+        .into_iter()
+        .find(|rule| contents.contains(rule))
+        {
+            info!("Generating the parser directly from grammar.js in Makefile");
+            contents = contents.replace(rule, "$(PARSER): grammar.js\n\t$(TS) generate $^\n");
         }
         if !contents.contains("\nDESCRIPTION :=")
             && let Some(version_line) = contents.lines().find(|l| l.starts_with("VERSION := "))
@@ -1185,6 +1180,18 @@ fn update_c_makefile(path: &Path, language_name: &str, opts: &GenerateOpts) -> R
 
 fn update_c_cmakelists(path: &Path, language_name: &str) -> Result<()> {
     let contents = fs::read_to_string(path)?;
+    let generation_command = indoc! {r#"
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/parser.c"
+                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/grammar.json"
+                                  "${CMAKE_CURRENT_SOURCE_DIR}/src/node-types.json"
+                           BYPRODUCTS "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_sitter/parser.h"
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_sitter/alloc.h"
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/tree_sitter/array.h"
+                           DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/grammar.js"
+                           COMMAND "${TREE_SITTER_CLI}" generate grammar.js
+                           WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                           COMMENT "Generating parser.c")
+        "#};
     let replaced_contents = contents
         .replace("add_custom_target(test", "add_custom_target(ts-test")
         .replace(
@@ -1218,6 +1225,9 @@ fn update_c_cmakelists(path: &Path, language_name: &str) -> Result<()> {
                                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                                COMMENT "Generating parser.c")
             "#},
+            generation_command
+        )
+        .replace(
             indoc! {r#"
             add_custom_command(OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/src/grammar.json"
                                       "${CMAKE_CURRENT_SOURCE_DIR}/src/node-types.json"
@@ -1234,7 +1244,8 @@ fn update_c_cmakelists(path: &Path, language_name: &str) -> Result<()> {
                                COMMAND "${TREE_SITTER_CLI}" generate src/grammar.json
                                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                                COMMENT "Generating parser.c")
-            "#}
+            "#},
+            generation_command
         )
         .replace(
             "\n                            --abi=${TREE_SITTER_ABI_VERSION}",
