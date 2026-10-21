@@ -1057,6 +1057,21 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
         ),
         (
             "c-sharp",
+            "class C { object x = x as\n}\nclass Following { int X; }",
+            vec!["class Following { int X; }"],
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\n\nclass Following { int X; }",
+            vec!["class Following { int X; }"],
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\n\n\nclass Following { int X; }",
+            vec!["class Following { int X; }"],
+        ),
+        (
+            "c-sharp",
             "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
             vec!["class Following { int Value => 1; }"],
         ),
