@@ -366,6 +366,35 @@ static void ts_lexer__advance(TSLexer *_self, bool skip) {
     }
   }
 
+  if (
+    (self->input.encoding == TSInputEncodingUTF16LE ||
+     self->input.encoding == TSInputEncodingUTF16BE) &&
+    self->lookahead_size == 2 &&
+    (uint32_t)self->data.lookahead < 0x80 &&
+    self->data.lookahead != '\n' &&
+    self->current_position.bytes <= UINT32_MAX - 4
+  ) {
+    const uint32_t next_utf16_position = self->current_position.bytes + 2;
+    if (
+      next_utf16_position + 1 < current_range_end &&
+      next_utf16_position + 1 < self->chunk_start + self->chunk_size
+    ) {
+      const uint8_t *next = (const uint8_t *)self->chunk + next_utf16_position - self->chunk_start;
+      uint16_t next_character = self->input.encoding == TSInputEncodingUTF16LE
+        ? (uint16_t)next[0] | (uint16_t)next[1] << 8
+        : (uint16_t)next[0] << 8 | (uint16_t)next[1];
+      if (next_character < 0x80) {
+        ts_lexer__advance_display_column(self);
+        ts_lexer__increment_column_data(self);
+        self->current_position.bytes = next_utf16_position;
+        self->current_position.extent.column += 2;
+        if (skip) self->token_start_position = self->current_position;
+        self->data.lookahead = next_character;
+        return;
+      }
+    }
+  }
+
   ts_lexer__do_advance(self, skip);
 }
 
