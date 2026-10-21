@@ -1,0 +1,13 @@
+==================
+Declaration and following sentinel
+==================
+a{b:x;}tail;
+---
+(source_file (declaration) (tail))
+
+==================
+Comments remain extra children
+==================
+a{/* note */b:x;}tail;
+---
+(source_file (comment) (declaration) (tail))

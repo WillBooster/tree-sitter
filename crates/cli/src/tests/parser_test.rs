@@ -1057,6 +1057,21 @@ fn test_recovery_keeps_declarations_after_restarting_an_error() {
         ),
         (
             "c-sharp",
+            "class C { object x = x as\n}\nclass Following { int X; }",
+            vec!["class Following { int X; }"],
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\n\nclass Following { int X; }",
+            vec!["class Following { int X; }"],
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\n\n\nclass Following { int X; }",
+            vec!["class Following { int X; }"],
+        ),
+        (
+            "c-sharp",
             "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
             vec!["class Following { int Value => 1; }"],
         ),
@@ -2911,6 +2926,253 @@ fn test_completed_nodes_before_unfinished_nonterminal_extras() {
             );
             assert_eq!(tree.root_node().has_error(), !suffix.ends_with("item x;"));
             assert_eq!(tree.root_node().end_byte(), source.len());
+        }
+    }
+}
+
+#[test]
+fn test_recovery_allocation_growth_with_repeated_errors() {
+    let cases = [
+        (
+            get_test_fixture_language("recovery_extra_groups"),
+            "a{",
+            "b:/*{*/?",
+            "}tail;",
+            "tail",
+            "tail;",
+        ),
+        (
+            get_language("c-sharp"),
+            "",
+            "#pragma warning disable X #:x\n",
+            "class C {}",
+            "class_declaration",
+            "class C {}",
+        ),
+    ];
+    for (language, prefix, fragment, suffix, kind, text) in cases {
+        let mut sizes = Vec::new();
+        for repetitions in [200, 2_000] {
+            let source = format!("{prefix}{}{suffix}", fragment.repeat(repetitions));
+            let ((), bytes) = allocations::record_allocated_bytes(|| {
+                let mut parser = Parser::new();
+                parser.set_language(&language).unwrap();
+                let tree = parser.parse(&source, None).unwrap();
+                let root = tree.root_node();
+                assert!(root.has_error());
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+                let mut cursor = root.walk();
+                let sentinel = root
+                    .named_children(&mut cursor)
+                    .find(|node| node.kind() == kind)
+                    .unwrap_or_else(|| panic!("{}", root.to_sexp()));
+                assert_eq!(sentinel.utf8_text(source.as_bytes()).unwrap(), text);
+                assert!(!sentinel.has_error());
+            });
+            sizes.push(bytes);
+        }
+        assert!(sizes[1] < sizes[0] * 20, "allocation sizes: {sizes:?}");
+    }
+}
+
+#[test]
+fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
+    use tree_sitter::StreamingIterator;
+    let languages = [
+        get_test_fixture_language("recovery_extra_groups"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_extra_groups"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for (source, query_source, expected) in [
+            (
+                "ab:?/**/:/**/",
+                r#"(ERROR (ERROR ":" @token))"#,
+                vec![(8, 9)],
+            ),
+            ("a{?/**/{bx;}tail;", r#"(ERROR "{" @token)"#, vec![(7, 8)]),
+            (
+                "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
+                r#"(ERROR (ERROR "a" @token))"#,
+                vec![(6, 7), (13, 14), (39, 40)],
+            ),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            let query = Query::new(&parser.language().unwrap(), query_source).unwrap();
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+            let mut ranges = Vec::new();
+            while let Some((query_match, index)) = captures.next() {
+                let node = query_match.captures()[*index].node;
+                ranges.push((node.start_byte(), node.end_byte()));
+            }
+            assert_eq!(ranges, expected, "{}", tree.root_node().to_sexp());
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_recovery_extra_groups_preserve_edits_and_node_metadata() {
+    let languages = [
+        get_test_fixture_language("recovery_extra_groups"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_extra_groups"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let fragment = "b:/*é*/?";
+        let mut source = format!("a{{{}}}tail;", fragment.repeat(64)).into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = fragment.len();
+        for replacement in ["b:x;", "b:/*漢*/?", "b:/*é*/]", fragment] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 2,
+                    deleted_length: previous_length,
+                    inserted_text: replacement.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+            assert_eq!(snapshot(&tree), snapshot(&fresh));
+            previous_length = replacement.len();
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct NodeSnapshot {
+        kind: String,
+        range: Range,
+        named: bool,
+        extra: bool,
+        missing: bool,
+        has_error: bool,
+        child_count: u32,
+        field: Option<String>,
+    }
+
+    fn snapshot(tree: &tree_sitter::Tree) -> Vec<NodeSnapshot> {
+        let mut cursor = tree.walk();
+        let mut result = Vec::new();
+        loop {
+            let node = cursor.node();
+            result.push(NodeSnapshot {
+                kind: node.kind().to_owned(),
+                range: node.range(),
+                named: node.is_named(),
+                extra: node.is_extra(),
+                missing: node.is_missing(),
+                has_error: node.has_error(),
+                child_count: node.child_count(),
+                field: cursor.field_name().map(str::to_owned),
+            });
+            if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return result;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_incremental_edits_around_reused_nonterminal_extras() {
+    let languages = [
+        get_test_fixture_language("nonterminal_extra_append"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("nonterminal_extra_append"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for initial in ["c&#\n", "c&!hé\n", "c&first&#\n", "c&!one\n#two\n"] {
+            let mut source = initial.as_bytes().to_vec();
+            let mut tree = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            for inserted in ["e", "&f", "&!漢\ng"] {
+                let position = source.len();
+                perform_edit(
+                    &mut tree,
+                    &mut source,
+                    &Edit {
+                        position,
+                        deleted_length: 0,
+                        inserted_text: inserted.as_bytes().to_vec(),
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{}",
+                    tree.root_node().to_sexp()
+                );
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                assert_eq!(nodes(&tree), nodes(&fresh));
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+            }
+        }
+        let mut source = b"a& #x\n a#\n&\n!\na".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for inserted in *b"a&a&" {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 10,
+                    deleted_length: 1,
+                    inserted_text: vec![inserted],
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(nodes(&tree), nodes(&fresh));
+            let last = tree
+                .root_node()
+                .named_child(tree.root_node().named_child_count() as u32 - 1)
+                .unwrap();
+            assert_eq!(last.kind(), "command");
+            assert!(!last.has_error());
+            assert_eq!(last.utf8_text(&source).unwrap(), "a");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+        }
+    }
+
+    fn nodes(tree: &tree_sitter::Tree) -> Vec<(u16, Range, bool, bool, Option<String>)> {
+        let mut cursor = tree.walk();
+        let mut result = Vec::new();
+        loop {
+            let node = cursor.node();
+            result.push((
+                node.kind_id(),
+                node.range(),
+                node.is_named(),
+                node.is_extra(),
+                cursor.field_name().map(str::to_owned),
+            ));
+            if cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return result;
+                }
+            }
         }
     }
 }
