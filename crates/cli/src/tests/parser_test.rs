@@ -855,6 +855,55 @@ fn test_recovery_respects_completed_prefixes() {
 }
 
 #[test]
+fn test_recovery_isolates_malformed_prefix_from_following_struct() {
+    for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language("c")).unwrap();
+        let following = "struct b c;";
+        let mut source = format!("{before}{following}{after}").into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        let mut previous_length = 0;
+        for prefix in [
+            "class C implements A, B<C\n",
+            "",
+            "class C implements A, B<C\n",
+            "",
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: before.len(),
+                    deleted_length: previous_length,
+                    inserted_text: prefix.as_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            tree = parser.parse(&source, Some(&tree)).unwrap();
+            let fresh = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let declarations = root
+                .named_children(&mut cursor)
+                .filter(|node| !node.has_error())
+                .map(|node| (node.kind(), node.utf8_text(&source).unwrap()))
+                .collect::<Vec<_>>();
+            let mut expected = Vec::new();
+            if !before.is_empty() {
+                expected.push(("declaration", before.trim()));
+            }
+            expected.push(("declaration", following));
+            if !after.is_empty() {
+                expected.push(("declaration", after.trim()));
+            }
+            assert_eq!(declarations, expected, "{}", root.to_sexp());
+            previous_length = prefix.len();
+        }
+    }
+}
+
+#[test]
 fn test_recovery_preserves_declarations_after_incomplete_generics() {
     let languages = [
         get_test_fixture_language("keyword_recovery_priority"),
