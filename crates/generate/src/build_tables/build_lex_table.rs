@@ -929,7 +929,7 @@ impl<'a> LexTableBuilder<'a> {
                 };
                 if let Some((start, completed_precedence)) = earlier_completion
                     && *precedence < completed_precedence
-                    && tag.is_none_or(|tag| tag > start)
+                    && tag.is_some_and(|tag| tag > start)
                 {
                     continue;
                 }

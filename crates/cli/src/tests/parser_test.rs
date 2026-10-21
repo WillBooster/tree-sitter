@@ -221,6 +221,66 @@ fn test_lexer_preserves_lower_precedence_comment_continuations() {
 }
 
 #[test]
+fn test_lexer_preserves_lower_precedence_separator_continuations() {
+    for extra in [
+        serde_json::json!({"type": "STRING", "value": "//x"}),
+        serde_json::json!({"type": "PATTERN", "value": "//x"}),
+    ] {
+        let grammar = serde_json::json!({
+            "name": "separator_continuations",
+            "extras": [{"type": "PATTERN", "value": "\\s"}, extra],
+            "rules": {
+                "source": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "slash"},
+                    {"type": "SYMBOL", "name": "identifier"}
+                ]}},
+                "slash": {"type": "TOKEN", "content": {"type": "PREC", "value": 1,
+                    "content": {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "/"},
+                        {"type": "CHOICE", "members": [
+                            {"type": "STRING", "value": "/y"},
+                            {"type": "BLANK"}
+                        ]}
+                    ]}
+                }},
+                "identifier": {"type": "STRING", "value": "z"}
+            }
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            let mut source = b"z".to_vec();
+            let mut tree = parser.parse(&source, None).unwrap();
+            let mut previous_length = 0;
+            for prefix in ["//x ", "/ ", "//x ", "//x //x ", ""] {
+                perform_edit(
+                    &mut tree,
+                    &mut source,
+                    &Edit {
+                        position: 0,
+                        deleted_length: previous_length,
+                        inserted_text: prefix.as_bytes().to_vec(),
+                    },
+                )
+                .unwrap();
+                tree = parser.parse(&source, Some(&tree)).unwrap();
+                let fresh = parser.parse(&source, None).unwrap();
+                for parsed in [&tree, &fresh] {
+                    let root = parsed.root_node();
+                    assert!(!root.has_error(), "{}", root.to_sexp());
+                    let identifier = root
+                        .named_child(root.named_child_count() as u32 - 1)
+                        .unwrap();
+                    assert_eq!(identifier.kind(), "identifier");
+                    assert_eq!(identifier.byte_range(), prefix.len()..prefix.len() + 1);
+                    assert_eq!(root.named_child_count(), if prefix == "/ " { 2 } else { 1 });
+                }
+                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                previous_length = prefix.len();
+            }
+        }
+    }
+}
+
+#[test]
 fn test_lexer_preserves_precedence_before_speculative_continuations() {
     let path = fixtures_dir().join("test_grammars/lexical_precedence_continuations/grammar.js");
     let grammar = load_grammar_file(&path, None).unwrap();
