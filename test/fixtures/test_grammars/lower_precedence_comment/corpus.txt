@@ -1,0 +1,31 @@
+==================
+Comment after a value without a semicolon
+==================
+
+a { x: red // x
+}
+
+---
+
+(source (declaration (value (word))) (comment))
+
+==================
+Comment after a division without a semicolon
+==================
+
+a { x: red / blue // x
+}
+
+---
+
+(source (declaration (value (binary (value (word)) (value (word))))) (comment))
+
+==================
+A slash inside a word remains part of the value
+==================
+
+a { x: /red; }
+
+---
+
+(source (declaration (value (word))))
