@@ -50,6 +50,35 @@ pub fn get_language(name: &str) -> Language {
     TEST_LOADER.load_language_at_path(config).unwrap()
 }
 
+pub fn fixture_node_types(name: &str) -> Vec<serde_json::Value> {
+    let grammar = fs::read_to_string(
+        fixtures_dir()
+            .join("test_grammars")
+            .join(name)
+            .join("grammar.js"),
+    )
+    .unwrap();
+    generate_node_types(&grammar)
+}
+
+pub fn generate_node_types(grammar: &str) -> Vec<serde_json::Value> {
+    let directory = tempfile::tempdir_in(scratch_dir()).unwrap();
+    fs::write(directory.path().join("grammar.js"), grammar).unwrap();
+    tree_sitter_generate::generate_parser_in_directory(
+        directory.path(),
+        None::<PathBuf>,
+        None::<PathBuf>,
+        None,
+        None,
+        false,
+        tree_sitter_generate::OptLevel::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    serde_json::from_slice(&fs::read(directory.path().join("src/node-types.json")).unwrap())
+        .unwrap()
+}
+
 pub fn get_test_fixture_language(name: &str) -> Language {
     get_test_fixture_language_internal(name, false)
 }

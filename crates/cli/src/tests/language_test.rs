@@ -234,3 +234,59 @@ fn test_supertypes() {
         }
     }
 }
+
+#[test]
+fn test_nested_inline_alias_metadata_matches_visible_nodes() {
+    let entries = super::helpers::fixtures::fixture_node_types("nested_inline_alias_metadata");
+    let node_entry = entries
+        .iter()
+        .find(|entry| entry["type"] == "node")
+        .unwrap();
+    assert_eq!(node_entry["fields"]["value"]["required"], true);
+    assert_eq!(node_entry["children"]["required"], true);
+    let language =
+        super::helpers::fixtures::get_test_fixture_language("nested_inline_alias_metadata");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let tree = parser
+        .parse(
+            "style; /* NOTE */ @func; plain; [name] [ns|name] (first:second)",
+            None,
+        )
+        .unwrap();
+    assert!(!tree.root_node().has_error());
+    let error_tree = parser.parse("#broken", None).unwrap();
+    assert!(error_tree.root_node().has_error());
+    let mut found_recovered_token = false;
+    let mut found_inline_extra = false;
+    let mut nodes = vec![tree.root_node(), error_tree.root_node()];
+    while let Some(node) = nodes.pop() {
+        let mut cursor = node.walk();
+        nodes.extend(node.named_children(&mut cursor));
+        if node.is_error() {
+            continue;
+        }
+        found_recovered_token |= node.kind() == "dead_name";
+        found_inline_extra |= node.kind() == "note";
+        let entry = entries
+            .iter()
+            .find(|entry| entry["type"] == node.kind() && entry["named"] == true)
+            .unwrap_or_else(|| panic!("missing schema for {}", node.kind()));
+        if entry["children"]["required"] == true {
+            assert!(node.named_child_count() > 0, "{} is a leaf", node.kind());
+        }
+        if let Some(fields) = entry["fields"].as_object() {
+            for (name, field) in fields {
+                if field["required"] == true {
+                    assert!(
+                        node.child_by_field_name(name).is_some(),
+                        "{} lacks {name}",
+                        node.kind()
+                    );
+                }
+            }
+        }
+    }
+    assert!(found_recovered_token);
+    assert!(found_inline_extra);
+}
