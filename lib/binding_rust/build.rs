@@ -14,6 +14,9 @@ fn main() {
     .unwrap();
 
     let mut config = cc::Build::new();
+    if !cfg!(debug_assertions) {
+        config.define("NDEBUG", None);
+    }
 
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_WASM");
     if env::var("CARGO_FEATURE_WASM").is_ok() {
