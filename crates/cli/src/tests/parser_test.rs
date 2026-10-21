@@ -1157,6 +1157,34 @@ fn test_incremental_recovery_after_replacing_generic_arguments() {
     }
 }
 
+#[test]
+fn test_incremental_recovery_after_replacing_a_declarator() {
+    let languages = [
+        get_test_fixture_language("recovery_reused_statement"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_reused_statement"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let mut source = b"i(x){if(x){case 1:[[a]]e:[[a]];;}e k;}".to_vec();
+        let mut tree = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        for inserted_text in [b" ", b"("] {
+            edit_and_assert_fresh(
+                &mut parser,
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 1,
+                    deleted_length: 1,
+                    inserted_text: inserted_text.to_vec(),
+                },
+            );
+            assert_eq!(tree.root_node().has_error(), inserted_text == b" ");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+        }
+    }
+}
+
 fn assert_prefix_edits_match_fresh(language: &str, source: &str) {
     let mut parser = Parser::new();
     parser.set_language(&get_language(language)).unwrap();
