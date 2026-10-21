@@ -14,7 +14,7 @@ fn main() {
     .unwrap();
 
     let mut config = cc::Build::new();
-    if !cfg!(debug_assertions) {
+    if env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_none() {
         config.define("NDEBUG", None);
     }
 
