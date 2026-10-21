@@ -76,7 +76,7 @@ typedef struct {
   Subtree lookahead_when_paused;
   StackStatus status;
   bool has_unconfirmed_missing_token;
-  uint64_t unconfirmed_recovery;
+  bool has_unconfirmed_recovery;
 } StackHead;
 
 typedef struct {
@@ -113,7 +113,6 @@ struct Stack {
   StackNode *base_node;
   SubtreePool *subtree_pool;
   uint64_t pending_generation;
-  uint64_t recovery_generation;
   Array(ExtraChain) extra_chains;
 };
 
@@ -387,7 +386,7 @@ static StackVersion ts_stack__add_version(
     .status = StackStatusActive,
     .lookahead_when_paused = NULL_SUBTREE,
     .has_unconfirmed_missing_token = array_get(&self->heads, original_version)->has_unconfirmed_missing_token,
-    .unconfirmed_recovery = array_get(&self->heads, original_version)->unconfirmed_recovery,
+    .has_unconfirmed_recovery = array_get(&self->heads, original_version)->has_unconfirmed_recovery,
   };
   array_push(&self->heads, head);
   stack_node_retain(node);
@@ -833,12 +832,12 @@ unsigned ts_stack_error_cost(const Stack *self, StackVersion version) {
   return result;
 }
 
-uint64_t ts_stack_unconfirmed_recovery(const Stack *self, StackVersion version) {
-  return array_get(&self->heads, version)->unconfirmed_recovery;
+bool ts_stack_has_unconfirmed_recovery(const Stack *self, StackVersion version) {
+  return array_get(&self->heads, version)->has_unconfirmed_recovery;
 }
 
 void ts_stack_set_unconfirmed_recovery(Stack *self, StackVersion version, bool value) {
-  array_get(&self->heads, version)->unconfirmed_recovery = value ? ++self->recovery_generation : 0;
+  array_get(&self->heads, version)->has_unconfirmed_recovery = value;
 }
 
 bool ts_stack_has_unconfirmed_missing_token(const Stack *self, StackVersion version) {
@@ -1145,7 +1144,7 @@ bool ts_stack_merge(Stack *self, StackVersion version1, StackVersion version2) {
   StackHead *head2 = array_get(&self->heads, version2);
   stack_node_expand_extra_groups(self, head1->node);
   stack_node_expand_extra_groups(self, head2->node);
-  if (!head2->unconfirmed_recovery) head1->unconfirmed_recovery = 0;
+  if (!head2->has_unconfirmed_recovery) head1->has_unconfirmed_recovery = false;
   for (uint32_t i = 0; i < head2->node->link_count; i++) {
     stack_node_add_link(self, head1->node, head2->node->links[i], self->subtree_pool);
   }
@@ -1215,7 +1214,6 @@ void ts_stack_clear(Stack *self) {
     stack_head_delete(array_get(&self->heads, i), &self->node_pool, self->subtree_pool);
   }
   array_clear(&self->heads);
-  self->recovery_generation = 0;
   array_push(&self->heads, ((StackHead) {
     .node = self->base_node,
     .status = StackStatusActive,

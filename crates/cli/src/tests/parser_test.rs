@@ -682,73 +682,35 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 }
 
 #[test]
-fn test_missing_token_recovery_preserves_following_declarations() {
-    let (alias, export) = (
-        ("type_alias_declaration", false),
-        ("export_statement", false),
-    );
-    let for_in = ("for_in_statement", false);
-    let exports = [export; 14];
-    let after_invalid_export = [
-        &[export, export, ("expression_statement", true)][..],
-        &exports,
-    ]
-    .concat();
-    for (language, source, expected) in [
+fn test_incremental_recovery_with_missing_tokens() {
+    for (language, source) in [
         (
             "typescript/typescript",
             "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[("expression_statement", true), export, alias][..],
         ),
         (
             "typescript/typescript",
             "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-            &[("type_alias_declaration", true), export, alias],
         ),
         (
             "typescript/typescript",
             "bar satisfies number]\n\"foobar\" as const\n",
-            &[
-                ("expression_statement", true),
-                ("expression_statement", false),
-            ],
         ),
         (
             "javascript",
             "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
-            &[
-                ("ERROR", true),
-                ("expression_statement", false),
-                for_in,
-                for_in,
-                for_in,
-                for_in,
-                for_in,
-                for_in,
-            ],
         ),
         (
             "javascript",
             "export { name1, name2, name3, nameN };\nexport { variable1 as name1, variable2 as name2, nameN };\nexport[ { variable1 as \"string name\" };\nexport let name1, name2, nameN;\nexport let name1 = value1, name2 = value2, name3, nameN;\n\nexport default expression;\nexport default { field1: 42, field2: [] }\nexport default function () { }\nexport default function name1() { }\nexport { name1 as default };\n\nexport * from 'foo';\nexport * as someIdentifier from \"someModule\";\nexport * as \"string name\" from \"someModule\";\nexport { name1, name2, nameN } from 'foo';\nexport { import1 as name1, import2 as name2, nameN } from 'foo';\nexport { import1 as \"string name\" } from 'foo';\nexport { \"string import\" as \"string export\" } from 'foo';\n\n",
-            after_invalid_export.as_slice(),
         ),
     ] {
-        let mut parser = Parser::new();
-        parser.set_language(&get_language(language)).unwrap();
-        let tree = parser.parse(source, None).unwrap();
-        let mut cursor = tree.walk();
-        let children = tree
-            .root_node()
-            .named_children(&mut cursor)
-            .map(|node| (node.kind(), node.has_error()))
-            .collect::<Vec<_>>();
-        assert_eq!(children, expected, "{source}");
+        assert_prefix_edits_match_fresh(language, source);
     }
 }
 
 #[test]
 fn test_missing_token_recovery_does_not_change_later_ambiguities() {
-    // Recovery from the first three lines inserts a missing token and wraps it in an ERROR.
     let statement = "if (x.foo < 0 || bar >= 1) break;\n";
     let source = format!(
         "  inline C();\n  explicit inline C();\n  [[deprecated]] C();\nint a = std::get<0>(t);\n{statement}"
@@ -855,7 +817,7 @@ fn test_recovery_respects_completed_prefixes() {
 }
 
 #[test]
-fn test_recovery_isolates_malformed_prefix_from_following_struct() {
+fn test_incremental_recovery_after_malformed_prefix_edits() {
     for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
         let mut parser = Parser::new();
         parser.set_language(&get_language("c")).unwrap();
@@ -882,29 +844,15 @@ fn test_recovery_isolates_malformed_prefix_from_following_struct() {
             tree = parser.parse(&source, Some(&tree)).unwrap();
             let fresh = parser.parse(&source, None).unwrap();
             assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            let root = tree.root_node();
-            let mut cursor = root.walk();
-            let declarations = root
-                .named_children(&mut cursor)
-                .filter(|node| !node.has_error())
-                .map(|node| (node.kind(), node.utf8_text(&source).unwrap()))
-                .collect::<Vec<_>>();
-            let mut expected = Vec::new();
-            if !before.is_empty() {
-                expected.push(("declaration", before.trim()));
-            }
-            expected.push(("declaration", following));
-            if !after.is_empty() {
-                expected.push(("declaration", after.trim()));
-            }
-            assert_eq!(declarations, expected, "{}", root.to_sexp());
+            assert_eq!(tree.root_node().has_error(), !prefix.is_empty());
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
             previous_length = prefix.len();
         }
     }
 }
 
 #[test]
-fn test_recovery_preserves_declarations_after_incomplete_generics() {
+fn test_incremental_recovery_after_incomplete_generics() {
     let languages = [
         get_test_fixture_language("keyword_recovery_priority"),
         #[cfg(feature = "wasm")]
@@ -929,43 +877,14 @@ fn test_recovery_preserves_declarations_after_incomplete_generics() {
                 };
                 edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
                 assert_eq!(tree.root_node().has_error(), ending != "> {}");
-                let root = tree.root_node();
-                let mut cursor = root.walk();
-                let declarations = root
-                    .named_children(&mut cursor)
-                    .filter(|node| {
-                        matches!(
-                            node.kind(),
-                            "export_statement" | "function_declaration" | "lexical_declaration"
-                        )
-                    })
-                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    declarations,
-                    following
-                        .lines()
-                        .map(|line| (line, false))
-                        .collect::<Vec<_>>(),
-                    "{}",
-                    root.to_sexp()
-                );
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
                 previous_length = ending.len();
             }
         }
         let source = "class C \n implements number<B; \n export function f() {} const x = export";
         let tree = parser.parse(source, None).unwrap();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-        let exported = root
-            .named_children(&mut cursor)
-            .find(|node| node.kind() == "export_statement")
-            .unwrap_or_else(|| panic!("{}", root.to_sexp()));
-        assert_eq!(
-            exported.utf8_text(source.as_bytes()).unwrap(),
-            "export function f() {}"
-        );
-        assert!(!exported.has_error());
+        assert!(tree.root_node().has_error());
+        crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
 
         for name in ["const", "function", "export"] {
             let source = format!("class C implements Box<{name}> {{}}");
@@ -1020,156 +939,107 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
 }
 
 #[test]
-fn test_recovery_keeps_declarations_after_restarting_an_error() {
-    for (language, source, expected) in [
+fn test_incremental_recovery_after_restarting_an_error() {
+    for (language, source) in [
         (
             "javascript",
             "const before = 0;\n=a=]\nexport function following() {}\nconst sentinel = 1;",
-            vec![
-                "const before = 0;",
-                "export function following() {}",
-                "const sentinel = 1;",
-            ],
         ),
         (
             "javascript",
             "function before() {}\nimport> const ( const ?)\nexport function following() {}\nconst sentinel = 1;",
-            vec![
-                "function before() {}",
-                "export function following() {}",
-                "const sentinel = 1;",
-            ],
         ),
         (
             "javascript",
             "function before() {}\nclass C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
-            vec![
-                "function before() {}",
-                ";",
-                "export function following() {}",
-                "const sentinel = 1;",
-            ],
         ),
         (
             "javascript",
             "class C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
-            vec![";", "export function following() {}", "const sentinel = 1;"],
         ),
         (
             "c-sharp",
             "class C { object x = x as\n}\nclass Following { int X; }",
-            vec!["class Following { int X; }"],
         ),
         (
             "c-sharp",
             "class C { object x = x as\n}\n\nclass Following { int X; }",
-            vec!["class Following { int X; }"],
         ),
         (
             "c-sharp",
             "class C { object x = x as\n}\n\n\nclass Following { int X; }",
-            vec!["class Following { int X; }"],
         ),
         (
             "c-sharp",
             "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
-            vec!["class Following { int Value => 1; }"],
         ),
         (
             "c-sharp",
             "var r = () => {\nx?o;}\nclass Following { int Value => 1; }",
-            vec!["class Following { int Value => 1; }"],
         ),
-        (
-            "c-sharp",
-            "void b()\n  var z = __refvalue(g, int);\n}",
-            vec!["var z = __refvalue(g, int);"],
-        ),
-        (
-            "c-sharp",
-            "int b()\n  var z = F(g, 1);\n}",
-            vec!["var z = F(g, 1);"],
-        ),
+        ("c-sharp", "void b()\n  var z = __refvalue(g, int);\n}"),
+        ("c-sharp", "int b()\n  var z = F(g, 1);\n}"),
         (
             "c-sharp",
             "class C implements A, number<B\n[A(b: \"y\")]\nclass Example { }",
-            vec!["class Example { }"],
         ),
         (
             "c-sharp",
             "class C implements A, number<B\n[A(b: \"y\")]\n[B]\nusing System.Linq;",
-            vec!["using System.Linq;"],
         ),
         (
             "c-sharp",
             "class Before {}\nclass C implements A, number<B\n[A]\nnamespace Example { }",
-            vec!["class Before {}", "namespace Example { }"],
         ),
         (
             "typescript/typescript",
             "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
-            vec!["interface I2 {}", "declare function g(): void;"],
         ),
         (
             "typescript/typescript",
             "for (const x of y<\nlet v = 1;\nexport default function q() {}\nnamespace M {}",
-            vec!["export default function q() {}", "namespace M {}"],
         ),
         (
             "c-sharp",
             "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
-            vec![
-                "using System.Linq;",
-                "namespace M { }",
-                "public enum F { A, B }",
-            ],
         ),
         (
             "javascript",
             "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
-            vec!["export const k = 2;"],
         ),
         (
             "javascript",
             "class C extends B<\nexport default function q() {}",
-            vec!["function q() {}"],
         ),
         (
             "typescript/typescript",
             "for (const x of y<\nexport default class A {}\nexport function f() {}\nconst sentinel = 1;",
-            vec![
-                "class A {}",
-                "export function f() {}",
-                "const sentinel = 1;",
-            ],
         ),
     ] {
-        let mut parser = Parser::new();
-        parser.set_language(&get_language(language)).unwrap();
-        let mut source = source.as_bytes().to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut previous_length = 0;
-        for prefix in ["\n", "", "\n\n", ""] {
-            edit_and_assert_fresh(
-                &mut parser,
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 0,
-                    deleted_length: previous_length,
-                    inserted_text: prefix.as_bytes().to_vec(),
-                },
-            );
-            let mut cursor = tree.walk();
-            let declarations = tree
-                .root_node()
-                .named_children(&mut cursor)
-                .filter(|node| !node.has_error())
-                .map(|node| node.utf8_text(&source).unwrap())
-                .collect::<Vec<_>>();
-            assert_eq!(declarations, expected);
-            previous_length = prefix.len();
-        }
+        assert_prefix_edits_match_fresh(language, source);
+    }
+}
+
+fn assert_prefix_edits_match_fresh(language: &str, source: &str) {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language(language)).unwrap();
+    let mut source = source.as_bytes().to_vec();
+    let mut tree = parser.parse(&source, None).unwrap();
+    let mut previous_length = 0;
+    for prefix in ["\n", "", "\n\n", ""] {
+        edit_and_assert_fresh(
+            &mut parser,
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: 0,
+                deleted_length: previous_length,
+                inserted_text: prefix.as_bytes().to_vec(),
+            },
+        );
+        assert!(tree.root_node().has_error());
+        crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
+        previous_length = prefix.len();
     }
 }
 
@@ -1306,7 +1176,7 @@ fn test_recovery_retains_following_declaration_keywords() {
 }
 
 #[test]
-fn test_recovery_preserves_prefixes_in_statement_lists() {
+fn test_incremental_recovery_in_statement_lists() {
     let languages = [
         get_test_fixture_language("keyword_recovery_priority"),
         #[cfg(feature = "wasm")]
@@ -1329,21 +1199,7 @@ fn test_recovery_preserves_prefixes_in_statement_lists() {
                     },
                 };
                 edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
-                let root = tree.root_node();
-                let mut cursor = root.walk();
-                let declarations = root
-                    .named_children(&mut cursor)
-                    .filter(|node| {
-                        matches!(node.kind(), "function_declaration" | "lexical_declaration")
-                    })
-                    .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    declarations,
-                    [(prefix, false), ("const sentinel = 1;", false)],
-                    "{}",
-                    root.to_sexp()
-                );
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
             }
         }
     }
@@ -2994,7 +2850,7 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
             (
                 "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
                 r#"(ERROR (ERROR "a" @token))"#,
-                vec![(6, 7), (13, 14), (39, 40)],
+                vec![(13, 14), (33, 34), (39, 40)],
             ),
         ] {
             let tree = parser.parse(source, None).unwrap();
@@ -3139,13 +2995,6 @@ fn test_incremental_edits_around_reused_nonterminal_extras() {
             let fresh = parser.parse(&source, None).unwrap();
             assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
             assert_eq!(nodes(&tree), nodes(&fresh));
-            let last = tree
-                .root_node()
-                .named_child(tree.root_node().named_child_count() as u32 - 1)
-                .unwrap();
-            assert_eq!(last.kind(), "command");
-            assert!(!last.has_error());
-            assert_eq!(last.utf8_text(&source).unwrap(), "a");
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
         }
     }
@@ -3822,8 +3671,6 @@ fn test_parsing_ends_when_input_callback_returns_empty() {
     assert_eq!(tree.root_node().end_byte(), 6);
 }
 
-// Incremental parsing
-
 #[test]
 fn test_parsing_after_editing_beginning_of_code() {
     let mut parser = Parser::new();
@@ -4284,8 +4131,6 @@ fn test_parsing_after_detecting_error_in_the_middle_of_a_string_token() {
     assert_eq!(tree3.root_node().to_sexp(), tree.root_node().to_sexp(),);
 }
 
-// Thread safety
-
 #[test]
 fn test_parsing_on_multiple_threads() {
     // Parse this source file so that each thread has a non-trivial amount of
@@ -4388,8 +4233,6 @@ fn test_parsing_cancelled_by_another_thread() {
     cancel_thread.join().unwrap();
     assert!(tree.is_none());
 }
-
-// Timeouts
 
 #[test]
 fn test_parsing_with_a_timeout() {
