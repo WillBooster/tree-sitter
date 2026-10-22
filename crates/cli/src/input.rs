@@ -178,10 +178,9 @@ pub fn get_test_info(
 }
 
 /// Writes `contents` to a temporary file and returns the path to that file.
-pub fn get_tmp_source_file(contents: &[u8]) -> Result<PathBuf> {
-    let parse_path = std::env::temp_dir().join(".tree-sitter-temp");
-    let mut parse_file = std::fs::File::create(&parse_path)?;
+pub fn get_tmp_source_file(contents: &[u8]) -> Result<tempfile::TempPath> {
+    let mut parse_file = tempfile::NamedTempFile::new()?;
     parse_file.write_all(contents)?;
 
-    Ok(parse_path)
+    Ok(parse_file.into_temp_path())
 }

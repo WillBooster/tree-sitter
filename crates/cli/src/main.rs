@@ -1383,7 +1383,6 @@ impl Parse {
                     &mut options,
                 )?;
                 update_stats(&mut stats);
-                fs::remove_file(path)?;
             }
 
             CliInput::Stdin(contents) => {
@@ -1408,7 +1407,6 @@ impl Parse {
                     &mut options,
                 )?;
                 update_stats(&mut stats);
-                fs::remove_file(path)?;
             }
         }
 
@@ -1778,7 +1776,6 @@ impl Query {
                     stdin: true,
                 };
                 query::query_file_at_path(language, &path, &name, query_path, &opts, None)?;
-                fs::remove_file(path)?;
             }
             CliInput::Stdin(contents) => {
                 // Place user input and query output on separate lines
@@ -1798,7 +1795,6 @@ impl Query {
                     stdin: true,
                 };
                 query::query_file_at_path(&language, &path, "stdin", query_path, &opts, None)?;
-                fs::remove_file(path)?;
             }
         }
 
@@ -1926,7 +1922,6 @@ impl Highlight {
                 } else {
                     warn!("No syntax highlighting config found for test {name}");
                 }
-                fs::remove_file(path)?;
             }
 
             CliInput::Stdin(contents) => {
@@ -1968,7 +1963,6 @@ impl Highlight {
                         current_dir.display()
                     );
                 }
-                fs::remove_file(path)?;
             }
         }
 
@@ -2068,7 +2062,6 @@ impl Tags {
                 } else {
                     warn!("No tags config found for test {name}");
                 }
-                fs::remove_file(path)?;
             }
 
             CliInput::Stdin(contents) => {
@@ -2099,7 +2092,6 @@ impl Tags {
                 } else {
                     warn!("No tags config found for path {}", current_dir.display());
                 }
-                fs::remove_file(path)?;
             }
         }
 
