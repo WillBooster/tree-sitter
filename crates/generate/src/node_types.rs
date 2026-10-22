@@ -202,13 +202,18 @@ pub fn get_variable_info(
     str_pool: &StrPool,
 ) -> VariableInfoResult<Vec<VariableInfo>> {
     validate_supertype_aliases(syntax_grammar, inlines, default_aliases, str_pool)?;
-    let mut result =
-        compute_variable_info_fixed_point(syntax_grammar, lexical_grammar, default_aliases);
+    let mut result = compute_variable_info_fixed_point(
+        syntax_grammar,
+        inlines,
+        lexical_grammar,
+        default_aliases,
+    );
     validate_supertype_structure(
         &result,
         syntax_grammar,
         lexical_grammar,
         default_aliases,
+        inlines,
         str_pool,
     )?;
     strip_hidden_child_types(&mut result, syntax_grammar, lexical_grammar);
@@ -251,15 +256,17 @@ fn validate_supertype_aliases(
 /// so we loop until no more changes occur.
 fn compute_variable_info_fixed_point(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
 ) -> Vec<VariableInfo> {
     let variables_with_fields =
-        variables_with_inherited_fields(syntax_grammar, lexical_grammar, default_aliases);
+        variables_with_inherited_fields(syntax_grammar, inlines, lexical_grammar, default_aliases);
     let mut result = vec![VariableInfo::default(); syntax_grammar.variables.len()];
     for compute_quantities in [false, true] {
         propagate_variable_info(
             syntax_grammar,
+            inlines,
             lexical_grammar,
             default_aliases,
             &variables_with_fields,
@@ -272,6 +279,7 @@ fn compute_variable_info_fixed_point(
 
 fn propagate_variable_info(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
     variables_with_fields: &[bool],
@@ -291,12 +299,18 @@ fn propagate_variable_info(
         did_change = false;
 
         for i in 0..syntax_grammar.variables.len() {
+            if syntax_grammar
+                .variables_to_inline
+                .contains(&Symbol::non_terminal(i))
+            {
+                continue;
+            }
             let mut variable_info = result[i].clone();
 
             // Examine each of the variable's productions. The variable's child types can be
             // immediately combined across all productions, but the child quantities must be
             // recorded separately for each production.
-            for prod_id in syntax_grammar.variable_prod_ids(i) {
+            for prod_id in expanded_variable_prod_ids(syntax_grammar, inlines, i) {
                 let production = syntax_grammar.production(prod_id);
                 let mut production_field_quantities = FxHashMap::default();
                 let mut production_children_quantity = ChildQuantity::zero();
@@ -416,12 +430,13 @@ fn propagate_variable_info(
 
 fn variables_with_inherited_fields(
     syntax_grammar: &SyntaxGrammar,
+    inlines: &InlinedProductionMap,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
 ) -> Vec<bool> {
     let mut has_fields: Vec<_> = (0..syntax_grammar.variables.len())
         .map(|i| {
-            syntax_grammar.variable_prod_ids(i).any(|id| {
+            expanded_variable_prod_ids(syntax_grammar, inlines, i).any(|id| {
                 syntax_grammar
                     .production(id)
                     .steps
@@ -436,22 +451,23 @@ fn variables_with_inherited_fields(
             if has_fields[i] {
                 continue;
             }
-            let inherits_fields = syntax_grammar.variable_prod_ids(i).any(|id| {
-                syntax_grammar.production(id).steps.iter().any(|step| {
-                    let symbol = step.symbol();
-                    if !symbol.is_non_terminal() || !has_fields[symbol.index as usize] {
-                        return false;
-                    }
-                    let child_type = step.child_type(default_aliases);
-                    variable_type_for_child_type(&child_type, syntax_grammar, lexical_grammar)
-                        < VariableType::Anonymous
-                        || (syntax_grammar.supertype_symbols.contains(&symbol)
-                            && (matches!(child_type, ChildType::Normal(_))
-                                || syntax_grammar
-                                    .supertype_alias(symbol, default_aliases)
-                                    .is_some()))
-                })
-            });
+            let inherits_fields =
+                expanded_variable_prod_ids(syntax_grammar, inlines, i).any(|id| {
+                    syntax_grammar.production(id).steps.iter().any(|step| {
+                        let symbol = step.symbol();
+                        if !symbol.is_non_terminal() || !has_fields[symbol.index as usize] {
+                            return false;
+                        }
+                        let child_type = step.child_type(default_aliases);
+                        variable_type_for_child_type(&child_type, syntax_grammar, lexical_grammar)
+                            < VariableType::Anonymous
+                            || (syntax_grammar.supertype_symbols.contains(&symbol)
+                                && (matches!(child_type, ChildType::Normal(_))
+                                    || syntax_grammar
+                                        .supertype_alias(symbol, default_aliases)
+                                        .is_some()))
+                    })
+                });
             if inherits_fields {
                 has_fields[i] = true;
                 changed = true;
@@ -545,6 +561,7 @@ fn validate_supertype_structure(
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
+    inlines: &InlinedProductionMap,
     str_pool: &StrPool,
 ) -> VariableInfoResult<()> {
     let child_type_is_visible = |t: &ChildType| {
@@ -557,24 +574,27 @@ fn validate_supertype_structure(
             // A symbol can have a multi-step production either directly or via an inlined
             // anonymous child. In the latter case, we can report a more specific error.
 
-            let hidden_child_name = syntax_grammar
-                .variable_prod_ids(supertype_symbol.index as usize)
-                .filter(|&prod_id| syntax_grammar.production(prod_id).steps.len() == 1)
-                .find_map(|prod_id| {
-                    let step = syntax_grammar.production(prod_id).steps[0];
-                    let child_symbol = step.symbol();
-                    let child_type = step.child_type(default_aliases);
-                    let child_is_hidden = !child_type_is_visible(&child_type)
-                        && !syntax_grammar.supertype_symbols.contains(&child_symbol);
-                    (child_is_hidden
-                        && child_symbol.is_non_terminal()
-                        && result[child_symbol.index as usize].has_multi_step_production)
-                        .then(|| {
-                            str_pool
-                                .resolve(syntax_grammar.variables[child_symbol.index as usize].name)
-                                .to_string()
-                        })
-                });
+            let hidden_child_name = expanded_variable_prod_ids(
+                syntax_grammar,
+                inlines,
+                supertype_symbol.index as usize,
+            )
+            .filter(|&prod_id| syntax_grammar.production(prod_id).steps.len() == 1)
+            .find_map(|prod_id| {
+                let step = syntax_grammar.production(prod_id).steps[0];
+                let child_symbol = step.symbol();
+                let child_type = step.child_type(default_aliases);
+                let child_is_hidden = !child_type_is_visible(&child_type)
+                    && !syntax_grammar.supertype_symbols.contains(&child_symbol);
+                (child_is_hidden
+                    && child_symbol.is_non_terminal()
+                    && result[child_symbol.index as usize].has_multi_step_production)
+                    .then(|| {
+                        str_pool
+                            .resolve(syntax_grammar.variables[child_symbol.index as usize].name)
+                            .to_string()
+                    })
+            });
 
             Err(VariableInfoError::InvalidSupertype(InvalidSupertypeError {
                 supertype: str_pool.resolve(variable.name).to_string(),
@@ -583,6 +603,16 @@ fn validate_supertype_structure(
         }
     }
     Ok(())
+}
+
+fn expanded_variable_prod_ids<'a>(
+    grammar: &'a SyntaxGrammar,
+    inlines: &'a InlinedProductionMap,
+    index: usize,
+) -> impl Iterator<Item = u32> + 'a {
+    grammar
+        .variable_prod_ids(index)
+        .flat_map(move |id| inlines.final_prod_ids(id))
 }
 
 /// Remove hidden child types from supertype children lists, field type lists,

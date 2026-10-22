@@ -519,7 +519,7 @@ fn prepare_node_types_grammar(
     let PreparedGrammar {
         syntax_grammar,
         lexical_grammar,
-        inlines,
+        mut inlines,
         default_aliases,
         str_pool,
     } = prepare_grammar(input_grammar, diagnostics)?;
@@ -530,6 +530,8 @@ fn prepare_node_types_grammar(
         &default_aliases,
         &str_pool,
     )?;
+
+    inlines.discard_fully_inlined();
 
     Ok(PreparedOutput {
         syntax_grammar,

@@ -273,9 +273,17 @@ impl ProductionStore {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct InlinedProductionRange {
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Default)]
 pub struct InlinedProductionMap {
     pub map: FxHashMap<(u32, u32), Vec<u32>>,
+    pub fully_inlined: FxHashMap<u32, InlinedProductionRange>,
+    pub fully_inlined_ids: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -406,6 +414,26 @@ impl SyntaxVariable {
 }
 
 impl InlinedProductionMap {
+    pub fn discard_fully_inlined(&mut self) {
+        self.fully_inlined = FxHashMap::default();
+        self.fully_inlined_ids = Vec::new();
+    }
+
+    #[must_use]
+    pub fn fully_inlined_prod_ids(&self, prod_id: u32) -> Option<&[u32]> {
+        let range = self.fully_inlined.get(&prod_id)?;
+        Some(&self.fully_inlined_ids[range.start as usize..range.end as usize])
+    }
+
+    pub fn final_prod_ids(&self, prod_id: u32) -> impl Iterator<Item = u32> + '_ {
+        let expanded = self.fully_inlined_prod_ids(prod_id);
+        expanded
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .chain(expanded.is_none().then_some(prod_id))
+    }
+
     #[must_use]
     pub fn inlined_prod_ids(&self, prod_id: u32, step_index: u32) -> Option<&[u32]> {
         self.map.get(&(prod_id, step_index)).map(Vec::as_slice)

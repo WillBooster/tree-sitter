@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    grammars::{InlinedProductionMap, InputGrammar, Production, ProductionStep, ProductionStore},
+    grammars::{
+        InlinedProductionMap, InlinedProductionRange, InputGrammar, Production, ProductionStep,
+        ProductionStore,
+    },
     prepare_grammar::extract_tokens::ExtractedGrammarMeta,
     rules::{Precedence, Symbol, SymbolType},
 };
@@ -30,9 +33,14 @@ impl InlineBuilder<'_> {
     /// was dropped.
     fn build(mut self) -> (InlinedProductionMap, FxHashSet<u32>) {
         let mut dead = FxHashSet::default();
+        let mut fully_inlined = FxHashMap::default();
+        let mut fully_inlined_ids = Vec::new();
         let mut worklist = Vec::new();
+        let mut final_productions = Vec::new();
+
         for prod_id in 0..self.first_inlined {
-            let mut survived = false;
+            let mut did_inline = false;
+            final_productions.clear();
             worklist.push((prod_id, 0u32));
             while !worklist.is_empty() {
                 let mut i = 0;
@@ -40,6 +48,7 @@ impl InlineBuilder<'_> {
                     let (prod_id, step_index) = worklist[i];
                     if let Some(step) = self.production_step_for_id(prod_id, step_index) {
                         if self.inline.contains(&step.symbol()) {
+                            did_inline = true;
                             let ids = self.inline_production_at_step(prod_id, step_index);
                             worklist.splice(i..=i, ids.into_iter().map(|id| (id, step_index)));
                         } else {
@@ -47,17 +56,31 @@ impl InlineBuilder<'_> {
                             i += 1;
                         }
                     } else {
+                        final_productions.push(prod_id);
                         worklist.remove(i);
-                        survived = true;
                     }
                 }
             }
-            if !survived {
+            debug_assert!(!final_productions.is_empty() || did_inline);
+            if final_productions.is_empty() {
                 dead.insert(prod_id);
+            }
+            if did_inline {
+                let start = fully_inlined_ids.len() as u32;
+                fully_inlined_ids.extend_from_slice(&final_productions);
+                let end = fully_inlined_ids.len() as u32;
+                fully_inlined.insert(prod_id, InlinedProductionRange { start, end });
             }
         }
 
-        (InlinedProductionMap { map: self.map }, dead)
+        (
+            InlinedProductionMap {
+                map: self.map,
+                fully_inlined,
+                fully_inlined_ids,
+            },
+            dead,
+        )
     }
 
     /// Expand inlining at one step of one production, dedup, and store the results
