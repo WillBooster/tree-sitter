@@ -527,7 +527,7 @@ pub fn parse_file_at_path(
                 writeln!(&mut stdout, "<?xml version=\"1.0\"?>")?;
                 writeln!(&mut stdout, "<sources>")?;
             }
-            writeln!(&mut stdout, "  <source name=\"{}\">", path.display())?;
+            writeln!(&mut stdout, "  <source name=\"{name}\">")?;
 
             loop {
                 let node = cursor.node();
@@ -657,7 +657,6 @@ pub fn parse_file_at_path(
 
         let first_error = first_error.or(error_container);
         if first_error.is_some() || opts.print_time {
-            let path = path.to_string_lossy();
             write!(
                 &mut stdout,
                 "{:width$}\tParse: {parse_duration_ms:>7.2} ms\t{:>6} bytes/ms",
@@ -700,7 +699,7 @@ pub fn parse_file_at_path(
                 write!(
                     &mut stdout,
                     "\n{:width$}\tEdit:  {edit_duration_ms:>7.2} ms",
-                    " ".repeat(path.len()),
+                    " ".repeat(name.len()),
                     width = max_path_length,
                 )?;
             }
@@ -708,7 +707,7 @@ pub fn parse_file_at_path(
         }
 
         opts.stats.parse_summaries.push(ParseSummary {
-            file: path.to_path_buf(),
+            file: PathBuf::from(name),
             successful: first_error.is_none(),
             start: Some(tree.root_node().start_position().into()),
             end: Some(tree.root_node().end_position().into()),
@@ -726,13 +725,13 @@ pub fn parse_file_at_path(
         writeln!(
             &mut stdout,
             "{:width$}\tParse: {duration_ms:>7.2} ms\t(timed out)",
-            path.to_str().unwrap(),
+            name,
             width = max_path_length
         )?;
     }
 
     opts.stats.parse_summaries.push(ParseSummary {
-        file: path.to_path_buf(),
+        file: PathBuf::from(name),
         successful: false,
         start: None,
         end: None,
