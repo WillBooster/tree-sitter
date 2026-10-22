@@ -408,7 +408,7 @@ void ts_subtree_summarize_children(
         TableEntry entry;
         ts_language_table_entry(language, state, symbol, &entry);
         self.ptr->has_ambiguous_extra |= entry.action_count > 1 &&
-          entry.actions[0].type == TSParseActionTypeShift;
+          (entry.actions[0] & TS_PARSE_ACTION_TYPE_MASK) == TSParseActionTypeShift;
       }
     }
 

@@ -1414,12 +1414,12 @@ static void ts_parser__accept(
 
 static bool ts_parser__process_candidate_recovery_actions(
   TSParser *self,
-  const TSParseAction *actions,
+  const uint32_t *actions,
   uint32_t action_count
 ) {
   bool has_shift_action = false;
   for (uint32_t i = 0; i < action_count; i++) {
-    TSParseAction action = actions[i];
+    TSParseAction action = ts_language_parse_action(self->language, actions[i]);
     switch (action.type) {
       case TSParseActionTypeShift:
       case TSParseActionTypeRecover:
@@ -1486,16 +1486,13 @@ static bool ts_parser__do_all_potential_reductions(
           has_shift_action = true;
       }
 
-      // Sort reduce_actions by symbol descending to ensure deterministic
-      // ordering. The LookaheadIterator may visit symbols in a different
-      // order than the original linear scan (group order vs symbol order
-      // for small parse states), which can produce different orderings.
-      // Since reductions are applied sequentially and the last reduction
-      // version survives, the order affects error recovery outcomes.
+      // The iterator's visiting order depends on how the table encodes the state's row. Reductions are
+      // applied sequentially and the last reduction version survives, so sort them into an order that
+      // does not depend on the encoding.
       for (uint32_t j = 1; j < self->reduce_actions.size; j++) {
         ReduceAction key = self->reduce_actions.contents[j];
         int32_t k = (int32_t)j - 1;
-        while (k >= 0 && self->reduce_actions.contents[k].symbol < key.symbol) {
+        while (k >= 0 && ts_reduce_action_precedes(key, self->reduce_actions.contents[k])) {
           self->reduce_actions.contents[k + 1] = self->reduce_actions.contents[k];
           k--;
         }
@@ -1757,8 +1754,8 @@ static void ts_parser__recover(
   // If the current lookahead token is an extra token, mark it as extra. This means it won't
   // be counted in error cost calculations.
   unsigned n;
-  const TSParseAction *actions = ts_language_actions(self->language, 1, ts_subtree_symbol(lookahead), &n);
-  if (n > 0 && actions[n - 1].type == TSParseActionTypeShift && actions[n - 1].shift.extra) {
+  const uint32_t *actions = ts_language_actions(self->language, 1, ts_subtree_symbol(lookahead), &n);
+  if (n > 0 && (actions[n - 1] & TS_PARSE_ACTION_MASK) == SHIFT_EXTRA()) {
     MutableSubtree mutable_lookahead = ts_subtree_make_mut(&self->tree_pool, lookahead);
     ts_subtree_set_extra(&mutable_lookahead, true);
     lookahead = ts_subtree_from_mut(mutable_lookahead);
@@ -1828,14 +1825,14 @@ static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state) {
   TableEntry entry;
   ts_language_table_entry(self->language, state, ts_builtin_sym_end, &entry);
   for (unsigned i = 0; i < entry.action_count; i++) {
-    TSParseAction action = entry.actions[i];
+    TSParseAction action = ts_language_parse_action(self->language, entry.actions[i]);
     if (action.type == TSParseActionTypeAccept) return true;
     if (action.type != TSParseActionTypeReduce || action.reduce.child_count != 1) continue;
     TSStateId next_state = ts_language_next_state(self->language, 1, action.reduce.symbol);
     TableEntry next_entry;
     ts_language_table_entry(self->language, next_state, ts_builtin_sym_end, &next_entry);
     for (unsigned j = 0; j < next_entry.action_count; j++) {
-      if (next_entry.actions[j].type == TSParseActionTypeAccept) return true;
+      if ((next_entry.actions[j] & TS_PARSE_ACTION_TYPE_MASK) == TSParseActionTypeAccept) return true;
     }
   }
   return false;
@@ -2089,7 +2086,7 @@ static bool ts_parser__advance(
     bool did_reduce = false;
     StackVersion last_reduction_version = STACK_VERSION_NONE;
     for (uint32_t i = 0; i < table_entry.action_count; i++) {
-      TSParseAction action = table_entry.actions[i];
+      TSParseAction action = ts_language_parse_action(self->language, table_entry.actions[i]);
 
       switch (action.type) {
         case TSParseActionTypeShift: {

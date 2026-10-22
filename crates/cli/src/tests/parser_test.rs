@@ -903,6 +903,19 @@ fn test_incremental_parse_restores_missing_opening_delimiter() {
 }
 
 #[test]
+fn test_recovery_wraps_skipped_extras_in_one_error() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    let source = "s(){/**/";
+    let tree = parser.parse(source, None).unwrap();
+    let root = tree.root_node();
+    assert_eq!(root.child_count(), 1, "{}", root.to_sexp());
+    let error = root.child(0).unwrap();
+    assert!(error.is_error(), "{}", root.to_sexp());
+    assert_eq!(error.byte_range(), 0..source.len(), "{}", root.to_sexp());
+}
+
+#[test]
 fn test_recovery_respects_completed_prefixes() {
     for (language, source, kind, text) in [
         (
