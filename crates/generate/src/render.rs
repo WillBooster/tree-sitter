@@ -26,6 +26,8 @@ use super::{
 };
 
 const BITMAP_STATE_MIN_ENTRIES: usize = 16;
+/// The largest count that fits in the 7 bits of a packed action list header.
+const MAX_ACTION_LIST_LENGTH: usize = 127;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
@@ -69,6 +71,8 @@ pub enum RenderError {
     Profile(String),
     #[error("Parse table action count {0} exceeds maximum value of {max}", max=u16::MAX)]
     ParseTable(usize),
+    #[error("Parse action list length {0} exceeds maximum value of {max}", max=MAX_ACTION_LIST_LENGTH)]
+    ActionListLength(usize),
 }
 
 #[clippy::format_args]
@@ -113,6 +117,11 @@ struct SmallParseRow {
     values: Vec<u16>,
 }
 
+type SmallStateGroups = Vec<((u32, SymbolType), Vec<Symbol>)>;
+
+/// Word indices of reduce records, keyed by symbol, child count, dynamic precedence, and production id.
+type ReduceRecords = IndexMap<(Symbol, u16, i32, u16), u32, FxBuildHasher>;
+
 struct SharedParseRows {
     offset: usize,
     rows: Vec<SmallParseRow>,
@@ -129,6 +138,7 @@ struct Generator {
     large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
     large_character_set_info: Vec<LargeCharacterSetInfo>,
     large_state_count: usize,
+    token_count: usize,
     alias_sequence_count: usize,
     lex_mode_count: usize,
     uses_reserved_word_slices: bool,
@@ -660,7 +670,26 @@ impl Generator {
 
         self.supertype_symbol_map.clear();
 
+        self.token_count = self.count_tokens();
         self.large_state_count = self.count_large_states();
+    }
+
+    fn count_tokens(&self) -> usize {
+        self.parse_table
+            .symbols
+            .iter()
+            .filter(|symbol| {
+                if symbol.is_terminal() || symbol.is_eof() {
+                    true
+                } else if symbol.is_external() {
+                    self.syntax_grammar.external_tokens[symbol.index as usize]
+                        .corresponding_internal_token
+                        .is_none()
+                } else {
+                    false
+                }
+            })
+            .count()
     }
 
     fn init_symbol_map(&mut self) {
@@ -730,61 +759,54 @@ impl Generator {
         }
         let minimum = self.parse_table.states.len().min(2);
         let dense_bytes = self.parse_table.symbols.len() * size_of::<u16>();
-        let mut terminal_groups = FxHashMap::default();
-        let mut nonterminal_groups = FxHashMap::default();
+        let mut groups = FxHashMap::default();
         let mut row_ids = FxHashMap::default();
         let mut rows = Vec::new();
         let mut row_counts = Vec::new();
         let mut row_bytes = Vec::new();
         for (i, state) in self.parse_table.states.iter().enumerate().skip(minimum) {
-            terminal_groups.clear();
-            for &entry in state.terminal_entries.values() {
-                *terminal_groups.entry(entry).or_insert(0usize) += 1;
-            }
-            nonterminal_groups.clear();
-            for &action in state.nonterminal_entries.values() {
-                *nonterminal_groups
-                    .entry(self.small_goto_value(action, i))
-                    .or_insert(0usize) += 1;
-            }
-            let mut row = state
+            let terminal_row = state
                 .terminal_entries
                 .iter()
-                .map(|(&symbol, id)| (symbol, (id.index() as u32) * 2 + u32::from(id.reusable())))
-                .chain(
-                    state
-                        .nonterminal_entries
-                        .iter()
-                        .map(|(&symbol, action)| (symbol, self.small_goto_value(*action, i))),
-                )
-                .collect::<Vec<_>>();
-            row.sort_unstable_by_key(|&(symbol, _)| symbol);
-            let next_id = row_counts.len();
-            let id = *row_ids.entry(row).or_insert_with(|| {
-                row_counts.push(0usize);
-                let (_, words) = self.small_state_encoding(
-                    terminal_groups
-                        .values()
-                        .chain(nonterminal_groups.values())
-                        .copied(),
-                    false,
-                );
-                row_bytes.push(words * size_of::<u16>());
-                next_id
-            });
-            row_counts[id] += 1;
-            rows.push(id);
+                .map(|(&symbol, id)| (symbol, (id.index() as u32) * 2 + u32::from(id.reusable())));
+            let goto_row = state
+                .nonterminal_entries
+                .iter()
+                .map(|(&symbol, action)| (symbol, self.small_goto_value(*action, i)));
+            let state_rows: [(bool, Vec<_>); 2] =
+                [(false, terminal_row.collect()), (true, goto_row.collect())];
+            for (is_goto, mut row) in state_rows {
+                row.sort_unstable_by_key(|&(symbol, _)| symbol);
+                let next_id = row_counts.len();
+                let id = *row_ids
+                    .entry((is_goto, row))
+                    .or_insert_with_key(|(_, row)| {
+                        row_counts.push(0usize);
+                        groups.clear();
+                        for &(_, value) in row {
+                            *groups.entry(value).or_insert(0usize) += 1;
+                        }
+                        let (_, words) =
+                            self.small_state_encoding(groups.values().copied(), false, is_goto);
+                        row_bytes.push(words * size_of::<u16>());
+                        next_id
+                    });
+                row_counts[id] += 1;
+                rows.push(id);
+            }
         }
         let mut bytes =
             minimum * dense_bytes + rows.len() * size_of::<u32>() + row_bytes.iter().sum::<usize>();
         let mut best_bytes = bytes;
         let mut count = minimum;
-        for (i, &id) in rows.iter().enumerate() {
+        for (i, ids) in rows.chunks(2).enumerate() {
             bytes += dense_bytes;
-            bytes -= size_of::<u32>();
-            row_counts[id] -= 1;
-            if row_counts[id] == 0 {
-                bytes -= row_bytes[id];
+            for &id in ids {
+                bytes -= size_of::<u32>();
+                row_counts[id] -= 1;
+                if row_counts[id] == 0 {
+                    bytes -= row_bytes[id];
+                }
             }
             if bytes <= best_bytes {
                 best_bytes = bytes;
@@ -818,22 +840,7 @@ impl Generator {
         if self.profile.is_some() {
             add_line!(self, "{}", GenerationProfile::SOURCE_MARKER);
         }
-        let token_count = self
-            .parse_table
-            .symbols
-            .iter()
-            .filter(|symbol| {
-                if symbol.is_terminal() || symbol.is_eof() {
-                    true
-                } else if symbol.is_external() {
-                    self.syntax_grammar.external_tokens[symbol.index as usize]
-                        .corresponding_internal_token
-                        .is_none()
-                } else {
-                    false
-                }
-            })
-            .count();
+        let token_count = self.token_count;
 
         add_line!(self, "#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}");
         add_line!(
@@ -2363,20 +2370,13 @@ impl Generator {
 
         self.add_dense_parse_table(&mut parse_table_entries, &mut next_parse_action_list_index);
         self.add_small_parse_table(&mut parse_table_entries, &mut next_parse_action_list_index)?;
-        if next_parse_action_list_index >= u32::from(u16::MAX) {
-            Err(RenderError::ParseTable(
-                next_parse_action_list_index as usize,
-            ))?;
-        }
 
         let mut parse_table_entries = parse_table_entries
             .into_iter()
             .map(|(id, i)| (i, id))
             .collect::<Vec<_>>();
         parse_table_entries.sort_by_key(|(index, _)| *index);
-        self.add_parse_action_list(parse_table_entries);
-
-        Ok(())
+        self.add_parse_action_list(parse_table_entries, next_parse_action_list_index)
     }
 
     fn add_dense_parse_table(
@@ -2460,50 +2460,33 @@ impl Generator {
             .as_ref()
             .is_some_and(|profile| profile.parse_states.iter().any(|&count| count > 0));
         for state_id in self.large_state_count..self.parse_table.states.len() {
-            let groups = self.small_state_groups(
-                state_id,
-                parse_table_entries,
-                next_parse_action_list_index,
-            );
-            let key = self.encode_small_parse_row(&groups, 0);
-            if let Some(&offset) = row_offsets.get(&key) {
-                indices.push(offset);
-                continue;
-            }
             let minimize = has_samples
                 && self
                     .profile
                     .as_ref()
                     .is_some_and(|profile| profile.parse_states[state_id] == 0);
-            let (flag, words) = self
-                .small_state_encoding(groups.iter().map(|(_, symbols)| symbols.len()), minimize);
-            let shared = self.encode_shared_parse_row(
-                &groups,
-                words,
-                minimize || flag == 0,
-                &mut symbol_sets,
-                &mut next_index,
-            )?;
-            let offset = if let Some(shared) = shared {
-                for row in shared.rows {
-                    self.add_small_parse_row(&row);
-                }
-                shared.offset
-            } else {
-                let row = SmallParseRow {
-                    index: next_index,
-                    values: self.encode_small_parse_row(&groups, flag),
+            let (terminal_groups, goto_groups) = self.small_state_groups(
+                state_id,
+                parse_table_entries,
+                next_parse_action_list_index,
+            );
+            for (is_goto, groups) in [(false, terminal_groups), (true, goto_groups)] {
+                let key = (is_goto, self.encode_small_parse_row(&groups, 0, is_goto));
+                let offset = if let Some(&offset) = row_offsets.get(&key) {
+                    offset
+                } else {
+                    let offset = self.add_small_parse_rows(
+                        &groups,
+                        minimize,
+                        is_goto,
+                        &mut symbol_sets,
+                        &mut next_index,
+                    )?;
+                    row_offsets.insert(key, offset);
+                    offset
                 };
-                self.add_small_parse_row(&row);
-                let offset = next_index | flag;
-                next_index += row.values.len();
-                offset
-            };
-            if next_index >= SMALL_STATE_BITMAP_FLAG {
-                return Err(RenderError::SparseTable(next_index));
+                indices.push(offset);
             }
-            indices.push(offset);
-            row_offsets.insert(key, offset);
         }
         dedent!(self);
         add_line!(self, "}};\n");
@@ -2512,12 +2495,59 @@ impl Generator {
             "static const uint32_t ts_small_parse_table_map[] = {{"
         );
         indent!(self);
-        for (state, offset) in (self.large_state_count..).zip(indices) {
-            add_line!(self, "[SMALL_STATE({state})] = {offset},");
+        for (state, offsets) in (self.large_state_count..).zip(indices.chunks(2)) {
+            add_line!(
+                self,
+                "[SMALL_STATE({state}) * 2] = {}, {},",
+                offsets[0],
+                offsets[1]
+            );
         }
         dedent!(self);
         add_line!(self, "}};\n");
         Ok(())
+    }
+
+    /// Adds the rows encoding `groups` and returns the map entry that refers to them.
+    fn add_small_parse_rows(
+        &mut self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        minimize: bool,
+        is_goto: bool,
+        symbol_sets: &mut FxHashMap<Vec<u16>, usize>,
+        next_index: &mut usize,
+    ) -> RenderResult<usize> {
+        let (flag, words) = self.small_state_encoding(
+            groups.iter().map(|(_, symbols)| symbols.len()),
+            minimize,
+            is_goto,
+        );
+        let shared = self.encode_shared_parse_row(
+            groups,
+            words,
+            minimize || flag == 0,
+            symbol_sets,
+            next_index,
+        )?;
+        let offset = if let Some(shared) = shared {
+            for row in shared.rows {
+                self.add_small_parse_row(&row);
+            }
+            shared.offset
+        } else {
+            let row = SmallParseRow {
+                index: *next_index,
+                values: self.encode_small_parse_row(groups, flag, is_goto),
+            };
+            self.add_small_parse_row(&row);
+            let offset = *next_index | flag;
+            *next_index += row.values.len();
+            offset
+        };
+        if *next_index >= SMALL_STATE_BITMAP_FLAG {
+            return Err(RenderError::SparseTable(*next_index));
+        }
+        Ok(offset)
     }
 
     fn add_small_parse_row(&mut self, row: &SmallParseRow) {
@@ -2538,7 +2568,7 @@ impl Generator {
         state_id: usize,
         parse_table_entries: &mut FxHashMap<ActionListId, u32>,
         next_parse_action_list_index: &mut u32,
-    ) -> Vec<((u32, SymbolType), Vec<Symbol>)> {
+    ) -> (SmallStateGroups, SmallStateGroups) {
         let state = &self.parse_table.states[state_id];
         let mut groups = FxHashMap::<(u32, SymbolType), Vec<Symbol>>::default();
         let mut terminals = state.terminal_entries.iter().collect::<Vec<_>>();
@@ -2570,12 +2600,27 @@ impl Generator {
             symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
         }
         groups
+            .into_iter()
+            .partition(|((_, kind), _)| *kind == SymbolType::Terminal)
+    }
+
+    /// The symbols of a small state's terminal or goto row: the first symbol and the count.
+    const fn small_row_symbols(&self, is_goto: bool) -> (usize, usize) {
+        if is_goto {
+            (
+                self.token_count,
+                self.parse_table.symbols.len() - self.token_count,
+            )
+        } else {
+            (0, self.token_count)
+        }
     }
 
     fn encode_small_parse_row(
         &self,
         groups: &[((u32, SymbolType), Vec<Symbol>)],
         flag: usize,
+        is_goto: bool,
     ) -> Vec<u16> {
         if flag == 0 {
             let mut row = vec![groups.len() as u16];
@@ -2607,9 +2652,11 @@ impl Generator {
             );
             return row;
         }
-        let blocks = self.parse_table.symbols.len().div_ceil(16);
+        let (first_symbol, symbol_count) = self.small_row_symbols(is_goto);
+        let blocks = symbol_count.div_ceil(16);
         let mut row = vec![0u16; blocks * 2];
         for &(symbol, _) in &entries {
+            let symbol = symbol - first_symbol;
             row[(symbol / 16) * 2] |= 1 << (symbol % 16);
         }
         let mut rank = 0;
@@ -2700,6 +2747,7 @@ impl Generator {
         &self,
         group_sizes: impl Iterator<Item = usize>,
         minimize: bool,
+        is_goto: bool,
     ) -> (usize, usize) {
         let mut entry_count = 0;
         let mut group_count = 0;
@@ -2717,7 +2765,7 @@ impl Generator {
         let grouped = (0, 1 + 2 * group_count + entry_count);
         let bitmap = (
             SMALL_STATE_BITMAP_FLAG,
-            2 * self.parse_table.symbols.len().div_ceil(16) + entry_count,
+            2 * self.small_row_symbols(is_goto).1.div_ceil(16) + entry_count,
         );
         let pairs = (SMALL_STATE_PAIR_FLAG, 1 + 2 * entry_count);
         if minimize {
@@ -2750,58 +2798,100 @@ impl Generator {
         }
     }
 
-    fn add_parse_action_list(&mut self, parse_table_entries: Vec<(u32, ActionListId)>) {
-        add_line!(
-            self,
-            "static const TSParseActionEntry ts_parse_actions[] = {{"
-        );
+    fn add_parse_action_list(
+        &mut self,
+        parse_table_entries: Vec<(u32, ActionListId)>,
+        reduce_records_start: u32,
+    ) -> RenderResult<()> {
+        let reduce_records = self.reduce_records(&parse_table_entries, reduce_records_start);
+        let word_count = reduce_records_start as usize + 2 * reduce_records.len();
+        if word_count > usize::from(u16::MAX) {
+            Err(RenderError::ParseTable(word_count))?;
+        }
+
+        add_line!(self, "static const uint32_t ts_parse_actions[] = {{");
         indent!(self);
         for (i, id) in parse_table_entries {
             let actions = self.parse_table.action_lists.get(id);
-            add!(
+            if actions.len() > MAX_ACTION_LIST_LENGTH {
+                Err(RenderError::ActionListLength(actions.len()))?;
+            }
+            let actions = actions
+                .iter()
+                .map(|action| Self::packed_parse_action(action, &reduce_records))
+                .collect::<Vec<_>>();
+            add_line!(
                 self,
-                "  [{i}] = {{.entry = {{.count = {}, .reusable = {}}}}},",
+                "[{i}] = ACTION_LIST({}, {}){}{},",
                 actions.len(),
                 id.reusable(),
+                if actions.is_empty() { "" } else { " | " },
+                actions.join(", ")
             );
-            for action in actions {
-                add!(self, " ");
-                match *action {
-                    ParseAction::Accept => add!(self, " ACCEPT_INPUT()"),
-                    ParseAction::Recover => add!(self, "RECOVER()"),
-                    ParseAction::ShiftExtra => add!(self, "SHIFT_EXTRA()"),
-                    ParseAction::Shift {
-                        state,
-                        is_repetition,
-                    } => {
-                        if is_repetition {
-                            add!(self, "SHIFT_REPEAT({state})");
-                        } else {
-                            add!(self, "SHIFT({state})");
-                        }
-                    }
-                    ParseAction::Reduce {
-                        symbol,
-                        child_count,
-                        dynamic_precedence,
-                        production_id,
-                        is_extra,
-                    } => {
-                        let action = if is_extra { "REDUCE_EXTRA" } else { "REDUCE" };
-                        add!(
-                            self,
-                            "{action}({}, {child_count}, {dynamic_precedence}, {production_id})",
-                            self.symbol_ids[&symbol]
-                        );
-                    }
-                }
-                add!(self, ",");
-            }
-            add!(self, "\n");
+        }
+        for ((symbol, child_count, dynamic_precedence, production_id), index) in reduce_records {
+            add_line!(
+                self,
+                "[{index}] = REDUCE_RECORD({}, {child_count}, {dynamic_precedence}, {production_id}),",
+                self.symbol_ids[&symbol]
+            );
         }
         dedent!(self);
         add_line!(self, "}};");
         add_line!(self, "");
+        Ok(())
+    }
+
+    /// Assigns each distinct reduction a two-word record after the action lists.
+    fn reduce_records(
+        &self,
+        parse_table_entries: &[(u32, ActionListId)],
+        start: u32,
+    ) -> ReduceRecords {
+        let mut records = ReduceRecords::default();
+        for &(_, id) in parse_table_entries {
+            for action in self.parse_table.action_lists.get(id) {
+                if let ParseAction::Reduce {
+                    symbol,
+                    child_count,
+                    dynamic_precedence,
+                    production_id,
+                    ..
+                } = *action
+                {
+                    let next = start + 2 * records.len() as u32;
+                    records
+                        .entry((symbol, child_count, dynamic_precedence, production_id))
+                        .or_insert(next);
+                }
+            }
+        }
+        records
+    }
+
+    fn packed_parse_action(action: &ParseAction, reduce_records: &ReduceRecords) -> String {
+        match *action {
+            ParseAction::Accept => "ACCEPT_INPUT()".to_string(),
+            ParseAction::Recover => "RECOVER()".to_string(),
+            ParseAction::ShiftExtra => "SHIFT_EXTRA()".to_string(),
+            ParseAction::Shift {
+                state,
+                is_repetition: true,
+            } => format!("SHIFT_REPEAT({state})"),
+            ParseAction::Shift { state, .. } => format!("SHIFT({state})"),
+            ParseAction::Reduce {
+                symbol,
+                child_count,
+                dynamic_precedence,
+                production_id,
+                is_extra,
+            } => {
+                let action = if is_extra { "REDUCE_EXTRA" } else { "REDUCE" };
+                let record =
+                    reduce_records[&(symbol, child_count, dynamic_precedence, production_id)];
+                format!("{action}({record})")
+            }
+        }
     }
 
     fn add_parser_export(&mut self) {
@@ -3016,7 +3106,7 @@ impl Generator {
         } else {
             let result = *next_parse_action_list_index;
             parse_action_list_offsets.insert(id, result);
-            *next_parse_action_list_index += 1 + pool.get(id).len() as u32;
+            *next_parse_action_list_index += pool.get(id).len().max(1) as u32;
             result
         }
     }

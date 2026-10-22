@@ -174,15 +174,16 @@ void ts_language_table_entry(
   } else {
     ts_assert(symbol < self->token_count);
     uint32_t action_index = ts_language_lookup(self, state, symbol);
-    const TSParseActionEntry *entry = &self->parse_actions[action_index];
-    result->action_count = entry->entry.count;
-    result->is_reusable = entry->entry.reusable;
-    result->actions = (const TSParseAction *)(entry + 1);
+    const uint32_t *actions = &self->parse_actions[action_index];
+    result->action_count = *actions >> TS_PARSE_ACTION_COUNT_SHIFT;
+    result->is_reusable = *actions & TS_PARSE_ACTION_REUSABLE;
+    result->actions = actions;
   }
 }
 
 static uint16_t ts_language_lookup_shared_set(const TSLanguage *self, uint32_t index, TSSymbol symbol);
 static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol);
+static uint16_t ts_language_lookup_bitmap(const TSLanguage *self, const uint16_t *data, TSSymbol symbol);
 
 uint16_t ts_language_lookup_small_compact(
   const TSLanguage *self,
@@ -193,14 +194,7 @@ uint16_t ts_language_lookup_small_compact(
     return ts_language_lookup_shared_set(self, index, symbol);
   }
   if (index & SMALL_STATE_BITMAP_FLAG) {
-    if (symbol >= self->symbol_count) return 0;
-    const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG];
-    uint32_t block = symbol / 16;
-    uint32_t bit = 1u << (symbol % 16);
-    uint32_t bits = data[block * 2];
-    if (!(bits & bit)) return 0;
-    uint32_t rank = data[block * 2 + 1] + ts_language__count_ones(bits & (bit - 1));
-    return data[2 * ((self->symbol_count + 15) / 16) + rank];
+    return ts_language_lookup_bitmap(self, &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG], symbol);
   }
   if (index & SMALL_STATE_PAIR_FLAG) {
     const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
@@ -215,6 +209,20 @@ uint16_t ts_language_lookup_small_compact(
     return 0;
   }
   return ts_language_lookup_grouped(&self->small_parse_table[index], symbol);
+}
+
+// A bitmap row covers the symbols of its terminal or goto half, starting from that half's first symbol.
+static uint16_t ts_language_lookup_bitmap(const TSLanguage *self, const uint16_t *data, TSSymbol symbol) {
+  if (symbol >= self->symbol_count) return 0;
+  bool is_goto_row = symbol >= self->token_count;
+  uint32_t row_symbol = is_goto_row ? symbol - self->token_count : symbol;
+  uint32_t row_symbol_count = is_goto_row ? self->symbol_count - self->token_count : self->token_count;
+  uint32_t block = row_symbol / 16;
+  uint32_t bit = 1u << (row_symbol % 16);
+  uint32_t bits = data[block * 2];
+  if (!(bits & bit)) return 0;
+  uint32_t rank = data[block * 2 + 1] + ts_language__count_ones(bits & (bit - 1));
+  return data[2 * ((row_symbol_count + 15) / 16) + rank];
 }
 
 static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol) {
@@ -328,9 +336,9 @@ TSStateId ts_language_next_state(
     return 0;
   } else if (symbol < self->token_count) {
     uint32_t count;
-    const TSParseAction *actions = ts_language_actions(self, state, symbol, &count);
+    const uint32_t *actions = ts_language_actions(self, state, symbol, &count);
     if (count > 0) {
-      TSParseAction action = actions[count - 1];
+      TSParseAction action = ts_language_parse_action(self, actions[count - 1]);
       if (action.type == TSParseActionTypeShift) {
         return action.shift.extra ? state : action.shift.state;
       }
