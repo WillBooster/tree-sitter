@@ -50,6 +50,7 @@ pub struct NfaTransition {
 }
 
 const END: u32 = char::MAX as u32 + 1;
+const SURROGATES: Range<u32> = 0xD800..0xE000;
 
 /// Rewrites a set's ranges as they're read in order: once finished, the ranges that were read
 /// are replaced by the ones that were kept.
@@ -386,7 +387,11 @@ impl CharacterSet {
                 .chain([None])
                 .filter_map(move |range| {
                     if let Some(range) = &range {
-                        if ruled_out_characters.contains_codepoint_range(range.clone()) {
+                        // Rendered conditions omit surrogate code points, so a range of only
+                        // surrogates would render as an empty condition.
+                        if ruled_out_characters.contains_codepoint_range(range.clone())
+                            || (SURROGATES.start <= range.start && range.end <= SURROGATES.end)
+                        {
                             return None;
                         }
 
@@ -1246,5 +1251,19 @@ mod tests {
                 "chars: {chars:?}, ruled out chars: {ruled_out_chars:?}"
             );
         }
+
+        let surrogates = CharacterSet::empty()
+            .add_range('\u{3000}', '\u{f8ff}')
+            .difference(
+                CharacterSet::empty()
+                    .add_range('\u{3000}', '\u{d7ff}')
+                    .add_range('\u{e000}', '\u{f8ff}'),
+            );
+        assert!(!surrogates.is_empty());
+        assert!(
+            surrogates
+                .simplify_ignoring(&CharacterSet::empty())
+                .is_empty()
+        );
     }
 }
