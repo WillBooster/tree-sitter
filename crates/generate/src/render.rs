@@ -1605,7 +1605,9 @@ impl Generator {
         }
 
         for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
-            if mapped_transitions[index] {
+            // Rendered ranges start and end at Unicode scalar values, so a transition on
+            // surrogate code points alone has no condition to render.
+            if mapped_transitions[index] || chars.ranges().next().is_none() {
                 continue;
             }
             add_whitespace!(self);

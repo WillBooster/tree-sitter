@@ -50,6 +50,7 @@ pub struct NfaTransition {
 }
 
 const END: u32 = char::MAX as u32 + 1;
+const SURROGATES: Range<u32> = 0xD800..0xE000;
 
 /// Rewrites a set's ranges as they're read in order: once finished, the ranges that were read
 /// are replaced by the ones that were kept.
@@ -401,7 +402,12 @@ impl CharacterSet {
 
                     let result = prev_range.clone();
                     prev_range = range;
-                    result
+                    // Rendered conditions omit surrogate code points, so a range of only
+                    // surrogates would render as an empty condition. Such a range still
+                    // joins its neighbors above when the gaps around it are ruled out.
+                    result.filter(|range| {
+                        !(SURROGATES.start <= range.start && range.end <= SURROGATES.end)
+                    })
                 })
                 .collect(),
         }
@@ -1246,5 +1252,31 @@ mod tests {
                 "chars: {chars:?}, ruled out chars: {ruled_out_chars:?}"
             );
         }
+
+        let surrogates = CharacterSet::empty()
+            .add_range('\u{3000}', '\u{f8ff}')
+            .difference(
+                CharacterSet::empty()
+                    .add_range('\u{3000}', '\u{d7ff}')
+                    .add_range('\u{e000}', '\u{f8ff}'),
+            );
+        assert!(!surrogates.is_empty());
+        assert!(
+            surrogates
+                .simplify_ignoring(&CharacterSet::empty())
+                .is_empty()
+        );
+
+        let ruled_out_chars = CharacterSet::empty()
+            .add_range('\u{3100}', '\u{d7ff}')
+            .add_range('\u{e000}', '\u{e0ff}');
+        let bridged = CharacterSet::empty()
+            .add_range('\u{3000}', '\u{e1ff}')
+            .difference(ruled_out_chars.clone());
+        assert_eq!(bridged.range_count(), 3);
+        assert_eq!(
+            bridged.simplify_ignoring(&ruled_out_chars),
+            CharacterSet::empty().add_range('\u{3000}', '\u{e1ff}')
+        );
     }
 }
