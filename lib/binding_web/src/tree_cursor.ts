@@ -259,7 +259,7 @@ export class TreeCursor {
 
   /**
    * Move this cursor to the first child of its current node that contains or
-   * starts after the given byte offset.
+   * starts after the given index.
    *
    * This returns `true` if the cursor successfully moved to a child node, and returns
    * `false` if no such child was found.
