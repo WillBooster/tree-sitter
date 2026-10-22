@@ -29,8 +29,9 @@ const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 /// The largest count that fits in the 7 bits of a packed action list header.
 const MAX_ACTION_LIST_LENGTH: usize = 127;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
-/// Marks a goto map entry that refers to a descriptor of two 32-bit offsets: the state's set of nonterminals
-/// with gotos, and the row of its gotos that differ from their nonterminal's default.
+/// Marks a goto map entry that refers to a descriptor of two 32-bit words: the offset of the state's set of
+/// nonterminals with gotos, and the map entry (offset and encoding flags) of the row of its gotos that differ
+/// from their nonterminal's default.
 const SMALL_STATE_DEFAULTS_FLAG: usize = 0x2000_0000;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
