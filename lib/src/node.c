@@ -435,26 +435,17 @@ static inline TSNode ts_node__descendant_for_byte_range(
     TSNode child;
     NodeChildIterator iterator = ts_node_iterate_children(&node);
     while (ts_node_child_iterator_next(&iterator, &child)) {
+      if (!ts_node__is_relevant(child, true) && ts_node_child_count(child) == 0) continue;
       uint32_t node_end = iterator.position.bytes;
 
-      // The end of this node must extend far enough forward to touch
-      // the end of the range
       if (node_end < range_end) continue;
 
-      // ...and exceed the start of the range, unless the node itself is
-      // empty, in which case it must at least be equal to the start of the range.
-      bool is_empty = ts_node_start_byte(child) == node_end;
-      if (is_empty ? node_end < range_start : node_end <= range_start) {
-        if (
-          range_start != range_end || node_end != range_start ||
-          ts_node__is_relevant(child, true)
-        ) continue;
+      if (node_end == range_start && ts_node_start_byte(child) != node_end) {
+        if (ts_node__is_relevant(child, true)) continue;
         child = ts_node__first_empty_child_at_end(child, false);
         if (ts_node_is_null(child)) continue;
       }
 
-      // The start of this node must extend far enough backward to
-      // touch the start of the range.
       if (range_start < ts_node_start_byte(child)) break;
 
       node = child;
@@ -488,26 +479,17 @@ static inline TSNode ts_node__descendant_for_point_range(
     TSNode child;
     NodeChildIterator iterator = ts_node_iterate_children(&node);
     while (ts_node_child_iterator_next(&iterator, &child)) {
+      if (!ts_node__is_relevant(child, true) && ts_node_child_count(child) == 0) continue;
       TSPoint node_end = iterator.position.extent;
 
-      // The end of this node must extend far enough forward to touch
-      // the end of the range
       if (point_lt(node_end, range_end)) continue;
 
-      // ...and exceed the start of the range, unless the node itself is
-      // empty, in which case it must at least be equal to the start of the range.
-      bool is_empty =  point_eq(ts_node_start_point(child), node_end);
-      if (is_empty ? point_lt(node_end, range_start) : point_lte(node_end, range_start)) {
-        if (
-          !point_eq(range_start, range_end) || !point_eq(node_end, range_start) ||
-          ts_node__is_relevant(child, true)
-        ) continue;
+      if (point_eq(node_end, range_start) && !point_eq(ts_node_start_point(child), node_end)) {
+        if (ts_node__is_relevant(child, true)) continue;
         child = ts_node__first_empty_child_at_end(child, true);
         if (ts_node_is_null(child)) continue;
       }
 
-      // The start of this node must extend far enough backward to
-      // touch the start of the range.
       if (point_lt(range_start, ts_node_start_point(child))) break;
 
       node = child;

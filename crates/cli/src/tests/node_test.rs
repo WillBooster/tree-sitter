@@ -975,6 +975,85 @@ fn test_node_descendant_for_empty_range_at_hidden_subtree_end() {
 }
 
 #[test]
+fn test_node_empty_range_skips_hidden_layout() {
+    let directory = tempfile::tempdir().unwrap();
+    let scanner = r#"
+            #include "tree_sitter/parser.h"
+            void *tree_sitter_hidden_layout_external_scanner_create(void) { return NULL; }
+            void tree_sitter_hidden_layout_external_scanner_destroy(void *p) {}
+            unsigned tree_sitter_hidden_layout_external_scanner_serialize(void *p, char *b) { return 0; }
+            void tree_sitter_hidden_layout_external_scanner_deserialize(void *p, const char *b, unsigned n) {}
+            bool tree_sitter_hidden_layout_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+                if (!valid[0]) return false;
+                lexer->result_symbol = 0;
+                return true;
+            }
+        "#;
+    for wrapped in [false, true] {
+        for prefix in ["", "!"] {
+            let name = format!("hidden_layout_{}_{}", u8::from(wrapped), prefix.len());
+            std::fs::write(
+                directory.path().join("scanner.c"),
+                scanner.replace("hidden_layout", &name),
+            )
+            .unwrap();
+            let layout = serde_json::json!({"type": "SYMBOL", "name": if wrapped { "_wrapped" } else { "_layout" }});
+            let mut members = Vec::new();
+            if !prefix.is_empty() {
+                members.push(serde_json::json!({"type": "STRING", "value": prefix}));
+            }
+            members.extend([
+                layout,
+                serde_json::json!({"type": "SYMBOL", "name": "identifier"}),
+            ]);
+            let grammar = serde_json::json!({
+                "name": name,
+                "externals": [{"type": "SYMBOL", "name": "_layout"}],
+                "extras": [],
+                "rules": {
+                    "document": {"type": "SEQ", "members": members},
+                    "_wrapped": {"type": "SEQ", "members": [
+                        {"type": "SYMBOL", "name": "_layout"},
+                        {"type": "SYMBOL", "name": "_layout"}
+                    ]},
+                    "identifier": {"type": "PATTERN", "value": "[a-z]+"}
+                }
+            });
+            let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+            let language = get_test_language(&name, &code, Some(directory.path()));
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let source = format!("{prefix}name");
+            let tree = parser.parse(&source, None).unwrap();
+            let root = tree.root_node();
+            assert!(!root.has_error(), "{}", root.to_sexp());
+            let identifier = root.named_child(0).unwrap();
+            assert_eq!(identifier.kind(), "identifier");
+            assert_eq!(identifier.byte_range(), prefix.len()..source.len());
+            for length in [0, 1] {
+                let start = prefix.len();
+                let end = start + length;
+                let point = Point::new(0, start);
+                let end_point = Point::new(0, end);
+                assert_eq!(root.descendant_for_byte_range(start, end), Some(identifier));
+                assert_eq!(
+                    root.named_descendant_for_byte_range(start, end),
+                    Some(identifier)
+                );
+                assert_eq!(
+                    root.descendant_for_point_range(point, end_point),
+                    Some(identifier)
+                );
+                assert_eq!(
+                    root.named_descendant_for_point_range(point, end_point),
+                    Some(identifier)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_node_empty_range_preserves_anonymous_boundaries() {
     for hidden in [false, true] {
         for empty in [false, true] {
