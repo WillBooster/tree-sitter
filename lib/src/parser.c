@@ -978,6 +978,63 @@ static bool ts_parser__has_included_range_difference(
   );
 }
 
+// Returns NULL when only the first leaf remains to be checked against the parse table.
+static const char *ts_parser__cant_reuse_node_reason(
+  TSParser *self,
+  StackVersion version,
+  Subtree result,
+  uint32_t byte_offset,
+  uint32_t end_byte_offset,
+  TSSymbol leaf_symbol
+) {
+  if (ts_subtree_has_changes(result)) {
+    return "has_changes";
+  }
+  if (ts_subtree_is_error(result)) {
+    return "is_error";
+  }
+  if (ts_subtree_missing(result)) {
+    return "is_missing";
+  }
+  if (ts_subtree_child_count(result) > 0 && ts_stack_error_cost(self->stack, version) > 0) {
+    return "follows_error";
+  }
+  if (ts_subtree_is_fragile(result)) {
+    return "is_fragile";
+  }
+  if (ts_subtree_child_count(result) > 0 && result.ptr->has_ambiguous_extra) {
+    return "contains_ambiguous_extra";
+  }
+  if (
+    ts_subtree_child_count(result) > 0 &&
+    !ts_subtree_extra(result) &&
+    reusable_node_precedes_unstable_extra(&self->reusable_node)
+  ) {
+    // Nonterminal extras can postpone reductions. Reusing this reduced subtree would hide
+    // intermediate states that recovery inside the following extra may need.
+    return "precedes_unstable_extra";
+  }
+  if (ts_parser__has_included_range_difference(
+        self,
+        byte_offset,
+        ts_subtree_is_eof(result)
+          ? end_byte_offset
+          : end_byte_offset + ts_subtree_lookahead_bytes(result)
+      )) {
+    return "contains_different_included_range";
+  }
+  if (
+    leaf_symbol >= self->language->token_count &&
+    leaf_symbol != ts_builtin_sym_error &&
+    leaf_symbol != ts_builtin_sym_error_repeat
+  ) {
+    // A subtree that begins with an empty nonterminal (e.g. a rule matching only EOF) has no
+    // first token to look up in the parse table.
+    return "starts_with_empty_nonterminal";
+  }
+  return NULL;
+}
+
 static Subtree ts_parser__reuse_node(
   TSParser *self,
   StackVersion version,
@@ -1014,36 +1071,10 @@ static Subtree ts_parser__reuse_node(
       continue;
     }
 
-    const char *reason = NULL;
-    if (ts_subtree_has_changes(result)) {
-      reason = "has_changes";
-    } else if (ts_subtree_is_error(result)) {
-      reason = "is_error";
-    } else if (ts_subtree_missing(result)) {
-      reason = "is_missing";
-    } else if (ts_subtree_child_count(result) > 0 && ts_stack_error_cost(self->stack, version) > 0) {
-      reason = "follows_error";
-    } else if (ts_subtree_is_fragile(result)) {
-      reason = "is_fragile";
-    } else if (ts_subtree_child_count(result) > 0 && result.ptr->has_ambiguous_extra) {
-      reason = "contains_ambiguous_extra";
-    } else if (
-      ts_subtree_child_count(result) > 0 &&
-      !ts_subtree_extra(result) &&
-      reusable_node_precedes_unstable_extra(&self->reusable_node)
-    ) {
-      // Nonterminal extras can postpone reductions. Reusing this reduced subtree would hide
-      // intermediate states that recovery inside the following extra may need.
-      reason = "precedes_unstable_extra";
-    } else if (ts_parser__has_included_range_difference(
-                 self,
-                 byte_offset,
-                 ts_subtree_is_eof(result)
-                   ? end_byte_offset
-                   : end_byte_offset + ts_subtree_lookahead_bytes(result)
-               )) {
-      reason = "contains_different_included_range";
-    }
+    TSSymbol leaf_symbol = ts_subtree_leaf_symbol(result);
+    const char *reason = ts_parser__cant_reuse_node_reason(
+      self, version, result, byte_offset, end_byte_offset, leaf_symbol
+    );
 
     if (reason) {
       LOG("cant_reuse_node_%s tree:%s", reason, TREE_NAME(result));
@@ -1055,7 +1086,6 @@ static Subtree ts_parser__reuse_node(
       continue;
     }
 
-    TSSymbol leaf_symbol = ts_subtree_leaf_symbol(result);
     ts_language_table_entry(self->language, *state, leaf_symbol, table_entry);
     if (
       ts_subtree_leaf_is_keyword(result) &&

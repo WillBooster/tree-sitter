@@ -2915,6 +2915,35 @@ fn test_nonterminal_extras_preserve_eof_gated_reductions() {
 }
 
 #[test]
+fn test_incremental_parsing_after_deleting_the_token_before_a_named_eof_rule() {
+    let grammar = serde_json::json!({
+        "name": "named_eof_reuse",
+        "rules": {
+            "document": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "("},
+                {"type": "SYMBOL", "name": "end"}
+            ]},
+            "end": {"type": "EOF"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let mut tree = parser.parse("(", None).unwrap();
+        tree.edit(&InputEdit {
+            start_byte: 0,
+            old_end_byte: 1,
+            new_end_byte: 0,
+            start_position: Point::new(0, 0),
+            old_end_position: Point::new(0, 1),
+            new_end_position: Point::new(0, 0),
+        });
+        let tree = parser.parse("", Some(&tree)).unwrap();
+        let fresh = parser.parse("", None).unwrap();
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        assert_eq!(tree.root_node().end_byte(), 0);
+    }
+}
+
+#[test]
 fn test_completed_nodes_before_unfinished_nonterminal_extras() {
     let languages = [
         get_test_fixture_language("unfinished_nonterminal_extra"),
