@@ -14,6 +14,13 @@ extern "C" {
 #define SMALL_STATE_PAIR_FLAG 0x80000000u
 #define SMALL_STATE_SET_FLAG (SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG)
 
+// Each small state has two `small_parse_table_map` entries: its terminal row, then its goto row. A goto
+// entry with `SMALL_STATE_DEFAULTS_FLAG` instead locates a descriptor of two 32-bit words: the offset of the
+// set of nonterminals that have gotos, and the map entry (offset and encoding flags) of the row of gotos that
+// differ from their nonterminal's default. The defaults start `small_parse_table`, indexed by the
+// nonterminal's position after the tokens.
+#define SMALL_STATE_DEFAULTS_FLAG 0x20000000u
+
 typedef struct {
   const uint32_t *actions;
   uint32_t action_count;
@@ -35,8 +42,10 @@ typedef struct {
   uint32_t set_symbol;
   uint16_t table_value;
   uint16_t group_count;
+  uint32_t goto_row;
   uint16_t first_symbol;
   uint16_t row_symbol_count;
+  bool uses_goto_defaults;
   bool is_small_state;
   bool is_goto_row;
   bool is_pair_state;
@@ -61,6 +70,26 @@ static inline uint32_t ts_language__count_ones(uint32_t bits);
 static inline uint32_t ts_language__trailing_zeros(uint32_t bits);
 
 uint16_t ts_language_lookup_small_compact(const TSLanguage *self, uint32_t index, TSSymbol symbol);
+
+static inline uint32_t ts_language__small_offset(const uint16_t *words) {
+  return words[0] | (uint32_t)words[1] << 16;
+}
+
+// Whether the shared symbol set at `offset` in `small_parse_table` contains `symbol`.
+static inline bool ts_language_small_set_contains(const TSLanguage *self, uint32_t offset, TSSymbol symbol) {
+  const uint16_t *set = &self->small_parse_table[offset];
+  uint32_t word = symbol / 16u - set[0];
+  return word < set[1] && (set[word + 2] & (1u << (symbol % 16)));
+}
+
+// Look up a goto through a descriptor located by a map entry with `SMALL_STATE_DEFAULTS_FLAG`.
+static inline uint16_t ts_language_lookup_goto_with_defaults(const TSLanguage *self, uint32_t index, TSSymbol symbol) {
+  const uint16_t *descriptor = &self->small_parse_table[index & ~SMALL_STATE_DEFAULTS_FLAG];
+  if (!ts_language_small_set_contains(self, ts_language__small_offset(descriptor), symbol)) return 0;
+  uint16_t value = ts_language_lookup_small_compact(self, ts_language__small_offset(descriptor + 2), symbol);
+  return value ? value : self->small_parse_table[symbol - self->token_count];
+}
+
 void ts_language_table_entry(const TSLanguage *self, TSStateId state, TSSymbol symbol, TableEntry *result);
 TSLexerMode ts_language_lex_mode_for_state(const TSLanguage *self, TSStateId state);
 bool ts_language_is_reserved_word(const TSLanguage *self, TSStateId state, TSSymbol symbol);
@@ -136,11 +165,12 @@ static inline uint16_t ts_language_lookup(
   TSSymbol symbol
 ) {
   if (state >= self->large_state_count) {
-    // Each small state has a terminal row followed by a goto row.
-    uint32_t row = 2 * (state - self->large_state_count) + (symbol >= self->token_count);
-    uint32_t index = self->small_parse_table_map[row];
-    uint16_t value = ts_language_lookup_small_compact(self, index, symbol);
-    if (symbol >= self->token_count && value == UINT16_MAX && self->state_count <= UINT16_MAX) return state;
+    const uint32_t *map = &self->small_parse_table_map[2 * (state - self->large_state_count)];
+    if (symbol < self->token_count) return ts_language_lookup_small_compact(self, map[0], symbol);
+    uint16_t value = map[1] & SMALL_STATE_DEFAULTS_FLAG
+      ? ts_language_lookup_goto_with_defaults(self, map[1], symbol)
+      : ts_language_lookup_small_compact(self, map[1], symbol);
+    if (value == UINT16_MAX && self->state_count <= UINT16_MAX) return state;
     return value;
   } else {
     return self->parse_table[state * self->symbol_count + symbol];
@@ -157,13 +187,25 @@ static inline bool ts_language_has_actions(
 
 static inline void ts_lookahead_iterator__start_small_row(LookaheadIterator *self, bool is_goto_row) {
   const TSLanguage *language = self->language;
-  uint32_t row = 2 * (self->state - language->large_state_count) + is_goto_row;
-  uint32_t index = language->small_parse_table_map[row];
-  uint32_t encoding = index & SMALL_STATE_SET_FLAG;
-  uint32_t offset = index & ~SMALL_STATE_SET_FLAG;
+  uint32_t index = language->small_parse_table_map[2 * (self->state - language->large_state_count) + is_goto_row];
   self->is_goto_row = is_goto_row;
+  self->uses_goto_defaults = index & SMALL_STATE_DEFAULTS_FLAG;
   self->first_symbol = is_goto_row ? language->token_count : 0;
   self->row_symbol_count = is_goto_row ? language->symbol_count - language->token_count : language->token_count;
+  if (self->uses_goto_defaults) {
+    // Visit the nonterminals of the state's goto set, looking each one's value up.
+    const uint16_t *descriptor = &language->small_parse_table[index & ~SMALL_STATE_DEFAULTS_FLAG];
+    const uint16_t *set = &language->small_parse_table[ts_language__small_offset(descriptor)];
+    self->goto_row = ts_language__small_offset(descriptor + 2);
+    self->set_symbol = set[0] * 16u - 16;
+    self->set_data = set + 2;
+    self->group_end = self->set_data + set[1];
+    self->set_bits = 0;
+    self->phase = LookaheadFresh;
+    return;
+  }
+  uint32_t encoding = index & SMALL_STATE_SET_FLAG;
+  uint32_t offset = index & ~SMALL_STATE_SET_FLAG;
   self->is_pair_state = encoding == SMALL_STATE_PAIR_FLAG;
   self->is_bitmap_state = encoding == SMALL_STATE_BITMAP_FLAG;
   self->is_set_state = encoding == SMALL_STATE_SET_FLAG;
@@ -237,9 +279,13 @@ static inline bool ts_lookahead_iterator__next(LookaheadIterator *self) {
   return true;
 }
 
+static inline bool ts_lookahead_iterator__next_goto(LookaheadIterator *self);
+
 static inline bool ts_lookahead_iterator__advance(LookaheadIterator *self) {
   bool advanced;
-  if (self->is_set_state) {
+  if (self->uses_goto_defaults) {
+    advanced = ts_lookahead_iterator__next_goto(self);
+  } else if (self->is_set_state) {
     advanced = ts_lookahead_iterator__next_set(self);
   } else if (self->is_bitmap_state) {
     advanced = ts_lookahead_iterator__next_bitmap(self);
@@ -288,6 +334,20 @@ static inline bool ts_lookahead_iterator__next_set(LookaheadIterator *self) {
   }
   self->symbol = self->set_symbol + ts_language__trailing_zeros(self->set_bits);
   self->set_bits &= self->set_bits - 1;
+  return true;
+}
+
+static inline bool ts_lookahead_iterator__next_goto(LookaheadIterator *self) {
+  while (!self->set_bits) {
+    if (self->set_data == self->group_end) return false;
+    self->set_bits = *(self->set_data++);
+    self->set_symbol += 16;
+  }
+  const TSLanguage *language = self->language;
+  self->symbol = self->set_symbol + ts_language__trailing_zeros(self->set_bits);
+  self->set_bits &= self->set_bits - 1;
+  self->table_value = ts_language_lookup_small_compact(language, self->goto_row, self->symbol);
+  if (!self->table_value) self->table_value = language->small_parse_table[self->symbol - language->token_count];
   return true;
 }
 

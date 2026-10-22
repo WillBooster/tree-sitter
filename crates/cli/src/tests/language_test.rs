@@ -155,6 +155,30 @@ fn test_lookahead_iterator_exhaustion() {
 }
 
 #[test]
+fn test_lookahead_iterator_visits_every_symbol_with_a_successor() {
+    for name in ["c", "javascript", "json", "ruby"] {
+        let language = get_language(name);
+        for state in 0..language.parse_state_count() {
+            let state = u16::try_from(state).unwrap();
+            let mut visited = vec![false; language.node_kind_count()];
+            for symbol in language.lookahead_iterator(state).unwrap() {
+                visited[usize::from(symbol)] = true;
+            }
+            for symbol in 0..language.node_kind_count() {
+                let symbol = u16::try_from(symbol).unwrap();
+                if language.next_state(state, symbol) != 0 {
+                    assert!(
+                        visited[usize::from(symbol)],
+                        "{name}: state {state} has a successor for {} that the iterator skips",
+                        language.node_kind_for_id(symbol).unwrap()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_symbol_metadata_checks() {
     let language = get_language("rust");
     for i in 0..language.node_kind_count() {
