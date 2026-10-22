@@ -11,6 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use glob::glob;
+use tempfile::{NamedTempFile, TempPath};
 
 use crate::test::{TestEntry, parse_tests};
 
@@ -177,11 +178,11 @@ pub fn get_test_info(
     None
 }
 
-/// Writes `contents` to a temporary file and returns the path to that file.
-pub fn get_tmp_source_file(contents: &[u8]) -> Result<PathBuf> {
-    let parse_path = std::env::temp_dir().join(".tree-sitter-temp");
-    let mut parse_file = std::fs::File::create(&parse_path)?;
+/// Writes `contents` to a uniquely named temporary file, which is deleted when the returned path
+/// is dropped.
+pub fn get_tmp_source_file(contents: &[u8]) -> Result<TempPath> {
+    let mut parse_file = NamedTempFile::with_prefix(".tree-sitter-temp")?;
     parse_file.write_all(contents)?;
 
-    Ok(parse_path)
+    Ok(parse_file.into_temp_path())
 }
