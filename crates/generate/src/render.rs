@@ -69,7 +69,7 @@ pub enum RenderError {
     SparseTable(usize),
     #[error("Invalid generation profile: {0}")]
     Profile(String),
-    #[error("Parse table action count {0} exceeds maximum value of {max}", max=u16::MAX)]
+    #[error("Parse action table size of {0} words exceeds maximum value of {max}", max=u16::MAX)]
     ParseTable(usize),
     #[error("Parse action list length {0} exceeds maximum value of {max}", max=MAX_ACTION_LIST_LENGTH)]
     ActionListLength(usize),
