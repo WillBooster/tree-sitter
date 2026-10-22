@@ -4106,6 +4106,160 @@ fn test_parsing_empty_file_with_reused_tree() {
 }
 
 #[test]
+fn test_column_replay_work_is_linear_after_scanner_lookahead() {
+    let language = get_test_fixture_language("column_replay");
+    for separator in ["\r", "\n", "\rλ😀\t"] {
+        let mut previous_reads = 0;
+        for count in [500, 1000, 2000] {
+            let source = format!("x{separator}").repeat(count);
+            let mut parser = Parser::new();
+            parser.set_language(&language).unwrap();
+            let mut reads = 0;
+            let tree = parser
+                .parse_with_options(
+                    &mut |offset, _| {
+                        let chunk = &source.as_bytes()[offset..(offset + 64).min(source.len())];
+                        reads += chunk.len();
+                        chunk
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert!(!tree.root_node().has_error(), "{separator:?}");
+            assert_eq!(tree.root_node().named_child_count(), count);
+            assert!(reads < source.len() * 8, "{separator:?}: {reads}");
+            if previous_reads > 0 {
+                assert!(reads < previous_reads * 3, "{separator:?}: {reads}");
+            }
+            previous_reads = reads;
+        }
+    }
+}
+
+#[test]
+fn test_column_replay_preserves_unicode_columns_and_incremental_reuse() {
+    let language = get_test_fixture_language("column_replay");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, expected) in [
+        ("λ😀x\rx", vec!["even_column", "even_column"]),
+        ("\u{feff}x\rλx", vec!["even_column", "odd_column"]),
+        (
+            "x\tλ😀x\nλx",
+            vec!["even_column", "even_column", "odd_column"],
+        ),
+    ] {
+        for encoding in ["utf8", "utf16le", "utf16be"] {
+            let tree = match encoding {
+                "utf16le" => parser.parse_utf16_le(
+                    source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                    None,
+                ),
+                "utf16be" => parser.parse_utf16_be(
+                    source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                    None,
+                ),
+                _ => parser.parse(source, None),
+            }
+            .unwrap();
+            assert!(!tree.root_node().has_error(), "{source:?} {encoding}");
+            let kinds = tree
+                .root_node()
+                .named_children(&mut tree.walk())
+                .map(|node| node.kind())
+                .collect::<Vec<_>>();
+            assert_eq!(kinds, expected, "{source:?} {encoding}");
+        }
+    }
+    let mut source = b"x\n".repeat(1000);
+    let mut tree = parser.parse(&source, None).unwrap();
+    for (deleted_length, inserted_text) in [(0, b" ".to_vec()), (1, Vec::new())] {
+        perform_edit(
+            &mut tree,
+            &mut source,
+            &Edit {
+                position: 0,
+                deleted_length,
+                inserted_text,
+            },
+        )
+        .unwrap();
+        let mut incremental_reads = 0;
+        let incremental = parser
+            .parse_with_options(
+                &mut |offset, _| {
+                    let chunk = source.get(offset..offset + 1).unwrap_or_default();
+                    incremental_reads += chunk.len();
+                    chunk
+                },
+                Some(&tree),
+                None,
+            )
+            .unwrap();
+        let mut fresh_reads = 0;
+        let fresh = parser
+            .parse_with_options(
+                &mut |offset, _| {
+                    let chunk = source.get(offset..offset + 1).unwrap_or_default();
+                    fresh_reads += chunk.len();
+                    chunk
+                },
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(!incremental.root_node().has_error());
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+        assert!(
+            incremental_reads * 4 < fresh_reads,
+            "incremental={incremental_reads}, fresh={fresh_reads}"
+        );
+        tree = incremental;
+    }
+}
+
+#[test]
+fn test_column_replay_across_row_changing_range_gaps() {
+    let language = get_test_fixture_language("column_replay");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    for (source, first_end, second_start, expected) in [
+        ("x  \n x", 3, 4, vec!["even_column", "odd_column"]),
+        ("x  \nx", 3, 4, vec!["even_column", "even_column"]),
+        ("a@\nx x", 1, 3, vec!["even_column", "even_column"]),
+    ] {
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: first_end,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, first_end),
+                },
+                Range {
+                    start_byte: second_start,
+                    end_byte: source.len(),
+                    start_point: Point::new(1, 0),
+                    end_point: Point::new(1, source.len() - second_start),
+                },
+            ])
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{source:?}");
+        let kinds = tree
+            .root_node()
+            .named_children(&mut tree.walk())
+            .map(|node| node.kind())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, expected, "{source:?}");
+    }
+}
+
+#[test]
 fn test_parsing_after_editing_tree_that_depends_on_column_values() {
     let mut parser = Parser::new();
     parser
