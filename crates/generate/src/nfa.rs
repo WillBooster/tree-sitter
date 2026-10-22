@@ -387,11 +387,7 @@ impl CharacterSet {
                 .chain([None])
                 .filter_map(move |range| {
                     if let Some(range) = &range {
-                        // Rendered conditions omit surrogate code points, so a range of only
-                        // surrogates would render as an empty condition.
-                        if ruled_out_characters.contains_codepoint_range(range.clone())
-                            || (SURROGATES.start <= range.start && range.end <= SURROGATES.end)
-                        {
+                        if ruled_out_characters.contains_codepoint_range(range.clone()) {
                             return None;
                         }
 
@@ -406,7 +402,12 @@ impl CharacterSet {
 
                     let result = prev_range.clone();
                     prev_range = range;
-                    result
+                    // Rendered conditions omit surrogate code points, so a range of only
+                    // surrogates would render as an empty condition. Such a range still
+                    // joins its neighbors above when the gaps around it are ruled out.
+                    result.filter(|range| {
+                        !(SURROGATES.start <= range.start && range.end <= SURROGATES.end)
+                    })
                 })
                 .collect(),
         }
@@ -1264,6 +1265,18 @@ mod tests {
             surrogates
                 .simplify_ignoring(&CharacterSet::empty())
                 .is_empty()
+        );
+
+        let ruled_out_chars = CharacterSet::empty()
+            .add_range('\u{3100}', '\u{d7ff}')
+            .add_range('\u{e000}', '\u{e0ff}');
+        let bridged = CharacterSet::empty()
+            .add_range('\u{3000}', '\u{e1ff}')
+            .difference(ruled_out_chars.clone());
+        assert_eq!(bridged.range_count(), 3);
+        assert_eq!(
+            bridged.simplify_ignoring(&ruled_out_chars),
+            CharacterSet::empty().add_range('\u{3000}', '\u{e1ff}')
         );
     }
 }
