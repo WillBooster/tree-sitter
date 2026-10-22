@@ -177,7 +177,6 @@ pub fn get_test_info(
     None
 }
 
-/// Writes `contents` to a temporary file and returns the path to that file.
 pub fn get_tmp_source_file(contents: &[u8]) -> Result<tempfile::TempPath> {
     let mut parse_file = tempfile::NamedTempFile::new()?;
     parse_file.write_all(contents)?;
