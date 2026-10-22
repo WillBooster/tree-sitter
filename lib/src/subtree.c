@@ -794,7 +794,8 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
 
       if ((
         (child_left.bytes > edit.old_end.bytes) ||
-        (child_left.bytes == edit.old_end.bytes && child_size.bytes > 0 && i > 0)
+        (child_left.bytes == edit.old_end.bytes && child_size.bytes > 0 &&
+          (i > 0 || (is_noop && parent_depends_on_position)))
       ) && (
         !parent_depends_on_column ||
         child_left.extent.row > edit.old_end.extent.row
