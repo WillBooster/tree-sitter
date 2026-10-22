@@ -4093,6 +4093,228 @@ fn test_parsing_empty_file_with_reused_tree() {
 }
 
 #[test]
+fn test_incremental_position_dependent_scanners() {
+    for reader in ["get_position", "get_mark_end"] {
+        for field in ["bytes", "row", "column"] {
+            for failed_scan in [false, true] {
+                let language = position_dependent_language(reader, field, failed_scan);
+                for included in [false, true] {
+                    let body = if field == "column" {
+                        "x x x x x x"
+                    } else {
+                        "x\nx\nx\nx\nx\nx"
+                    };
+                    let mut source = if included {
+                        format!("@{body}@{body}@").into_bytes()
+                    } else {
+                        body.as_bytes().to_vec()
+                    };
+                    let mut parser = Parser::new();
+                    parser.set_language(&language).unwrap();
+                    if included {
+                        parser
+                            .set_included_ranges(&position_test_ranges(&source))
+                            .unwrap();
+                    }
+                    let mut tree = parser.parse(&source, None).unwrap();
+                    assert!(!tree.root_node().has_error());
+                    let prefix = if field == "row" { b'\n' } else { b' ' };
+                    for edit in [
+                        Edit {
+                            position: 0,
+                            deleted_length: 0,
+                            inserted_text: vec![prefix],
+                        },
+                        Edit {
+                            position: 0,
+                            deleted_length: 1,
+                            inserted_text: Vec::new(),
+                        },
+                    ] {
+                        perform_edit(&mut tree, &mut source, &edit).unwrap();
+                        if included {
+                            parser
+                                .set_included_ranges(&position_test_ranges(&source))
+                                .unwrap();
+                        }
+                        tree = parser.parse(&source, Some(&tree)).unwrap();
+                        let fresh = parser.parse(&source, None).unwrap();
+                        assert!(!fresh.root_node().has_error());
+                        assert_eq!(
+                            tree.root_node().to_sexp(),
+                            fresh.root_node().to_sexp(),
+                            "{reader} {field} failed={failed_scan} included={included}"
+                        );
+                        let mut actual_cursor = tree.walk();
+                        let mut expected_cursor = fresh.walk();
+                        let actual = tree
+                            .root_node()
+                            .named_children(&mut actual_cursor)
+                            .map(|node| node.range())
+                            .collect::<Vec<_>>();
+                        let expected = fresh
+                            .root_node()
+                            .named_children(&mut expected_cursor)
+                            .map(|node| node.range())
+                            .collect::<Vec<_>>();
+                        assert_eq!(actual, expected);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_position_restore_scanner_reuses_unchanged_positions() {
+    let language = position_dependent_language("restore", "bytes", false);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let mut source = format!(" {}", "x ".repeat(128)).into_bytes();
+    let mut tree = parser.parse(&source, None).unwrap();
+    perform_edit(
+        &mut tree,
+        &mut source,
+        &Edit {
+            position: 0,
+            deleted_length: 1,
+            inserted_text: vec![b'\t'],
+        },
+    )
+    .unwrap();
+    let mut incremental_bytes = 0;
+    let incremental = parser
+        .parse_with_options(
+            &mut |offset, _| {
+                let chunk = source.get(offset..offset + 1).unwrap_or_default();
+                incremental_bytes += chunk.len();
+                chunk
+            },
+            Some(&tree),
+            None,
+        )
+        .unwrap();
+    let mut fresh_bytes = 0;
+    let fresh = parser
+        .parse_with_options(
+            &mut |offset, _| {
+                let chunk = source.get(offset..offset + 1).unwrap_or_default();
+                fresh_bytes += chunk.len();
+                chunk
+            },
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(!incremental.root_node().has_error());
+    assert_eq!(
+        incremental.root_node().to_sexp(),
+        fresh.root_node().to_sexp()
+    );
+    assert!(
+        incremental_bytes * 4 < fresh_bytes,
+        "incremental={incremental_bytes}, fresh={fresh_bytes}"
+    );
+}
+
+fn position_dependent_language(
+    reader: &str,
+    field: &str,
+    failed_scan: bool,
+) -> tree_sitter::Language {
+    let name = format!("position_{reader}_{field}_{}", u8::from(failed_scan));
+    let directory = tempfile::tempdir().unwrap();
+    let read_position = match reader {
+        "get_position" => {
+            "lexer->get_position(lexer, &position); lexer->advance(lexer, false); lexer->mark_end(lexer);"
+        }
+        "get_mark_end" => {
+            "lexer->advance(lexer, false); lexer->mark_end(lexer); lexer->get_mark_end(lexer, &position);"
+        }
+        "restore" => {
+            "lexer->get_position(lexer, &start); lexer->advance(lexer, false); lexer->mark_end(lexer); lexer->get_mark_end(lexer, &position); if (!lexer->eof(lexer)) lexer->advance(lexer, false); lexer->mark_start(lexer, &start); lexer->mark_end_at(lexer, &position);"
+        }
+        _ => unreachable!(),
+    };
+    let scanner = r#"
+        #include "tree_sitter/parser.h"
+        void *tree_sitter_NAME_external_scanner_create(void) { return NULL; }
+        void tree_sitter_NAME_external_scanner_destroy(void *p) {}
+        unsigned tree_sitter_NAME_external_scanner_serialize(void *p, char *b) { return 0; }
+        void tree_sitter_NAME_external_scanner_deserialize(void *p, const char *b, unsigned n) {}
+        bool tree_sitter_NAME_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+            while (lexer->lookahead == ' ' || lexer->lookahead == '\t' || lexer->lookahead == '\n') lexer->advance(lexer, true);
+            if (lexer->lookahead != 'x') return false;
+            TSLexerPosition position, start;
+            READ_POSITION
+            if (REJECT && position.FIELD % 2 == 0) return false;
+            lexer->result_symbol = RESULT;
+            return true;
+        }
+    "#;
+    std::fs::write(
+        directory.path().join("scanner.c"),
+        scanner
+            .replace("NAME", &name)
+            .replace("READ_POSITION", read_position)
+            .replace("REJECT", if failed_scan { "true" } else { "false" })
+            .replace("FIELD", field)
+            .replace(
+                "RESULT",
+                if reader == "restore" {
+                    "0"
+                } else {
+                    "position.FIELD % 2"
+                },
+            )
+            .replace("FIELD", field),
+    )
+    .unwrap();
+    let grammar = serde_json::json!({
+        "name": name,
+        "extras": [{"type": "PATTERN", "value": "[ \\t\\n]"}],
+        "externals": [{"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}],
+        "rules": {
+            "document": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}, {"type": "SYMBOL", "name": "fallback"}
+            ]}},
+            "fallback": {"type": "STRING", "value": "x"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    get_test_language(&name, &code, Some(directory.path()))
+}
+
+fn position_test_ranges(source: &[u8]) -> Vec<Range> {
+    let boundaries = source
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &byte)| (byte == b'@').then_some(index))
+        .collect::<Vec<_>>();
+    boundaries
+        .windows(2)
+        .map(|pair| {
+            let point = |index: usize| {
+                let prefix = &source[..index];
+                Point::new(
+                    prefix.iter().filter(|&&byte| byte == b'\n').count(),
+                    prefix
+                        .iter()
+                        .rposition(|&byte| byte == b'\n')
+                        .map_or(index, |newline| index - newline - 1),
+                )
+            };
+            Range {
+                start_byte: pair[0] + 1,
+                end_byte: pair[1],
+                start_point: point(pair[0] + 1),
+                end_point: point(pair[1]),
+            }
+        })
+        .collect()
+}
+
+#[test]
 fn test_parsing_after_editing_tree_that_depends_on_column_values() {
     let mut parser = Parser::new();
     parser

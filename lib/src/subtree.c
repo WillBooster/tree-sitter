@@ -166,7 +166,7 @@ static inline bool ts_subtree_can_inline(Length padding, Length size, uint32_t l
 Subtree ts_subtree_new_leaf(
   SubtreePool *pool, TSSymbol symbol, Length padding, Length size,
   uint32_t lookahead_bytes, TSStateId parse_state,
-  bool has_external_tokens, bool depends_on_column,
+  bool has_external_tokens, bool depends_on_column, bool depends_on_position,
   bool is_keyword, bool is_keyword_exact, const TSLanguage *language
 ) {
   TSSymbolMetadata metadata = ts_language_symbol_metadata(language, symbol);
@@ -175,8 +175,8 @@ Subtree ts_subtree_new_leaf(
   bool is_inline = (
     symbol <= UINT8_MAX &&
     !has_external_tokens &&
-    // The inline representation has no bit left to record a column dependency.
     !depends_on_column &&
+    !depends_on_position &&
     ts_subtree_can_inline(padding, size, lookahead_bytes)
   );
 
@@ -218,6 +218,7 @@ Subtree ts_subtree_new_leaf(
       .has_external_tokens = has_external_tokens,
       .has_external_scanner_state_change = false,
       .depends_on_column = depends_on_column,
+      .depends_on_position = depends_on_position,
       .is_missing = false,
       .is_keyword = is_keyword,
       .first_leaf_is_keyword = is_keyword_exact,
@@ -254,7 +255,7 @@ Subtree ts_subtree_new_error(
 ) {
   Subtree result = ts_subtree_new_leaf(
     pool, ts_builtin_sym_error, padding, size, bytes_scanned,
-    parse_state, false, false, false, false, language
+    parse_state, false, false, false, false, false, language
   );
   SubtreeHeapData *data = (SubtreeHeapData *)result.ptr;
   data->fragile_left = true;
@@ -381,6 +382,7 @@ void ts_subtree_summarize_children(
   self.ptr->has_external_tokens = false;
   self.ptr->trailing_extra = false;
   self.ptr->depends_on_column = false;
+  self.ptr->depends_on_position = false;
   self.ptr->has_external_scanner_state_change = false;
   self.ptr->dynamic_precedence = 0;
   self.ptr->has_ambiguous_extra = false;
@@ -412,6 +414,9 @@ void ts_subtree_summarize_children(
 
     if (ts_subtree_depends_on_column(child)) {
       self.ptr->depends_on_column = true;
+    }
+    if (ts_subtree_depends_on_position(child)) {
+      self.ptr->depends_on_position = true;
     }
 
     if (ts_subtree_has_external_scanner_state_change(child)) {
@@ -613,7 +618,7 @@ Subtree ts_subtree_new_missing_leaf(
 ) {
   Subtree result = ts_subtree_new_leaf(
     pool, symbol, padding, length_zero(), lookahead_bytes,
-    state, false, false, false, false, language
+    state, false, false, false, false, false, language
   );
   if (result.data.is_inline) {
     result.data.is_missing = true;
@@ -705,6 +710,8 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
   } EditEntry;
 
   Array(EditEntry) stack = array_new();
+  bool position_changed = input_edit->old_end_byte != input_edit->new_end_byte ||
+    !point_eq(input_edit->old_end_point, input_edit->new_end_point);
   array_push(&stack, ((EditEntry) {
     .tree = &self,
     .edit = (Edit) {
@@ -720,6 +727,7 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
     bool is_noop = edit.old_end.bytes == edit.start.bytes && edit.new_end.bytes == edit.start.bytes;
     bool is_pure_insertion = edit.old_end.bytes == edit.start.bytes;
     bool parent_depends_on_column = ts_subtree_depends_on_column(*entry.tree);
+    bool parent_depends_on_position = position_changed && ts_subtree_depends_on_position(*entry.tree);
 
     Length size = ts_subtree_size(*entry.tree);
     Length padding = ts_subtree_padding(*entry.tree);
@@ -784,9 +792,6 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
       // If this child ends before the edit, it is not affected.
       if (child_right.bytes + ts_subtree_lookahead_bytes(*child) < edit.start.bytes) continue;
 
-      // Keep editing child nodes until a node is reached that starts after the edit.
-      // Also, if this node's validity depends on its column position, then continue
-      // invalidating child nodes until reaching a line break.
       if ((
         (child_left.bytes > edit.old_end.bytes) ||
         (child_left.bytes == edit.old_end.bytes && child_size.bytes > 0 && i > 0)
@@ -794,7 +799,8 @@ Subtree ts_subtree_edit(Subtree self, const TSInputEdit *input_edit, SubtreePool
         !parent_depends_on_column ||
         child_left.extent.row > edit.old_end.extent.row
       )) {
-        break;
+        if (!parent_depends_on_position) break;
+        if (!ts_subtree_depends_on_position(*child)) continue;
       }
 
       // Transform edit into the child's coordinate space.
@@ -1109,6 +1115,7 @@ void ts_subtree__print_dot_graph(const Subtree *self, uint32_t start_offset,
         "error-cost: %u\n"
         "has-changes: %u\n"
         "depends-on-column: %u\n"
+        "depends-on-position: %u\n"
         "descendant-count: %u\n"
         "repeat-depth: %u\n"
         "lookahead-bytes: %u",
@@ -1117,6 +1124,7 @@ void ts_subtree__print_dot_graph(const Subtree *self, uint32_t start_offset,
         ts_subtree_error_cost(*self),
         ts_subtree_has_changes(*self),
         ts_subtree_depends_on_column(*self),
+        ts_subtree_depends_on_position(*self),
         ts_subtree_visible_descendant_count(*self),
         ts_subtree_repeat_depth(*self),
         ts_subtree_lookahead_bytes(*self)

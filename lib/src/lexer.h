@@ -34,6 +34,7 @@ typedef struct {
   uint32_t lookahead_size;
   char lookahead_buffer[4];
   bool did_get_column;
+  bool did_get_position;
   ColumnData column_data;
   ColumnData display_column_data;
   uint32_t display_tab_width;
