@@ -200,13 +200,15 @@ static StackNode *stack_node_new(
   StackNode *node = pool->size > 0
     ? array_pop(pool)
     : ts_malloc(sizeof(StackNode));
-  *node = (StackNode) {
-    .ref_count = 1,
-    .link_count = 0,
-    .state = state,
-    .pending_generation = pending_generation,
-    .has_pending = is_pending,
-  };
+  // Assign each field rather than the whole struct, which would also clear the unused links.
+  node->ref_count = 1;
+  node->link_count = 0;
+  node->state = state;
+  node->pending_generation = pending_generation;
+  node->has_pending = is_pending;
+  node->node_count = 0;
+  node->dynamic_precedence = 0;
+  node->after_extra = false;
 
   if (previous_node) {
     node->link_count = 1;
@@ -911,7 +913,51 @@ forceinline StackAction pop_count_callback(void *payload, const StackIterator *i
   }
 }
 
+// Whether no node within `count` subtrees of `node` has several links.
+static bool stack__has_single_path(const StackNode *node, uint32_t count) {
+  for (uint32_t subtree_count = 0; subtree_count < count && node->link_count > 0;) {
+    if (node->link_count > 1) return false;
+    StackLink link = node->links[0];
+    if (!link.subtree.ptr || !ts_subtree_extra(link.subtree)) subtree_count++;
+    node = link.node;
+  }
+  return true;
+}
+
+// Pops `count` subtrees along the only path from the head, producing what `stack__iter` with
+// `pop_count_callback` produces there. Returns false, changing nothing, when a node on the way has
+// several links.
+static bool stack__pop_count_on_single_path(Stack *self, StackVersion version, uint32_t count) {
+  StackNode *head_node = array_get(&self->heads, version)->node;
+  if (!stack__has_single_path(head_node, count)) return false;
+
+  array_clear(&self->slices);
+  array_clear(&self->iterators);
+  SubtreeArray subtrees = array_new();
+  array_reserve(&subtrees, (uint32_t)ts_subtree_alloc_size(count) / sizeof(Subtree));
+  StackNode *node = head_node;
+  for (uint32_t subtree_count = 0; subtree_count < count;) {
+    if (node->link_count == 0) {
+      ts_subtree_array_delete(self->subtree_pool, &subtrees);
+      return true;
+    }
+    StackLink link = node->links[0];
+    if (link.subtree.ptr) {
+      array_push(&subtrees, link.subtree);
+      ts_subtree_retain(link.subtree);
+      if (!ts_subtree_extra(link.subtree)) subtree_count++;
+    } else {
+      subtree_count++;
+    }
+    node = link.node;
+  }
+  ts_subtree_array_reverse(&subtrees);
+  ts_stack__add_slice(self, version, node, &subtrees);
+  return true;
+}
+
 StackSliceArray ts_stack_pop_count(Stack *self, StackVersion version, uint32_t count) {
+  if (stack__pop_count_on_single_path(self, version, count)) return self->slices;
   return stack__iter(self, version, pop_count_callback, &count, (int)count, 0, NULL);
 }
 
@@ -923,6 +969,11 @@ StackSliceArray ts_stack_pop_count_for_reduce(
   uint32_t max_reductions,
   bool *is_ambiguous
 ) {
+  // On a single path, compacting ambiguous extras has only one candidate to select, so the result is the same.
+  if (stack__pop_count_on_single_path(self, version, count)) {
+    if (is_ambiguous) *is_ambiguous = false;
+    return self->slices;
+  }
   return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, is_ambiguous);
 }
 

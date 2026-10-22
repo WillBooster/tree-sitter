@@ -57,6 +57,52 @@ static void ts_lexer__invalidate_column_data(Lexer *self) {
   self->column_data.value = 0;
 }
 
+static bool ts_lexer__at_position(const Lexer *self, Length position) {
+  return self->current_position.bytes == position.bytes &&
+    point_eq(self->current_position.extent, position.extent);
+}
+
+static ColumnCheckpoint ts_lexer__column_checkpoint(const Lexer *self) {
+  return (ColumnCheckpoint) {
+    .position = self->current_position,
+    .column = self->column_data,
+    .display_column = self->display_column_data,
+    .tab_width = self->display_tab_width,
+  };
+}
+
+static void ts_lexer__checkpoint_columns(Lexer *self) {
+  ColumnCheckpoint checkpoint = ts_lexer__column_checkpoint(self);
+  if (ts_lexer__at_position(self, self->token_start_position)) {
+    self->start_column_checkpoint = checkpoint;
+  }
+  if (ts_lexer__at_position(self, self->token_end_position)) {
+    self->end_column_checkpoint = checkpoint;
+  }
+}
+
+static void ts_lexer__restore_columns(Lexer *self) {
+  const ColumnCheckpoint *checkpoint = NULL;
+  if (ts_lexer__at_position(self, self->start_column_checkpoint.position)) {
+    checkpoint = &self->start_column_checkpoint;
+  }
+  if (ts_lexer__at_position(self, self->end_column_checkpoint.position)) {
+    checkpoint = &self->end_column_checkpoint;
+  }
+  if (checkpoint) {
+    self->column_data = checkpoint->column;
+    if (self->display_tab_width == checkpoint->tab_width) {
+      self->display_column_data = checkpoint->display_column;
+    }
+  }
+}
+
+static void ts_lexer__clear_column_checkpoints(Lexer *self) {
+  self->start_column_checkpoint.position = LENGTH_UNDEFINED;
+  self->end_column_checkpoint.position = LENGTH_UNDEFINED;
+  ts_lexer__invalidate_column_data(self);
+}
+
 // Check if the lexer has reached EOF. This state is stored
 // by setting the lexer's `current_included_range_index` such that
 // it has consumed all of its available ranges.
@@ -253,6 +299,7 @@ static void ts_lexer_goto(Lexer *self, Length position) {
     self->lookahead_size = 1;
     self->data.lookahead = '\0';
   }
+  ts_lexer__restore_columns(self);
 }
 
 static void ts_lexer__advance_display_column(Lexer *self) {
@@ -303,6 +350,7 @@ static void ts_lexer__do_advance(Lexer *self, bool skip) {
     if (self->current_included_range_index < self->included_range_count) {
       current_range++;
       if (current_range->start_point.row != self->current_position.extent.row) {
+        ts_lexer__set_column_data(self, 0);
         self->display_column_data.value = 0;
       }
       self->current_position = (Length) {
@@ -426,6 +474,7 @@ static void ts_lexer__mark_start(TSLexer *_self, const TSLexerCheckpoint *checkp
 static void ts_lexer__mark_end_at(TSLexer *_self, const TSLexerCheckpoint *checkpoint) {
   Lexer *self = (Lexer *)_self;
   self->token_end_position = (Length) {checkpoint->_opaque[0], {checkpoint->_opaque[1], checkpoint->_opaque[2]}};
+  ts_lexer__checkpoint_columns(self);
 }
 
 static void ts_lexer__get_mark_end(const TSLexer *_self, TSLexerPosition *position) {
@@ -469,6 +518,7 @@ static void ts_lexer__mark_end(TSLexer *_self) {
     }
   }
   self->token_end_position = self->current_position;
+  ts_lexer__checkpoint_columns(self);
 }
 
 static void ts_lexer__replay_columns(Lexer *self) {
@@ -496,6 +546,7 @@ static uint32_t ts_lexer__get_column(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
   self->did_get_column = true;
   if (!self->column_data.valid) ts_lexer__replay_columns(self);
+  ts_lexer__checkpoint_columns(self);
   return self->column_data.value;
 }
 
@@ -509,6 +560,7 @@ static uint32_t ts_lexer__get_display_column(TSLexer *_self, uint32_t tab_width)
     ts_lexer__replay_columns(self);
     self->column_data = column_data;
   }
+  ts_lexer__checkpoint_columns(self);
   return self->display_column_data.value;
 }
 
@@ -589,7 +641,7 @@ void ts_lexer_delete(Lexer *self) {
 
 void ts_lexer_set_input(Lexer *self, TSInput input) {
   self->input = input;
-  self->display_column_data.valid = false;
+  ts_lexer__clear_column_checkpoints(self);
   ts_lexer__clear_chunk(self);
   ts_lexer_goto(self, self->current_position);
 }
@@ -619,6 +671,8 @@ void ts_lexer_start(Lexer *self) {
       ts_lexer__set_column_data(self, 0);
     }
   }
+  self->start_column_checkpoint = ts_lexer__column_checkpoint(self);
+  self->end_column_checkpoint.position = LENGTH_UNDEFINED;
 }
 
 void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte) {
@@ -682,7 +736,7 @@ bool ts_lexer_set_included_ranges(
   self->included_ranges = ts_realloc(self->included_ranges, size);
   memcpy(self->included_ranges, ranges, size);
   self->included_range_count = count;
-  self->display_column_data.valid = false;
+  ts_lexer__clear_column_checkpoints(self);
   ts_lexer_goto(self, self->current_position);
   return true;
 }
