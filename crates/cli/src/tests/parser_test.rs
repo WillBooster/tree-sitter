@@ -4708,6 +4708,59 @@ fn test_column_query_replay_after_edit_in_row_changing_ranges() {
 }
 
 #[test]
+fn test_scalar_column_replay_preserves_active_display_width() {
+    for mut parser in parsers_for_languages([
+        get_test_fixture_language("column_display_replay"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("column_display_replay"),
+    ]) {
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 1,
+                    end_byte: 15,
+                    start_point: Point::new(0, 1),
+                    end_point: Point::new(0, 15),
+                },
+                Range {
+                    start_byte: 20,
+                    end_byte: 22,
+                    start_point: Point::new(1, 13),
+                    end_point: Point::new(1, 15),
+                },
+            ])
+            .unwrap();
+        let source = b"abc \t\tbb\t \t\r\t\tbXXXXXc  ";
+        for chunk in [1, 7, 256] {
+            let mut tree = parser
+                .parse_with_options(
+                    &mut |offset, _| &source[offset..source.len().min(offset + chunk)],
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                tree.root_node().to_sexp(),
+                "(document (even_column) (odd_column))"
+            );
+            tree.edit(&InputEdit {
+                start_byte: 21,
+                old_end_byte: 22,
+                new_end_byte: 22,
+                start_position: Point::new(1, 14),
+                old_end_position: Point::new(1, 15),
+                new_end_position: Point::new(1, 15),
+            });
+            let incremental = parser.parse(source, Some(&tree)).unwrap();
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                tree.root_node().to_sexp()
+            );
+        }
+    }
+}
+
+#[test]
 fn test_parsing_after_editing_tree_that_depends_on_column_values() {
     let mut parser = Parser::new();
     parser

@@ -532,9 +532,11 @@ static bool ts_lexer__restore_query_checkpoint(Lexer *self, bool display) {
     : self->query_column_checkpoint;
   Length goal = self->current_position;
   Length position = checkpoint.position;
+  bool display_valid = checkpoint.display_column.valid &&
+    checkpoint.tab_width == self->display_tab_width;
   bool valid = display
-    ? checkpoint.display_column.valid && checkpoint.tab_width == self->display_tab_width
-    : checkpoint.column.valid;
+    ? display_valid
+    : checkpoint.column.valid && (!self->display_tab_width || display_valid);
   if (
     !valid || length_is_undefined(position) || position.bytes > goal.bytes ||
     !ts_lexer__same_line_origin(position, goal)
