@@ -350,18 +350,18 @@ bool ts_tree_cursor_goto_last_child_wasm(const TSTree *tree) {
 
 bool ts_tree_cursor_goto_first_child_for_index_wasm(const TSTree *tree) {
   TSTreeCursor cursor = unmarshal_cursor(TRANSFER_BUFFER, tree);
-  const void **address = TRANSFER_BUFFER + 3;
+  const void **address = TRANSFER_BUFFER + SIZE_OF_CURSOR;
   uint32_t index = code_unit_to_byte((uint32_t)address[0]);
-  bool result = ts_tree_cursor_goto_first_child_for_byte(&cursor, index);
+  bool result = ts_tree_cursor_goto_first_child_for_byte(&cursor, index) >= 0;
   marshal_cursor(&cursor);
   return result;
 }
 
 bool ts_tree_cursor_goto_first_child_for_position_wasm(const TSTree *tree) {
   TSTreeCursor cursor = unmarshal_cursor(TRANSFER_BUFFER, tree);
-  const void **address = TRANSFER_BUFFER + 3;
+  const void **address = TRANSFER_BUFFER + SIZE_OF_CURSOR;
   TSPoint point = unmarshal_point(address);
-  bool result = ts_tree_cursor_goto_first_child_for_point(&cursor, point);
+  bool result = ts_tree_cursor_goto_first_child_for_point(&cursor, point) >= 0;
   marshal_cursor(&cursor);
   return result;
 }
@@ -858,7 +858,7 @@ void ts_query_matches_wasm(
   TSPoint start_containing_point = {start_containing_row, code_unit_to_byte(start_containing_column)};
   TSPoint end_containing_point = {end_containing_row, code_unit_to_byte(end_containing_column)};
   ts_query_cursor_set_point_range(cursor, start_point, end_point);
-  ts_query_cursor_set_byte_range(cursor, start_index, end_index);
+  ts_query_cursor_set_byte_range(cursor, code_unit_to_byte(start_index), code_unit_to_byte(end_index));
   ts_query_cursor_set_containing_point_range(
     cursor,
     start_containing_point,
@@ -866,8 +866,8 @@ void ts_query_matches_wasm(
   );
   ts_query_cursor_set_containing_byte_range(
     cursor,
-    start_containing_index,
-    end_containing_index
+    code_unit_to_byte(start_containing_index),
+    code_unit_to_byte(end_containing_index)
   );
   ts_query_cursor_set_match_limit(cursor, match_limit);
   ts_query_cursor_set_max_start_depth(cursor, max_start_depth);
@@ -928,7 +928,7 @@ void ts_query_captures_wasm(
   TSPoint start_containing_point = {start_containing_row, code_unit_to_byte(start_containing_column)};
   TSPoint end_containing_point = {end_containing_row, code_unit_to_byte(end_containing_column)};
   ts_query_cursor_set_point_range(cursor, start_point, end_point);
-  ts_query_cursor_set_byte_range(cursor, start_index, end_index);
+  ts_query_cursor_set_byte_range(cursor, code_unit_to_byte(start_index), code_unit_to_byte(end_index));
   ts_query_cursor_set_containing_point_range(
     cursor,
     start_containing_point,
@@ -936,8 +936,8 @@ void ts_query_captures_wasm(
   );
   ts_query_cursor_set_containing_byte_range(
     cursor,
-    start_containing_index,
-    end_containing_index
+    code_unit_to_byte(start_containing_index),
+    code_unit_to_byte(end_containing_index)
   );
   ts_query_cursor_set_match_limit(cursor, match_limit);
   ts_query_cursor_set_max_start_depth(cursor, max_start_depth);
