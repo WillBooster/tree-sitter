@@ -4656,6 +4656,58 @@ fn test_column_query_replay_preserves_included_range_provenance() {
 }
 
 #[test]
+fn test_column_query_replay_after_edit_in_row_changing_ranges() {
+    for mut parser in parsers_for_languages([
+        get_test_fixture_language("column_replay"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("column_replay"),
+    ]) {
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: 2,
+                    start_point: Point::new(1, 2),
+                    end_point: Point::new(1, 4),
+                },
+                Range {
+                    start_byte: 4,
+                    end_byte: 6,
+                    start_point: Point::new(2, 3),
+                    end_point: Point::new(2, 5),
+                },
+            ])
+            .unwrap();
+        let fresh = parser.parse("axXXax", None).unwrap();
+        assert_eq!(
+            fresh.root_node().to_sexp(),
+            "(document (odd_column) (even_column))"
+        );
+        let mut edited = fresh.clone();
+        edited.edit(&InputEdit {
+            start_byte: 5,
+            old_end_byte: 6,
+            new_end_byte: 6,
+            start_position: Point::new(2, 4),
+            old_end_position: Point::new(2, 5),
+            new_end_position: Point::new(2, 5),
+        });
+        let incremental = parser.parse("axXXax", Some(&edited)).unwrap();
+        assert_eq!(
+            incremental.root_node().to_sexp(),
+            fresh.root_node().to_sexp()
+        );
+        let ranges = |tree: &Tree| {
+            tree.root_node()
+                .named_children(&mut tree.walk())
+                .map(|node| node.range())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranges(&incremental), ranges(&fresh));
+    }
+}
+
+#[test]
 fn test_parsing_after_editing_tree_that_depends_on_column_values() {
     let mut parser = Parser::new();
     parser

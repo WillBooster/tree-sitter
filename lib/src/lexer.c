@@ -347,8 +347,8 @@ static void ts_lexer__set_range_start(Lexer *self, const TSRange *range) {
   if (position.extent.row != self->current_position.extent.row) {
     ts_lexer__set_column_data(self, 0);
     self->display_column_data.value = 0;
-    self->display_column_data.valid_for_replay = true;
-  } else if (!ts_lexer__same_line_origin(position, self->current_position)) {
+  }
+  if (!ts_lexer__same_line_origin(position, self->current_position)) {
     self->column_data.valid_for_replay = false;
     self->display_column_data.valid_for_replay = false;
   }
