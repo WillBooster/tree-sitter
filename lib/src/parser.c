@@ -814,10 +814,12 @@ static Subtree ts_parser__lex(
         }
       }
       if (!bulk_keyword) {
+        ColumnCheckpoint end_column_checkpoint = self->lexer.end_column_checkpoint;
         ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
         ts_lexer_start(&self->lexer);
 
         is_keyword = ts_parser__call_keyword_lex_fn(self);
+        self->lexer.end_column_checkpoint = end_column_checkpoint;
 
         if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
           candidate = self->lexer.data.result_symbol;

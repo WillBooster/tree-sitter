@@ -4106,6 +4106,206 @@ fn test_parsing_empty_file_with_reused_tree() {
 }
 
 #[test]
+fn test_keyword_relex_preserves_linear_column_replay() {
+    for mut parser in column_keyword_parsers() {
+        assert_keyword_relex_is_linear(&mut parser);
+    }
+}
+
+fn assert_keyword_relex_is_linear(parser: &mut Parser) {
+    for word in ["x", "whilex", "while", "λx", "😀x"] {
+        for ending in ["\r", "\n", "\r\n"] {
+            for chunk_size in [1, 7, 64, 256] {
+                let mut previous_reads = 0;
+                for count in [250, 500, 1000] {
+                    let source = format!("{word} = 1{ending}").repeat(count);
+                    let (tree, reads) =
+                        parse_column_keyword_input(parser, source.as_bytes(), None, chunk_size);
+                    assert!(!tree.root_node().has_error(), "{word:?} {ending:?}");
+                    assert_eq!(tree.root_node().named_child_count(), count);
+                    let fresh = parser.parse(&source, None).unwrap();
+                    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+                    assert!(
+                        reads < source.len() * 8,
+                        "{word:?} {ending:?} chunk={chunk_size} count={count}: {reads} reads for {} bytes",
+                        source.len(),
+                    );
+                    if previous_reads > 0 {
+                        assert!(
+                            reads < previous_reads * 3,
+                            "{word:?} chunk={chunk_size}: {reads}"
+                        );
+                    }
+                    previous_reads = reads;
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_keyword_relex_column_checkpoints_after_edits_input_and_range_changes() {
+    for mut parser in column_keyword_parsers() {
+        assert_keyword_column_input_lifecycle(&mut parser);
+    }
+}
+
+fn assert_keyword_column_input_lifecycle(parser: &mut Parser) {
+    for ending in ["\r", "\n", "\r\n"] {
+        let mut source = format!("whilex = 1{ending}").repeat(512).into_bytes();
+        let mut tree = parser.parse(&source, None).unwrap();
+        for (deleted_length, inserted_text) in [
+            (0, b" ".to_vec()),
+            (1, Vec::new()),
+            (6, b"while".to_vec()),
+            (5, b"whilex".to_vec()),
+        ] {
+            perform_edit(
+                &mut tree,
+                &mut source,
+                &Edit {
+                    position: 0,
+                    deleted_length,
+                    inserted_text,
+                },
+            )
+            .unwrap();
+            let (incremental, reads) = parse_column_keyword_input(parser, &source, Some(&tree), 7);
+            let (fresh, fresh_reads) = parse_column_keyword_input(parser, &source, None, 7);
+            assert!(!incremental.root_node().has_error());
+            assert_eq!(
+                incremental.root_node().to_sexp(),
+                fresh.root_node().to_sexp()
+            );
+            assert_eq!(incremental.root_node().range(), fresh.root_node().range());
+            if ending.contains('\n') {
+                assert!(reads * 2 < fresh_reads, "{ending:?}: {reads}/{fresh_reads}");
+            }
+            tree = incremental;
+        }
+    }
+    for word in ["x", "λx", "whilex"] {
+        let body = format!("{word} = 1\r").repeat(512);
+        let source = format!("{body}EXCLUDED\n{body}");
+        let second_start = body.len() + "EXCLUDED\n".len();
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: body.len(),
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, body.len()),
+                },
+                Range {
+                    start_byte: second_start,
+                    end_byte: source.len(),
+                    start_point: Point::new(1, 0),
+                    end_point: Point::new(1, body.len()),
+                },
+            ])
+            .unwrap();
+        let (tree, reads) = parse_column_keyword_input(parser, source.as_bytes(), None, 7);
+        let fresh = parser.parse(&source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+        assert_eq!(tree.root_node().range(), fresh.root_node().range());
+        assert!(reads < source.len() * 8, "{word}: {reads}");
+        parser.set_included_ranges(&[]).unwrap();
+        let (replacement, reads) = parse_column_keyword_input(parser, body.as_bytes(), None, 7);
+        assert!(!replacement.root_node().has_error());
+        assert_eq!(replacement.root_node().named_child_count(), 512);
+        assert!(reads < body.len() * 8, "{word}: {reads}");
+    }
+}
+
+#[test]
+fn test_keyword_relex_column_checkpoints_with_utf16_input() {
+    for mut parser in column_keyword_parsers() {
+        for word in ["x", "whilex", "while", "λx", "😀x"] {
+            let source = format!("{word} = 1\r").repeat(500);
+            let expected = parser.parse(&source, None).unwrap();
+            for big_endian in [false, true] {
+                let units = source
+                    .encode_utf16()
+                    .map(|unit| {
+                        if big_endian {
+                            unit.to_be()
+                        } else {
+                            unit.to_le()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                for chunk_size in [1, 7, 256] {
+                    let mut reads = 0;
+                    let mut read = |offset, _| {
+                        let remaining = units.get(offset..).unwrap_or_default();
+                        let mut size = remaining.len().min(chunk_size);
+                        if size > 0 {
+                            let last = if big_endian {
+                                u16::from_be(remaining[size - 1])
+                            } else {
+                                u16::from_le(remaining[size - 1])
+                            };
+                            if (0xd800..=0xdbff).contains(&last) && size < remaining.len() {
+                                size += 1;
+                            }
+                        }
+                        reads += size;
+                        &remaining[..size]
+                    };
+                    let tree = if big_endian {
+                        parser.parse_utf16_be_with_options(&mut read, None, None)
+                    } else {
+                        parser.parse_utf16_le_with_options(&mut read, None, None)
+                    }
+                    .unwrap();
+                    assert!(
+                        !tree.root_node().has_error(),
+                        "{word}: {}",
+                        tree.root_node().to_sexp()
+                    );
+                    assert_eq!(tree.root_node().to_sexp(), expected.root_node().to_sexp());
+                    assert!(
+                        reads < units.len() * 8,
+                        "{word} endian={big_endian} chunk={chunk_size}: {reads}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn column_keyword_parsers() -> impl Iterator<Item = Parser> {
+    parsers_for_languages([
+        get_test_fixture_language("column_keyword_rewind"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("column_keyword_rewind"),
+    ])
+}
+
+fn parse_column_keyword_input(
+    parser: &mut Parser,
+    source: &[u8],
+    old: Option<&Tree>,
+    chunk_size: usize,
+) -> (Tree, usize) {
+    let mut reads = 0;
+    let tree = parser
+        .parse_with_options(
+            &mut |offset, _| {
+                let remaining = source.get(offset..).unwrap_or_default();
+                let chunk = &remaining[..remaining.len().min(chunk_size)];
+                reads += chunk.len();
+                chunk
+            },
+            old,
+            None,
+        )
+        .unwrap();
+    (tree, reads)
+}
+
+#[test]
 fn test_column_replay_work_is_linear_after_scanner_lookahead() {
     let language = get_test_fixture_language("column_replay");
     for separator in ["\r", "\n", "\rλ😀\t"] {
