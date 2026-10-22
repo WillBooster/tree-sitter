@@ -527,7 +527,11 @@ pub fn parse_file_at_path(
                 writeln!(&mut stdout, "<?xml version=\"1.0\"?>")?;
                 writeln!(&mut stdout, "<sources>")?;
             }
-            writeln!(&mut stdout, "  <source name=\"{name}\">")?;
+            writeln!(
+                &mut stdout,
+                "  <source name=\"{}\">",
+                html_escape::encode_double_quoted_attribute(name)
+            )?;
 
             loop {
                 let node = cursor.node();
