@@ -350,6 +350,7 @@ static void ts_lexer__do_advance(Lexer *self, bool skip) {
     if (self->current_included_range_index < self->included_range_count) {
       current_range++;
       if (current_range->start_point.row != self->current_position.extent.row) {
+        ts_lexer__set_column_data(self, 0);
         self->display_column_data.value = 0;
       }
       self->current_position = (Length) {

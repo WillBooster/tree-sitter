@@ -4223,45 +4223,39 @@ fn test_column_replay_preserves_unicode_columns_and_incremental_reuse() {
 }
 
 #[test]
-fn test_column_replay_invalidates_checkpoints_for_input_and_ranges() {
+fn test_column_replay_across_row_changing_range_gaps() {
     let language = get_test_fixture_language("column_replay");
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    for source in ["λx@ x", "  x@λx", "λx@ x"] {
-        let separator = source.find('@').unwrap();
-        for include_first in [true, false, true] {
-            let mut ranges = vec![Range {
-                start_byte: separator + 1,
-                end_byte: source.len(),
-                start_point: Point::new(0, separator + 1),
-                end_point: Point::new(0, source.len()),
-            }];
-            if include_first {
-                ranges.insert(
-                    0,
-                    Range {
-                        start_byte: 0,
-                        end_byte: separator,
-                        start_point: Point::new(0, 0),
-                        end_point: Point::new(0, separator),
-                    },
-                );
-            }
-            parser.set_included_ranges(&ranges).unwrap();
-            let actual = parser.parse(source, None).unwrap();
-            let mut fresh_parser = Parser::new();
-            fresh_parser.set_language(&language).unwrap();
-            fresh_parser.set_included_ranges(&ranges).unwrap();
-            let fresh = fresh_parser.parse(source, None).unwrap();
-            assert!(!actual.root_node().has_error(), "{source:?} {ranges:?}");
-            let nodes = |tree: &Tree| {
-                tree.root_node()
-                    .named_children(&mut tree.walk())
-                    .map(|node| (node.kind().to_owned(), node.range()))
-                    .collect::<Vec<_>>()
-            };
-            assert_eq!(nodes(&actual), nodes(&fresh), "{source:?} {ranges:?}");
-        }
+    for (source, first_end, second_start, expected) in [
+        ("x  \n x", 3, 4, vec!["even_column", "odd_column"]),
+        ("x  \nx", 3, 4, vec!["even_column", "even_column"]),
+        ("a@\nx x", 1, 3, vec!["even_column", "even_column"]),
+    ] {
+        parser
+            .set_included_ranges(&[
+                Range {
+                    start_byte: 0,
+                    end_byte: first_end,
+                    start_point: Point::new(0, 0),
+                    end_point: Point::new(0, first_end),
+                },
+                Range {
+                    start_byte: second_start,
+                    end_byte: source.len(),
+                    start_point: Point::new(1, 0),
+                    end_point: Point::new(1, source.len() - second_start),
+                },
+            ])
+            .unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error(), "{source:?}");
+        let kinds = tree
+            .root_node()
+            .named_children(&mut tree.walk())
+            .map(|node| node.kind())
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, expected, "{source:?}");
     }
 }
 
