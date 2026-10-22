@@ -1459,10 +1459,13 @@ static void ts_query__perform_analysis(
           .child_index = child_index,
         };
         if (lookahead_iterator.action_count) {
-          const TSParseAction *action = &lookahead_iterator.actions[lookahead_iterator.action_count - 1];
-          if (action->type == TSParseActionTypeShift) {
-            if (!action->shift.extra) {
-              successor.state = action->shift.state;
+          TSParseAction action = ts_language_parse_action(
+            self->language,
+            lookahead_iterator.actions[lookahead_iterator.action_count - 1]
+          );
+          if (action.type == TSParseActionTypeShift) {
+            if (!action.shift.extra) {
+              successor.state = action.shift.state;
               successor.child_index++;
             }
           } else {
@@ -1846,12 +1849,12 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     while (ts_lookahead_iterator__next(&lookahead_iterator)) {
       if (lookahead_iterator.action_count) {
         for (unsigned i = 0; i < lookahead_iterator.action_count; i++) {
-          const TSParseAction *action = &lookahead_iterator.actions[i];
-          if (ts_parse_action_is_reduce(action)) {
+          TSParseAction action = ts_language_parse_action(self->language, lookahead_iterator.actions[i]);
+          if (ts_parse_action_is_reduce(&action)) {
             const TSSymbol *aliases, *aliases_end;
             ts_language_aliases_for_symbol(
               self->language,
-              action->reduce.symbol,
+              action.reduce.symbol,
               &aliases,
               &aliases_end
             );
@@ -1867,8 +1870,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
                 AnalysisSubgraph *subgraph = array_get(&subgraphs, subgraph_index);
                 AnalysisSubgraphNode node = {
                   .state = state,
-                  .production_id = action->reduce.production_id,
-                  .child_index = action->reduce.child_count,
+                  .production_id = action.reduce.production_id,
+                  .child_index = action.reduce.child_count,
                   .done = true,
                 };
                 array_insert_sorted_with(
@@ -1876,8 +1879,8 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
                 );
               }
             }
-          } else if (action->type == TSParseActionTypeShift && !action->shift.extra) {
-            TSStateId next_state = action->shift.state;
+          } else if (action.type == TSParseActionTypeShift && !action.shift.extra) {
+            TSStateId next_state = action.shift.state;
             state_predecessor_map_add(&predecessor_map, next_state, state);
           }
         }

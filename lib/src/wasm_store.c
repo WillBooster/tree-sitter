@@ -1776,7 +1776,7 @@ const TSLanguage *ts_wasm_store_load_language(
     language->small_parse_table_map = copy(
       &wasm_memory,
       wasm_language.small_parse_table_map,
-      small_state_count * sizeof(uint32_t),
+      2 * small_state_count * sizeof(uint32_t),
       &valid_wasm_memory
     );
     language->small_parse_table = copy_unsized_static_array(
