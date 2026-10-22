@@ -4310,7 +4310,7 @@ fn position_test_ranges(source: &[u8]) -> Vec<Range> {
             let point = |index: usize| {
                 let prefix = &source[..index];
                 Point::new(
-                    prefix.iter().filter(|&&byte| byte == b'\n').count(),
+                    memchr::memchr_iter(b'\n', prefix).count(),
                     prefix
                         .iter()
                         .rposition(|&byte| byte == b'\n')
