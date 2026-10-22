@@ -17,8 +17,8 @@ extern "C" {
 // Each small state has two `small_parse_table_map` entries: its terminal row, then its goto row. A goto
 // entry with `SMALL_STATE_DEFAULTS_FLAG` instead locates a descriptor of two 32-bit words: the offset of the
 // set of nonterminals that have gotos, and the map entry (offset and encoding flags) of the row of gotos that
-// differ from their nonterminal's default. The
-// defaults start `small_parse_table`, indexed by the nonterminal's position after the tokens.
+// differ from their nonterminal's default. The defaults start `small_parse_table`, indexed by the
+// nonterminal's position after the tokens.
 #define SMALL_STATE_DEFAULTS_FLAG 0x20000000u
 
 typedef struct {
