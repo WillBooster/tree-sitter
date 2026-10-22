@@ -16,6 +16,13 @@ typedef struct {
 } ColumnData;
 
 typedef struct {
+  Length position;
+  ColumnData column;
+  ColumnData display_column;
+  uint32_t tab_width;
+} ColumnCheckpoint;
+
+typedef struct {
   TSLexer data;
   Length current_position;
   Length token_start_position;
@@ -37,6 +44,8 @@ typedef struct {
   ColumnData column_data;
   ColumnData display_column_data;
   uint32_t display_tab_width;
+  ColumnCheckpoint start_column_checkpoint;
+  ColumnCheckpoint end_column_checkpoint;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;
