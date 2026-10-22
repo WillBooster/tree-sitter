@@ -724,8 +724,7 @@ pub fn parse_file_at_path(
         let duration_ms = duration.as_micros() as f64 / 1e3;
         writeln!(
             &mut stdout,
-            "{:width$}\tParse: {duration_ms:>7.2} ms\t(timed out)",
-            name,
+            "{name:width$}\tParse: {duration_ms:>7.2} ms\t(timed out)",
             width = max_path_length
         )?;
     }
