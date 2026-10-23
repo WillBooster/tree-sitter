@@ -23,12 +23,12 @@
   "prettier": "@willbooster/prettier-config",
   "devDependencies": {
     "@willbooster/prettier-config": "10.4.0",
-    "@willbooster/wb": "22.26.2",
+    "@willbooster/wb": "22.26.3",
     "conventional-changelog-conventionalcommits": "10.4.1",
     "lefthook": "2.2.2",
     "prettier": "3.9.10",
     "prettier-plugin-java": "2.11.0",
     "semantic-release": "25.0.9",
-    "sort-package-json": "4.0.0"
+    "sort-package-json": "4.1.0"
   }
 }

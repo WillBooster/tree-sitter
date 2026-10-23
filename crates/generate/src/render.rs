@@ -1401,7 +1401,7 @@ impl Generator {
         if has_fallback {
             add_line!(
                 self,
-                "typedef struct {{ bool valid; int32_t precedence; TSSymbol symbol; TSLexerPosition start, end; }} {name}_fallback;"
+                "typedef struct {{ bool valid; int32_t precedence; TSSymbol symbol; TSLexerCheckpoint start, end; }} {name}_fallback;"
             );
         }
         if lex_table.states.len() > MAX_SINGLE_LEXER_STATES {
@@ -1424,7 +1424,7 @@ impl Generator {
         indent!(self);
 
         let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
+        add_line!(self, "UNUSED TSLexerCheckpoint start_tags[{tag_count}];");
         if has_fallback {
             add_line!(
                 self,
@@ -1489,7 +1489,7 @@ impl Generator {
         for chunk in 0..chunk_count {
             add_line!(
                 self,
-                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerPosition *{fallback_parameter});"
+                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerCheckpoint *{fallback_parameter});"
             );
         }
         add_line!(self, "");
@@ -1499,7 +1499,7 @@ impl Generator {
         );
         indent!(self);
         let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
+        add_line!(self, "UNUSED TSLexerCheckpoint start_tags[{tag_count}];");
         if has_fallback {
             add_line!(self, "{name}_fallback fallback = {{0}};");
         }
@@ -1545,7 +1545,7 @@ impl Generator {
         });
         add_line!(
             self,
-            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerPosition *start_tags{fallback_parameter}) {{"
+            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerCheckpoint *start_tags{fallback_parameter}) {{"
         );
         indent!(self);
         add_line!(self, "(void)start_tags;");
@@ -1864,10 +1864,13 @@ impl Generator {
             if let Some(tag) = start_tag {
                 add_line!(self, "fallback->start = start_tags[{tag}];");
             } else {
-                add_line!(self, "lexer->get_position(lexer, &fallback->start);");
+                add_line!(self, "lexer->get_checkpoint(lexer, &fallback->start);");
             }
             add_line!(self, "lexer->mark_end(lexer);");
-            add_line!(self, "lexer->get_mark_end(lexer, &fallback->end);");
+            add_line!(
+                self,
+                "lexer->get_mark_end_checkpoint(lexer, &fallback->end);"
+            );
             dedent!(self);
             add_line!(self, "}}");
         }
@@ -2131,7 +2134,10 @@ impl Generator {
                 if let Some(source) = source {
                     add!(self, "start_tags[{target}] = start_tags[{source}]; ");
                 } else {
-                    add!(self, "lexer->get_position(lexer, &start_tags[{target}]); ");
+                    add!(
+                        self,
+                        "lexer->get_checkpoint(lexer, &start_tags[{target}]); "
+                    );
                 }
             }
         }

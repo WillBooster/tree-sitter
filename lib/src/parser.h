@@ -52,6 +52,14 @@ typedef struct {
   uint32_t column;
 } TSLexerPosition;
 
+/**
+ * Checkpoints may only restore marks during the lex invocation that captured them.
+ * Their contents must not be inspected or serialized as scanner state.
+ */
+typedef struct {
+  uint32_t _opaque[3];
+} TSLexerCheckpoint;
+
 struct TSLexer {
   int32_t lookahead;
   TSSymbol result_symbol;
@@ -62,10 +70,12 @@ struct TSLexer {
   bool (*eof)(const TSLexer *);
   void (*log)(const TSLexer *, const char *, ...);
   void (*get_position)(const TSLexer *, TSLexerPosition *);
-  void (*mark_start)(TSLexer *, const TSLexerPosition *);
-  void (*mark_end_at)(TSLexer *, const TSLexerPosition *);
+  void (*mark_start)(TSLexer *, const TSLexerCheckpoint *);
+  void (*mark_end_at)(TSLexer *, const TSLexerCheckpoint *);
   void (*get_mark_end)(const TSLexer *, TSLexerPosition *);
   uint32_t (*get_display_column)(TSLexer *, uint32_t tab_width);
+  void (*get_checkpoint)(const TSLexer *, TSLexerCheckpoint *);
+  void (*get_mark_end_checkpoint)(const TSLexer *, TSLexerCheckpoint *);
 };
 
 typedef enum {

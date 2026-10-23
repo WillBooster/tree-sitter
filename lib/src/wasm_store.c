@@ -193,6 +193,8 @@ typedef struct {
   int32_t mark_end_at;
   int32_t get_mark_end;
   int32_t get_display_column;
+  int32_t get_checkpoint;
+  int32_t get_mark_end_checkpoint;
 } LexerInWasmMemory;
 
 // Linear memory layout:
@@ -376,6 +378,8 @@ typedef enum {
   LexerPositionMarkStart,
   LexerPositionMarkEnd,
   LexerPositionGetMarkEnd,
+  LexerCheckpointCurrent,
+  LexerCheckpointMarkEnd,
 } LexerPositionOperation;
 
 static wasm_trap_t *callback__lexer_position(
@@ -388,27 +392,39 @@ static wasm_trap_t *callback__lexer_position(
   wasmtime_context_t *context = wasmtime_caller_context(caller);
   uint32_t address = args[1].i32;
   size_t size = wasmtime_memory_data_size(context, &store->memory);
-  if (size < sizeof(TSLexerPosition) || address > size - sizeof(TSLexerPosition)) {
+  union {
+    TSLexerPosition position;
+    TSLexerCheckpoint checkpoint;
+  } value;
+  if (size < sizeof(value) || address > size - sizeof(value)) {
     const char message[] = "Lexer position is outside Wasm memory";
     return wasmtime_trap_new(message, sizeof(message) - 1);
   }
   uint8_t *memory = wasmtime_memory_data(context, &store->memory);
-  TSLexerPosition position;
-  if (operation == LexerPositionMarkStart || operation == LexerPositionMarkEnd) {
-    memcpy(&position, memory + address, sizeof(position));
-    if (operation == LexerPositionMarkStart) {
-      store->current_lexer->mark_start(store->current_lexer, &position);
-    } else {
-      store->current_lexer->mark_end_at(store->current_lexer, &position);
-    }
-  } else {
-    if (operation == LexerPositionCurrent) {
-      store->current_lexer->get_position(store->current_lexer, &position);
-    } else {
-      store->current_lexer->get_mark_end(store->current_lexer, &position);
-    }
-    memcpy(memory + address, &position, sizeof(position));
+  TSLexer *lexer = store->current_lexer;
+  switch (operation) {
+    case LexerPositionMarkStart:
+      memcpy(&value.checkpoint, memory + address, sizeof(value.checkpoint));
+      lexer->mark_start(lexer, &value.checkpoint);
+      return NULL;
+    case LexerPositionMarkEnd:
+      memcpy(&value.checkpoint, memory + address, sizeof(value.checkpoint));
+      lexer->mark_end_at(lexer, &value.checkpoint);
+      return NULL;
+    case LexerPositionCurrent:
+      lexer->get_position(lexer, &value.position);
+      break;
+    case LexerPositionGetMarkEnd:
+      lexer->get_mark_end(lexer, &value.position);
+      break;
+    case LexerCheckpointCurrent:
+      lexer->get_checkpoint(lexer, &value.checkpoint);
+      break;
+    case LexerCheckpointMarkEnd:
+      lexer->get_mark_end_checkpoint(lexer, &value.checkpoint);
+      break;
   }
+  memcpy(memory + address, &value, sizeof(value));
   return NULL;
 }
 
@@ -446,6 +462,24 @@ static wasm_trap_t *callback__lexer_get_mark_end(
   size_t len
 ) {
   return callback__lexer_position(env, caller, args, LexerPositionGetMarkEnd);
+}
+
+static wasm_trap_t *callback__lexer_get_checkpoint(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return callback__lexer_position(env, caller, args, LexerCheckpointCurrent);
+}
+
+static wasm_trap_t *callback__lexer_get_mark_end_checkpoint(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return callback__lexer_position(env, caller, args, LexerCheckpointMarkEnd);
 }
 
 static wasm_trap_t *callback__lexer_get_display_column(
@@ -856,6 +890,16 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
     {
       &lexer.get_mark_end,
       callback__lexer_get_mark_end,
+      wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.get_checkpoint,
+      callback__lexer_get_checkpoint,
+      wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.get_mark_end_checkpoint,
+      callback__lexer_get_mark_end_checkpoint,
       wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
     },
     {
