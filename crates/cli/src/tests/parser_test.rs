@@ -4605,6 +4605,12 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *p, TSLexer *lexer, const bo
 
 #[test]
 fn test_position_checkpoint_restore_scanner_reuses_suffixes_after_edits() {
+    let token_ranges = |tree: &Tree| {
+        tree.root_node()
+            .named_children(&mut tree.walk())
+            .map(|node| node.range())
+            .collect::<Vec<_>>()
+    };
     for mut parser in position_dependent_parsers("restore", "bytes", false) {
         for included in [false, true] {
             for (deleted_length, inserted_text) in
@@ -4667,6 +4673,7 @@ fn test_position_checkpoint_restore_scanner_reuses_suffixes_after_edits() {
                         fresh.root_node().to_sexp()
                     );
                     assert_eq!(incremental.root_node().range(), fresh.root_node().range());
+                    assert_eq!(token_ranges(&incremental), token_ranges(&fresh));
                     assert!(
                         incremental_bytes * 4 < fresh_bytes,
                         "incremental={incremental_bytes}, fresh={fresh_bytes}"
