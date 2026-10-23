@@ -1040,8 +1040,8 @@ typedef struct {
   unsigned count;
 } VisitedActionLists;
 
-// Records an action list, returning whether it was already recorded. Once full, it records nothing and
-// reports every further list as new.
+// Returns true for an action list recorded earlier. Once all slots are used, unrecorded lists are
+// reported as new each time, so their work is repeated rather than skipped wrongly.
 static inline bool visited_action_lists__visit(VisitedActionLists *self, uint16_t action_list) {
   for (unsigned i = 0; i < self->count; i++) {
     if (self->action_lists[i] == action_list) return true;
