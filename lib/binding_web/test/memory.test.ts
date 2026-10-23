@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { gc, event, Finalizer } from './memory';
+
+import { event, Finalizer, gc } from './memory';
 
 // hijack finalization registry before import web-tree-sitter
 globalThis.FinalizationRegistry = Finalizer;
@@ -10,13 +11,13 @@ describe('Memory Management', () => {
       const timer = setInterval(() => {
         gc();
       }, 100);
-      let done = 0; 
+      let done = 0;
       event.on('gc', () => {
         done++;
       });
       await (async () => {
         const { JavaScript } = await (await import('./helper')).default;
-        const  { Parser, Query } = await import('../src');
+        const { Parser, Query } = await import('../src');
         const parser = new Parser();
         parser.setLanguage(JavaScript);
         const tree = parser.parse('1+1')!;
@@ -58,7 +59,7 @@ describe('Memory Management', () => {
       });
       await (async () => {
         const { JavaScript } = await (await import('./helper')).default;
-        const  { Parser, Query } = await import('../src');
+        const { Parser, Query } = await import('../src');
         const parser = new Parser(); // 1
         parser.setLanguage(JavaScript);
         const tree = parser.parse('1+1')!; // 2

@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
-import { expect, it } from 'vitest';
 import { Language, Parser } from '@willbooster/web-tree-sitter';
+import { expect, it } from 'vitest';
+
 import javascriptUrl from '../../../../target/release/tree-sitter-javascript.wasm?url';
 
 it.each(['URL', 'module'] as const)('loads a grammar larger than 8 MiB from a %s', async (kind) => {
@@ -15,7 +16,7 @@ it.each(['URL', 'module'] as const)('loads a grammar larger than 8 MiB from a %s
     const tree = parser.parse('let x = 1;');
     try {
       expect(tree?.rootNode.toString()).toBe(
-        '(program (lexical_declaration (variable_declarator name: (identifier) value: (number))))',
+        '(program (lexical_declaration (variable_declarator name: (identifier) value: (number))))'
       );
     } finally {
       tree?.delete();

@@ -1,9 +1,9 @@
-import { C, INTERNAL, LogCallback, ParseCallback, Range, SIZE_OF_INT, SIZE_OF_RANGE, setModule } from './constants';
+import { checkModule, initializeBinding, type ParserInitOptions } from './bindings';
+import { C, INTERNAL, LogCallback, ParseCallback, Range, setModule, SIZE_OF_INT, SIZE_OF_RANGE } from './constants';
+import { newFinalizer } from './finalization_registry';
 import { Language } from './language';
 import { marshalRange, unmarshalRange } from './marshal';
-import { checkModule, initializeBinding, type ParserInitOptions } from './bindings';
 import { Tree } from './tree';
-import { newFinalizer } from './finalization_registry';
 
 /**
  * Options for parsing
@@ -86,7 +86,7 @@ export function assertSupportedLanguage(language: Language): void {
   if (version !== LANGUAGE_VERSION) {
     throw new Error(
       `Incompatible language version 0x${(version >>> 0).toString(16)}. ` +
-      `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
+        `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
     );
   }
 }
@@ -144,7 +144,7 @@ export class Parser {
   /** @internal */
   initialize() {
     if (!checkModule()) {
-      throw new Error("cannot construct a Parser before calling `init()`");
+      throw new Error('cannot construct a Parser before calling `init()`');
     }
     C._ts_parser_new_wasm();
     this[0] = C.getValue(TRANSFER_BUFFER, 'i32');
@@ -202,11 +202,7 @@ export class Parser {
    *  - The parser has not yet had a language assigned with {@link Parser#setLanguage}.
    *  - The progress callback returned true.
    */
-  parse(
-    callback: string | ParseCallback,
-    oldTree?: Tree | null,
-    options?: ParseOptions,
-  ): Tree | null {
+  parse(callback: string | ParseCallback, oldTree?: Tree | null, options?: ParseOptions): Tree | null {
     if (typeof callback === 'string') {
       C.currentParseCallback = (index: number) => callback.slice(index);
     } else if (typeof callback === 'function') {
@@ -241,13 +237,7 @@ export class Parser {
       }
     }
 
-    const treeAddress = C._ts_parser_parse_wasm(
-      this[0],
-      this[1],
-      oldTree ? oldTree[0] : 0,
-      rangeAddress,
-      rangeCount
-    );
+    const treeAddress = C._ts_parser_parse_wasm(this[0], this[1], oldTree ? oldTree[0] : 0, rangeAddress, rangeCount);
 
     if (!treeAddress) {
       C.currentParseCallback = null;
@@ -270,7 +260,7 @@ export class Parser {
   /**
    * Instruct the parser to start the next parse from the beginning.
    *
-   * If the parser previously failed because of a callback, 
+   * If the parser previously failed because of a callback,
    * then by default, it will resume where it left off on the
    * next call to {@link Parser#parse} or other parsing functions.
    * If you don't want to resume, and instead intend to use this parser to

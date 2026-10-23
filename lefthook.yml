@@ -12,7 +12,7 @@ pre-push:
 pre-commit:
   jobs:
     - name: cleanup
-      glob: '**/*.{java}'
+      glob: '**/*.{cjs,css,cts,gql,graphql,hbs,htm,html,java,js,json,json5,jsonc,jsx,less,md,mdx,mjs,mts,scss,toml,ts,tsx,vue,yaml,yml}'
       run: |-
         [ -d node_modules ] || bun install --frozen-lockfile || exit
         bun wb lint --fix --format -- {staged_files}

@@ -1,6 +1,6 @@
 import { type MainModule } from '../lib/web-tree-sitter';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { ParseState, type Parser } from './parser';
+import { type Parser, ParseState } from './parser';
 
 /**
  * A position in a multi-line text document, in terms of rows and columns.
@@ -85,11 +85,7 @@ export function assertInternal(x: unknown): asserts x is Internal {
 
 /** @internal */
 export function isPoint(point?: Point): point is Point {
-  return (
-    !!point &&
-    typeof (point).row === 'number' &&
-    typeof (point).column === 'number'
-  );
+  return !!point && typeof point.row === 'number' && typeof point.column === 'number';
 }
 
 /**

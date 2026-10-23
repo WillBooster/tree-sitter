@@ -1,12 +1,12 @@
-import { INTERNAL, Point, Range, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT, C } from "./constants";
-import { Node } from "./node";
-import { Tree } from "./tree";
+import { C, INTERNAL, Point, Range, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT } from './constants';
+import { Edit } from './edit';
+import { LanguageMetadata } from './language';
+import { Node } from './node';
+import { TRANSFER_BUFFER } from './parser';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { Query, QueryCapture, type QueryMatch } from "./query";
-import { TreeCursor } from "./tree_cursor";
-import { TRANSFER_BUFFER } from "./parser";
-import { LanguageMetadata } from "./language";
-import { Edit } from "./edit";
+import { Query, QueryCapture, type QueryMatch } from './query';
+import { Tree } from './tree';
+import { TreeCursor } from './tree_cursor';
 
 /**
  * @internal
@@ -25,7 +25,7 @@ export function unmarshalCaptures(
     address += SIZE_OF_INT;
     const node = unmarshalNode(tree, address)!;
     address += SIZE_OF_NODE;
-    result[i] = {patternIndex, name: query.captureNames[captureIndex], node};
+    result[i] = { patternIndex, name: query.captureNames[captureIndex], node };
   }
   return address;
 }
@@ -70,7 +70,7 @@ export function unmarshalNode(tree: Tree, address = TRANSFER_BUFFER): Node | nul
     id,
     tree,
     startIndex: index,
-    startPosition: {row, column},
+    startPosition: { row, column },
     other,
   });
 
@@ -130,9 +130,12 @@ export function unmarshalPoint(address: number): Point {
  * Marshals a {@link Range} to the transfer buffer.
  */
 export function marshalRange(address: number, range: Range): void {
-  marshalPoint(address, range.startPosition); address += SIZE_OF_POINT;
-  marshalPoint(address, range.endPosition); address += SIZE_OF_POINT;
-  C.setValue(address, range.startIndex, 'i32'); address += SIZE_OF_INT;
+  marshalPoint(address, range.startPosition);
+  address += SIZE_OF_POINT;
+  marshalPoint(address, range.endPosition);
+  address += SIZE_OF_POINT;
+  C.setValue(address, range.startIndex, 'i32');
+  address += SIZE_OF_INT;
   C.setValue(address, range.endIndex, 'i32');
 }
 
@@ -143,9 +146,12 @@ export function marshalRange(address: number, range: Range): void {
  */
 export function unmarshalRange(address: number): Range {
   const result = {} as Range;
-  result.startPosition = unmarshalPoint(address); address += SIZE_OF_POINT;
-  result.endPosition = unmarshalPoint(address); address += SIZE_OF_POINT;
-  result.startIndex = C.getValue(address, 'i32') >>> 0; address += SIZE_OF_INT;
+  result.startPosition = unmarshalPoint(address);
+  address += SIZE_OF_POINT;
+  result.endPosition = unmarshalPoint(address);
+  address += SIZE_OF_POINT;
+  result.startIndex = C.getValue(address, 'i32') >>> 0;
+  address += SIZE_OF_INT;
   result.endIndex = C.getValue(address, 'i32') >>> 0;
   return result;
 }
@@ -156,11 +162,16 @@ export function unmarshalRange(address: number): Range {
  * Marshals an {@link Edit} to the transfer buffer.
  */
 export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER) {
-  marshalPoint(address, edit.startPosition); address += SIZE_OF_POINT;
-  marshalPoint(address, edit.oldEndPosition); address += SIZE_OF_POINT;
-  marshalPoint(address, edit.newEndPosition); address += SIZE_OF_POINT;
-  C.setValue(address, edit.startIndex, 'i32'); address += SIZE_OF_INT;
-  C.setValue(address, edit.oldEndIndex, 'i32'); address += SIZE_OF_INT;
+  marshalPoint(address, edit.startPosition);
+  address += SIZE_OF_POINT;
+  marshalPoint(address, edit.oldEndPosition);
+  address += SIZE_OF_POINT;
+  marshalPoint(address, edit.newEndPosition);
+  address += SIZE_OF_POINT;
+  C.setValue(address, edit.startIndex, 'i32');
+  address += SIZE_OF_INT;
+  C.setValue(address, edit.oldEndIndex, 'i32');
+  address += SIZE_OF_INT;
   C.setValue(address, edit.newEndIndex, 'i32');
 }
 
@@ -169,9 +180,9 @@ export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER) {
  *
  * Unmarshals a {@link LanguageMetadata} from the transfer buffer.
  */
-export function unmarshalLanguageMetadata(address: number): LanguageMetadata {  
+export function unmarshalLanguageMetadata(address: number): LanguageMetadata {
   const major_version = C.getValue(address, 'i32');
-  const minor_version = C.getValue(address += SIZE_OF_INT, 'i32');
+  const minor_version = C.getValue((address += SIZE_OF_INT), 'i32');
   const patch_version = C.getValue(address + SIZE_OF_INT, 'i32');
   return { major_version, minor_version, patch_version };
 }

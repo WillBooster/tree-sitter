@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import type { Language, Tree, Node } from '../src';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+import type { Language, Node, Tree } from '../src';
 import { Parser } from '../src';
 import helper from './helper';
 
@@ -63,7 +64,7 @@ describe('Node', () => {
       tree = parser.parse('x10 + 1000')!;
       expect(tree.rootNode.children).toHaveLength(1);
       const sumNode = tree.rootNode.firstChild!.firstChild!;
-      expect(sumNode.children.map(child => child.type)).toEqual(['identifier', '+', 'number']);
+      expect(sumNode.children.map((child) => child.type)).toEqual(['identifier', '+', 'number']);
     });
   });
 
@@ -72,7 +73,7 @@ describe('Node', () => {
       tree = parser.parse('x10 + 1000')!;
       const sumNode = tree.rootNode.firstChild!.firstChild!;
       expect(tree.rootNode.namedChildren).toHaveLength(1);
-      expect(sumNode.namedChildren.map(child => child.type)).toEqual(['identifier', 'number']);
+      expect(sumNode.namedChildren.map((child) => child.type)).toEqual(['identifier', 'number']);
     });
   });
 
@@ -93,7 +94,7 @@ describe('Node', () => {
       const node = tree.rootNode.firstChild!;
       expect(node.type).toBe('if_statement');
       const alternatives = node.childrenForFieldName('alternative');
-      const alternativeTexts = alternatives.map(n => {
+      const alternativeTexts = alternatives.map((n) => {
         const condition = n.childForFieldName('condition')!;
         return source.slice(condition.startIndex, condition.endIndex);
       });
@@ -108,8 +109,8 @@ describe('Node', () => {
 
       expect(quotientNode.startIndex).toBe(0);
       expect(quotientNode.endIndex).toBe(15);
-      expect(quotientNode.children.map(child => child.startIndex)).toEqual([0, 7, 9]);
-      expect(quotientNode.children.map(child => child.endIndex)).toEqual([6, 8, 15]);
+      expect(quotientNode.children.map((child) => child.startIndex)).toEqual([0, 7, 9]);
+      expect(quotientNode.children.map((child) => child.endIndex)).toEqual([6, 8, 15]);
     });
   });
 
@@ -136,16 +137,25 @@ describe('Node', () => {
     it('handles characters that occupy two UTF16 code units', () => {
       tree = parser.parse('a👍👎1 /\n b👎c👎')!;
       const sumNode = tree.rootNode.firstChild!.firstChild!;
-      expect(sumNode.children.map(child => [child.startPosition, child.endPosition])).toEqual([
-        [{ row: 0, column: 0 }, { row: 0, column: 6 }],
-        [{ row: 0, column: 7 }, { row: 0, column: 8 }],
-        [{ row: 1, column: 1 }, { row: 1, column: 7 }]
+      expect(sumNode.children.map((child) => [child.startPosition, child.endPosition])).toEqual([
+        [
+          { row: 0, column: 0 },
+          { row: 0, column: 6 },
+        ],
+        [
+          { row: 0, column: 7 },
+          { row: 0, column: 8 },
+        ],
+        [
+          { row: 1, column: 1 },
+          { row: 1, column: 7 },
+        ],
       ]);
     });
   });
 
   describe('.parent', () => {
-    it('returns the node\'s parent', () => {
+    it("returns the node's parent", () => {
       tree = parser.parse('x10 + 1000')!;
       const sumNode = tree.rootNode.firstChild!;
       const variableNode = sumNode.firstChild!;
@@ -203,19 +213,19 @@ describe('Node', () => {
     it('correctly retrieves immediate children', () => {
       const sourceCode = 'let x = 1; console.log(x);';
       tree = parser.parse(sourceCode)!;
-      const root = tree.rootNode
-      const child = root.children[0].children[0]
-      const a = root.childWithDescendant(child)
-      expect(a!.startIndex).toBe(0)
-      const b = a!.childWithDescendant(child)
-      expect(b).toEqual(child)
-      const c = b!.childWithDescendant(child)
-      expect(c).toBeNull()
+      const root = tree.rootNode;
+      const child = root.children[0].children[0];
+      const a = root.childWithDescendant(child);
+      expect(a!.startIndex).toBe(0);
+      const b = a!.childWithDescendant(child);
+      expect(b).toEqual(child);
+      const c = b!.childWithDescendant(child);
+      expect(c).toBeNull();
     });
   });
 
   describe('.nextSibling and .previousSibling', () => {
-    it('returns the node\'s next and previous sibling', () => {
+    it("returns the node's next and previous sibling", () => {
       tree = parser.parse('x10 + 1000')!;
       const sumNode = tree.rootNode.firstChild!.firstChild!;
       expect(sumNode.children[1].id).toBe(sumNode.children[0].nextSibling!.id);
@@ -226,7 +236,7 @@ describe('Node', () => {
   });
 
   describe('.nextNamedSibling and .previousNamedSibling', () => {
-    it('returns the node\'s next and previous named sibling', () => {
+    it("returns the node's next and previous named sibling", () => {
       tree = parser.parse('x10 + 1000')!;
       const sumNode = tree.rootNode.firstChild!.firstChild!;
       expect(sumNode.namedChildren[1].id).toBe(sumNode.namedChildren[0].nextNamedSibling!.id);
@@ -287,7 +297,7 @@ describe('Node', () => {
       tree = parser.parse('x10 + 1000')!;
       const sumNode = tree.rootNode.firstChild!;
 
-      expect(sumNode.namedDescendantForPosition({ row: 0, column: 1 }, { row: 0, column: 2 })!.type).toBe('identifier')
+      expect(sumNode.namedDescendantForPosition({ row: 0, column: 1 }, { row: 0, column: 2 })!.type).toBe('identifier');
       expect(sumNode.namedDescendantForPosition({ row: 0, column: 4 })!.type).toBe('binary_expression');
     });
   });
@@ -484,11 +494,7 @@ describe('Node', () => {
       )!;
       const errorNode = tree.rootNode;
       const descendants = errorNode.descendantsOfType('ERROR');
-      expect(
-        descendants.map((node) => node.startIndex)
-      ).toEqual(
-        [4]
-      );
+      expect(descendants.map((node) => node.startIndex)).toEqual([4]);
     });
 
     it('finds ERROR nodes along with other types', () => {
@@ -509,8 +515,11 @@ describe('Node', () => {
       const outerSum = tree.rootNode.firstChild!.firstChild!;
 
       const descendants = outerSum.descendantsOfType('number', { row: 0, column: 2 }, { row: 0, column: 15 });
-      expect(descendants.map(node => node.startIndex)).toEqual([4, 12]);
-      expect(descendants.map(node => node.endPosition)).toEqual([{ row: 0, column: 5 }, { row: 0, column: 13 }]);
+      expect(descendants.map((node) => node.startIndex)).toEqual([4, 12]);
+      expect(descendants.map((node) => node.endPosition)).toEqual([
+        { row: 0, column: 5 },
+        { row: 0, column: 13 },
+      ]);
     });
   });
 
@@ -564,9 +573,7 @@ describe('Node', () => {
 
       const translationUnitNode = tree.rootNode;
       const declarationNode = translationUnitNode.firstChild;
-      const binaryExpressionNode = declarationNode!
-        .childForFieldName('declarator')!
-        .childForFieldName('value')!;
+      const binaryExpressionNode = declarationNode!.childForFieldName('declarator')!.childForFieldName('value')!;
 
       // -------------------
       // left: (identifier)  0
@@ -592,9 +599,7 @@ describe('Node', () => {
 
       const translationUnitNode = tree.rootNode;
       const declarationNode = translationUnitNode.firstNamedChild;
-      const binaryExpressionNode = declarationNode!
-        .childForFieldName('declarator')!
-        .childForFieldName('value')!;
+      const binaryExpressionNode = declarationNode!.childForFieldName('declarator')!.childForFieldName('value')!;
 
       // -------------------
       // left: (identifier)  0

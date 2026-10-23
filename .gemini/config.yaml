@@ -8,4 +8,4 @@ code_review:
     summary: true
     code_review: true
 ignore_patterns:
-  - "**/__generated__"
+  - '**/__generated__'

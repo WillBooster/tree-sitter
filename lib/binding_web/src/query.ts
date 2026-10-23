@@ -1,9 +1,9 @@
-import { Point, ZERO_POINT, SIZE_OF_INT, C } from './constants';
-import { Node } from './node';
-import { marshalNode, unmarshalCaptures } from './marshal';
-import { TRANSFER_BUFFER, assertSupportedLanguage } from './parser';
-import { Language } from './language';
+import { C, Point, SIZE_OF_INT, ZERO_POINT } from './constants';
 import { newFinalizer } from './finalization_registry';
+import { Language } from './language';
+import { marshalNode, unmarshalCaptures } from './marshal';
+import { Node } from './node';
+import { assertSupportedLanguage, TRANSFER_BUFFER } from './parser';
 
 const PREDICATE_STEP_TYPE_CAPTURE = 1;
 
@@ -156,11 +156,11 @@ export const CaptureQuantifier = {
   ZeroOrOne: 1,
   ZeroOrMore: 2,
   One: 3,
-  OneOrMore: 4
+  OneOrMore: 4,
 } as const;
 
 /** A quantifier for captures */
-export type CaptureQuantifier = typeof CaptureQuantifier[keyof typeof CaptureQuantifier];
+export type CaptureQuantifier = (typeof CaptureQuantifier)[keyof typeof CaptureQuantifier];
 
 /**
  * Predicates are represented as a single array of steps. There are two
@@ -180,14 +180,20 @@ export type PredicateStep = CapturePredicateStep | StringPredicateStep;
  *
  * The `name` field is the name of the capture.
  */
-export interface CapturePredicateStep { type: 'capture', name: string }
+export interface CapturePredicateStep {
+  type: 'capture';
+  name: string;
+}
 
 /**
  * A step in a predicate that refers to a string.
  *
  * The `value` field is the string value.
  */
-export interface StringPredicateStep { type: 'string', value: string }
+export interface StringPredicateStep {
+  type: 'string';
+  value: string;
+}
 
 const isCaptureStep = (step: PredicateStep): step is Extract<PredicateStep, { type: 'capture' }> =>
   step.type === 'capture';
@@ -214,7 +220,7 @@ export const QueryErrorKind = {
 } as const;
 
 /** An error that occurred while parsing a query string. */
-export type QueryErrorKind = typeof QueryErrorKind[keyof typeof QueryErrorKind];
+export type QueryErrorKind = (typeof QueryErrorKind)[keyof typeof QueryErrorKind];
 
 /** Information about a {@link QueryError}. */
 export interface QueryErrorInfo {
@@ -257,22 +263,13 @@ export class QueryError extends Error {
 /**
  * Parses the `eq?` and `not-eq?` predicates in a query, and updates the text predicates.
  */
-function parseAnyPredicate(
-  steps: PredicateStep[],
-  index: number,
-  operator: string,
-  textPredicates: TextPredicate[][],
-) {
+function parseAnyPredicate(steps: PredicateStep[], index: number, operator: string, textPredicates: TextPredicate[][]) {
   if (steps.length !== 3) {
-    throw new Error(
-      `Wrong number of arguments to \`#${operator}\` predicate. Expected 2, got ${steps.length - 1}`
-    );
+    throw new Error(`Wrong number of arguments to \`#${operator}\` predicate. Expected 2, got ${steps.length - 1}`);
   }
 
   if (!isCaptureStep(steps[1])) {
-    throw new Error(
-      `First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}"`
-    );
+    throw new Error(`First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}"`);
   }
 
   const isPositive = operator === 'eq?' || operator === 'any-eq?';
@@ -318,24 +315,18 @@ function parseMatchPredicate(
   steps: PredicateStep[],
   index: number,
   operator: string,
-  textPredicates: TextPredicate[][],
+  textPredicates: TextPredicate[][]
 ) {
   if (steps.length !== 3) {
-    throw new Error(
-      `Wrong number of arguments to \`#${operator}\` predicate. Expected 2, got ${steps.length - 1}.`,
-    );
+    throw new Error(`Wrong number of arguments to \`#${operator}\` predicate. Expected 2, got ${steps.length - 1}.`);
   }
 
   if (steps[1].type !== 'capture') {
-    throw new Error(
-      `First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}".`,
-    );
+    throw new Error(`First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}".`);
   }
 
   if (steps[2].type !== 'string') {
-    throw new Error(
-      `Second argument of \`#${operator}\` predicate must be a string. Got @${steps[2].name}.`,
-    );
+    throw new Error(`Second argument of \`#${operator}\` predicate must be a string. Got @${steps[2].name}.`);
   }
 
   const isPositive = operator === 'match?' || operator === 'any-match?';
@@ -348,14 +339,10 @@ function parseMatchPredicate(
       if (c.name === captureName) nodes.push(c.node.text);
     }
     const test = (text: string, positive: boolean) => {
-      return positive ?
-        regex.test(text) :
-        !regex.test(text);
+      return positive ? regex.test(text) : !regex.test(text);
     };
     if (nodes.length === 0) return !isPositive;
-    return matchAll ?
-      nodes.every((text) => test(text, isPositive)) :
-      nodes.some((text) => test(text, isPositive));
+    return matchAll ? nodes.every((text) => test(text, isPositive)) : nodes.some((text) => test(text, isPositive));
   });
 }
 
@@ -366,18 +353,16 @@ function parseAnyOfPredicate(
   steps: PredicateStep[],
   index: number,
   operator: string,
-  textPredicates: TextPredicate[][],
+  textPredicates: TextPredicate[][]
 ) {
   if (steps.length < 2) {
     throw new Error(
-      `Wrong number of arguments to \`#${operator}\` predicate. Expected at least 1. Got ${steps.length - 1}.`,
+      `Wrong number of arguments to \`#${operator}\` predicate. Expected at least 1. Got ${steps.length - 1}.`
     );
   }
 
   if (steps[1].type !== 'capture') {
-    throw new Error(
-      `First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}".`,
-    );
+    throw new Error(`First argument of \`#${operator}\` predicate must be a capture. Got "${steps[1].value}".`);
   }
 
   const isPositive = operator === 'any-of?';
@@ -385,9 +370,7 @@ function parseAnyOfPredicate(
 
   const stringSteps = steps.slice(2);
   if (!stringSteps.every(isStringStep)) {
-    throw new Error(
-      `Arguments to \`#${operator}\` predicate must be strings.".`,
-    );
+    throw new Error(`Arguments to \`#${operator}\` predicate must be strings.".`);
   }
   const values = stringSteps.map((s) => s.value);
 
@@ -410,18 +393,16 @@ function parseIsPredicate(
   index: number,
   operator: string,
   assertedProperties: QueryProperties[],
-  refutedProperties: QueryProperties[],
+  refutedProperties: QueryProperties[]
 ) {
   if (steps.length < 2 || steps.length > 3) {
     throw new Error(
-      `Wrong number of arguments to \`#${operator}\` predicate. Expected 1 or 2. Got ${steps.length - 1}.`,
+      `Wrong number of arguments to \`#${operator}\` predicate. Expected 1 or 2. Got ${steps.length - 1}.`
     );
   }
 
   if (!steps.every(isStringStep)) {
-    throw new Error(
-      `Arguments to \`#${operator}\` predicate must be strings.".`,
-    );
+    throw new Error(`Arguments to \`#${operator}\` predicate must be strings.".`);
   }
 
   const properties = operator === 'is?' ? assertedProperties : refutedProperties;
@@ -432,11 +413,7 @@ function parseIsPredicate(
 /**
  * Parses the `set!` directive in a query, and updates the set properties.
  */
-function parseSetDirective(
-  steps: PredicateStep[],
-  index: number,
-  setProperties: QueryProperties[],
-) {
+function parseSetDirective(steps: PredicateStep[], index: number, setProperties: QueryProperties[]) {
   if (steps.length < 2 || steps.length > 3) {
     throw new Error(`Wrong number of arguments to \`#set!\` predicate. Expected 1 or 2. Got ${steps.length - 1}.`);
   }
@@ -462,7 +439,7 @@ function parsePattern(
   predicates: QueryPredicate[][],
   setProperties: QueryProperties[],
   assertedProperties: QueryProperties[],
-  refutedProperties: QueryProperties[],
+  refutedProperties: QueryProperties[]
 ) {
   if (stepType === PREDICATE_STEP_TYPE_CAPTURE) {
     const name = captureNames[stepValueId];
@@ -623,11 +600,7 @@ export class Query {
 
     // Fill in the capture names
     for (let i = 0; i < captureCount; i++) {
-      const nameAddress = C._ts_query_capture_name_for_id(
-        address,
-        i,
-        TRANSFER_BUFFER
-      );
+      const nameAddress = C._ts_query_capture_name_for_id(address, i, TRANSFER_BUFFER);
       const nameLength = C.getValue(TRANSFER_BUFFER, 'i32');
       captureNames[i] = C.UTF8ToString(nameAddress, nameLength);
     }
@@ -644,11 +617,7 @@ export class Query {
 
     // Fill in the string values
     for (let i = 0; i < stringCount; i++) {
-      const valueAddress = C._ts_query_string_value_for_id(
-        address,
-        i,
-        TRANSFER_BUFFER
-      );
+      const valueAddress = C._ts_query_string_value_for_id(address, i, TRANSFER_BUFFER);
       const nameLength = C.getValue(TRANSFER_BUFFER, 'i32');
       stringValues[i] = C.UTF8ToString(valueAddress, nameLength);
     }
@@ -688,7 +657,7 @@ export class Query {
           predicates,
           setProperties,
           assertedProperties,
-          refutedProperties,
+          refutedProperties
         );
       }
 
@@ -700,7 +669,6 @@ export class Query {
     }
 
     C._free(sourceAddress);
-
 
     this[0] = address;
     this.captureNames = captureNames;
@@ -734,10 +702,7 @@ export class Query {
    *
    * @param {QueryOptions} options - Options for query execution.
    */
-  matches(
-    node: Node,
-    options: QueryOptions = {}
-  ): QueryMatch[] {
+  matches(node: Node, options: QueryOptions = {}): QueryMatch[] {
     const {
       startPosition,
       endPosition,
@@ -773,10 +738,10 @@ export class Query {
           startContainingIndex,
           endContainingIndex,
           matchLimit,
-          maxStartDepth,
+          maxStartDepth
         );
       },
-      exceededMatchLimit => {
+      (exceededMatchLimit) => {
         this.matchLimit = matchLimit;
         this.exceededMatchLimit = exceededMatchLimit;
       },
@@ -807,7 +772,7 @@ export class Query {
         }
         result.length = filteredCount;
         return result;
-      },
+      }
     );
   }
 
@@ -822,10 +787,7 @@ export class Query {
    *
    * @param {QueryOptions} options - Options for query execution.
    */
-  captures(
-    node: Node,
-    options: QueryOptions = {}
-  ): QueryCapture[] {
+  captures(node: Node, options: QueryOptions = {}): QueryCapture[] {
     const {
       startPosition,
       endPosition,
@@ -842,7 +804,7 @@ export class Query {
 
     const callback: ((state: QueryState) => unknown) | undefined = progressCallback;
     return executeQuery(
-      callback ? state => callback(state) === true : undefined,
+      callback ? (state) => callback(state) === true : undefined,
       () => {
         marshalNode(node);
 
@@ -862,10 +824,10 @@ export class Query {
           startContainingIndex,
           endContainingIndex,
           matchLimit,
-          maxStartDepth,
+          maxStartDepth
         );
       },
-      exceededMatchLimit => {
+      (exceededMatchLimit) => {
         this.matchLimit = matchLimit;
         this.exceededMatchLimit = exceededMatchLimit;
       },
@@ -885,7 +847,7 @@ export class Query {
           captures.length = captureCount;
           address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
 
-          if (this.textPredicates[patternIndex].every(p => p(captures))) {
+          if (this.textPredicates[patternIndex].every((p) => p(captures))) {
             const capture = captures[captureIndex];
             capture.setProperties = this.setProperties[patternIndex];
             capture.assertedProperties = this.assertedProperties[patternIndex];
@@ -895,7 +857,7 @@ export class Query {
         }
 
         return result;
-      },
+      }
     );
   }
 
@@ -927,9 +889,7 @@ export class Query {
    */
   disablePattern(patternIndex: number): void {
     if (patternIndex >= this.predicates.length) {
-      throw new Error(
-        `Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`
-      );
+      throw new Error(`Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`);
     }
     C._ts_query_disable_pattern(this[0], patternIndex);
   }
@@ -945,9 +905,7 @@ export class Query {
   /** Get the index where the given pattern starts in the query's source. */
   startIndexForPattern(patternIndex: number): number {
     if (patternIndex >= this.predicates.length) {
-      throw new Error(
-        `Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`
-      );
+      throw new Error(`Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`);
     }
     const byteOffset = C._ts_query_start_byte_for_pattern(this[0], patternIndex);
     return indexForByteOffset(this.source, byteOffset);
@@ -956,9 +914,7 @@ export class Query {
   /** Get the index where the given pattern ends in the query's source. */
   endIndexForPattern(patternIndex: number): number {
     if (patternIndex >= this.predicates.length) {
-      throw new Error(
-        `Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`
-      );
+      throw new Error(`Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`);
     }
     const byteOffset = C._ts_query_end_byte_for_pattern(this[0], patternIndex);
     return indexForByteOffset(this.source, byteOffset);
@@ -1006,8 +962,8 @@ function prepareQuery(query: Query, options: QueryOptions) {
     endContainingPosition: options.endContainingPosition ?? ZERO_POINT,
     startContainingIndex: options.startContainingIndex ?? 0,
     endContainingIndex: options.endContainingIndex ?? 0,
-    matchLimit: options.matchLimit ?? 0xFFFFFFFF,
-    maxStartDepth: options.maxStartDepth ?? 0xFFFFFFFF,
+    matchLimit: options.matchLimit ?? 0xffffffff,
+    maxStartDepth: options.maxStartDepth ?? 0xffffffff,
     progressCallback: options.progressCallback,
   };
   const {
@@ -1030,10 +986,11 @@ function prepareQuery(query: Query, options: QueryOptions) {
     throw new Error('`startIndex` cannot be greater than `endIndex`');
   }
 
-  if (endPosition !== ZERO_POINT && (
-    startPosition.row > endPosition.row ||
-    (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
-  )) {
+  if (
+    endPosition !== ZERO_POINT &&
+    (startPosition.row > endPosition.row ||
+      (startPosition.row === endPosition.row && startPosition.column > endPosition.column))
+  ) {
     throw new Error('`startPosition` cannot be greater than `endPosition`');
   }
 
@@ -1041,11 +998,12 @@ function prepareQuery(query: Query, options: QueryOptions) {
     throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
   }
 
-  if (endContainingPosition !== ZERO_POINT && (
-    startContainingPosition.row > endContainingPosition.row ||
-    (startContainingPosition.row === endContainingPosition.row &&
-      startContainingPosition.column > endContainingPosition.column)
-  )) {
+  if (
+    endContainingPosition !== ZERO_POINT &&
+    (startContainingPosition.row > endContainingPosition.row ||
+      (startContainingPosition.row === endContainingPosition.row &&
+        startContainingPosition.column > endContainingPosition.column))
+  ) {
     throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
   }
   return parameters;
@@ -1055,18 +1013,20 @@ function executeQuery<T>(
   progressCallback: NonNullable<typeof C.currentQueryProgressCallback> | undefined,
   execute: () => void,
   updateState: (exceededMatchLimit: boolean) => void,
-  readResult: (count: number, address: number) => T,
+  readResult: (count: number, address: number) => T
 ): T {
   const previousCallback = C.currentQueryProgressCallback;
   let callbackFailure: { error: unknown } | undefined;
-  C.currentQueryProgressCallback = progressCallback ? state => {
-    try {
-      return progressCallback(state);
-    } catch (error) {
-      callbackFailure = { error };
-      return true;
-    }
-  } : null;
+  C.currentQueryProgressCallback = progressCallback
+    ? (state) => {
+        try {
+          return progressCallback(state);
+        } catch (error) {
+          callbackFailure = { error };
+          return true;
+        }
+      }
+    : null;
   try {
     execute();
   } finally {

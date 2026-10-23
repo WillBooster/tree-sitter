@@ -1,8 +1,25 @@
-import { Parser, Language } from '../src';
 import path from 'path';
 
+import { Language, Parser } from '../src';
+
 // https://github.com/tree-sitter/tree-sitter/blob/master/xtask/src/fetch.rs#L15
-export type LanguageName = 'bash' | 'c' | 'cpp' | 'embedded-template' | 'go' | 'html' | 'java' | 'javascript' | 'jsdoc' | 'json' | 'php' | 'python' | 'ruby' | 'rust' | 'typescript' | 'tsx';
+export type LanguageName =
+  | 'bash'
+  | 'c'
+  | 'cpp'
+  | 'embedded-template'
+  | 'go'
+  | 'html'
+  | 'java'
+  | 'javascript'
+  | 'jsdoc'
+  | 'json'
+  | 'php'
+  | 'python'
+  | 'ruby'
+  | 'rust'
+  | 'typescript'
+  | 'tsx';
 
 function languageURL(name: LanguageName): string {
   const basePath = process.cwd();

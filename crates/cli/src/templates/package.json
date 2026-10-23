@@ -2,26 +2,23 @@
   "name": "tree-sitter-PARSER_NAME",
   "version": "PARSER_VERSION",
   "description": "PARSER_DESCRIPTION",
-  "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "git+PARSER_URL.git"
-  },
-  "funding": "FUNDING_URL",
+  "keywords": [
+    "LOWER_PARSER_NAME",
+    "incremental",
+    "parsing",
+    "tree-sitter"
+  ],
   "license": "PARSER_LICENSE",
   "author": {
     "name": "PARSER_AUTHOR_NAME",
     "email": "PARSER_AUTHOR_EMAIL",
     "url": "PARSER_AUTHOR_URL"
   },
-  "main": "bindings/node",
-  "types": "bindings/node",
-  "keywords": [
-    "incremental",
-    "parsing",
-    "tree-sitter",
-    "LOWER_PARSER_NAME"
-  ],
+  "repository": {
+    "type": "git",
+    "url": "git+PARSER_URL.git"
+  },
+  "funding": "FUNDING_URL",
   "files": [
     "grammar.js",
     "tree-sitter.json",
@@ -32,6 +29,15 @@
     "src/**",
     "*.wasm"
   ],
+  "type": "module",
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "scripts": {
+    "install": "node-gyp-build",
+    "prestart": "tree-sitter build --wasm",
+    "start": "tree-sitter playground",
+    "test": "node --test bindings/node/*_test.js"
+  },
   "dependencies": {
     "node-addon-api": "^8.5.0",
     "node-gyp-build": "^4.8.4"
@@ -48,11 +54,5 @@
     "tree-sitter": {
       "optional": true
     }
-  },
-  "scripts": {
-    "install": "node-gyp-build",
-    "prestart": "tree-sitter build --wasm",
-    "start": "tree-sitter playground",
-    "test": "node --test bindings/node/*_test.js"
   }
 }

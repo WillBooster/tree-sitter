@@ -1,9 +1,9 @@
 function alias(rule, value) {
   const result = {
-    type: "ALIAS",
+    type: 'ALIAS',
     content: normalize(rule),
     named: false,
-    value: null
+    value: null,
   };
 
   switch (value.constructor) {
@@ -29,31 +29,33 @@ function alias(rule, value) {
 
 function blank() {
   return {
-    type: "BLANK"
+    type: 'BLANK',
   };
 }
 
 function eof() {
   return {
-    type: "EOF"
+    type: 'EOF',
   };
 }
 
 function field(name, rule) {
-  if (typeof name !== "string" || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
-    throw new Error(`Invalid field name '${name}': field names must start with a letter or underscore, followed by letters, digits, or underscores`);
+  if (typeof name !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(
+      `Invalid field name '${name}': field names must start with a letter or underscore, followed by letters, digits, or underscores`
+    );
   }
   return {
-    type: "FIELD",
+    type: 'FIELD',
     name,
-    content: normalize(rule)
-  }
+    content: normalize(rule),
+  };
 }
 
 function choice(...elements) {
   return {
-    type: "CHOICE",
-    members: elements.map(normalize)
+    type: 'CHOICE',
+    members: elements.map(normalize),
   };
 }
 
@@ -64,18 +66,12 @@ function optional(value) {
 
 function prec(number, rule) {
   checkPrecedence(number);
-  checkArguments(
-    arguments,
-    arguments.length - 1,
-    prec,
-    'prec',
-    ' and a precedence argument'
-  );
+  checkArguments(arguments, arguments.length - 1, prec, 'prec', ' and a precedence argument');
 
   return {
-    type: "PREC",
+    type: 'PREC',
     value: number,
-    content: normalize(rule)
+    content: normalize(rule),
   };
 }
 
@@ -86,20 +82,14 @@ prec.left = function (number, rule) {
   }
 
   checkPrecedence(number);
-  checkArguments(
-    arguments,
-    arguments.length - 1,
-    prec.left,
-    'prec.left',
-    ' and an optional precedence argument'
-  );
+  checkArguments(arguments, arguments.length - 1, prec.left, 'prec.left', ' and an optional precedence argument');
 
   return {
-    type: "PREC_LEFT",
+    type: 'PREC_LEFT',
     value: number,
-    content: normalize(rule)
+    content: normalize(rule),
   };
-}
+};
 
 prec.right = function (number, rule) {
   if (rule == null) {
@@ -108,77 +98,65 @@ prec.right = function (number, rule) {
   }
 
   checkPrecedence(number);
-  checkArguments(
-    arguments,
-    arguments.length - 1,
-    prec.right,
-    'prec.right',
-    ' and an optional precedence argument'
-  );
+  checkArguments(arguments, arguments.length - 1, prec.right, 'prec.right', ' and an optional precedence argument');
 
   return {
-    type: "PREC_RIGHT",
+    type: 'PREC_RIGHT',
     value: number,
-    content: normalize(rule)
+    content: normalize(rule),
   };
-}
+};
 
 prec.dynamic = function (number, rule) {
   checkPrecedence(number);
-  checkArguments(
-    arguments,
-    arguments.length - 1,
-    prec.dynamic,
-    'prec.dynamic',
-    ' and a precedence argument'
-  );
+  checkArguments(arguments, arguments.length - 1, prec.dynamic, 'prec.dynamic', ' and a precedence argument');
 
   return {
-    type: "PREC_DYNAMIC",
+    type: 'PREC_DYNAMIC',
     value: number,
-    content: normalize(rule)
+    content: normalize(rule),
   };
-}
+};
 
 function repeat(rule) {
   checkArguments(arguments, arguments.length, repeat, 'repeat');
   return {
-    type: "REPEAT",
-    content: normalize(rule)
+    type: 'REPEAT',
+    content: normalize(rule),
   };
 }
 
 function repeat1(rule) {
   checkArguments(arguments, arguments.length, repeat1, 'repeat1');
   return {
-    type: "REPEAT1",
-    content: normalize(rule)
+    type: 'REPEAT1',
+    content: normalize(rule),
   };
 }
 
 function seq(...elements) {
   return {
-    type: "SEQ",
-    members: elements.map(normalize)
+    type: 'SEQ',
+    members: elements.map(normalize),
   };
 }
 
 class GrammarSymbol {
   constructor(name) {
-    this.type = "SYMBOL";
+    this.type = 'SYMBOL';
     this.name = name;
   }
 }
 
 function reserved(wordset, rule) {
   if (typeof wordset !== 'string') {
-    throw new Error('Invalid reserved word set name: ' + wordset)
+    throw new Error('Invalid reserved word set name: ' + wordset);
   }
   return {
-    type: "RESERVED",
+    type: 'RESERVED',
     content: normalize(rule),
     context_name: wordset,
-  }
+  };
 }
 
 function sym(name) {
@@ -188,53 +166,54 @@ function sym(name) {
 function token(value) {
   checkArguments(arguments, arguments.length, token, 'token', '', 'literal');
   return {
-    type: "TOKEN",
-    content: normalize(value)
+    type: 'TOKEN',
+    content: normalize(value),
   };
 }
 
 token.nonkeyword = function (value) {
   checkArguments(arguments, arguments.length, token.nonkeyword, 'token.nonkeyword', '', 'literal');
   return {
-    type: "NONKEYWORD_TOKEN",
-    content: normalize(value)
+    type: 'NONKEYWORD_TOKEN',
+    content: normalize(value),
   };
-}
+};
 
 token.immediate = function (value) {
   checkArguments(arguments, arguments.length, token.immediate, 'token.immediate', '', 'literal');
   return {
-    type: "IMMEDIATE_TOKEN",
-    content: normalize(value)
+    type: 'IMMEDIATE_TOKEN',
+    content: normalize(value),
   };
-}
+};
 
 function normalize(value) {
-  if (typeof value == "undefined")
-    throw new Error("Undefined symbol");
+  if (typeof value == 'undefined') throw new Error('Undefined symbol');
 
   switch (value.constructor) {
     case String:
       return {
         type: 'STRING',
-        value
+        value,
       };
     case RegExp:
-      return value.flags ? {
-        type: 'PATTERN',
-        value: value.source,
-        flags: value.flags
-      } : {
-        type: 'PATTERN',
-        value: value.source
-      };
+      return value.flags
+        ? {
+            type: 'PATTERN',
+            value: value.source,
+            flags: value.flags,
+          }
+        : {
+            type: 'PATTERN',
+            value: value.source,
+          };
     case RustRegex:
       return {
         type: 'PATTERN',
-        value: value.value
+        value: value.value,
       };
     case ReferenceError:
-      throw value
+      throw value;
     default:
       if (typeof value.type === 'string') {
         return value;
@@ -245,19 +224,22 @@ function normalize(value) {
 }
 
 function RuleBuilder(ruleMap) {
-  return new Proxy({}, {
-    get(_, propertyName) {
-      const symbol = sym(propertyName);
+  return new Proxy(
+    {},
+    {
+      get(_, propertyName) {
+        const symbol = sym(propertyName);
 
-      if (!ruleMap || Object.prototype.hasOwnProperty.call(ruleMap, propertyName)) {
-        return symbol;
-      } else {
-        const error = new ReferenceError(`Undefined symbol '${propertyName}'`);
-        error.symbol = symbol;
-        return error;
-      }
+        if (!ruleMap || Object.prototype.hasOwnProperty.call(ruleMap, propertyName)) {
+          return symbol;
+        } else {
+          const error = new ReferenceError(`Undefined symbol '${propertyName}'`);
+          error.symbol = symbol;
+          return error;
+        }
+      },
     }
-  })
+  );
 }
 
 function grammar(baseGrammar, options) {
@@ -283,11 +265,11 @@ function grammar(baseGrammar, options) {
 
   let externals = baseGrammar.externals;
   if (options.externals) {
-    if (typeof options.externals !== "function") {
+    if (typeof options.externals !== 'function') {
       throw new Error("Grammar's 'externals' property must be a function.");
     }
 
-    const externalsRuleBuilder = RuleBuilder(null)
+    const externalsRuleBuilder = RuleBuilder(null);
     const externalRules = options.externals.call(externalsRuleBuilder, externalsRuleBuilder, baseGrammar.externals);
 
     if (!Array.isArray(externalRules)) {
@@ -313,7 +295,7 @@ function grammar(baseGrammar, options) {
   const ruleBuilder = RuleBuilder(ruleMap);
 
   const name = options.name;
-  if (typeof name !== "string") {
+  if (typeof name !== 'string') {
     throw new Error("Grammar's 'name' property must be a string.");
   }
 
@@ -321,23 +303,25 @@ function grammar(baseGrammar, options) {
     throw new Error("Grammar's 'name' property must not start with a digit and cannot contain non-word characters.");
   }
 
-  if (inherits && typeof inherits !== "string") {
+  if (inherits && typeof inherits !== 'string') {
     throw new Error("Base grammar's 'name' property must be a string.");
   }
 
   if (inherits && !/^[a-zA-Z_]\w*$/.test(name)) {
-    throw new Error("Base grammar's 'name' property must not start with a digit and cannot contain non-word characters.");
+    throw new Error(
+      "Base grammar's 'name' property must not start with a digit and cannot contain non-word characters."
+    );
   }
 
   const rules = Object.assign({}, baseGrammar.rules);
   if (options.rules) {
-    if (typeof options.rules !== "object") {
+    if (typeof options.rules !== 'object') {
       throw new Error("Grammar's 'rules' property must be an object.");
     }
 
     for (const ruleName of Object.keys(options.rules)) {
       const ruleFn = options.rules[ruleName];
-      if (typeof ruleFn !== "function") {
+      if (typeof ruleFn !== 'function') {
         throw new Error(`Grammar rules must all be functions. '${ruleName}' rule is not.`);
       }
       const rule = ruleFn.call(ruleBuilder, ruleBuilder, baseGrammar.rules[ruleName]);
@@ -350,20 +334,26 @@ function grammar(baseGrammar, options) {
 
   let reserved = { ...baseGrammar.reserved };
   if (options.reserved) {
-    if (typeof options.reserved !== "object") {
+    if (typeof options.reserved !== 'object') {
       throw new Error("Grammar's 'reserved' property must be an object.");
     }
 
     for (const reservedWordSetName of Object.keys(options.reserved)) {
-      const reservedWordSetFn = options.reserved[reservedWordSetName]
-      if (typeof reservedWordSetFn !== "function") {
+      const reservedWordSetFn = options.reserved[reservedWordSetName];
+      if (typeof reservedWordSetFn !== 'function') {
         throw new Error(`Grammar reserved word sets must all be functions. '${reservedWordSetName}' is not.`);
       }
 
-      const reservedTokens = reservedWordSetFn.call(ruleBuilder, ruleBuilder, baseGrammar.reserved[reservedWordSetName]);
+      const reservedTokens = reservedWordSetFn.call(
+        ruleBuilder,
+        ruleBuilder,
+        baseGrammar.reserved[reservedWordSetName]
+      );
 
       if (!Array.isArray(reservedTokens)) {
-        throw new Error(`Grammar's reserved word set functions must all return arrays of rules. '${reservedWordSetName}' does not.`);
+        throw new Error(
+          `Grammar's reserved word set functions must all return arrays of rules. '${reservedWordSetName}' does not.`
+        );
       }
 
       reserved[reservedWordSetName] = reservedTokens.map(normalize);
@@ -372,15 +362,14 @@ function grammar(baseGrammar, options) {
 
   let extras = baseGrammar.extras.slice();
   if (options.extras) {
-    if (typeof options.extras !== "function") {
+    if (typeof options.extras !== 'function') {
       throw new Error("Grammar's 'extras' property must be a function.");
     }
 
-    extras = options.extras
-      .call(ruleBuilder, ruleBuilder, baseGrammar.extras)
+    extras = options.extras.call(ruleBuilder, ruleBuilder, baseGrammar.extras);
 
     if (!Array.isArray(extras)) {
-      throw new Error("Grammar's 'extras' function must return an array.")
+      throw new Error("Grammar's 'extras' function must return an array.");
     }
 
     extras = extras.map(normalize);
@@ -402,23 +391,23 @@ function grammar(baseGrammar, options) {
 
   let conflicts = baseGrammar.conflicts;
   if (options.conflicts) {
-    if (typeof options.conflicts !== "function") {
+    if (typeof options.conflicts !== 'function') {
       throw new Error("Grammar's 'conflicts' property must be a function.");
     }
 
-    const baseConflictRules = baseGrammar.conflicts.map(conflict => conflict.map(sym));
+    const baseConflictRules = baseGrammar.conflicts.map((conflict) => conflict.map(sym));
     const conflictRules = options.conflicts.call(ruleBuilder, ruleBuilder, baseConflictRules);
 
     if (!Array.isArray(conflictRules)) {
       throw new Error("Grammar's conflicts must be an array of arrays of rules.");
     }
 
-    conflicts = conflictRules.map(conflictSet => {
+    conflicts = conflictRules.map((conflictSet) => {
       if (!Array.isArray(conflictSet)) {
         throw new Error("Grammar's conflicts must be an array of arrays of rules.");
       }
 
-      return conflictSet.map(symbol => {
+      return conflictSet.map((symbol) => {
         const rule = normalize(symbol);
         if (rule.type !== 'SYMBOL') {
           throw new Error("Grammar's conflicts must contain only named rules.");
@@ -430,7 +419,7 @@ function grammar(baseGrammar, options) {
 
   let inline = baseGrammar.inline;
   if (options.inline) {
-    if (typeof options.inline !== "function") {
+    if (typeof options.inline !== 'function') {
       throw new Error("Grammar's 'inline' property must be a function.");
     }
 
@@ -441,25 +430,27 @@ function grammar(baseGrammar, options) {
       throw new Error("Grammar's inline must be an array of rules.");
     }
 
-    inline = inlineRules.filter((symbol, index, self) => {
-      if (symbol?.name === 'ReferenceError') {
-        console.log(`Warning: inline rule '${symbol.symbol.name}' is not defined.`);
-        return false;
-      }
-      if (symbol?.type !== 'SYMBOL' || typeof symbol.name !== 'string') {
-        throw new Error("Grammar's inline property must contain only named rules.");
-      }
-      if (self.findIndex(s => s?.name === symbol.name) !== index) {
-        console.log(`Warning: duplicate inline rule '${symbol.name}'`);
-        return false;
-      }
-      return true;
-    }).map(symbol => symbol.name);
+    inline = inlineRules
+      .filter((symbol, index, self) => {
+        if (symbol?.name === 'ReferenceError') {
+          console.log(`Warning: inline rule '${symbol.symbol.name}' is not defined.`);
+          return false;
+        }
+        if (symbol?.type !== 'SYMBOL' || typeof symbol.name !== 'string') {
+          throw new Error("Grammar's inline property must contain only named rules.");
+        }
+        if (self.findIndex((s) => s?.name === symbol.name) !== index) {
+          console.log(`Warning: duplicate inline rule '${symbol.name}'`);
+          return false;
+        }
+        return true;
+      })
+      .map((symbol) => symbol.name);
   }
 
   let supertypes = baseGrammar.supertypes;
   if (options.supertypes) {
-    if (typeof options.supertypes !== "function") {
+    if (typeof options.supertypes !== 'function') {
       throw new Error("Grammar's 'supertypes' property must be a function.");
     }
 
@@ -470,7 +461,7 @@ function grammar(baseGrammar, options) {
       throw new Error("Grammar's supertypes must be an array of rules.");
     }
 
-    supertypes = supertypeRules.map(symbol => {
+    supertypes = supertypeRules.map((symbol) => {
       if (symbol?.name === 'ReferenceError') {
         throw new Error(`Supertype rule \`${symbol.symbol.name}\` is not defined.`);
       }
@@ -483,23 +474,21 @@ function grammar(baseGrammar, options) {
 
   let precedences = baseGrammar.precedences;
   if (options.precedences) {
-    if (typeof options.precedences !== "function") {
+    if (typeof options.precedences !== 'function') {
       throw new Error("Grammar's 'precedences' property must be a function");
     }
     precedences = options.precedences.call(ruleBuilder, ruleBuilder, baseGrammar.precedences);
     if (!Array.isArray(precedences)) {
       throw new Error("Grammar's precedences must be an array of arrays of rules.");
     }
-    precedences = precedences.map(list => {
+    precedences = precedences.map((list) => {
       if (!Array.isArray(list)) {
         throw new Error("Grammar's precedences must be an array of arrays of rules.");
       }
-      return list.map(entry => {
+      return list.map((entry) => {
         const rule = normalize(entry);
         if (rule.type !== 'STRING' && rule.type !== 'SYMBOL') {
-          throw new Error(
-            "Grammar's precedences must contain only precedence names or named rules."
-          );
+          throw new Error("Grammar's precedences must contain only precedence names or named rules.");
         }
         return rule;
       });
@@ -507,7 +496,7 @@ function grammar(baseGrammar, options) {
   }
 
   if (Object.keys(rules).length === 0) {
-    throw new Error("Grammar must have at least one rule.");
+    throw new Error('Grammar must have at least one rule.');
   }
 
   return {
@@ -540,12 +529,14 @@ function checkArguments(args, ruleCount, caller, callerName, suffix = '', argTyp
     ruleCount = typeof args[2] === 'number' ? 1 : args[2].length;
   }
   if (ruleCount > 1 && !isMapCall) {
-    const error = new Error([
-      `The \`${callerName}\` function only takes one ${argType} argument${suffix}.`,
-      `You passed in multiple ${argType}s. Did you mean to call \`seq\`?\n`
-    ].join('\n'));
+    const error = new Error(
+      [
+        `The \`${callerName}\` function only takes one ${argType} argument${suffix}.`,
+        `You passed in multiple ${argType}s. Did you mean to call \`seq\`?\n`,
+      ].join('\n')
+    );
     Error.captureStackTrace(error, caller);
-    throw error
+    throw error;
   }
 }
 
@@ -559,7 +550,7 @@ function getEnv(name) {
   if (globalThis.native) return globalThis.__ts_grammar_path;
   if (globalThis.process) return process.env[name]; // Node/Bun
   if (globalThis.Deno) return Deno.env.get(name); // Deno
-  throw Error("Unsupported JS runtime");
+  throw Error('Unsupported JS runtime');
 }
 
 globalThis.alias = alias;
@@ -578,7 +569,7 @@ globalThis.grammar = grammar;
 globalThis.field = field;
 globalThis.RustRegex = RustRegex;
 
-const grammarPath = getEnv("TREE_SITTER_GRAMMAR_PATH");
+const grammarPath = getEnv('TREE_SITTER_GRAMMAR_PATH');
 let result = await import(grammarPath);
 let grammarObj = result.default?.grammar ?? result.grammar;
 
@@ -587,17 +578,19 @@ if (globalThis.native && !grammarObj) {
 }
 
 const object = {
-  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/grammar.schema.json",
+  $schema: 'https://tree-sitter.github.io/tree-sitter/assets/schemas/grammar.schema.json',
   ...grammarObj,
 };
 const output = JSON.stringify(object);
 
 if (globalThis.native) {
   globalThis.output = output;
-} else if (globalThis.process) { // Node/Bun
+} else if (globalThis.process) {
+  // Node/Bun
   process.stdout.write(output);
-} else if (globalThis.Deno) { // Deno
+} else if (globalThis.Deno) {
+  // Deno
   Deno.stdout.writeSync(new TextEncoder().encode(output));
 } else {
-  throw Error("Unsupported JS runtime");
+  throw Error('Unsupported JS runtime');
 }

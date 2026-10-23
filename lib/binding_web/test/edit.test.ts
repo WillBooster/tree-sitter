@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
+
 import { Edit } from '../src';
 
 describe('Edit', () => {
@@ -106,7 +107,7 @@ describe('Edit', () => {
       newEndIndex: 20,
       startPosition: { row: 1, column: 0 },
       oldEndPosition: { row: 1, column: 5 },
-      newEndPosition: { row: 2, column: 0 }
+      newEndPosition: { row: 2, column: 0 },
     });
 
     const range = {

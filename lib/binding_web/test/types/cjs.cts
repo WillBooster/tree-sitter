@@ -14,10 +14,46 @@ export function defineGrammar(dsl: DSL): GrammarSchema<'source_file' | 'word'> {
 }
 
 export function bindDsl(dsl: DSL) {
-  const { alias, blank, choice, eof, field, grammar, optional, prec, repeat, repeat1, reserved, RustRegex, seq, sym, token } = dsl;
+  const {
+    alias,
+    blank,
+    choice,
+    eof,
+    field,
+    grammar,
+    optional,
+    prec,
+    repeat,
+    repeat1,
+    reserved,
+    RustRegex,
+    seq,
+    sym,
+    token,
+  } = dsl;
   const { left, right, dynamic } = prec;
   const { immediate } = token;
-  return { alias, blank, choice, eof, field, grammar, optional, prec, repeat, repeat1, reserved, RustRegex, seq, sym, token, left, right, dynamic, immediate };
+  return {
+    alias,
+    blank,
+    choice,
+    eof,
+    field,
+    grammar,
+    optional,
+    prec,
+    repeat,
+    repeat1,
+    reserved,
+    RustRegex,
+    seq,
+    sym,
+    token,
+    left,
+    right,
+    dynamic,
+    immediate,
+  };
 }
 
 export function checkInvalidRule(dsl: DSL): void {

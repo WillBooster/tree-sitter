@@ -2,11 +2,12 @@
   "name": "@willbooster/web-tree-sitter",
   "version": "0.27.0",
   "description": "Tree-sitter bindings for the web",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/WillBooster/tree-sitter.git",
-    "directory": "lib/binding_web"
-  },
+  "keywords": [
+    "incremental",
+    "parsing",
+    "tree-sitter",
+    "wasm"
+  ],
   "license": "MIT",
   "author": "WillBooster Inc.",
   "contributors": [
@@ -19,7 +20,49 @@
       "email": "amaanq12@gmail.com"
     }
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WillBooster/tree-sitter.git",
+    "directory": "lib/binding_web"
+  },
+  "files": [
+    "web-tree-sitter.cjs",
+    "web-tree-sitter.cjs.map",
+    "web-tree-sitter.js",
+    "web-tree-sitter.js.map",
+    "web-tree-sitter.web.js",
+    "web-tree-sitter.web.js.map",
+    "web-tree-sitter.wasm",
+    "web-tree-sitter.wasm.map",
+    "debug/web-tree-sitter.cjs",
+    "debug/web-tree-sitter.cjs.map",
+    "debug/web-tree-sitter.js",
+    "debug/web-tree-sitter.js.map",
+    "debug/web-tree-sitter.wasm",
+    "debug/web-tree-sitter.wasm.map",
+    "web-tree-sitter.d.ts",
+    "web-tree-sitter.d.ts.map",
+    "web-tree-sitter.d.cts",
+    "web-tree-sitter.d.cts.map",
+    "dsl.d.ts"
+  ],
   "type": "module",
+  "browser": {
+    "fs": false,
+    "fs/promises": false,
+    "module": false
+  },
+  "types": "web-tree-sitter.d.ts",
+  "typesVersions": {
+    "*": {
+      "debug": [
+        "web-tree-sitter.d.ts"
+      ],
+      "dsl": [
+        "dsl.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "workerd": {
@@ -55,49 +98,26 @@
       "types": "./dsl.d.ts"
     }
   },
-  "browser": {
-    "fs": false,
-    "fs/promises": false,
-    "module": false
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
-  "types": "web-tree-sitter.d.ts",
-  "typesVersions": {
-    "*": {
-      "debug": [
-        "web-tree-sitter.d.ts"
-      ],
-      "dsl": [
-        "dsl.d.ts"
-      ]
-    }
+  "scripts": {
+    "build:ts": "tsc -b . && tsc -p test/browser && node script/build.js",
+    "build:wasm": "cd ../../ && cargo xtask build-wasm",
+    "build:wasm:debug": "cd ../../ && cargo xtask build-wasm --debug",
+    "build": "npm run build:wasm && npm run build:ts",
+    "build:debug": "npm run build:wasm:debug && npm run build:ts -- --debug",
+    "build:dts": "node script/generate-dts.js",
+    "lint": "eslint src/*.ts script/*.ts \"test/**/*.ts\"",
+    "lint:fix": "eslint src/*.ts script/*.ts \"test/**/*.ts\" --fix",
+    "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:watch": "vitest",
+    "prepack": "cp ../../LICENSE .",
+    "postpack": "rm LICENSE",
+    "prepublishOnly": "node script/checkDslTypes.js && tsx script/check-artifacts-fresh.ts"
   },
-  "keywords": [
-    "incremental",
-    "parsing",
-    "tree-sitter",
-    "wasm"
-  ],
-  "files": [
-    "web-tree-sitter.cjs",
-    "web-tree-sitter.cjs.map",
-    "web-tree-sitter.js",
-    "web-tree-sitter.js.map",
-    "web-tree-sitter.web.js",
-    "web-tree-sitter.web.js.map",
-    "web-tree-sitter.wasm",
-    "web-tree-sitter.wasm.map",
-    "debug/web-tree-sitter.cjs",
-    "debug/web-tree-sitter.cjs.map",
-    "debug/web-tree-sitter.js",
-    "debug/web-tree-sitter.js.map",
-    "debug/web-tree-sitter.wasm",
-    "debug/web-tree-sitter.wasm.map",
-    "web-tree-sitter.d.ts",
-    "web-tree-sitter.d.ts.map",
-    "web-tree-sitter.d.cts",
-    "web-tree-sitter.d.cts.map",
-    "dsl.d.ts"
-  ],
   "dependencies": {
     "@types/emscripten": "^1.41.5"
   },
@@ -116,25 +136,5 @@
     "typescript-eslint": "8.71.1",
     "vitest": "5.0.5",
     "wrangler": "4.149.0"
-  },
-  "scripts": {
-    "build:ts": "tsc -b . && tsc -p test/browser && node script/build.js",
-    "build:wasm": "cd ../../ && cargo xtask build-wasm",
-    "build:wasm:debug": "cd ../../ && cargo xtask build-wasm --debug",
-    "build": "npm run build:wasm && npm run build:ts",
-    "build:debug": "npm run build:wasm:debug && npm run build:ts -- --debug",
-    "build:dts": "node script/generate-dts.js",
-    "lint": "eslint src/*.ts script/*.ts \"test/**/*.ts\"",
-    "lint:fix": "eslint src/*.ts script/*.ts \"test/**/*.ts\" --fix",
-    "test": "vitest run",
-    "test:browser": "vitest run --config vitest.browser.config.ts",
-    "test:watch": "vitest",
-    "prepack": "cp ../../LICENSE .",
-    "postpack": "rm LICENSE",
-    "prepublishOnly": "node script/checkDslTypes.js && tsx script/check-artifacts-fresh.ts"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
   }
 }

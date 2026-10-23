@@ -3,7 +3,7 @@ import { Parser as DebugParser } from '@willbooster/web-tree-sitter/debug';
 import type { DSL, GrammarSchema } from '@willbooster/web-tree-sitter/dsl';
 
 // Values cross between the CommonJS and the ES module declarations of the same types.
-import { LanguageClass, createParser, defineGrammar } from './cjs.cjs';
+import { createParser, defineGrammar, LanguageClass } from './cjs.cjs';
 
 export function defineEsmGrammar(dsl: DSL): GrammarSchema<'source_file' | 'word'> {
   return defineGrammar(dsl);

@@ -1,6 +1,6 @@
-import { C, Internal, assertInternal } from './constants';
-import { Language } from './language';
+import { assertInternal, C, Internal } from './constants';
 import { newFinalizer } from './finalization_registry';
+import { Language } from './language';
 
 const finalizer = newFinalizer((address: number) => {
   C._ts_lookahead_iterator_delete(address);
@@ -34,8 +34,7 @@ export class LookaheadIterator implements Iterable<string> {
    * - After a {@link reset} or {@link resetState} call
    */
   get currentTypeId(): number | null {
-    return this.positioned ?
-      C._ts_lookahead_iterator_current_symbol(this[0]) : null;
+    return this.positioned ? C._ts_lookahead_iterator_current_symbol(this[0]) : null;
   }
 
   /**
@@ -48,8 +47,7 @@ export class LookaheadIterator implements Iterable<string> {
     if (id === null) return null;
     // `Language.types` only holds regular and anonymous symbols, so auxiliary
     // ones (i.e. `end`) fall back to the language's own name table.
-    return this.language.types[id] ??
-      C.UTF8ToString(C._ts_language_symbol_name(this.language[0], id));
+    return this.language.types[id] ?? C.UTF8ToString(C._ts_language_symbol_name(this.language[0], id));
   }
 
   /** Delete the lookahead iterator, freeing its resources. */
@@ -58,7 +56,6 @@ export class LookaheadIterator implements Iterable<string> {
     C._ts_lookahead_iterator_delete(this[0]);
     this[0] = 0;
   }
-
 
   /**
    * Reset the lookahead iterator.
@@ -98,10 +95,8 @@ export class LookaheadIterator implements Iterable<string> {
       next: (): IteratorResult<string> => {
         this.positioned = Boolean(C._ts_lookahead_iterator_next(this[0]));
         const value = this.currentType;
-        return value === null
-          ? { done: true, value: '' }
-          : { done: false, value };
-      }
+        return value === null ? { done: true, value: '' } : { done: false, value };
+      },
     };
   }
 }

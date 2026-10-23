@@ -8,10 +8,10 @@
 // @ts-check
 
 export default grammar({
-  name: "LOWER_PARSER_NAME",
+  name: 'LOWER_PARSER_NAME',
 
   rules: {
     // TODO: add the actual grammar rules
-    source_file: $ => "hello"
-  }
+    source_file: ($) => 'hello',
+  },
 });

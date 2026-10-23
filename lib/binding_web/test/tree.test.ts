@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import type { Point, Language, Tree, TreeCursor } from '../src';
-import { Parser, Edit } from '../src';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+
+import type { Language, Point, Tree, TreeCursor } from '../src';
+import { Edit, Parser } from '../src';
 import helper from './helper';
 
 let JavaScript: Language;
@@ -121,14 +122,16 @@ describe('Tree', () => {
       );
 
       sourceCode = 'abc + defg + hij';
-      tree.edit(new Edit({
-        startIndex: 2,
-        oldEndIndex: 2,
-        newEndIndex: 5,
-        startPosition: { row: 0, column: 2 },
-        oldEndPosition: { row: 0, column: 2 },
-        newEndPosition: { row: 0, column: 5 },
-      }));
+      tree.edit(
+        new Edit({
+          startIndex: 2,
+          oldEndIndex: 2,
+          newEndIndex: 5,
+          startPosition: { row: 0, column: 2 },
+          oldEndPosition: { row: 0, column: 2 },
+          newEndPosition: { row: 0, column: 5 },
+        })
+      );
 
       const tree2 = parser.parse(sourceCode, tree)!;
       expect(tree2.rootNode.toString()).toBe(

@@ -1,9 +1,16 @@
-import { INTERNAL, Internal, assertInternal, Point, SIZE_OF_NODE, SIZE_OF_CURSOR, C } from './constants';
-import { marshalNode, marshalPoint, marshalTreeCursor, unmarshalNode, unmarshalPoint, unmarshalTreeCursor } from './marshal';
+import { assertInternal, C, INTERNAL, Internal, Point, SIZE_OF_CURSOR, SIZE_OF_NODE } from './constants';
+import { newFinalizer } from './finalization_registry';
+import {
+  marshalNode,
+  marshalPoint,
+  marshalTreeCursor,
+  unmarshalNode,
+  unmarshalPoint,
+  unmarshalTreeCursor,
+} from './marshal';
 import { Node } from './node';
 import { TRANSFER_BUFFER } from './parser';
 import { getText, Tree } from './tree';
-import { newFinalizer } from './finalization_registry';
 
 const finalizer = newFinalizer((handles: number[]) => {
   marshalTreeCursor({ handles });

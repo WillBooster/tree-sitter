@@ -1,11 +1,22 @@
-import { INTERNAL, Internal, assertInternal, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT, ZERO_POINT, isPoint, C, Point } from './constants';
-import { getText, Tree } from './tree';
-import { TreeCursor } from './tree_cursor';
+import {
+  assertInternal,
+  C,
+  INTERNAL,
+  Internal,
+  isPoint,
+  Point,
+  SIZE_OF_INT,
+  SIZE_OF_NODE,
+  SIZE_OF_POINT,
+  ZERO_POINT,
+} from './constants';
+import { Edit } from './edit';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Language } from './language';
 import { marshalNode, marshalPoint, unmarshalNode, unmarshalPoint } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
-import { Edit } from './edit';
+import { getText, Tree } from './tree';
+import { TreeCursor } from './tree_cursor';
 
 /** A single node within a syntax {@link Tree}. */
 export class Node {
@@ -267,10 +278,10 @@ export class Node {
   }
 
   /**
-    * Get an array of this node's children with a given field id.
-    *
-    * See also {@link Node#childrenForFieldName}.
-    */
+   * Get an array of this node's children with a given field id.
+   *
+   * See also {@link Node#childrenForFieldName}.
+   */
   childrenForFieldId(fieldId: number): Node[] {
     marshalNode(this);
     C._ts_node_children_by_field_id_wasm(this.tree[0], fieldId);
@@ -312,7 +323,6 @@ export class Node {
     marshalNode(this);
     return C._ts_node_child_count_wasm(this.tree[0]);
   }
-
 
   /**
    * Get this node's number of *named* children.

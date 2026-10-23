@@ -18,7 +18,9 @@ if (sectionStart < 0 || !/\nversion = "[^"]*"/.test(section)) {
   throw new Error('Cargo.toml has no [workspace.package] version');
 }
 const updated = (
-  manifest.slice(0, sectionStart) + section.replace(/\nversion = "[^"]*"/, `\nversion = "${version}"`) + manifest.slice(sectionEnd)
+  manifest.slice(0, sectionStart) +
+  section.replace(/\nversion = "[^"]*"/, `\nversion = "${version}"`) +
+  manifest.slice(sectionEnd)
 )
   // Path dependencies on workspace crates carry the version they are published against.
   .replace(/^(tree-sitter[\w-]* = \{[^}\n]*path = "[^"]+", version = )"[^"]*"/gm, `$1"${version}"`);

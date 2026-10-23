@@ -1,4 +1,4 @@
-import { configDefaults, defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
@@ -7,15 +7,8 @@ export default defineConfig({
     environment: 'node',
     exclude: [...configDefaults.exclude, 'dist/**', 'test/browser/**'],
     coverage: {
-      include: [
-        'web-tree-sitter.js',
-      ],
-      exclude: [
-        'test/**',
-        'dist/**',
-        'lib/**',
-        'wasm/**'
-      ],
+      include: ['web-tree-sitter.js'],
+      exclude: ['test/**', 'dist/**', 'lib/**', 'wasm/**'],
     },
-  }
-})
+  },
+});

@@ -78,4 +78,4 @@ jobs:
       - c-library
     runs-on: ubuntu-latest
     steps:
-      - run: '! ${{ contains(needs.*.result, ''failure'') || contains(needs.*.result, ''cancelled'') }}'
+      - run: "! ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}"

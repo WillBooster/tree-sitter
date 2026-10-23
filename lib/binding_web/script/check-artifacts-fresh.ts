@@ -1,6 +1,6 @@
 import fs from 'fs';
-import path from 'path';
 import { fileURLToPath } from 'node:url';
+import path from 'path';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,8 +43,8 @@ for (const inputFile of inputFiles) {
 function listFiles(dir: string): string[] {
   return fs
     .readdirSync(path.resolve(scriptDir, dir))
-    .filter(p => !p.startsWith('.'))
-    .map(p => path.join(dir, p));
+    .filter((p) => !p.startsWith('.'))
+    .map((p) => path.join(dir, p));
 }
 
 function getMtime(p: string): number {

@@ -1,4 +1,4 @@
-import { Point, Range } from "./constants";
+import { Point, Range } from './constants';
 
 export class Edit {
   /** The start position of the change. */
@@ -57,9 +57,10 @@ export class Edit {
       newIndex = this.newEndIndex + (index - this.oldEndIndex);
       const originalRow = point.row;
       newPoint.row = this.newEndPosition.row + (point.row - this.oldEndPosition.row);
-      newPoint.column = originalRow === this.oldEndPosition.row
-        ? this.newEndPosition.column + (point.column - this.oldEndPosition.column)
-        : point.column;
+      newPoint.column =
+        originalRow === this.oldEndPosition.row
+          ? this.newEndPosition.column + (point.column - this.oldEndPosition.column)
+          : point.column;
     } else if (index > this.startIndex) {
       newIndex = this.newEndIndex;
       newPoint.row = this.newEndPosition.row;
@@ -81,7 +82,7 @@ export class Edit {
       startIndex: range.startIndex,
       startPosition: { ...range.startPosition },
       endIndex: range.endIndex,
-      endPosition: { ...range.endPosition }
+      endPosition: { ...range.endPosition },
     };
 
     if (range.endIndex >= this.oldEndIndex) {
@@ -89,9 +90,10 @@ export class Edit {
         newRange.endIndex = this.newEndIndex + (range.endIndex - this.oldEndIndex);
         newRange.endPosition = {
           row: this.newEndPosition.row + (range.endPosition.row - this.oldEndPosition.row),
-          column: range.endPosition.row === this.oldEndPosition.row
-            ? this.newEndPosition.column + (range.endPosition.column - this.oldEndPosition.column)
-            : range.endPosition.column,
+          column:
+            range.endPosition.row === this.oldEndPosition.row
+              ? this.newEndPosition.column + (range.endPosition.column - this.oldEndPosition.column)
+              : range.endPosition.column,
         };
         if (newRange.endIndex < this.newEndIndex) {
           newRange.endIndex = Number.MAX_SAFE_INTEGER;
@@ -107,9 +109,10 @@ export class Edit {
       newRange.startIndex = this.newEndIndex + (range.startIndex - this.oldEndIndex);
       newRange.startPosition = {
         row: this.newEndPosition.row + (range.startPosition.row - this.oldEndPosition.row),
-        column: range.startPosition.row === this.oldEndPosition.row
-          ? this.newEndPosition.column + (range.startPosition.column - this.oldEndPosition.column)
-          : range.startPosition.column,
+        column:
+          range.startPosition.row === this.oldEndPosition.row
+            ? this.newEndPosition.column + (range.startPosition.column - this.oldEndPosition.column)
+            : range.startPosition.column,
       };
       if (newRange.startIndex < this.newEndIndex) {
         newRange.startIndex = Number.MAX_SAFE_INTEGER;

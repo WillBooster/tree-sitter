@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language, Query, Edit } from '../src';
-import { Parser, LANGUAGE_VERSION } from '../src';
-import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
 import { pathToFileURL } from 'url';
+
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { Edit, Language, LANGUAGE_VERSION, LookaheadIterator, Parser, Query } from '../src';
+import { C } from '../src/constants';
+import helper, { type LanguageName } from './helper';
 
 let JavaScript: Language;
 let Rust: Language;
@@ -42,7 +43,7 @@ describe('Language', () => {
 
       try {
         expect(() => Language.loadSync({})).toThrow(
-          'Language.loadSync failed: no language function found in Wasm file',
+          'Language.loadSync failed: no language function found in Wasm file'
         );
         expect(log).toHaveBeenCalledWith(expect.stringContaining('not_a_language'));
       } finally {
@@ -62,16 +63,18 @@ describe('Language', () => {
       const query = new Query(lang, '(pair key: (property_identifier) @key)');
       try {
         expect(tree.rootNode.hasError).toBe(false);
-        expect(query.captures(tree.rootNode).map(capture => capture.node.text)).toEqual(['field']);
+        expect(query.captures(tree.rootNode).map((capture) => capture.node.text)).toEqual(['field']);
         const position = input.indexOf('1');
-        tree.edit(new Edit({
-          startIndex: position,
-          oldEndIndex: position + 1,
-          newEndIndex: position + 1,
-          startPosition: { row: 0, column: position },
-          oldEndPosition: { row: 0, column: position + 1 },
-          newEndPosition: { row: 0, column: position + 1 },
-        }));
+        tree.edit(
+          new Edit({
+            startIndex: position,
+            oldEndIndex: position + 1,
+            newEndIndex: position + 1,
+            startPosition: { row: 0, column: position },
+            oldEndPosition: { row: 0, column: position + 1 },
+            newEndPosition: { row: 0, column: position + 1 },
+          })
+        );
         const edited = input.replace('1', '2');
         const incremental = parser.parse(edited, tree)!;
         const fresh = parser.parse(edited)!;
@@ -102,29 +105,31 @@ describe('Language', () => {
           const identifier = `if${'x'.repeat(length - 2)}`;
           const input = `int ${identifier} = 1; const char *s = "λ😀";`;
           const messages: string[] = [];
-          parser.setLogger(message => messages.push(message));
+          parser.setLogger((message) => messages.push(message));
           const reference = parser.parse(input)!;
           parser.setLogger(null);
           try {
             expect(reference.rootNode.hasError).toBe(false);
-            expect(reference.rootNode.descendantsOfType('identifier').map(node => node.text)).toContain(identifier);
+            expect(reference.rootNode.descendantsOfType('identifier').map((node) => node.text)).toContain(identifier);
             expect(messages.length).toBeGreaterThan(0);
             for (const chunk of [1, 2, 3, 7, 128, 4096]) {
-              const tree = parser.parse(index => input.slice(index, index + chunk))!;
+              const tree = parser.parse((index) => input.slice(index, index + chunk))!;
               try {
                 expect(tree.rootNode.toString()).toBe(reference.rootNode.toString());
                 expect(tree.rootNode.text).toBe(input);
                 const position = input.indexOf('1');
-                tree.edit(new Edit({
-                  startIndex: position,
-                  oldEndIndex: position + 1,
-                  newEndIndex: position + 1,
-                  startPosition: { row: 0, column: position },
-                  oldEndPosition: { row: 0, column: position + 1 },
-                  newEndPosition: { row: 0, column: position + 1 },
-                }));
+                tree.edit(
+                  new Edit({
+                    startIndex: position,
+                    oldEndIndex: position + 1,
+                    newEndIndex: position + 1,
+                    startPosition: { row: 0, column: position },
+                    oldEndPosition: { row: 0, column: position + 1 },
+                    newEndPosition: { row: 0, column: position + 1 },
+                  })
+                );
                 const edited = input.replace('1', '2');
-                const incremental = parser.parse(index => edited.slice(index, index + chunk), tree)!;
+                const incremental = parser.parse((index) => edited.slice(index, index + chunk), tree)!;
                 const fresh = parser.parse(edited)!;
                 try {
                   expect(incremental.rootNode.toString()).toBe(fresh.rootNode.toString());
@@ -155,8 +160,18 @@ describe('Language', () => {
       const start = input.indexOf('@@@@');
       const options = {
         includedRanges: [
-          { startIndex: 0, endIndex: start, startPosition: { row: 0, column: 0 }, endPosition: { row: 0, column: start } },
-          { startIndex: start + 4, endIndex: input.length, startPosition: { row: 0, column: start + 4 }, endPosition: { row: 0, column: input.length } },
+          {
+            startIndex: 0,
+            endIndex: start,
+            startPosition: { row: 0, column: 0 },
+            endPosition: { row: 0, column: start },
+          },
+          {
+            startIndex: start + 4,
+            endIndex: input.length,
+            startPosition: { row: 0, column: start + 4 },
+            endPosition: { row: 0, column: input.length },
+          },
         ],
       };
       try {
@@ -196,13 +211,14 @@ describe('Language', () => {
     it('reports when an async-loaded module has no language function', async () => {
       const loadWebAssemblyModule = C.loadWebAssemblyModule;
       const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-      C.loadWebAssemblyModule = (() => Promise.resolve({
-        not_a_language: () => 0,
-      })) as unknown as typeof C.loadWebAssemblyModule;
+      C.loadWebAssemblyModule = (() =>
+        Promise.resolve({
+          not_a_language: () => 0,
+        })) as unknown as typeof C.loadWebAssemblyModule;
 
       try {
         await expect(Language.load(new Uint8Array([0, 0, 0, 0]))).rejects.toThrow(
-          'Language.load failed: no language function found in Wasm file',
+          'Language.load failed: no language function found in Wasm file'
         );
         expect(log).toHaveBeenCalledWith(expect.stringContaining('not_a_language'));
       } finally {
@@ -277,13 +293,7 @@ describe('Language', () => {
     it('gets the supertypes and subtypes of a parser', () => {
       const supertypes = Rust.supertypes;
       const names = supertypes.map((id) => Rust.nodeTypeForId(id));
-      expect(names).toEqual([
-        '_expression',
-        '_literal',
-        '_literal_pattern',
-        '_pattern',
-        '_type'
-      ]);
+      expect(names).toEqual(['_expression', '_literal', '_literal_pattern', '_pattern', '_type']);
 
       for (const id of supertypes) {
         const name = Rust.nodeTypeForId(id);
@@ -369,7 +379,9 @@ describe('Lookahead iterator', () => {
     expect(lookahead).toBeDefined();
   });
 
-  afterAll(() => { lookahead.delete() });
+  afterAll(() => {
+    lookahead.delete();
+  });
 
   const expected = ['(', 'identifier', '*', 'formal_parameters', 'html_comment', 'comment'];
 

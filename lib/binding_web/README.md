@@ -33,6 +33,7 @@ them to `Parser.init` and `Language.load`:
 ```js
 import { Language, Parser } from '@willbooster/web-tree-sitter';
 import runtime from '@willbooster/web-tree-sitter/web-tree-sitter.wasm';
+
 import javascript from './tree-sitter-javascript.wasm';
 
 await Parser.init({ wasmModule: runtime });

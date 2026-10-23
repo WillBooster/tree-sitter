@@ -21,19 +21,19 @@ The `wasm` feature, which `tree-sitter test --wasm` and `tree-sitter parse --was
 
 The `tree-sitter` binary itself has no dependencies, but specific commands have dependencies that must be present at runtime:
 
-* To generate a parser from a grammar, you must have [`node`](https://nodejs.org) on your PATH, or pass
+- To generate a parser from a grammar, you must have [`node`](https://nodejs.org) on your PATH, or pass
   `--js-runtime native` to use the bundled `QuickJS` runtime.
-* To run and test parsers, you must have a C and C++ compiler on your system.
+- To run and test parsers, you must have a C and C++ compiler on your system.
 
 ### Commands
 
-* `generate` - The `tree-sitter generate` command will generate a Tree-sitter parser based on the grammar in the current
+- `generate` - The `tree-sitter generate` command will generate a Tree-sitter parser based on the grammar in the current
   working directory. See [the documentation] for more information.
 
-* `test` - The `tree-sitter test` command will run the unit tests for the Tree-sitter parser in the current working directory.
+- `test` - The `tree-sitter test` command will run the unit tests for the Tree-sitter parser in the current working directory.
   See [the documentation] for more information.
 
-* `parse` - The `tree-sitter parse` command will parse a file (or list of files) using Tree-sitter parsers.
+- `parse` - The `tree-sitter parse` command will parse a file (or list of files) using Tree-sitter parsers.
 
 [the documentation]: https://tree-sitter.github.io/tree-sitter/creating-parsers
 [the releases page]: https://github.com/WillBooster/tree-sitter/releases

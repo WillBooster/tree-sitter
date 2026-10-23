@@ -21,7 +21,7 @@ export interface ParserInitOptions extends Partial<EmscriptenModule> {
 export async function initializeBinding(options?: ParserInitOptions): Promise<MainModule> {
   if (Module) return Module;
   const { wasmModule, ...moduleOptions } = options ?? {};
-  if (!wasmModule) return Module ??= await createModule(moduleOptions);
+  if (!wasmModule) return (Module ??= await createModule(moduleOptions));
 
   // Emscripten gives `instantiateWasm` no way to report a failure, so its initialization would never settle;
   // the failure is raced against it instead.
@@ -30,13 +30,16 @@ export async function initializeBinding(options?: ParserInitOptions): Promise<Ma
       WebAssembly.instantiate(wasmModule, imports)
         .then((instance) => {
           // Emscripten reads the dynamic-linking metadata from the module passed with the instance, so both are passed.
-          (receiveInstance as (instance: WebAssembly.Instance, module: WebAssembly.Module) => void)(instance, wasmModule);
+          (receiveInstance as (instance: WebAssembly.Instance, module: WebAssembly.Module) => void)(
+            instance,
+            wasmModule
+          );
         })
         .catch(reject);
       return {};
     };
   });
-  return Module ??= await Promise.race([createModule(moduleOptions), instantiationFailure]);
+  return (Module ??= await Promise.race([createModule(moduleOptions), instantiationFailure]));
 }
 
 /**
