@@ -13,6 +13,7 @@ extern "C" {
 typedef struct {
   uint32_t value;
   bool valid;
+  bool valid_for_replay;
 } ColumnData;
 
 typedef struct {
@@ -46,6 +47,8 @@ typedef struct {
   uint32_t display_tab_width;
   ColumnCheckpoint start_column_checkpoint;
   ColumnCheckpoint end_column_checkpoint;
+  ColumnCheckpoint query_column_checkpoint;
+  ColumnCheckpoint query_display_column_checkpoint;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;

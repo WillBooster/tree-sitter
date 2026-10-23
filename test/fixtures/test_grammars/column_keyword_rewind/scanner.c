@@ -17,7 +17,9 @@ bool tree_sitter_column_keyword_rewind_external_scanner_scan(void *payload, TSLe
   if (!valid[1]) return false;
   lexer->advance(lexer, true);
   lexer->mark_end(lexer);
+  if (lexer->lookahead == 'd') lexer->get_display_column(lexer, 4);
   lexer->get_column(lexer);
+  if (lexer->lookahead == 's') lexer->get_display_column(lexer, 4);
   lexer->result_symbol = 1;
   return true;
 }
