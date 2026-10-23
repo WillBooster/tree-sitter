@@ -130,12 +130,12 @@ pub fn expand_tokens(
     builder
         .expand_rule(pool, separator_root, eof_state)
         .map_err(ExpandTokensError::ExpandRule)?;
-    let eof_start_state = Some(builder.nfa.last_state_id());
+    let eof_states = eof_state..builder.nfa.states.len() as u32;
 
     Ok(LexicalGrammar {
         nfa: builder.nfa,
         variables,
-        eof_start_state,
+        eof_states,
     })
 }
 

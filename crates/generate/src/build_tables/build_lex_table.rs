@@ -558,6 +558,10 @@ impl<'a> LexTableBuilder<'a> {
                     .push((guard_keywords.clone(), preserve_fallback, accepts_word));
                 self.word_guards.len() - 1
             });
+        let accepts_separators = tokens.iter().any(|token| {
+            token.is_terminal()
+                && !self.lexical_grammar.variables[token.index as usize].is_immediate
+        });
         let mut prefer_eof_to_nul = false;
         let mut nfa_states: Vec<u32> = tokens
             .iter()
@@ -566,7 +570,11 @@ impl<'a> LexTableBuilder<'a> {
                     Some(self.lexical_grammar.variables[token.index as usize].start_state)
                 } else {
                     prefer_eof_to_nul = true;
-                    self.lexical_grammar.eof_start_state
+                    if accepts_separators {
+                        self.lexical_grammar.eof_states.clone().last()
+                    } else {
+                        self.lexical_grammar.eof_states.clone().next()
+                    }
                 }
             })
             .collect();
@@ -683,11 +691,7 @@ impl<'a> LexTableBuilder<'a> {
                         && !self.word_guards[guard_id].2))
                     && !self.word_guards[guard_id].0.contains(token)
             });
-        let token_state_limit = self
-            .lexical_grammar
-            .variables
-            .last()
-            .map_or(0, |variable| variable.start_state + 1);
+        let token_state_limit = self.lexical_grammar.eof_states.start;
         let (transitions, has_sep) = self
             .cursor
             .partitioned_transitions_and_any_sep(token_state_limit);

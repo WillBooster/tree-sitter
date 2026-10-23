@@ -69,7 +69,7 @@ pub struct LexicalVariable {
 pub struct LexicalGrammar {
     pub nfa: Nfa,
     pub variables: Vec<LexicalVariable>,
-    pub eof_start_state: Option<u32>,
+    pub eof_states: std::ops::Range<u32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]

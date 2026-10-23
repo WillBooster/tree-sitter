@@ -2769,18 +2769,21 @@ fn test_immediate_token_with_overlapping_external_extra_pattern() {
         }
     });
     let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-    let language = get_test_language_with_declining_scanner(&name, &parser_code);
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    for source in ["", "ab", "abab", "aab", "a"] {
-        let tree = parser.parse(source, None).unwrap();
-        let root = tree.root_node();
-        assert_eq!(
-            root.has_error(),
-            matches!(source, "aab" | "a"),
-            "{source:?}"
-        );
-        assert_eq!(root.end_byte(), source.len(), "{source:?}");
+    for mut parser in parsers_for_languages([
+        get_test_language_with_declining_scanner(&name, &parser_code),
+        #[cfg(feature = "wasm")]
+        get_test_language_wasm_with_declining_scanner(&name, &parser_code),
+    ]) {
+        for source in ["", "ab", "abab", "aab", "a"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert_eq!(
+                root.has_error(),
+                matches!(source, "aab" | "a"),
+                "{source:?}"
+            );
+            assert_eq!(root.end_byte(), source.len(), "{source:?}");
+        }
     }
 }
 
@@ -2821,21 +2824,37 @@ fn test_immediate_token_with_reused_anonymous_extra_pattern() {
     }
 }
 
-fn get_test_language_with_declining_scanner(
-    name: &str,
-    parser_code: &str,
-) -> tree_sitter::Language {
-    get_test_language_with_scanner(
-        name,
-        parser_code,
-        r#"
+const DECLINING_SCANNER: &str = r#"
 #include "tree_sitter/parser.h"
 void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
 void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
 unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
 void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
 bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) { return false; }
-"#,
+"#;
+
+fn get_test_language_with_declining_scanner(
+    name: &str,
+    parser_code: &str,
+) -> tree_sitter::Language {
+    get_test_language_with_scanner(name, parser_code, DECLINING_SCANNER)
+}
+
+#[cfg(feature = "wasm")]
+fn get_test_language_wasm_with_declining_scanner(
+    name: &str,
+    parser_code: &str,
+) -> tree_sitter::Language {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        DECLINING_SCANNER.replace("GRAMMAR", name),
+    )
+    .unwrap();
+    super::helpers::fixtures::get_test_language_wasm_with_scanner(
+        name,
+        parser_code,
+        Some(fixture.path()),
     )
 }
 
