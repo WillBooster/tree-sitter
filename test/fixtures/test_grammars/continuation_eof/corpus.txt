@@ -1,0 +1,8 @@
+==================
+Trailing complete continuation
+==================
+int value;\
+
+---
+
+(source_file (identifier))
