@@ -13,7 +13,15 @@ extern "C" {
 typedef struct {
   uint32_t value;
   bool valid;
+  bool valid_for_replay;
 } ColumnData;
+
+typedef struct {
+  Length position;
+  ColumnData column;
+  ColumnData display_column;
+  uint32_t tab_width;
+} ColumnCheckpoint;
 
 typedef struct {
   TSLexer data;
@@ -34,9 +42,14 @@ typedef struct {
   uint32_t lookahead_size;
   char lookahead_buffer[4];
   bool did_get_column;
+  bool did_get_position;
   ColumnData column_data;
   ColumnData display_column_data;
   uint32_t display_tab_width;
+  ColumnCheckpoint start_column_checkpoint;
+  ColumnCheckpoint end_column_checkpoint;
+  ColumnCheckpoint query_column_checkpoint;
+  ColumnCheckpoint query_display_column_checkpoint;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;

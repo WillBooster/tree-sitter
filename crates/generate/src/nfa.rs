@@ -15,6 +15,7 @@ pub struct CharacterSet {
 /// A state in an NFA representing a regular grammar.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NfaState {
+    AcceptEof,
     Advance {
         chars: CharacterSet,
         state_id: u32,
@@ -500,7 +501,7 @@ impl Nfa {
         let mut visited = FxHashSet::default();
         while let Some(state_id) = pending.pop() {
             match self.states[state_id as usize] {
-                NfaState::Accept { .. } => return true,
+                NfaState::Accept { .. } | NfaState::AcceptEof => return true,
                 NfaState::Split(left, right) => {
                     if visited.insert(state_id) {
                         pending.extend([left, right]);
@@ -584,12 +585,21 @@ impl<'a> NfaCursor<'a> {
     }
 
     #[must_use]
-    pub fn partitioned_transitions_and_any_sep(&self) -> (Vec<NfaTransition>, bool) {
+    pub fn partitioned_transitions_and_any_sep(
+        &self,
+        token_state_limit: u32,
+    ) -> (Vec<NfaTransition>, bool) {
         let mut any_sep = false;
         let result = Self::partition_transitions(self.raw_transitions().map(
             |(chars, is_sep, prec, state)| {
-                any_sep |= is_sep;
-                (chars, is_sep, prec, state)
+                let belongs_to_token = state < token_state_limit;
+                any_sep |= is_sep && belongs_to_token;
+                (
+                    chars,
+                    is_sep,
+                    if belongs_to_token { prec } else { i32::MIN },
+                    state,
+                )
             },
         ));
         (result, any_sep)

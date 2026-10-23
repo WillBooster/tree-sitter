@@ -29,6 +29,10 @@ const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 /// The largest count that fits in the 7 bits of a packed action list header.
 const MAX_ACTION_LIST_LENGTH: usize = 127;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
+/// Marks a goto map entry that refers to a descriptor of two 32-bit words: the offset of the state's set of
+/// nonterminals with gotos, and the map entry (offset and encoding flags) of the row of its gotos that differ
+/// from their nonterminal's default.
+const SMALL_STATE_DEFAULTS_FLAG: usize = 0x2000_0000;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const SMALL_STATE_SET_FLAG: usize = SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG;
@@ -139,6 +143,8 @@ struct Generator {
     large_character_set_info: Vec<LargeCharacterSetInfo>,
     large_state_count: usize,
     token_count: usize,
+    /// The most common goto value of each nonterminal, by its position after the tokens.
+    goto_defaults: Vec<u32>,
     alias_sequence_count: usize,
     lex_mode_count: usize,
     uses_reserved_word_slices: bool,
@@ -670,7 +676,20 @@ impl Generator {
 
         self.supertype_symbol_map.clear();
 
+        self.symbol_order.insert(Symbol::end(), 0);
+        self.symbol_order
+            .insert(Symbol::end_of_nonterminal_extra(), 0);
+        for (i, symbol) in self
+            .parse_table
+            .symbols
+            .iter()
+            .filter(|symbol| **symbol != Symbol::end())
+            .enumerate()
+        {
+            self.symbol_order.insert(*symbol, i + 1);
+        }
         self.token_count = self.count_tokens();
+        self.goto_defaults = self.compute_goto_defaults();
         self.large_state_count = self.count_large_states();
     }
 
@@ -741,6 +760,34 @@ impl Generator {
         }
     }
 
+    fn compute_goto_defaults(&self) -> Vec<u32> {
+        let mut counts = vec![
+            FxHashMap::<u32, usize>::default();
+            self.parse_table.symbols.len() - self.token_count
+        ];
+        for (state_id, state) in self.parse_table.states.iter().enumerate() {
+            for (symbol, &action) in state.nonterminal_entries.iter() {
+                let column = self.symbol_order[symbol] - self.token_count;
+                *counts[column]
+                    .entry(self.small_goto_value(action, state_id))
+                    .or_default() += 1;
+            }
+        }
+        counts
+            .into_iter()
+            .map(|column| {
+                column
+                    .into_iter()
+                    .max_by_key(|&(value, count)| (count, std::cmp::Reverse(value)))
+                    .map_or(0, |(value, _)| value)
+            })
+            .collect()
+    }
+
+    fn is_goto_default(&self, symbol: Symbol, value: u32) -> bool {
+        self.goto_defaults[self.symbol_order[&symbol] - self.token_count] == value
+    }
+
     fn count_large_states(&self) -> usize {
         if let Some(profile) = &self.profile {
             let total = profile
@@ -772,7 +819,8 @@ impl Generator {
             let goto_row = state
                 .nonterminal_entries
                 .iter()
-                .map(|(&symbol, action)| (symbol, self.small_goto_value(*action, i)));
+                .map(|(&symbol, action)| (symbol, self.small_goto_value(*action, i)))
+                .filter(|&(symbol, value)| !self.is_goto_default(symbol, value));
             let state_rows: [(bool, Vec<_>); 2] =
                 [(false, terminal_row.collect()), (true, goto_row.collect())];
             for (is_goto, mut row) in state_rows {
@@ -795,14 +843,16 @@ impl Generator {
                 rows.push(id);
             }
         }
+        // Each small state has two map entries; goto descriptors and sets are not counted.
+        let map_bytes = 2 * size_of::<u32>();
         let mut bytes =
-            minimum * dense_bytes + rows.len() * size_of::<u32>() + row_bytes.iter().sum::<usize>();
+            minimum * dense_bytes + rows.len() / 2 * map_bytes + row_bytes.iter().sum::<usize>();
         let mut best_bytes = bytes;
         let mut count = minimum;
         for (i, ids) in rows.chunks(2).enumerate() {
             bytes += dense_bytes;
+            bytes -= map_bytes;
             for &id in ids {
-                bytes -= size_of::<u32>();
                 row_counts[id] -= 1;
                 if row_counts[id] == 0 {
                     bytes -= row_bytes[id];
@@ -895,13 +945,9 @@ impl Generator {
     fn add_symbol_enum(&mut self) {
         add_line!(self, "enum ts_symbol_identifiers {{");
         indent!(self);
-        self.symbol_order.insert(Symbol::end(), 0);
-        self.symbol_order
-            .insert(Symbol::end_of_nonterminal_extra(), 0);
         let mut i = 1;
         for symbol in &self.parse_table.symbols {
             if *symbol != Symbol::end() {
-                self.symbol_order.insert(*symbol, i);
                 add_line!(self, "{} = {i},", self.symbol_ids[symbol]);
                 i += 1;
             }
@@ -1355,7 +1401,7 @@ impl Generator {
         if has_fallback {
             add_line!(
                 self,
-                "typedef struct {{ bool valid; int32_t precedence; TSSymbol symbol; TSLexerPosition start, end; }} {name}_fallback;"
+                "typedef struct {{ bool valid; int32_t precedence; TSSymbol symbol; TSLexerCheckpoint start, end; }} {name}_fallback;"
             );
         }
         if lex_table.states.len() > MAX_SINGLE_LEXER_STATES {
@@ -1378,7 +1424,7 @@ impl Generator {
         indent!(self);
 
         let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
+        add_line!(self, "UNUSED TSLexerCheckpoint start_tags[{tag_count}];");
         if has_fallback {
             add_line!(
                 self,
@@ -1443,7 +1489,7 @@ impl Generator {
         for chunk in 0..chunk_count {
             add_line!(
                 self,
-                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerPosition *{fallback_parameter});"
+                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerCheckpoint *{fallback_parameter});"
             );
         }
         add_line!(self, "");
@@ -1453,7 +1499,7 @@ impl Generator {
         );
         indent!(self);
         let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "UNUSED TSLexerPosition start_tags[{tag_count}];");
+        add_line!(self, "UNUSED TSLexerCheckpoint start_tags[{tag_count}];");
         if has_fallback {
             add_line!(self, "{name}_fallback fallback = {{0}};");
         }
@@ -1499,7 +1545,7 @@ impl Generator {
         });
         add_line!(
             self,
-            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerPosition *start_tags{fallback_parameter}) {{"
+            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerCheckpoint *start_tags{fallback_parameter}) {{"
         );
         indent!(self);
         add_line!(self, "(void)start_tags;");
@@ -1818,10 +1864,13 @@ impl Generator {
             if let Some(tag) = start_tag {
                 add_line!(self, "fallback->start = start_tags[{tag}];");
             } else {
-                add_line!(self, "lexer->get_position(lexer, &fallback->start);");
+                add_line!(self, "lexer->get_checkpoint(lexer, &fallback->start);");
             }
             add_line!(self, "lexer->mark_end(lexer);");
-            add_line!(self, "lexer->get_mark_end(lexer, &fallback->end);");
+            add_line!(
+                self,
+                "lexer->get_mark_end_checkpoint(lexer, &fallback->end);"
+            );
             dedent!(self);
             add_line!(self, "}}");
         }
@@ -2085,7 +2134,10 @@ impl Generator {
                 if let Some(source) = source {
                     add!(self, "start_tags[{target}] = start_tags[{source}]; ");
                 } else {
-                    add!(self, "lexer->get_position(lexer, &start_tags[{target}]); ");
+                    add!(
+                        self,
+                        "lexer->get_checkpoint(lexer, &start_tags[{target}]); "
+                    );
                 }
             }
         }
@@ -2451,10 +2503,21 @@ impl Generator {
         }
         add_line!(self, "static const uint16_t ts_small_parse_table[] = {{");
         indent!(self);
-        let mut next_index = 0;
+        // The table starts with each nonterminal's default goto, indexed by its position after the tokens.
+        let defaults = SmallParseRow {
+            index: 0,
+            values: self
+                .goto_defaults
+                .iter()
+                .map(|&value| value as u16)
+                .collect(),
+        };
+        self.add_small_parse_row(&defaults);
+        let mut next_index = defaults.values.len();
         let mut indices = Vec::new();
         let mut row_offsets = FxHashMap::default();
         let mut symbol_sets = FxHashMap::default();
+        let mut goto_descriptors = FxHashMap::default();
         let has_samples = self
             .profile
             .as_ref()
@@ -2470,9 +2533,24 @@ impl Generator {
                 parse_table_entries,
                 next_parse_action_list_index,
             );
+            // States that training visited keep complete goto rows, which take one lookup instead of three.
+            let uses_goto_defaults = !has_samples || minimize;
+            let goto_symbols = self.goto_symbols(state_id);
+            let mut goto_groups = goto_groups
+                .into_iter()
+                .filter_map(|((value, kind), mut symbols)| {
+                    symbols.retain(|&symbol| {
+                        !uses_goto_defaults || !self.is_goto_default(symbol, value)
+                    });
+                    (!symbols.is_empty()).then_some(((value, kind), symbols))
+                })
+                .collect::<Vec<_>>();
+            goto_groups
+                .sort_unstable_by_key(|((value, _), symbols)| (symbols.len(), *value, symbols[0]));
+            let mut offsets = [0; 2];
             for (is_goto, groups) in [(false, terminal_groups), (true, goto_groups)] {
                 let key = (is_goto, self.encode_small_parse_row(&groups, 0, is_goto));
-                let offset = if let Some(&offset) = row_offsets.get(&key) {
+                offsets[usize::from(is_goto)] = if let Some(&offset) = row_offsets.get(&key) {
                     offset
                 } else {
                     let offset = self.add_small_parse_rows(
@@ -2485,8 +2563,20 @@ impl Generator {
                     row_offsets.insert(key, offset);
                     offset
                 };
-                indices.push(offset);
             }
+            indices.push(offsets[0]);
+            if !uses_goto_defaults {
+                indices.push(offsets[1]);
+                continue;
+            }
+            let descriptor = self.add_goto_descriptor(
+                &goto_symbols,
+                offsets[1],
+                &mut symbol_sets,
+                &mut goto_descriptors,
+                &mut next_index,
+            )?;
+            indices.push(descriptor | SMALL_STATE_DEFAULTS_FLAG);
         }
         dedent!(self);
         add_line!(self, "}};\n");
@@ -2506,6 +2596,51 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}};\n");
         Ok(())
+    }
+
+    /// Adds a descriptor of the set of `goto_symbols` and the goto row at `goto_row`, and returns its offset.
+    fn add_goto_descriptor(
+        &mut self,
+        goto_symbols: &[Symbol],
+        goto_row: usize,
+        symbol_sets: &mut FxHashMap<Vec<u16>, usize>,
+        descriptors: &mut FxHashMap<Vec<u16>, usize>,
+        next_index: &mut usize,
+    ) -> RenderResult<usize> {
+        let set = if goto_symbols.is_empty() {
+            vec![0, 0]
+        } else {
+            self.symbol_set(goto_symbols)
+        };
+        let set_offset = self.add_shared_values(set, symbol_sets, next_index)?;
+        let descriptor = [set_offset, goto_row]
+            .into_iter()
+            .flat_map(|offset| [(offset & 0xffff) as u16, (offset >> 16) as u16])
+            .collect();
+        self.add_shared_values(descriptor, descriptors, next_index)
+    }
+
+    /// Adds `values` as a row unless an identical row was added to `rows` before, and returns its offset.
+    fn add_shared_values(
+        &mut self,
+        values: Vec<u16>,
+        rows: &mut FxHashMap<Vec<u16>, usize>,
+        next_index: &mut usize,
+    ) -> RenderResult<usize> {
+        if let Some(&offset) = rows.get(&values) {
+            return Ok(offset);
+        }
+        let row = SmallParseRow {
+            index: *next_index,
+            values,
+        };
+        self.add_small_parse_row(&row);
+        *next_index += row.values.len();
+        if *next_index >= SMALL_STATE_DEFAULTS_FLAG {
+            return Err(RenderError::SparseTable(*next_index));
+        }
+        rows.insert(row.values, row.index);
+        Ok(row.index)
     }
 
     /// Adds the rows encoding `groups` and returns the map entry that refers to them.
@@ -2544,7 +2679,7 @@ impl Generator {
             *next_index += row.values.len();
             offset
         };
-        if *next_index >= SMALL_STATE_BITMAP_FLAG {
+        if *next_index >= SMALL_STATE_DEFAULTS_FLAG {
             return Err(RenderError::SparseTable(*next_index));
         }
         Ok(offset)
@@ -2602,6 +2737,17 @@ impl Generator {
         groups
             .into_iter()
             .partition(|((_, kind), _)| *kind == SymbolType::Terminal)
+    }
+
+    /// The nonterminals that have gotos in a state, in symbol order.
+    fn goto_symbols(&self, state_id: usize) -> Vec<Symbol> {
+        let mut symbols = self.parse_table.states[state_id]
+            .nonterminal_entries
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
+        symbols
     }
 
     /// The symbols of a small state's terminal or goto row: the first symbol and the count.
@@ -2693,7 +2839,7 @@ impl Generator {
         if words >= unshared_words {
             return Ok(None);
         }
-        if *next_table_index + words >= SMALL_STATE_BITMAP_FLAG {
+        if *next_table_index + words >= SMALL_STATE_DEFAULTS_FLAG {
             return Err(RenderError::SparseTable(*next_table_index + words));
         }
         let mut rows = Vec::new();
