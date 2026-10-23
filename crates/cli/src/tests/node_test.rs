@@ -626,6 +626,82 @@ fn test_node_child_by_field_name_with_extra_hidden_children() {
 }
 
 #[test]
+fn test_node_field_name_for_child_through_hidden_extras() {
+    let grammar = serde_json::json!({
+        "name": "field_names_through_hidden_extras",
+        "extras": [
+            {"type": "PATTERN", "value": "\\s"},
+            {"type": "SYMBOL", "name": "_note"},
+            {"type": "SYMBOL", "name": "_tag"}
+        ],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "binding"}},
+            "binding": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "let"},
+                {"type": "FIELD", "name": "outer", "content": {"type": "SYMBOL", "name": "_binding"}},
+                {"type": "STRING", "value": ";"}
+            ]},
+            "_binding": {"type": "SEQ", "members": [
+                {"type": "FIELD", "name": "inner", "content": {"type": "SYMBOL", "name": "name"}},
+                {"type": "STRING", "value": "="},
+                {"type": "SYMBOL", "name": "name"}
+            ]},
+            "name": {"type": "PATTERN", "value": "[a-z0-9]+"},
+            "_note": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "@"},
+                {"type": "FIELD", "name": "outer", "content": {"type": "SYMBOL", "name": "name"}}
+            ]},
+            "_tag": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "#"},
+                {"type": "SYMBOL", "name": "name"}
+            ]}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+
+    // The tree cursor gives the nodes inside a hidden extra only the fields set
+    // inside it, not the field of the child before it or of a rule around it.
+    // An empty string stands for no field.
+    for (source, fields, named_fields) in [
+        (
+            "let a @x = b;",
+            ["", "inner", "", "outer", "outer", "outer", ""],
+            ["inner", "outer", "outer"],
+        ),
+        (
+            "let a #y = b;",
+            ["", "inner", "", "", "outer", "outer", ""],
+            ["inner", "", "outer"],
+        ),
+    ] {
+        let tree = parser.parse(source, None).unwrap();
+        let binding = tree.root_node().named_child(0).unwrap();
+        let mut cursor = binding.walk();
+        assert!(cursor.goto_first_child());
+        let mut cursor_fields = Vec::new();
+        loop {
+            cursor_fields.push(cursor.field_name().unwrap_or(""));
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        assert_eq!(cursor_fields, fields, "cursor fields of `{source}`");
+        let actual = (0..binding.child_count() as u32)
+            .map(|i| binding.field_name_for_child(i).unwrap_or(""))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, fields, "`{source}`");
+        let actual = (0..binding.named_child_count() as u32)
+            .map(|i| binding.field_name_for_named_child(i).unwrap_or(""))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, named_fields, "named children of `{source}`");
+    }
+}
+
+#[test]
 fn test_node_named_child() {
     let tree = parse_json_example();
     let array_node = tree.root_node().child(0).unwrap();
