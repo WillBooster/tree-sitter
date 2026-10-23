@@ -123,6 +123,55 @@ fn generated_node_types_omit_fields_from_inline_branches_that_cannot_finish() {
     }
 }
 
+#[test]
+fn invalid_supertype_error_names_the_multistep_inline_child() {
+    let grammar = json!({
+        "name": "inline_supertype_diagnostic",
+        "inline": ["_pair"],
+        "supertypes": ["_expression"],
+        "rules": {
+            "source_file": {"type": "REPEAT", "content": {
+                "type": "SYMBOL", "name": "_expression"
+            }},
+            "_expression": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "name"},
+                {"type": "SYMBOL", "name": "_pair"}
+            ]},
+            "_pair": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "name"},
+                {"type": "STRING", "value": "="},
+                {"type": "SYMBOL", "name": "name"}
+            ]},
+            "name": {"type": "PATTERN", "value": "[a-z]+"}
+        }
+    });
+    let mut non_inline = grammar.clone();
+    non_inline["inline"] = json!([]);
+    let mut hidden_wrapper = grammar.clone();
+    hidden_wrapper["rules"]["_wrapper"] = grammar["rules"]["_pair"].clone();
+    hidden_wrapper["rules"]["_pair"] = json!({"type": "SYMBOL", "name": "_wrapper"});
+    for grammar in [grammar, non_inline, hidden_wrapper] {
+        let temporary_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
+        fs::create_dir_all(&temporary_root).unwrap();
+        let directory = tempfile::tempdir_in(&temporary_root).unwrap();
+        fs::write(directory.path().join("grammar.json"), grammar.to_string()).unwrap();
+        for metadata_only in [false, true] {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_tree-sitter"));
+            command
+                .current_dir(directory.path())
+                .args(["generate", "grammar.json"]);
+            if metadata_only {
+                command.arg("--no-parser");
+            }
+            let output = command.output().unwrap();
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(
+            "The hidden child `_pair` can expand into multiple nodes. Consider making `_pair` visible."
+        ));
+        }
+    }
+}
+
 fn generate_both_ways(grammar: &Value) -> [Vec<Value>; 2] {
     let temporary_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.tmp");
     fs::create_dir_all(&temporary_root).unwrap();

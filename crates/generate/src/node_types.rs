@@ -571,30 +571,43 @@ fn validate_supertype_structure(
     for supertype_symbol in &syntax_grammar.supertype_symbols {
         if result[supertype_symbol.index as usize].has_multi_step_production {
             let variable = &syntax_grammar.variables[supertype_symbol.index as usize];
-            // A symbol can have a multi-step production either directly or via an inlined
-            // anonymous child. In the latter case, we can report a more specific error.
-
-            let hidden_child_name = expanded_variable_prod_ids(
-                syntax_grammar,
-                inlines,
-                supertype_symbol.index as usize,
-            )
-            .filter(|&prod_id| syntax_grammar.production(prod_id).steps.len() == 1)
-            .find_map(|prod_id| {
-                let step = syntax_grammar.production(prod_id).steps[0];
-                let child_symbol = step.symbol();
-                let child_type = step.child_type(default_aliases);
-                let child_is_hidden = !child_type_is_visible(&child_type)
-                    && !syntax_grammar.supertype_symbols.contains(&child_symbol);
-                (child_is_hidden
-                    && child_symbol.is_non_terminal()
-                    && result[child_symbol.index as usize].has_multi_step_production)
+            let hidden_child_name = syntax_grammar
+                .variable_prod_ids(supertype_symbol.index as usize)
+                .filter(|&prod_id| syntax_grammar.production(prod_id).steps.len() == 1)
+                .find_map(|prod_id| {
+                    let step = syntax_grammar.production(prod_id).steps[0];
+                    let child_symbol = step.symbol();
+                    let child_type = step.child_type(default_aliases);
+                    let child_is_hidden = !child_type_is_visible(&child_type)
+                        && !syntax_grammar.supertype_symbols.contains(&child_symbol);
+                    (child_is_hidden
+                        && child_symbol.is_non_terminal()
+                        && (result[child_symbol.index as usize].has_multi_step_production
+                            || expanded_variable_prod_ids(
+                                syntax_grammar,
+                                inlines,
+                                child_symbol.index as usize,
+                            )
+                            .any(|id| {
+                                let production = syntax_grammar.production(id);
+                                production.steps.len() > 1
+                                    || production.steps.iter().any(|step| {
+                                        let symbol = step.symbol();
+                                        symbol.is_non_terminal()
+                                            && !child_type_is_visible(
+                                                &step.child_type(default_aliases),
+                                            )
+                                            && !syntax_grammar.supertype_symbols.contains(&symbol)
+                                            && result[symbol.index as usize]
+                                                .has_multi_step_production
+                                    })
+                            })))
                     .then(|| {
                         str_pool
                             .resolve(syntax_grammar.variables[child_symbol.index as usize].name)
                             .to_string()
                     })
-            });
+                });
 
             Err(VariableInfoError::InvalidSupertype(InvalidSupertypeError {
                 supertype: str_pool.resolve(variable.name).to_string(),
