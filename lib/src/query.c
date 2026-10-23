@@ -1035,6 +1035,23 @@ static void query_step__remove_capture(QueryStep *self, uint16_t capture_id) {
  * StatePredecessorMap
  **********************/
 
+typedef struct {
+  uint16_t action_lists[16];
+  unsigned count;
+} VisitedActionLists;
+
+// Returns true for an action list recorded earlier. Once all slots are used, unrecorded lists are
+// reported as new each time, so their work is repeated rather than skipped wrongly.
+static inline bool visited_action_lists__visit(VisitedActionLists *self, uint16_t action_list) {
+  for (unsigned i = 0; i < self->count; i++) {
+    if (self->action_lists[i] == action_list) return true;
+  }
+  if (self->count < sizeof(self->action_lists) / sizeof(self->action_lists[0])) {
+    self->action_lists[self->count++] = action_list;
+  }
+  return false;
+}
+
 static inline StatePredecessorMap state_predecessor_map_new(
   const TSLanguage *language
 ) {
@@ -1845,9 +1862,12 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
   StatePredecessorMap predecessor_map = state_predecessor_map_new(self->language);
   for (TSStateId state = 1; state < (uint16_t)self->language->state_count; state++) {
     unsigned subgraph_index, exists;
+    // A state's terminals mostly share a few action lists, whose effects depend only on the state.
+    VisitedActionLists visited_action_lists = {.count = 0};
     LookaheadIterator lookahead_iterator = ts_language_lookaheads(self->language, state);
     while (ts_lookahead_iterator__next(&lookahead_iterator)) {
       if (lookahead_iterator.action_count) {
+        if (visited_action_lists__visit(&visited_action_lists, lookahead_iterator.table_value)) continue;
         for (unsigned i = 0; i < lookahead_iterator.action_count; i++) {
           TSParseAction action = ts_language_parse_action(self->language, lookahead_iterator.actions[i]);
           if (ts_parse_action_is_reduce(&action)) {
