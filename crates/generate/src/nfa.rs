@@ -15,6 +15,7 @@ pub struct CharacterSet {
 /// A state in an NFA representing a regular grammar.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NfaState {
+    AcceptEof,
     Advance {
         chars: CharacterSet,
         state_id: u32,
@@ -500,7 +501,7 @@ impl Nfa {
         let mut visited = FxHashSet::default();
         while let Some(state_id) = pending.pop() {
             match self.states[state_id as usize] {
-                NfaState::Accept { .. } => return true,
+                NfaState::Accept { .. } | NfaState::AcceptEof => return true,
                 NfaState::Split(left, right) => {
                     if visited.insert(state_id) {
                         pending.extend([left, right]);

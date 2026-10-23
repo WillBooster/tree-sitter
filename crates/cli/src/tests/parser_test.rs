@@ -3834,6 +3834,86 @@ fn test_parsing_text_with_byte_order_mark() {
 }
 
 #[test]
+fn test_complete_continuation_extras_at_eof() {
+    for mut parser in parsers_for_languages([
+        get_test_fixture_language("continuation_eof"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("continuation_eof"),
+    ]) {
+        for statement in ["int value;", r"\u0061;", "int λ;"] {
+            for ending in ["\n", "\r", "\r\n", "\n\r"] {
+                let source = format!("{statement}\\{ending}");
+                let expected_end = match ending {
+                    "\r" => Point::new(0, source.len()),
+                    "\n\r" => Point::new(1, 1),
+                    _ => Point::new(1, 0),
+                };
+                for chunk in [1, 7, 256] {
+                    let tree = parser
+                        .parse_with_options(
+                            &mut |offset, _| {
+                                &source.as_bytes()[offset..source.len().min(offset + chunk)]
+                            },
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        tree.root_node().to_sexp(),
+                        "(source_file (identifier))",
+                        "{source:?}, chunk={chunk}"
+                    );
+                    assert_eq!(tree.root_node().end_byte(), source.len());
+                    assert_eq!(tree.root_node().end_position(), expected_end);
+                }
+                let utf16 = source.encode_utf16().collect::<Vec<_>>();
+                for tree in [
+                    parser
+                        .parse_utf16_le(
+                            utf16.iter().copied().map(u16::to_le).collect::<Vec<_>>(),
+                            None,
+                        )
+                        .unwrap(),
+                    parser
+                        .parse_utf16_be(
+                            utf16.iter().copied().map(u16::to_be).collect::<Vec<_>>(),
+                            None,
+                        )
+                        .unwrap(),
+                ] {
+                    assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
+                    assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
+                    let end_column = if ending == "\r" {
+                        utf16.len() * 2
+                    } else {
+                        expected_end.column * 2
+                    };
+                    assert_eq!(
+                        tree.root_node().end_position(),
+                        Point::new(expected_end.row, end_column)
+                    );
+                }
+            }
+        }
+        let ordinary = parser.parse("int value;\n", None).unwrap();
+        assert_eq!(ordinary.root_node().to_sexp(), "(source_file (identifier))");
+        assert_eq!(ordinary.root_node().end_position(), Point::new(1, 0));
+        for source in ["", "\\\n", "\\\r", "\\\r\n", "\\\n\r"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), "(source_file)");
+        }
+        let tree = parser.parse("int value;\\\nint next;", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(source_file (identifier) (identifier))"
+        );
+        for source in [r"int value;\", r"int value;\u", r"int value;\u000"] {
+            assert!(parser.parse(source, None).unwrap().root_node().has_error());
+        }
+    }
+}
+
+#[test]
 fn test_parsing_invalid_chars_at_eof() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();

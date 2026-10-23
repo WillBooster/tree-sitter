@@ -493,7 +493,7 @@ struct TaggedAdvance {
 struct QueueEntry {
     state_id: LexStateId,
     nfa_states: Vec<TaggedState>,
-    eof_valid: bool,
+    prefer_eof_to_nul: bool,
     guard_id: usize,
 }
 
@@ -558,15 +558,15 @@ impl<'a> LexTableBuilder<'a> {
                     .push((guard_keywords.clone(), preserve_fallback, accepts_word));
                 self.word_guards.len() - 1
             });
-        let mut eof_valid = false;
+        let mut prefer_eof_to_nul = false;
         let mut nfa_states: Vec<u32> = tokens
             .iter()
             .filter_map(|token| {
                 if token.is_terminal() {
                     Some(self.lexical_grammar.variables[token.index as usize].start_state)
                 } else {
-                    eof_valid = true;
-                    None
+                    prefer_eof_to_nul = true;
+                    self.lexical_grammar.eof_start_state
                 }
             })
             .collect();
@@ -584,7 +584,7 @@ impl<'a> LexTableBuilder<'a> {
         }
         let (state_id, is_new) = self.add_state(
             nfa_states.into_iter().map(|id| (id, None)).collect(),
-            eof_valid,
+            prefer_eof_to_nul,
             guard_id,
         );
 
@@ -609,11 +609,11 @@ impl<'a> LexTableBuilder<'a> {
         while let Some(QueueEntry {
             state_id,
             nfa_states,
-            eof_valid,
+            prefer_eof_to_nul,
             guard_id,
         }) = self.state_queue.pop_front()
         {
-            self.populate_state(state_id, &nfa_states, eof_valid, guard_id);
+            self.populate_state(state_id, &nfa_states, prefer_eof_to_nul, guard_id);
         }
         state_id
     }
@@ -621,13 +621,13 @@ impl<'a> LexTableBuilder<'a> {
     fn add_state(
         &mut self,
         nfa_states: Vec<TaggedState>,
-        eof_valid: bool,
+        prefer_eof_to_nul: bool,
         guard_id: usize,
     ) -> (LexStateId, bool) {
         let nfa_states = self.expand_start_tags(nfa_states);
         match self
             .state_ids_by_nfa_state_set
-            .entry((nfa_states, eof_valid, guard_id))
+            .entry((nfa_states, prefer_eof_to_nul, guard_id))
         {
             Entry::Occupied(o) => (*o.get(), false),
             Entry::Vacant(v) => {
@@ -636,7 +636,7 @@ impl<'a> LexTableBuilder<'a> {
                 self.state_queue.push_back(QueueEntry {
                     state_id,
                     nfa_states: v.key().0.clone(),
-                    eof_valid,
+                    prefer_eof_to_nul,
                     guard_id,
                 });
                 v.insert(state_id);
@@ -649,7 +649,7 @@ impl<'a> LexTableBuilder<'a> {
         &mut self,
         state_id: LexStateId,
         nfa_states: &[TaggedState],
-        eof_valid: bool,
+        prefer_eof_to_nul: bool,
         guard_id: usize,
     ) {
         self.cursor
@@ -684,7 +684,13 @@ impl<'a> LexTableBuilder<'a> {
                     && !self.word_guards[guard_id].0.contains(token)
             });
         let (transitions, has_sep) = self.cursor.partitioned_transitions_and_any_sep();
-        if eof_valid {
+        let eof_valid = nfa_states.iter().any(|&(id, _)| {
+            matches!(
+                self.lexical_grammar.nfa.states[id as usize],
+                NfaState::AcceptEof
+            )
+        });
+        if eof_valid && completion.is_none() {
             let next_state_id = *self.eof_state.get_or_insert_with(|| {
                 let id = self.table.states.len() as LexStateId;
                 self.table.states.push(LexState {
@@ -758,9 +764,12 @@ impl<'a> LexTableBuilder<'a> {
             else {
                 continue;
             };
-            let (next_state_id, _) =
-                self.add_state(next_tags, eof_valid && transition.is_separator, guard_id);
-            if !eof_valid && transition.characters.contains('\0') {
+            let (next_state_id, _) = self.add_state(
+                next_tags,
+                prefer_eof_to_nul && transition.is_separator,
+                guard_id,
+            );
+            if !prefer_eof_to_nul && transition.characters.contains('\0') {
                 self.add_standalone_nul_eof(
                     state_id,
                     nfa_states,

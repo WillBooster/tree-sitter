@@ -124,9 +124,18 @@ pub fn expand_tokens(
         });
     }
 
+    builder.is_sep = true;
+    builder.nfa.states.push(NfaState::AcceptEof);
+    let eof_state = builder.nfa.last_state_id();
+    builder
+        .expand_rule(pool, separator_root, eof_state)
+        .map_err(ExpandTokensError::ExpandRule)?;
+    let eof_start_state = Some(builder.nfa.last_state_id());
+
     Ok(LexicalGrammar {
         nfa: builder.nfa,
         variables,
+        eof_start_state,
     })
 }
 

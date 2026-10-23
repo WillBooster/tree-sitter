@@ -69,6 +69,7 @@ pub struct LexicalVariable {
 pub struct LexicalGrammar {
     pub nfa: Nfa,
     pub variables: Vec<LexicalVariable>,
+    pub eof_start_state: Option<u32>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
@@ -374,6 +375,9 @@ impl LexicalGrammar {
         let mut prev = None;
         state_ids.iter().filter_map(move |state_id| {
             let variable_id = self.variable_index_for_nfa_state(*state_id);
+            if variable_id == self.variables.len() {
+                return None;
+            }
             if prev == Some(variable_id) {
                 None
             } else {
