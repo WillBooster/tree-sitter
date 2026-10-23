@@ -213,7 +213,6 @@ pub fn get_variable_info(
         syntax_grammar,
         lexical_grammar,
         default_aliases,
-        inlines,
         str_pool,
     )?;
     strip_hidden_child_types(&mut result, syntax_grammar, lexical_grammar);
@@ -299,12 +298,6 @@ fn propagate_variable_info(
         did_change = false;
 
         for i in 0..syntax_grammar.variables.len() {
-            if syntax_grammar
-                .variables_to_inline
-                .contains(&Symbol::non_terminal(i))
-            {
-                continue;
-            }
             let mut variable_info = result[i].clone();
 
             // Examine each of the variable's productions. The variable's child types can be
@@ -561,7 +554,6 @@ fn validate_supertype_structure(
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
     default_aliases: &AliasMap,
-    inlines: &InlinedProductionMap,
     str_pool: &StrPool,
 ) -> VariableInfoResult<()> {
     let child_type_is_visible = |t: &ChildType| {
@@ -582,31 +574,12 @@ fn validate_supertype_structure(
                         && !syntax_grammar.supertype_symbols.contains(&child_symbol);
                     (child_is_hidden
                         && child_symbol.is_non_terminal()
-                        && (result[child_symbol.index as usize].has_multi_step_production
-                            || expanded_variable_prod_ids(
-                                syntax_grammar,
-                                inlines,
-                                child_symbol.index as usize,
-                            )
-                            .any(|id| {
-                                let production = syntax_grammar.production(id);
-                                production.steps.len() > 1
-                                    || production.steps.iter().any(|step| {
-                                        let symbol = step.symbol();
-                                        symbol.is_non_terminal()
-                                            && !child_type_is_visible(
-                                                &step.child_type(default_aliases),
-                                            )
-                                            && !syntax_grammar.supertype_symbols.contains(&symbol)
-                                            && result[symbol.index as usize]
-                                                .has_multi_step_production
-                                    })
-                            })))
-                    .then(|| {
-                        str_pool
-                            .resolve(syntax_grammar.variables[child_symbol.index as usize].name)
-                            .to_string()
-                    })
+                        && result[child_symbol.index as usize].has_multi_step_production)
+                        .then(|| {
+                            str_pool
+                                .resolve(syntax_grammar.variables[child_symbol.index as usize].name)
+                                .to_string()
+                        })
                 });
 
             Err(VariableInfoError::InvalidSupertype(InvalidSupertypeError {
