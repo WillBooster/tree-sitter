@@ -3834,6 +3834,44 @@ fn test_parsing_text_with_byte_order_mark() {
 }
 
 #[test]
+fn test_eof_extras_preserve_immediate_token_longest_match() {
+    for precedence in [-1, 0, 1] {
+        let immediate = |value| {
+            serde_json::json!({
+                "type": "IMMEDIATE_TOKEN",
+                "content": {"type": "PREC", "value": precedence, "content": {"type": "STRING", "value": value}}
+            })
+        };
+        let grammar = serde_json::json!({
+            "name": format!("eof_immediate_{}", precedence + 1),
+            "extras": [{"type": "STRING", "value": "a"}],
+            "rules": {
+                "source": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "short"},
+                    {"type": "SYMBOL", "name": "long"}
+                ]}},
+                "short": immediate("a"),
+                "long": immediate("ab")
+            }
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            for (source, expected) in [
+                ("a", "(source (short))"),
+                ("ab", "(source (long))"),
+                ("aab", "(source (short) (long))"),
+            ] {
+                let tree = parser.parse(source, None).unwrap();
+                assert_eq!(
+                    tree.root_node().to_sexp(),
+                    expected,
+                    "precedence={precedence} {source:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_complete_continuation_extras_at_eof() {
     for mut parser in parsers_for_languages([
         get_test_fixture_language("continuation_eof"),

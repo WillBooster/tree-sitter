@@ -683,7 +683,14 @@ impl<'a> LexTableBuilder<'a> {
                         && !self.word_guards[guard_id].2))
                     && !self.word_guards[guard_id].0.contains(token)
             });
-        let (transitions, has_sep) = self.cursor.partitioned_transitions_and_any_sep();
+        let token_state_limit = self
+            .lexical_grammar
+            .variables
+            .last()
+            .map_or(0, |variable| variable.start_state + 1);
+        let (transitions, has_sep) = self
+            .cursor
+            .partitioned_transitions_and_any_sep(token_state_limit);
         let eof_valid = nfa_states.iter().any(|&(id, _)| {
             matches!(
                 self.lexical_grammar.nfa.states[id as usize],
