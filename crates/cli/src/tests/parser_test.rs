@@ -2769,18 +2769,21 @@ fn test_immediate_token_with_overlapping_external_extra_pattern() {
         }
     });
     let (name, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-    let language = get_test_language_with_declining_scanner(&name, &parser_code);
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    for source in ["", "ab", "abab", "aab", "a"] {
-        let tree = parser.parse(source, None).unwrap();
-        let root = tree.root_node();
-        assert_eq!(
-            root.has_error(),
-            matches!(source, "aab" | "a"),
-            "{source:?}"
-        );
-        assert_eq!(root.end_byte(), source.len(), "{source:?}");
+    for mut parser in parsers_for_languages([
+        get_test_language_with_declining_scanner(&name, &parser_code),
+        #[cfg(feature = "wasm")]
+        get_test_language_wasm_with_declining_scanner(&name, &parser_code),
+    ]) {
+        for source in ["", "ab", "abab", "aab", "a"] {
+            let tree = parser.parse(source, None).unwrap();
+            let root = tree.root_node();
+            assert_eq!(
+                root.has_error(),
+                matches!(source, "aab" | "a"),
+                "{source:?}"
+            );
+            assert_eq!(root.end_byte(), source.len(), "{source:?}");
+        }
     }
 }
 
@@ -2821,21 +2824,37 @@ fn test_immediate_token_with_reused_anonymous_extra_pattern() {
     }
 }
 
-fn get_test_language_with_declining_scanner(
-    name: &str,
-    parser_code: &str,
-) -> tree_sitter::Language {
-    get_test_language_with_scanner(
-        name,
-        parser_code,
-        r#"
+const DECLINING_SCANNER: &str = r#"
 #include "tree_sitter/parser.h"
 void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
 void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
 unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
 void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
 bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) { return false; }
-"#,
+"#;
+
+fn get_test_language_with_declining_scanner(
+    name: &str,
+    parser_code: &str,
+) -> tree_sitter::Language {
+    get_test_language_with_scanner(name, parser_code, DECLINING_SCANNER)
+}
+
+#[cfg(feature = "wasm")]
+fn get_test_language_wasm_with_declining_scanner(
+    name: &str,
+    parser_code: &str,
+) -> tree_sitter::Language {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fixture.path().join("scanner.c"),
+        DECLINING_SCANNER.replace("GRAMMAR", name),
+    )
+    .unwrap();
+    super::helpers::fixtures::get_test_language_wasm_with_scanner(
+        name,
+        parser_code,
+        Some(fixture.path()),
     )
 }
 
@@ -3831,6 +3850,124 @@ fn test_parsing_text_with_byte_order_mark() {
         "(source_file (function_item name: (identifier) parameters: (parameters) body: (block)))"
     );
     assert_eq!(tree.root_node().start_byte(), 3);
+}
+
+#[test]
+fn test_eof_extras_preserve_immediate_token_longest_match() {
+    for precedence in [-1, 0, 1] {
+        let immediate = |value| {
+            serde_json::json!({
+                "type": "IMMEDIATE_TOKEN",
+                "content": {"type": "PREC", "value": precedence, "content": {"type": "STRING", "value": value}}
+            })
+        };
+        let grammar = serde_json::json!({
+            "name": format!("eof_immediate_{}", precedence + 1),
+            "extras": [{"type": "STRING", "value": "a"}],
+            "rules": {
+                "source": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "short"},
+                    {"type": "SYMBOL", "name": "long"}
+                ]}},
+                "short": immediate("a"),
+                "long": immediate("ab")
+            }
+        });
+        for mut parser in parsers_for_grammar(&grammar.to_string()) {
+            for (source, expected) in [
+                ("a", "(source (short))"),
+                ("ab", "(source (long))"),
+                ("aab", "(source (short) (long))"),
+            ] {
+                let tree = parser.parse(source, None).unwrap();
+                assert_eq!(
+                    tree.root_node().to_sexp(),
+                    expected,
+                    "precedence={precedence} {source:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_complete_continuation_extras_at_eof() {
+    for mut parser in parsers_for_languages([
+        get_test_fixture_language("continuation_eof"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("continuation_eof"),
+    ]) {
+        for statement in ["int value;", r"\u0061;", "int λ;"] {
+            for ending in ["\n", "\r", "\r\n", "\n\r"] {
+                let source = format!("{statement}\\{ending}");
+                let expected_end = match ending {
+                    "\r" => Point::new(0, source.len()),
+                    "\n\r" => Point::new(1, 1),
+                    _ => Point::new(1, 0),
+                };
+                for chunk in [1, 7, 256] {
+                    let tree = parser
+                        .parse_with_options(
+                            &mut |offset, _| {
+                                &source.as_bytes()[offset..source.len().min(offset + chunk)]
+                            },
+                            None,
+                            None,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        tree.root_node().to_sexp(),
+                        "(source_file (identifier))",
+                        "{source:?}, chunk={chunk}"
+                    );
+                    assert_eq!(tree.root_node().end_byte(), source.len());
+                    assert_eq!(tree.root_node().end_position(), expected_end);
+                }
+                let utf16 = source.encode_utf16().collect::<Vec<_>>();
+                for tree in [
+                    parser
+                        .parse_utf16_le(
+                            utf16.iter().copied().map(u16::to_le).collect::<Vec<_>>(),
+                            None,
+                        )
+                        .unwrap(),
+                    parser
+                        .parse_utf16_be(
+                            utf16.iter().copied().map(u16::to_be).collect::<Vec<_>>(),
+                            None,
+                        )
+                        .unwrap(),
+                ] {
+                    assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
+                    assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
+                    let end_column = if ending == "\r" {
+                        utf16.len() * 2
+                    } else {
+                        expected_end.column * 2
+                    };
+                    assert_eq!(
+                        tree.root_node().end_position(),
+                        Point::new(expected_end.row, end_column)
+                    );
+                }
+            }
+        }
+        let ordinary = parser.parse("int value;\n", None).unwrap();
+        assert_eq!(ordinary.root_node().to_sexp(), "(source_file (identifier))");
+        assert_eq!(ordinary.root_node().end_position(), Point::new(1, 0));
+        for source in ["", "\\\n", "\\\r", "\\\r\n", "\\\n\r"] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().to_sexp(), "(source_file)");
+        }
+        let tree = parser.parse("int value;\\\nint next;", None).unwrap();
+        assert_eq!(
+            tree.root_node().to_sexp(),
+            "(source_file (identifier) (identifier))"
+        );
+        for source in [r"int value;\", r"int value;\u", r"int value;\u000"] {
+            assert!(parser.parse(source, None).unwrap().root_node().has_error());
+        }
+    }
 }
 
 #[test]
