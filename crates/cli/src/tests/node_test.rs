@@ -690,7 +690,7 @@ fn test_node_field_name_for_child_through_hidden_extras() {
             }
         }
         assert_eq!(cursor_fields, fields, "cursor fields of `{source}`");
-        let actual = (0..binding.child_count() as u32)
+        let actual = (0..binding.child_count())
             .map(|i| binding.field_name_for_child(i).unwrap_or(""))
             .collect::<Vec<_>>();
         assert_eq!(actual, fields, "`{source}`");
