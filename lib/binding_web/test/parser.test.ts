@@ -34,12 +34,12 @@ describe('Parser', () => {
     });
 
     it('throws an exception when the given object is not a tree-sitter language', () => {
-      // @ts-expect-error Testing invalid arguments
       expect(() => {
+        // @ts-expect-error Testing invalid arguments
         parser.setLanguage({});
       }).toThrow(/Argument must be a Language/);
-      // @ts-expect-error Testing invalid arguments
       expect(() => {
+        // @ts-expect-error Testing invalid arguments
         parser.setLanguage(1);
       }).toThrow(/Argument must be a Language/);
     });
@@ -83,8 +83,8 @@ describe('Parser', () => {
     });
 
     it("throws an error when given a truthy value that isn't a function", () => {
-      // @ts-expect-error Testing invalid arguments
       expect(() => {
+        // @ts-expect-error Testing invalid arguments
         parser.setLogger('5');
       }).toThrow('Logger callback must be a function');
     });
