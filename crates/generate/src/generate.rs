@@ -65,7 +65,7 @@ const LANGUAGE_VERSION: usize = 0x5742_000a;
 
 pub const ALLOC_HEADER: &str = include_str!("templates/alloc.h");
 pub const ARRAY_HEADER: &str = include_str!("templates/array.h");
-pub const PARSER_HEADER: &str = include_str!("parser.h.inc");
+pub const PARSER_HEADER: &str = include_str!("templates/parser.h");
 
 pub type GenerateResult<T> = Result<T, GenerateError>;
 
@@ -808,7 +808,7 @@ mod tests {
         let parser_h = include_str!("../../../lib/src/parser.h");
         assert!(
             parser_h == PARSER_HEADER,
-            "parser.h.inc is out of sync with lib/src/parser.h. Run: cp lib/src/parser.h crates/generate/src/parser.h.inc"
+            "templates/parser.h is out of sync with lib/src/parser.h. Run: cp lib/src/parser.h crates/generate/src/templates/parser.h"
         );
     }
 }
