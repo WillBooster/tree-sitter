@@ -3,8 +3,10 @@ package PARSER_NS_CLEANED.jtreesitter.LOWER_PARSER_NAME;
 import java.lang.foreign.*;
 
 public final class PARSER_CLASS_NAME {
-    private static final ValueLayout VOID_PTR =
-            ValueLayout.ADDRESS.withTargetLayout(MemoryLayout.sequenceLayout(Long.MAX_VALUE, ValueLayout.JAVA_BYTE));
+
+    private static final ValueLayout VOID_PTR = ValueLayout.ADDRESS.withTargetLayout(
+        MemoryLayout.sequenceLayout(Long.MAX_VALUE, ValueLayout.JAVA_BYTE)
+    );
     private static final FunctionDescriptor FUNC_DESC = FunctionDescriptor.of(VOID_PTR);
     private static final Linker LINKER = Linker.nativeLinker();
     private static final PARSER_CLASS_NAME INSTANCE = new PARSER_CLASS_NAME();
@@ -18,8 +20,7 @@ public final class PARSER_CLASS_NAME {
      * Get the tree-sitter language for this grammar.
      */
     public static MemorySegment language() {
-        if (INSTANCE.lookup == null)
-            INSTANCE.lookup = INSTANCE.findLibrary();
+        if (INSTANCE.lookup == null) INSTANCE.lookup = INSTANCE.findLibrary();
         return language(INSTANCE.lookup);
     }
 
