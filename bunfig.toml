@@ -98,3 +98,13 @@ minimumReleaseAgeExcludes = [
     "react-server-dom-webpack",
     "@next/third-parties",
 ]
+
+[fmt]
+ignorePatterns = [
+  # Project-specific patterns
+  # Upstream tree-sitter sources keep their own layout so that diffs against upstream show only our changes.
+  "crates/**",
+  "lib/**",
+  "script/**",
+  "test/**",
+]
