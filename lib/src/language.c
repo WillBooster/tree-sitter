@@ -275,7 +275,7 @@ TSLexerMode ts_language_lex_mode_for_state(
    const TSLanguage *self,
    TSStateId state
 ) {
-  if (self->lex_mode_ids) state = self->lex_mode_ids[state];
+  if (self->lex_mode_ids) state = ts_language_lex_mode_id(self, state);
   return self->lex_modes[state];
 }
 

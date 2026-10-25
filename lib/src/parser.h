@@ -166,7 +166,7 @@ struct TSLanguage {
     unsigned (*serialize)(void *, char *);
     void (*deserialize)(void *, const char *, unsigned);
   } external_scanner;
-  const TSStateId *primary_state_ids;
+  const uint8_t *primary_state_bitmap;
   const char *name;
   const TSSymbol *reserved_words;
   uint16_t max_reserved_word_set_size;
@@ -177,7 +177,7 @@ struct TSLanguage {
   TSLanguageMetadata metadata;
   const uint32_t *alias_sequence_offsets;
   uint32_t alias_sequence_count;
-  const uint16_t *lex_mode_ids;
+  const void *lex_mode_ids;
   uint32_t lex_mode_count;
   const TSMapSlice *reserved_word_slices;
   uint32_t external_state_stride;

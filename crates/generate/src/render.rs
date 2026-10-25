@@ -216,7 +216,7 @@ impl Generator {
         }
 
         self.add_non_terminal_alias_map();
-        self.add_primary_state_id_list();
+        self.add_primary_state_bitmap();
 
         if !self.supertype_map.is_empty() {
             self.add_supertype_map();
@@ -1206,27 +1206,18 @@ impl Generator {
         add_line!(self, "");
     }
 
-    /// Produces a list of the "primary state" for every state in the grammar.
-    ///
-    /// The "primary state" for a given state is the first encountered state that behaves
-    /// identically with respect to query analysis. We derive this by keeping track of the `core_id`
-    /// for each state and treating the first state with a given `core_id` as primary.
-    fn add_primary_state_id_list(&mut self) {
-        add_line!(
-            self,
-            "static const TSStateId ts_primary_state_ids[STATE_COUNT] = {{"
-        );
-        indent!(self);
-        let mut first_state_for_each_core_id = FxHashMap::default();
+    fn add_primary_state_bitmap(&mut self) {
+        let mut primary_states = vec![0u8; self.parse_table.states.len().div_ceil(8)];
+        let mut seen_cores = FxHashSet::default();
         for (idx, state) in self.parse_table.states.iter().enumerate() {
-            let primary_state = first_state_for_each_core_id
-                .entry(state.core_id)
-                .or_insert(idx);
-            add_line!(self, "[{idx}] = {primary_state},");
+            if seen_cores.insert(state.core_id) {
+                primary_states[idx / 8] |= 1 << (idx % 8);
+            }
         }
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
+        self.add_integer_array(
+            "static const uint8_t ts_primary_state_bitmap[]",
+            &primary_states,
+        );
     }
 
     fn add_field_sequences(&mut self) {
@@ -2221,7 +2212,8 @@ impl Generator {
             let next = modes.len();
             ids.push(*modes.entry(mode).or_insert(next));
         }
-        if modes.len() * 10 + ids.len() * 2 >= ids.len() * 10 {
+        let id_width = if modes.len() <= 256 { 1 } else { 2 };
+        if modes.len() * 10 + ids.len() * id_width >= ids.len() * 10 {
             return false;
         }
         self.lex_mode_count = modes.len();
@@ -2235,21 +2227,28 @@ impl Generator {
         }
         dedent!(self);
         add_line!(self, "}};\n");
-        add_line!(
-            self,
-            "static const uint16_t ts_lex_mode_ids[STATE_COUNT] = {{"
+        self.add_integer_array(
+            &format!(
+                "static const uint{}_t ts_lex_mode_ids[STATE_COUNT]",
+                id_width * 8
+            ),
+            &ids,
         );
+        true
+    }
+
+    fn add_integer_array<T: std::fmt::Display>(&mut self, declaration: &str, values: &[T]) {
+        add_line!(self, "{declaration} = {{");
         indent!(self);
-        for chunk in ids.chunks(16) {
+        for chunk in values.chunks(16) {
             add_whitespace!(self);
-            for id in chunk {
-                add!(self, "{id}, ");
+            for value in chunk {
+                add!(self, "{value}, ");
             }
             add!(self, "\n");
         }
         dedent!(self);
         add_line!(self, "}};\n");
-        true
     }
 
     fn add_reserved_word_sets(&mut self) {
@@ -3198,7 +3197,7 @@ impl Generator {
                 self.external_state_stride
             );
         }
-        add_line!(self, ".primary_state_ids = ts_primary_state_ids,");
+        add_line!(self, ".primary_state_bitmap = ts_primary_state_bitmap,");
 
         add_line!(self, ".name = \"{}\",", self.language_name);
 

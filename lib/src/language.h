@@ -60,7 +60,7 @@ typedef struct {
   uint16_t action_count;
 } LookaheadIterator;
 
-// Languages with another ABI version lack `primary_state_ids` and the fields after it or lay them out differently,
+// Languages with another ABI version lack `primary_state_bitmap` and the fields after it or lay them out differently,
 // so the accessors that work on a language before a parser or a query has accepted it must not read them.
 static inline bool ts_language_has_supported_abi(const TSLanguage *self) {
   return self->abi_version == TREE_SITTER_LANGUAGE_VERSION;
@@ -153,6 +153,12 @@ static inline bool ts_language_has_reduce_action(
   TableEntry entry;
   ts_language_table_entry(self, state, symbol, &entry);
   return ts_table_entry_has_reduce_action(&entry);
+}
+
+static inline uint16_t ts_language_lex_mode_id(const TSLanguage *self, uint32_t state) {
+  return self->lex_mode_count <= UINT8_MAX + 1u
+    ? ((const uint8_t *)self->lex_mode_ids)[state]
+    : ((const uint16_t *)self->lex_mode_ids)[state];
 }
 
 // Lookup the table value for a given symbol and state.
@@ -384,7 +390,7 @@ static inline bool ts_language_state_is_primary(
   const TSLanguage *self,
   TSStateId state
 ) {
-  return state == self->primary_state_ids[state];
+  return (self->primary_state_bitmap[state / 8] >> (state % 8)) & 1;
 }
 
 static inline uint32_t ts_language_external_state_stride(const TSLanguage *self) {
