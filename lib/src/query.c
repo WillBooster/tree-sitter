@@ -1864,6 +1864,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
     unsigned subgraph_index, exists;
     // A state's terminals mostly share a few action lists, whose effects depend only on the state.
     VisitedActionLists visited_action_lists = {.count = 0};
+    bool state_is_primary = ts_language_state_is_primary(self->language, state);
     LookaheadIterator lookahead_iterator = ts_language_lookaheads(self->language, state);
     while (ts_lookahead_iterator__next(&lookahead_iterator)) {
       if (lookahead_iterator.action_count) {
@@ -1908,7 +1909,7 @@ static bool ts_query__analyze_patterns(TSQuery *self, unsigned *error_offset) {
         if (lookahead_iterator.next_state != state) {
           state_predecessor_map_add(&predecessor_map, lookahead_iterator.next_state, state);
         }
-        if (ts_language_state_is_primary(self->language, state)) {
+        if (state_is_primary) {
           const TSSymbol *aliases, *aliases_end;
           ts_language_aliases_for_symbol(
             self->language,
