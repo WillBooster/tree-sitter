@@ -159,7 +159,7 @@ typedef struct {
     int32_t serialize;
     int32_t deserialize;
   } external_scanner;
-  int32_t primary_state_ids;
+  int32_t primary_state_bitmap;
   int32_t name;
   int32_t reserved_words;
   uint16_t max_reserved_word_set_size;
@@ -699,7 +699,7 @@ static void delete_partially_loaded_language(
     ts_free((void *)language->name);
     ts_free((void *)language->parse_actions);
     ts_free((void *)language->parse_table);
-    ts_free((void *)language->primary_state_ids);
+    ts_free((void *)language->primary_state_bitmap);
     ts_free((void *)language->public_symbol_map);
     ts_free((void *)language->reserved_words);
     ts_free((void *)language->small_parse_table);
@@ -1603,7 +1603,7 @@ const TSLanguage *ts_wasm_store_load_language(
     wasm_language.reserved_word_slices,
     wasm_language.lex_fn,
     wasm_language.keyword_lex_fn,
-    wasm_language.primary_state_ids,
+    wasm_language.primary_state_bitmap,
     wasm_language.name,
     wasm_language.reserved_words,
     has_supertypes ? wasm_language.supertype_symbols : 0,
@@ -1685,10 +1685,11 @@ const TSLanguage *ts_wasm_store_load_language(
   if (wasm_language.lex_mode_ids) {
     if (!wasm_language.lex_mode_count) goto invalid_language_memory;
     language->lex_mode_ids = copy(&wasm_memory, wasm_language.lex_mode_ids,
-      (size_t)wasm_language.state_count * sizeof(uint16_t), &valid_wasm_memory);
+      (size_t)wasm_language.state_count * (wasm_language.lex_mode_count <= UINT8_MAX + 1u ? 1 : 2),
+      &valid_wasm_memory);
     if (!valid_wasm_memory) goto invalid_language_memory;
     for (uint32_t i = 0; i < language->state_count; i++) {
-      if (language->lex_mode_ids[i] >= language->lex_mode_count) goto invalid_language_memory;
+      if (ts_language_lex_mode_id(language, i) >= language->lex_mode_count) goto invalid_language_memory;
     }
   }
 
@@ -1833,10 +1834,10 @@ const TSLanguage *ts_wasm_store_load_language(
     if (!valid_wasm_memory) goto invalid_language_memory;
   }
 
-  language->primary_state_ids = copy(
+  language->primary_state_bitmap = copy(
     &wasm_memory,
-    wasm_language.primary_state_ids,
-    wasm_language.state_count * sizeof(TSStateId),
+    wasm_language.primary_state_bitmap,
+    wasm_language.state_count / 8u + (wasm_language.state_count % 8u != 0),
     &valid_wasm_memory
   );
   if (!valid_wasm_memory) goto invalid_language_memory;
@@ -2293,7 +2294,7 @@ void ts_wasm_language_release(const TSLanguage *self) {
     ts_free((void *)self->reserved_words);
     ts_free((void *)self->parse_actions);
     ts_free((void *)self->parse_table);
-    ts_free((void *)self->primary_state_ids);
+    ts_free((void *)self->primary_state_bitmap);
     ts_free((void *)self->public_symbol_map);
     ts_free((void *)self->small_parse_table);
     ts_free((void *)self->small_parse_table_map);
