@@ -542,6 +542,18 @@ impl HighlightConfiguration {
             .copied()
             .collect()
     }
+
+    fn definition_uses_parent_scope(&self, pattern: usize, capture: u32) -> bool {
+        self.query
+            .property_settings(pattern)
+            .iter()
+            .rev()
+            .find(|property| {
+                property.key.as_ref() == "local.definition-scope"
+                    && property.capture_id.is_none_or(|id| id == capture as usize)
+            })
+            .is_some_and(|property| property.value.as_deref() == Some("parent"))
+    }
 }
 
 impl<'a> HighlightIterLayer<'a> {
@@ -1086,13 +1098,17 @@ where
                         }
                     }
                     layer.scope_stack.push(scope);
-                }
-                // If the node represents a definition, add a new definition to the
-                // local scope at the top of the scope stack.
-                else if Some(capture.index) == layer.config.local_def_capture_index {
+                } else if Some(capture.index) == layer.config.local_def_capture_index {
                     reference_highlight = None;
                     definition_highlight = None;
-                    let scope = layer.scope_stack.last_mut().unwrap();
+                    let parent = layer
+                        .config
+                        .definition_uses_parent_scope(match_.pattern_index, capture.index);
+                    let scope_index = layer
+                        .scope_stack
+                        .len()
+                        .saturating_sub(1 + usize::from(parent));
+                    let scope = &mut layer.scope_stack[scope_index];
 
                     let mut value_range = None;
                     for capture in match_.captures() {

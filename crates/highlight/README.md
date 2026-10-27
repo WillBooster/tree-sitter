@@ -111,6 +111,30 @@ The last parameter to `highlight` is a _language injection_ callback. This allow
 other languages to be retrieved when Tree-sitter detects an embedded document
 (for example, a piece of JavaScript code inside a `script` tag within HTML).
 
+## Local definition scopes
+
+By default, `local.definition` adds a binding to the active captured scope. To capture an
+entire function for its parameters while binding its name in the enclosing scope:
+
+```scheme
+(function_declaration) @local.scope
+((function_declaration name: (identifier) @local.definition)
+  (#set! local.definition-scope "parent"))
+(formal_parameters (identifier) @local.definition)
+(identifier) @local.reference
+```
+
+The name moves to the immediately enclosing scope, using the implicit root when there
+is no enclosing captured scope. A definition already in the implicit root stays there.
+Parameters remain in the function scope. Reference lookup still follows
+`local.scope-inherits`; an inheriting function scope can resolve its name recursively.
+
+A capture-targeted setting, `(#set! @local.definition local.definition-scope "parent")`,
+applies only to the matching definition capture. Settings targeting other captures are
+ignored. The last applicable setting wins. Only the exact value `parent` selects the
+parent; absent or other values retain the active scope. Initializer-boundary rules use
+the selected destination scope. These settings do not create scopes or infer hoisting.
+
 ## Local initializer boundaries
 
 A locals query can associate independently matched bindings with a shared initializer:

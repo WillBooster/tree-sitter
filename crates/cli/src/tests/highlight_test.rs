@@ -319,6 +319,156 @@ fn test_highlighting_rejects_ambiguous_definition_context_pairs() {
 }
 
 #[test]
+fn test_highlighting_parent_definition_scopes() {
+    let scopes = "(function_declaration) @local.scope";
+    let definitions = r"
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    for property in [
+        "(#set! local.definition-scope parent)",
+        "(#set! @local.definition local.definition-scope parent)",
+        "(#set! local.definition-scope current) (#set! local.definition-scope parent)",
+    ] {
+        let locals = format!(
+            "{scopes} ((function_declaration name: (identifier) @local.definition) {property}) {definitions}"
+        );
+        for (source, expected) in [
+            (
+                "function target(value) { target(value); } target(1);",
+                vec!["function", "function", "function"],
+            ),
+            (
+                "function target() {} function first(target) { target(); }function next() { target(); }target();",
+                vec![
+                    "function",
+                    "variable.parameter",
+                    "variable.parameter",
+                    "function",
+                    "function",
+                ],
+            ),
+            (
+                "function outer() { function target() { target(); } target(); }target();",
+                vec!["function", "function", "function", "function.call"],
+            ),
+        ] {
+            assert_eq!(
+                local_scope_styles(source, &locals),
+                expected,
+                "{source}\n{locals}"
+            );
+        }
+        let root = locals.replacen(scopes, "", 1);
+        assert_eq!(
+            local_scope_styles("function target() {} target();", &root),
+            ["function", "function"]
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_parent_definition_scope_settings() {
+    let source = "function target() {} target();";
+    for property in [
+        "",
+        "(#set! local.definition-scope current)",
+        "(#set! local.definition-scope unsupported)",
+        "(#set! @other local.definition-scope parent)",
+        "(#set! local.definition-scope parent) (#set! @local.definition local.definition-scope current)",
+    ] {
+        let locals = format!(
+            "(function_declaration) @local.scope ((function_declaration name: (identifier) @local.definition @other) {property}) (identifier) @local.reference"
+        );
+        assert_eq!(
+            local_scope_styles(source, &locals),
+            ["function", "function.call"],
+            "{locals}"
+        );
+    }
+    let locals = r#"
+        ((function_declaration) @local.scope (#set! local.scope-inherits "false"))
+        ((function_declaration name: (identifier) @local.definition) (#set! local.definition-scope parent))
+        (identifier) @local.reference
+    "#;
+    assert_eq!(
+        local_scope_styles("function target() { target(); } target();", locals),
+        ["function", "function.call", "function"]
+    );
+}
+
+#[test]
+fn test_highlighting_parent_definition_scope_initializers() {
+    let locals = r"
+        [(function_declaration) (array_pattern)] @local.scope
+        ((function_declaration name: (identifier) @local.definition) (#set! local.definition-scope parent))
+        ((array_pattern (identifier) @local.definition) (#set! local.definition-scope parent))
+        ((assignment_pattern left: (identifier) @local.definition right: (_) @local.definition-value)
+            (#set! local.definition-scope parent))
+        (variable_declarator value: (_) @local.definition-value) @local.definition-context
+        (identifier) @local.reference
+    ";
+    assert_eq!(
+        local_scope_styles(
+            "function target() {} var [target] = target(); target();",
+            locals
+        ),
+        ["function", "variable", "function", "variable"]
+    );
+    assert_eq!(
+        local_scope_styles(
+            "function target() {} var [target = target()] = target(); target();",
+            locals
+        ),
+        ["function", "variable", "function", "variable", "variable"]
+    );
+}
+
+fn local_scope_styles(source: &str, locals: &str) -> Vec<&'static str> {
+    let names = [
+        "function",
+        "function.call",
+        "variable",
+        "variable.parameter",
+    ];
+    let highlights = r"
+        (identifier) @variable
+        (formal_parameters (identifier) @variable.parameter)
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function.call) (#is-not? local))
+    ";
+    let mut config = HighlightConfiguration::new(
+        get_language("javascript"),
+        "javascript",
+        highlights,
+        "",
+        locals,
+    )
+    .unwrap();
+    config.configure(&names);
+    let mut highlighter = Highlighter::new();
+    let events = highlighter
+        .highlight(&config, source.as_bytes(), None, None, |_| None)
+        .unwrap();
+    let mut active = Vec::new();
+    let mut styles = Vec::new();
+    for event in events {
+        match event.unwrap() {
+            HighlightEvent::HighlightStart(highlight) => active.push(highlight),
+            HighlightEvent::HighlightEnd => {
+                active.pop().unwrap();
+            }
+            HighlightEvent::Source { start, end } => {
+                if &source[start..end] == "target" {
+                    styles.push(names[active.last().unwrap().0]);
+                }
+            }
+        }
+    }
+    styles
+}
+
+#[test]
 fn test_highlighting_reference_at_scope_end() {
     let locals = r"
         (statement_block) @local.scope
