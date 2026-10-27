@@ -110,3 +110,33 @@ for event in highlights {
 The last parameter to `highlight` is a _language injection_ callback. This allows
 other languages to be retrieved when Tree-sitter detects an embedded document
 (for example, a piece of JavaScript code inside a `script` tag within HTML).
+
+## Local initializer boundaries
+
+A locals query can associate independently matched bindings with a shared initializer:
+
+```scheme
+(array_pattern (identifier) @local.definition)
+(variable_declarator
+  value: (_) @local.definition-value) @local.definition-context
+```
+
+This handles arbitrary nesting without enumerating each destructuring depth. A definition
+inside the captured context inherits the value's end as its availability boundary when the
+definition ends at or before the value starts. References within that initializer can still
+resolve to an outer binding. Definitions inside the value and after it are unaffected.
+
+Each context pattern must capture exactly one `local.definition-context` and one
+`local.definition-value` per match. Configuration rejects missing, optional, or repeated
+pairs. The value must be contained in the context; other pairs are ignored. Use separate
+matches for multiple initializers. The smallest containing context takes precedence;
+equal-sized contexts use their byte ranges and then the value's byte range as a stable tie
+break. An explicit value in a definition's own match takes precedence over inherited values.
+Context patterns may also capture definitions, references, and scopes.
+
+Context/value metadata is collected before emitting highlight events, so locals pattern
+order does not affect inherited boundaries. Configurations using this convention also
+collect complete same-match definition/value pairs before streaming captures. Configurations
+without `local.definition-context` retain their existing query execution path and do not
+perform this additional query. This convention changes availability only where the locals
+query opts in; it does not infer lexical scopes or hoisting rules.
