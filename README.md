@@ -102,7 +102,7 @@ Source builds can set `TREE_SITTER_MAX_VERSION_COUNT` when compiling the runtime
 CFLAGS=-DTREE_SITTER_MAX_VERSION_COUNT=64 cargo build --release -p tree-sitter-cli
 ```
 
-The value must be a positive integer that leaves room for four overflow versions in an unsigned count; invalid values fail compilation. This define applies to the runtime, not generated grammar code. Published binaries and packages retain the default budget and require a runtime rebuild to change it. Raising the budget can preserve a valid interpretation of heavily ambiguous code, but increases memory use and parsing time, and does not remove other traversal limits or guarantee an error-free parse. Compare representative valid and malformed inputs before choosing a larger budget.
+The value must be a positive integer preprocessor expression that leaves room for four overflow versions in an unsigned count; invalid values fail compilation. This define applies to the runtime, not generated grammar code. Published binaries and packages retain the default budget and require a runtime rebuild to change it. Raising the budget can preserve a valid interpretation of heavily ambiguous code, but increases memory use and parsing time, and does not remove other traversal limits or guarantee an error-free parse. Compare representative valid and malformed inputs before choosing a larger budget.
 
 ## External scanner positions
 

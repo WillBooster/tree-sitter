@@ -999,10 +999,9 @@ StackSliceArray ts_stack_pop_count_for_reduce(
 ) {
   if (reduction_status) *reduction_status = (StackReductionStatus) {0};
   // On a single path, compacting ambiguous extras has only one candidate to select, so the result is the same.
-  if (stack__pop_count_on_single_path(self, version, count)) {
-    return self->slices;
-  }
-  return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, reduction_status, NULL);
+  return stack__pop_count_on_single_path(self, version, count)
+    ? self->slices
+    : stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, reduction_status, NULL);
 }
 
 forceinline StackAction pop_pending_callback(void *payload, const StackIterator *iterator) {

@@ -74,15 +74,14 @@
 
 #define TREE_NAME(tree) SYM_NAME(ts_subtree_symbol(tree))
 
+#define MAX_VERSION_COUNT_OVERFLOW 4
 #ifndef TREE_SITTER_MAX_VERSION_COUNT
 #define TREE_SITTER_MAX_VERSION_COUNT 6
 #endif
-enum { MAX_VERSION_COUNT_OVERFLOW = 4 };
-_Static_assert(
-  (TREE_SITTER_MAX_VERSION_COUNT) > 0 &&
-  (TREE_SITTER_MAX_VERSION_COUNT) <= UINT_MAX - MAX_VERSION_COUNT_OVERFLOW,
-  "TREE_SITTER_MAX_VERSION_COUNT must be positive and leave room for overflow versions"
-);
+#if (TREE_SITTER_MAX_VERSION_COUNT) <= 0 || \
+    (TREE_SITTER_MAX_VERSION_COUNT) > UINT_MAX - MAX_VERSION_COUNT_OVERFLOW
+#error "TREE_SITTER_MAX_VERSION_COUNT must be a positive integer and leave room for overflow versions"
+#endif
 static const unsigned MAX_VERSION_COUNT = (TREE_SITTER_MAX_VERSION_COUNT);
 static const unsigned MAX_SUMMARY_DEPTH = 16;
 // Bounds how many reductions error recovery performs in a row on one stack version without reaching a shift, in case a
