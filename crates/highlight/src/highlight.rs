@@ -112,11 +112,11 @@ pub enum HighlightEvent {
 
 /// Contains the data needed to highlight code written in a particular language.
 ///
-/// This struct is immutable and can be shared between threads.
+/// Once configured, this struct can be shared between threads.
 pub struct HighlightConfiguration {
     pub language: Language,
     pub language_name: String,
-    pub query: Query,
+    query: Query,
     combined_injections_query: Option<Query>,
     local_definition_query: Option<LocalDefinitionQuery>,
     locals_pattern_index: usize,
@@ -477,6 +477,37 @@ impl HighlightConfiguration {
             local_ref_capture_index,
             local_scope_capture_index,
         })
+    }
+
+    /// Get the combined injection, locals, and highlighting query for inspection.
+    #[must_use]
+    pub const fn query(&self) -> &Query {
+        &self.query
+    }
+
+    /// Disable a capture in all queries used by this configuration.
+    pub fn disable_capture(&mut self, name: &str) {
+        self.query.disable_capture(name);
+        if let Some(query) = &mut self.combined_injections_query {
+            query.disable_capture(name);
+        }
+        if let Some(query) = &mut self.local_definition_query {
+            query.disable_capture(name);
+        }
+    }
+
+    /// Disable a pattern using its index in the combined [`Self::query`].
+    pub fn disable_pattern(&mut self, index: usize) {
+        self.query.disable_pattern(index);
+        if index < self.locals_pattern_index {
+            if let Some(query) = &mut self.combined_injections_query {
+                query.disable_pattern(index);
+            }
+        } else if index < self.highlights_pattern_index
+            && let Some(query) = &mut self.local_definition_query
+        {
+            query.disable_pattern(index - self.locals_pattern_index);
+        }
     }
 
     /// Get a slice containing all of the highlight names used in the configuration.

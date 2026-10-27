@@ -111,6 +111,15 @@ The last parameter to `highlight` is a _language injection_ callback. This allow
 other languages to be retrieved when Tree-sitter detects an embedded document
 (for example, a piece of JavaScript code inside a `script` tag within HTML).
 
+## Query customization
+
+Inspect the combined query with `configuration.query()`. Disable captures with
+`configuration.disable_capture(name)` and patterns with `configuration.disable_pattern(index)`.
+Pattern indices use that combined query's injection, locals, and highlights order.
+These methods update the internal metadata and combined-injection queries together with
+the main query. The query accessor is read-only. Disabling `local.definition-value` also
+skips initializer metadata collection.
+
 ## Local initializer boundaries
 
 A pattern capturing both `local.definition` and `local.definition-value` makes the binding

@@ -13,7 +13,7 @@ use tree_sitter::{
 pub struct LocalDefinitionQuery {
     query: Query,
     context_capture: Option<u32>,
-    value_capture: u32,
+    value_capture: Option<u32>,
     definition_capture: Option<u32>,
 }
 
@@ -79,6 +79,9 @@ impl LocalDefinitions {
         source: &[u8],
         cancellation_flag: Option<&AtomicUsize>,
     ) -> Result<Self, Error> {
+        let Some(value_capture) = query.value_capture else {
+            return Ok(Self::default());
+        };
         let mut contexts: HashMap<usize, LocalDefinitionContext> = HashMap::new();
         let mut explicit_values = HashMap::new();
         let mut progress = |_: &QueryCursorState| {
@@ -98,7 +101,7 @@ impl LocalDefinitions {
             let mut values = mat
                 .captures()
                 .iter()
-                .filter(|capture| capture.index == query.value_capture)
+                .filter(|capture| capture.index == value_capture)
                 .map(|capture| capture.node.byte_range());
             let Some(mut value) = values.next() else {
                 continue;
@@ -174,6 +177,19 @@ impl LocalDefinitionQuery {
         })
     }
 
+    pub(super) fn disable_capture(&mut self, name: &str) {
+        self.query.disable_capture(name);
+        match name {
+            "local.definition-value" => self.value_capture = None,
+            "local.definition-context" => self.context_capture = None,
+            _ => {}
+        }
+    }
+
+    pub(super) fn disable_pattern(&mut self, index: usize) {
+        self.query.disable_pattern(index);
+    }
+
     fn record_explicit_values(
         &self,
         mat: &QueryMatch,
@@ -240,7 +256,7 @@ impl LocalDefinitionQuery {
         Ok(Some(Self {
             query,
             context_capture,
-            value_capture: value_capture.unwrap(),
+            value_capture,
             definition_capture,
         }))
     }

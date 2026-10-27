@@ -373,6 +373,50 @@ fn test_highlighting_completed_definition_values_with_siblings() {
 }
 
 #[test]
+fn test_highlighting_disabled_initializer_captures() {
+    let source = "function target() {} var target = target(); target();";
+    for initializer in [
+        "(variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)",
+        "(variable_declarator name: (identifier) @local.definition) (variable_declarator value: (_) @local.definition-value) @local.definition-context",
+    ] {
+        let locals = format!(
+            "(function_declaration name: (identifier) @local.definition){initializer}(identifier) @local.reference"
+        );
+        let mut config = target_highlight_config(&locals);
+        config.disable_capture("local.definition-value");
+        assert_target_highlights_with_config(
+            source,
+            &config,
+            &["function", "variable", "variable", "variable"],
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_disabled_initializer_patterns() {
+    let source = "function target() {} var target = target(); target();";
+    for (initializer, index, expected) in [
+        (
+            "(variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)",
+            1,
+            ["function", "function", "function", "function"],
+        ),
+        (
+            "(variable_declarator name: (identifier) @local.definition) (variable_declarator value: (_) @local.definition-value) @local.definition-context",
+            2,
+            ["function", "variable", "variable", "variable"],
+        ),
+    ] {
+        let locals = format!(
+            "(function_declaration name: (identifier) @local.definition){initializer}(identifier) @local.reference"
+        );
+        let mut config = target_highlight_config(&locals);
+        config.disable_pattern(index);
+        assert_target_highlights_with_config(source, &config, &expected);
+    }
+}
+
+#[test]
 fn test_highlighting_reference_at_scope_end() {
     let locals = r"
         (statement_block) @local.scope
@@ -407,6 +451,25 @@ fn test_highlighting_new_scope_at_scope_end() {
 }
 
 fn assert_target_highlights(source: &str, locals: &str, expected: &[&str]) {
+    assert_target_highlights_with_config(source, &target_highlight_config(locals), expected);
+}
+
+fn assert_target_highlights_with_config(
+    source: &str,
+    config: &HighlightConfiguration,
+    expected: &[&str],
+) {
+    let tokens = to_token_vector(source, config).unwrap();
+    let actual = tokens
+        .iter()
+        .flatten()
+        .filter(|(text, _)| *text == "target")
+        .map(|(_, names)| names.last().copied().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected, "{source}");
+}
+
+fn target_highlight_config(locals: &str) -> HighlightConfiguration {
     let highlights = r"
         (identifier) @variable
         (formal_parameters (identifier) @variable.parameter)
@@ -422,14 +485,7 @@ fn assert_target_highlights(source: &str, locals: &str, expected: &[&str]) {
     )
     .unwrap();
     config.configure(&HIGHLIGHT_NAMES);
-    let tokens = to_token_vector(source, &config).unwrap();
-    let actual = tokens
-        .iter()
-        .flatten()
-        .filter(|(text, _)| *text == "target")
-        .map(|(_, names)| names.last().copied().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected, "{source}\n{locals}");
+    config
 }
 
 #[test]
@@ -1139,6 +1195,46 @@ fn test_highlighting_combined_injections_in_source_order() {
                 "pattern order {order:?}"
             );
         }
+    }
+}
+
+#[test]
+fn test_highlighting_disabled_combined_injections() {
+    let source = "'let target = 1;'";
+    for disabled in ["capture", "pattern"] {
+        let mut config = HighlightConfiguration::new(
+            get_language("javascript"),
+            "javascript",
+            "(string_fragment) @string",
+            r#"
+                ((string_fragment) @injection.content
+                    (#set! injection.language "javascript")
+                    (#set! injection.combined))
+            "#,
+            "",
+        )
+        .unwrap();
+        config.configure(&HIGHLIGHT_NAMES);
+        let tokens = to_token_vector(source, &config).unwrap();
+        assert!(
+            tokens
+                .iter()
+                .flatten()
+                .any(|(text, names)| *text == "let" && names.contains(&"keyword"))
+        );
+        if disabled == "capture" {
+            config.disable_capture("injection.content");
+        } else {
+            config.disable_pattern(0);
+        }
+        assert_eq!(
+            to_token_vector(source, &config).unwrap(),
+            [vec![
+                ("'", vec![]),
+                ("let target = 1;", vec!["string"]),
+                ("'", vec![])
+            ]]
+        );
     }
 }
 
