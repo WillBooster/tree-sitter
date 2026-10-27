@@ -14,7 +14,7 @@ static void ts_range_array_add(
 ) {
   if (self->size > 0) {
     TSRange *last_range = array_back(self);
-    if (start.bytes <= last_range->end_byte) {
+    if (last_range->start_byte < last_range->end_byte && start.bytes <= last_range->end_byte) {
       last_range->end_byte = end.bytes;
       last_range->end_point = end.extent;
       return;
@@ -35,12 +35,28 @@ bool ts_range_array_intersects(
 ) {
   for (unsigned i = start_index; i < self->size; i++) {
     TSRange *range = array_get(self, i);
-    if (range->end_byte > start_byte) {
+    if (range->start_byte == range->end_byte) {
+      if (range->start_byte > end_byte) break;
+      if (range->start_byte >= start_byte) return true;
+    } else if (range->end_byte > start_byte) {
       if (range->start_byte >= end_byte) break;
       return true;
     }
   }
   return false;
+}
+
+static void ts_range_array_add_difference(TSRangeArray *self, Length start, Length end) {
+  if (start.bytes < end.bytes) {
+    ts_range_array_add(self, start, end);
+    return;
+  }
+  if (self->size > 0) {
+    const TSRange *last = array_back(self);
+    if (last->start_byte == start.bytes && last->end_byte == start.bytes) return;
+  }
+  TSRange point = {start.extent, start.extent, start.bytes, start.bytes};
+  array_push(self, point);
 }
 
 void ts_range_array_get_changed_ranges(
@@ -83,7 +99,7 @@ void ts_range_array_get_changed_ranges(
       ? next_old_position
       : next_new_position;
     if (differs) {
-      ts_range_array_add(differences, current_position, next_position);
+      ts_range_array_add_difference(differences, current_position, next_position);
     }
     if (next_old_position.bytes <= next_new_position.bytes && old_index < old_range_count) {
       if (in_old_range) old_index++;
