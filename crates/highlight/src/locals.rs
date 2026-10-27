@@ -1,0 +1,253 @@
+use super::Error;
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::{self, ControlFlow},
+    sync::atomic::{AtomicUsize, Ordering},
+};
+use streaming_iterator::StreamingIterator;
+use tree_sitter::{
+    CaptureQuantifier, Language, Node, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
+    QueryError, QueryErrorKind, QueryMatch, Tree,
+};
+
+pub struct LocalDefinitionContextQuery {
+    query: Query,
+    context_capture: u32,
+    value_capture: u32,
+    definition_capture: Option<u32>,
+}
+
+type ExplicitValues = HashMap<(usize, usize), ops::Range<usize>>;
+
+struct LocalDefinitionContext {
+    range: ops::Range<usize>,
+    value_range: ops::Range<usize>,
+}
+
+#[derive(Default)]
+pub struct LocalDefinitionContexts {
+    pending: VecDeque<LocalDefinitionContext>,
+    active: Vec<LocalDefinitionContext>,
+    explicit_values: ExplicitValues,
+}
+
+impl LocalDefinitionContexts {
+    pub(super) fn explicit_value_range(
+        &self,
+        pattern: usize,
+        node: Node,
+    ) -> Option<ops::Range<usize>> {
+        self.explicit_values.get(&(pattern, node.id())).cloned()
+    }
+
+    pub(super) fn value_range(
+        &mut self,
+        definition: &ops::Range<usize>,
+        scope: &ops::Range<usize>,
+    ) -> Option<ops::Range<usize>> {
+        while self
+            .pending
+            .front()
+            .is_some_and(|context| context.range.start <= definition.start)
+        {
+            self.active.push(self.pending.pop_front().unwrap());
+        }
+        self.active
+            .retain(|context| context.value_range.start >= definition.start);
+        self.active
+            .iter()
+            .filter(|context| {
+                definition.end <= context.value_range.start
+                    && scope.start <= context.range.start
+                    && context.range.end <= scope.end
+            })
+            .min_by_key(|context| {
+                (
+                    context.range.len(),
+                    context.range.start,
+                    context.value_range.start,
+                    context.value_range.end,
+                )
+            })
+            .map(|context| context.value_range.clone())
+    }
+
+    pub(super) fn collect(
+        query: &LocalDefinitionContextQuery,
+        cursor: &mut QueryCursor,
+        tree: &Tree,
+        source: &[u8],
+        cancellation_flag: Option<&AtomicUsize>,
+    ) -> Result<Self, Error> {
+        let mut contexts: HashMap<usize, LocalDefinitionContext> = HashMap::new();
+        let mut explicit_values = HashMap::new();
+        let mut progress = |_: &QueryCursorState| {
+            if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let options = QueryCursorOptions::new().progress_callback(&mut progress);
+        let mut matches =
+            cursor.matches_with_options(&query.query, tree.root_node(), source, options);
+        while let Some(mat) = matches.next() {
+            if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
+                return Err(Error::Cancelled);
+            }
+            let mut values = mat
+                .captures()
+                .iter()
+                .filter(|capture| capture.index == query.value_capture)
+                .map(|capture| capture.node.byte_range());
+            let Some(mut value) = values.next() else {
+                continue;
+            };
+            let mut last_value = value.clone();
+            for next in values {
+                include_range(&mut value, &next);
+                last_value = next;
+            }
+            if let Some(context) = mat
+                .captures()
+                .iter()
+                .find(|capture| capture.index == query.context_capture)
+                .map(|capture| capture.node)
+                && context.start_byte() <= value.start
+                && value.end <= context.end_byte()
+            {
+                contexts
+                    .entry(context.id())
+                    .and_modify(|previous| include_range(&mut previous.value_range, &value))
+                    .or_insert_with(|| LocalDefinitionContext {
+                        range: context.byte_range(),
+                        value_range: value.clone(),
+                    });
+            }
+            query.record_explicit_values(mat, &mut explicit_values, value, last_value);
+        }
+        if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
+            return Err(Error::Cancelled);
+        }
+        let mut contexts = contexts.into_values().collect::<Vec<_>>();
+        contexts.sort_unstable_by_key(|context| {
+            (
+                context.range.start,
+                context.range.end,
+                context.value_range.start,
+                context.value_range.end,
+            )
+        });
+        contexts.dedup_by(|a, b| a.range == b.range && a.value_range == b.value_range);
+        Ok(Self {
+            pending: contexts.into(),
+            active: Vec::new(),
+            explicit_values,
+        })
+    }
+}
+
+impl LocalDefinitionContextQuery {
+    pub(super) fn new(
+        language: &Language,
+        locals_query: &str,
+        main_query: &Query,
+        locals_offset: usize,
+        query_source: &str,
+    ) -> Result<Option<Self>, QueryError> {
+        if main_query
+            .capture_index_for_name("local.definition-context")
+            .is_none()
+        {
+            return Ok(None);
+        }
+        Self::compile(language, locals_query).map_err(|mut error| {
+            error.offset += locals_offset;
+            let prefix = &query_source[..error.offset];
+            error.row = prefix.bytes().filter(|byte| *byte == b'\n').count();
+            error.column = prefix.rsplit('\n').next().unwrap().len();
+            error
+        })
+    }
+
+    fn record_explicit_values(
+        &self,
+        mat: &QueryMatch,
+        values: &mut ExplicitValues,
+        region: ops::Range<usize>,
+        last_value: ops::Range<usize>,
+    ) {
+        let has_context = mat
+            .captures()
+            .iter()
+            .any(|capture| capture.index == self.context_capture);
+        let value = if has_context { region } else { last_value };
+        for definition in mat
+            .captures()
+            .iter()
+            .filter(|capture| Some(capture.index) == self.definition_capture)
+        {
+            values
+                .entry((mat.pattern_index, definition.node.id()))
+                .and_modify(|previous| {
+                    if has_context {
+                        include_range(previous, &value);
+                    } else {
+                        *previous = value.clone();
+                    }
+                })
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    fn compile(language: &Language, locals_query: &str) -> Result<Option<Self>, QueryError> {
+        let mut query = Query::new(language, locals_query)?;
+        let Some(context_capture) = query.capture_index_for_name("local.definition-context") else {
+            return Ok(None);
+        };
+        let value_capture = query.capture_index_for_name("local.definition-value");
+        let definition_capture = query.capture_index_for_name("local.definition");
+        for pattern in 0..query.pattern_count() {
+            let quantifiers = query.capture_quantifiers(pattern);
+            if quantifiers[context_capture as usize] == CaptureQuantifier::Zero {
+                if !definition_capture.is_some_and(|definition| {
+                    quantifiers[definition as usize] != CaptureQuantifier::Zero
+                }) || !value_capture
+                    .is_some_and(|value| quantifiers[value as usize] != CaptureQuantifier::Zero)
+                {
+                    query.disable_pattern(pattern);
+                }
+                continue;
+            }
+            if quantifiers[context_capture as usize] != CaptureQuantifier::One
+                || value_capture.is_none_or(|value| {
+                    !matches!(
+                        quantifiers[value as usize],
+                        CaptureQuantifier::One | CaptureQuantifier::OneOrMore
+                    )
+                })
+            {
+                let offset = query.start_byte_for_pattern(pattern);
+                let prefix = &locals_query[..offset];
+                return Err(QueryError {
+                    row: prefix.bytes().filter(|b| *b == b'\n').count(),
+                    column: prefix.rsplit('\n').next().unwrap().len(),
+                    offset,
+                    message: "Each local.definition-context pattern must capture exactly one context and one or more local.definition-value nodes".into(),
+                    kind: QueryErrorKind::Structure,
+                });
+            }
+        }
+        Ok(Some(Self {
+            query,
+            context_capture,
+            value_capture: value_capture.unwrap(),
+            definition_capture,
+        }))
+    }
+}
+
+fn include_range(region: &mut ops::Range<usize>, value: &ops::Range<usize>) {
+    region.start = region.start.min(value.start);
+    region.end = region.end.max(value.end);
+}

@@ -1,7 +1,9 @@
 #![cfg_attr(not(any(test, doctest)), doc = include_str!("../README.md"))]
 
 pub mod c_lib;
+mod locals;
 use core::slice;
+use locals::{LocalDefinitionContextQuery, LocalDefinitionContexts};
 use std::{
     collections::HashSet,
     iter,
@@ -116,6 +118,7 @@ pub struct HighlightConfiguration {
     pub language_name: String,
     pub query: Query,
     combined_injections_query: Option<Query>,
+    definition_context_query: Option<LocalDefinitionContextQuery>,
     locals_pattern_index: usize,
     highlights_pattern_index: usize,
     highlight_indices: Vec<Option<Highlight>>,
@@ -181,12 +184,29 @@ where
 struct HighlightIterLayer<'a> {
     _tree: Tree,
     cursor: QueryCursor,
-    captures: iter::Peekable<_QueryCaptures<'a, 'a, &'a [u8], &'a [u8]>>,
+    captures: iter::Peekable<HighlightCaptures<'a>>,
     config: &'a HighlightConfiguration,
     highlight_end_stack: Vec<usize>,
     scope_stack: Vec<LocalScope<'a>>,
+    definition_contexts: LocalDefinitionContexts,
     ranges: Vec<Range>,
     depth: usize,
+}
+
+struct HighlightCaptures<'a> {
+    inner: _QueryCaptures<'a, 'a, &'a [u8], &'a [u8]>,
+    metadata: Option<[u32; 2]>,
+}
+
+impl<'a> Iterator for HighlightCaptures<'a> {
+    type Item = (QueryMatch<'a, 'a>, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.find(|(mat, index)| {
+            self.metadata
+                .is_none_or(|metadata| !metadata.contains(&mat.captures()[*index].index))
+        })
+    }
 }
 
 pub struct _QueryCaptures<'query, 'tree, T: TextProvider<I>, I: AsRef<[u8]>> {
@@ -377,12 +397,10 @@ impl HighlightConfiguration {
         for i in 0..(query.pattern_count()) {
             let pattern_offset = query.start_byte_for_pattern(i);
             if pattern_offset < highlights_query_offset {
-                if pattern_offset < highlights_query_offset {
-                    highlights_pattern_index += 1;
-                }
-                if pattern_offset < locals_query_offset {
-                    locals_pattern_index += 1;
-                }
+                highlights_pattern_index += 1;
+            }
+            if pattern_offset < locals_query_offset {
+                locals_pattern_index += 1;
             }
         }
 
@@ -436,12 +454,20 @@ impl HighlightConfiguration {
             }
         }
 
+        let definition_context_query = LocalDefinitionContextQuery::new(
+            &language,
+            locals_query,
+            &query,
+            locals_query_offset,
+            &query_source,
+        )?;
         let highlight_indices = vec![None; query.capture_names().len()];
         Ok(Self {
             language,
             language_name: name.into(),
             query,
             combined_injections_query,
+            definition_context_query,
             locals_pattern_index,
             highlights_pattern_index,
             highlight_indices,
@@ -653,6 +679,18 @@ impl<'a> HighlightIterLayer<'a> {
                     }
                 }
 
+                let definition_contexts = if let Some(query) = &config.definition_context_query {
+                    LocalDefinitionContexts::collect(
+                        query,
+                        &mut cursor,
+                        &tree,
+                        source,
+                        cancellation_flag,
+                    )?
+                } else {
+                    LocalDefinitionContexts::default()
+                };
+
                 // SAFETY:
                 // The `captures` iterator borrows the `Tree` and the `QueryCursor`, which
                 // prevents them from being moved. But both of these values are really just
@@ -669,6 +707,22 @@ impl<'a> HighlightIterLayer<'a> {
                     std::mem::transmute::<QueryCaptures<_, _>, _QueryCaptures<_, _>>(
                         cursor_ref.captures(&config.query, tree_ref.root_node(), source),
                     )
+                };
+                let metadata = config.definition_context_query.as_ref().map(|_| {
+                    [
+                        config
+                            .query
+                            .capture_index_for_name("local.definition-context")
+                            .unwrap(),
+                        config
+                            .query
+                            .capture_index_for_name("local.definition-value")
+                            .unwrap(),
+                    ]
+                });
+                let captures = HighlightCaptures {
+                    inner: captures,
+                    metadata,
                 }
                 .peekable();
 
@@ -679,6 +733,7 @@ impl<'a> HighlightIterLayer<'a> {
                         range: 0..usize::MAX,
                         local_defs: Vec::new(),
                     }],
+                    definition_contexts,
                     cursor,
                     depth,
                     _tree: tree,
@@ -1039,13 +1094,22 @@ where
                     definition_highlight = None;
                     let scope = layer.scope_stack.last_mut().unwrap();
 
-                    let mut value_range = 0..0;
+                    let mut value_range = None;
                     for capture in match_.captures() {
                         if Some(capture.index) == layer.config.local_def_value_capture_index {
-                            value_range = capture.node.byte_range();
+                            value_range = Some(capture.node.byte_range());
                         }
                     }
 
+                    let value_range = layer
+                        .definition_contexts
+                        .explicit_value_range(
+                            match_.pattern_index - layer.config.locals_pattern_index,
+                            capture.node,
+                        )
+                        .or(value_range)
+                        .or_else(|| layer.definition_contexts.value_range(&range, &scope.range))
+                        .unwrap_or(0..0);
                     if let Ok(name) = str::from_utf8(&self.source[range.clone()]) {
                         scope.local_defs.push(LocalDef {
                             name,
