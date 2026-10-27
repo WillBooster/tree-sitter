@@ -244,10 +244,69 @@ fn test_highlighting_definition_context_predicates() {
 }
 
 #[test]
+fn test_highlighting_initializer_regions_with_multiple_values() {
+    let highlights = r"
+        (identifier) @variable
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function) (#is-not? local))
+    ";
+    let definitions = r"
+        (function_declaration name: (identifier) @local.definition)
+        (array_pattern (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    let contexts = r"
+        (variable_declarator value: (array (_)+ @local.definition-value)) @local.definition-context
+    ";
+    for locals in [
+        format!("{definitions}{contexts}"),
+        format!("{contexts}{definitions}"),
+    ] {
+        let mut config = HighlightConfiguration::new(
+            get_language("javascript"),
+            "javascript",
+            highlights,
+            "",
+            &locals,
+        )
+        .unwrap();
+        config.configure(&HIGHLIGHT_NAMES);
+        for (source, expected_target) in [
+            (
+                "function target() {} function inner() {} var [target] = [target(), (inner)=>inner(), target()]; target;",
+                vec!["function", "variable", "function", "function", "variable"],
+            ),
+            (
+                "function target() {} function inner() {} var [target] = [target(), (inner)=>inner(), target()], [other] = [target()]; target;",
+                vec![
+                    "function", "variable", "function", "function", "variable", "variable",
+                ],
+            ),
+        ] {
+            let tokens = to_token_vector(source, &config).unwrap();
+            for (name, expected) in [
+                ("target", expected_target),
+                ("inner", vec!["function", "variable", "variable"]),
+            ] {
+                let actual = tokens
+                    .iter()
+                    .flatten()
+                    .filter(|(text, _)| *text == name)
+                    .map(|(_, names)| names.last().copied().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "{name}: {source}\n{locals}");
+            }
+        }
+    }
+}
+
+#[test]
 fn test_highlighting_rejects_ambiguous_definition_context_pairs() {
     for locals in [
         "(variable_declarator) @local.definition-context",
-        "(array (identifier) @local.definition-value+) @local.definition-context",
+        "(array (identifier)? @local.definition-value) @local.definition-context",
+        "(array (identifier)* @local.definition-value) @local.definition-context",
         "((variable_declarator value: (_) @local.definition-value) @local.definition-context)+",
     ] {
         let result =

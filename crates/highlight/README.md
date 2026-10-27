@@ -124,16 +124,21 @@ A locals query can associate independently matched bindings with a shared initia
 This handles arbitrary nesting without enumerating each destructuring depth. A definition
 inside the captured context inherits the value's end as its availability boundary when the
 definition ends at or before the value starts and its current captured scope contains
-the context. References within that initializer can still
-resolve to an outer binding. Definitions inside the value, after it, or in a separately captured nested scope are
-unaffected.
+the context. References within that initializer can still resolve to an outer binding.
+Definitions inside the value, after it, or in a separately captured nested scope are unaffected.
 
-Each context pattern must capture exactly one `local.definition-context` and one
-`local.definition-value` per match. Configuration rejects missing, optional, or repeated
-pairs. The value must be contained in the context; other pairs are ignored. Use separate
-matches for multiple initializers. The smallest containing context takes precedence;
-equal-sized contexts use their byte ranges and then the value's byte range as a stable tie
-break. An explicit value in a definition's own match takes precedence over inherited values.
+Each context pattern must capture exactly one `local.definition-context` and one or more
+`local.definition-value` nodes per match. All values captured for the same context node,
+including across completed matches, define one initializer region from their minimum start
+to maximum end. Capture all sibling values of a flattened expression, for example
+`value: (_)+ @local.definition-value` for a cascaded loop iterable. Definitions within
+any part of that region are unaffected by its inherited boundary. Configuration rejects
+missing/optional values and repeated contexts. The region must be contained in the context;
+other pairs are ignored. Use distinct context nodes for distinct declarators/initializers,
+rather than a broad lexical declaration containing unrelated initializers. The smallest
+containing context takes precedence. Equal-sized contexts use their byte ranges and then
+the value's byte range as a stable tie break. An explicit value in a definition's own match takes precedence over inherited values.
+Explicit patterns without a context retain their last captured value behavior.
 Context patterns may also capture definitions, references, and scopes. Text predicates
 on context/value captures continue to filter those locals matches.
 
