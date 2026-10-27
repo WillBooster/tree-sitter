@@ -319,6 +319,66 @@ fn test_highlighting_rejects_ambiguous_definition_context_pairs() {
 }
 
 #[test]
+fn test_highlighting_reference_at_scope_end() {
+    let locals = r"
+        (statement_block) @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (variable_declarator name: (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    for gap in ["", " ", "\n"] {
+        let source =
+            format!("function target(){{}} function outer(){{let target=1;}}{gap}target();");
+        assert_target_highlights(&source, locals, &["function", "variable", "function"]);
+    }
+}
+
+#[test]
+fn test_highlighting_new_scope_at_scope_end() {
+    let locals = r"
+        [(function_declaration) (statement_block)] @local.scope
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    for gap in ["", " ", "\n"] {
+        let source = format!(
+            "function target(){{}} function first(target){{}}{gap}function next(){{target();}}"
+        );
+        assert_target_highlights(
+            &source,
+            locals,
+            &["function", "variable.parameter", "function"],
+        );
+    }
+}
+
+fn assert_target_highlights(source: &str, locals: &str, expected: &[&str]) {
+    let highlights = r"
+        (identifier) @variable
+        (formal_parameters (identifier) @variable.parameter)
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function) (#is-not? local))
+    ";
+    let mut config = HighlightConfiguration::new(
+        get_language("javascript"),
+        "javascript",
+        highlights,
+        "",
+        locals,
+    )
+    .unwrap();
+    config.configure(&HIGHLIGHT_NAMES);
+    let tokens = to_token_vector(source, &config).unwrap();
+    let actual = tokens
+        .iter()
+        .flatten()
+        .filter(|(text, _)| *text == "target")
+        .map(|(_, names)| names.last().copied().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected, "{source}\n{locals}");
+}
+
+#[test]
 fn test_highlighting_javascript() {
     let source = "const a = function(b) { return b + c; }";
     assert_eq!(
