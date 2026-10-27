@@ -5812,13 +5812,13 @@ fn test_parsing_with_timeout_and_no_completion() {
 fn test_parsing_cancellation_limits_acceptance_allocation() {
     let language = get_language("typescript/typescript");
     let source = "a<b<".repeat(1000);
-    let (_, complete_bytes) = allocations::record_allocated_bytes(|| {
+    let ((), complete_bytes) = allocations::record_allocated_bytes(|| {
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
         let tree = parser.parse(&source, None).unwrap();
         assert!(tree.root_node().has_error());
     });
-    let (_, canceled_bytes) = allocations::record_allocated_bytes(|| {
+    let ((), canceled_bytes) = allocations::record_allocated_bytes(|| {
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
         let tree = parser.parse_with_options(
