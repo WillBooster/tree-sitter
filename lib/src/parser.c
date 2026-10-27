@@ -74,8 +74,16 @@
 
 #define TREE_NAME(tree) SYM_NAME(ts_subtree_symbol(tree))
 
-static const unsigned MAX_VERSION_COUNT = 6;
-static const unsigned MAX_VERSION_COUNT_OVERFLOW = 4;
+#ifndef TREE_SITTER_MAX_VERSION_COUNT
+#define TREE_SITTER_MAX_VERSION_COUNT 6
+#endif
+enum { MAX_VERSION_COUNT_OVERFLOW = 4 };
+_Static_assert(
+  (TREE_SITTER_MAX_VERSION_COUNT) > 0 &&
+  (TREE_SITTER_MAX_VERSION_COUNT) <= UINT_MAX - MAX_VERSION_COUNT_OVERFLOW,
+  "TREE_SITTER_MAX_VERSION_COUNT must be positive and leave room for overflow versions"
+);
+static const unsigned MAX_VERSION_COUNT = (TREE_SITTER_MAX_VERSION_COUNT);
 static const unsigned MAX_SUMMARY_DEPTH = 16;
 // Bounds how many reductions error recovery performs in a row on one stack version without reaching a shift, in case a
 // parse table's reductions never reach one. A chain that does reach one grows with the nesting depth of the input (about
@@ -185,6 +193,18 @@ static void ts_parser__log(TSParser *self) {
     }
     fprintf(self->dot_graph_file, "\"\n}\n\n");
   }
+}
+
+static void ts_parser__log_version_limit(
+  TSParser *self,
+  const char *operation,
+  StackVersion version,
+  bool limit_reached
+) {
+  if (!limit_reached) return;
+  LOG("version_limit operation:%s, version:%u, limit:%u, overflow:%u, halted:%u",
+    operation, version, MAX_VERSION_COUNT, MAX_VERSION_COUNT_OVERFLOW,
+    ts_stack_halted_version_count(self->stack));
 }
 
 static bool ts_parser__breakdown_top_of_stack(
@@ -1240,12 +1260,13 @@ static StackVersion ts_parser__reduce(
   // path back through the stack. For each path, create a new parent node to
   // contain the popped children, and push it onto the stack in place of the
   // children.
-  bool has_multiple_paths;
+  StackReductionStatus reduction_status;
   StackSliceArray pop = ts_stack_pop_count_for_reduce(
     self->stack, version, count, MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW,
-    &has_multiple_paths
+    &reduction_status
   );
-  is_fragile |= has_multiple_paths;
+  is_fragile |= reduction_status.has_multiple_paths;
+  ts_parser__log_version_limit(self, "reduce_paths", version, reduction_status.was_truncated);
   uint32_t removed_version_count = 0;
   uint32_t halted_version_count = ts_stack_halted_version_count(self->stack);
   for (uint32_t i = 0; i < pop.size; i++) {
@@ -1256,7 +1277,8 @@ static StackVersion ts_parser__reduce(
     // will all be sorted and truncated at the end of the outer parsing loop.
     // Allow the maximum version count to be temporarily exceeded, but only
     // by a limited threshold.
-    if (slice_version > MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW + halted_version_count) {
+    if ((uint64_t)slice_version > (uint64_t)MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW + halted_version_count) {
+      ts_parser__log_version_limit(self, "reduce", slice_version, true);
       ts_stack_remove_version(self->stack, slice_version);
       ts_subtree_array_delete(&self->tree_pool, &slice.subtrees);
       removed_version_count++;
@@ -1752,6 +1774,7 @@ static void ts_parser__recover(
   }
 
   if (did_recover && ts_stack_version_count(self->stack) > MAX_VERSION_COUNT) {
+    ts_parser__log_version_limit(self, "recover", version, true);
     ts_stack_halt(self->stack, version);
     ts_subtree_release(&self->tree_pool, lookahead);
     return;
@@ -2360,6 +2383,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
   // Enforce a hard upper bound on the number of stack versions by
   // discarding the least promising versions.
   while (ts_stack_version_count(self->stack) > MAX_VERSION_COUNT) {
+    ts_parser__log_version_limit(self, "condense", MAX_VERSION_COUNT, true);
     ts_stack_remove_version(self->stack, MAX_VERSION_COUNT);
     made_changes = true;
   }
@@ -2383,6 +2407,7 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
         (ts_stack_unconfirmed_recovery(self->stack, i) ||
          ts_parser__version_status(self, i).cost < active_cost);
       if ((has_active_version && !can_resume_recovery) || self->accept_count >= MAX_VERSION_COUNT) {
+        ts_parser__log_version_limit(self, "accept", i, self->accept_count >= MAX_VERSION_COUNT);
         ts_stack_remove_version(self->stack, i);
         made_changes = true;
         i--;

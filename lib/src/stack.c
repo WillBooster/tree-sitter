@@ -514,11 +514,11 @@ static StackSliceArray stack__iter(
   void *payload,
   int goal_subtree_count,
   uint32_t max_reductions,
-  bool *is_ambiguous,
+  StackReductionStatus *reduction_status,
   StackIterationProgress *progress
 ) {
   StackHead *head = array_get(&self->heads, version);
-  bool compact = is_ambiguous && self->has_ambiguous_extras;
+  bool compact = reduction_status && self->has_ambiguous_extras;
   // The original head pins every borrowed path until the selected arrays retain it.
   uint32_t pop_count = 0;
   bool invalid_path = false;
@@ -666,6 +666,7 @@ static StackSliceArray stack__iter(
   }
 
   if (compact && !invalid_path) {
+    reduction_status->was_truncated = winners.size > max_reductions;
     for (uint32_t selected = 0; selected < max_reductions; selected++) {
       uint32_t best = UINT32_MAX;
       for (uint32_t i = 0; i < winners.size; i++) {
@@ -700,10 +701,10 @@ static StackSliceArray stack__iter(
   array_delete(&paths);
   array_delete(&winners);
   array_delete(&candidates);
-  if (is_ambiguous) *is_ambiguous = pop_count > 1;
+  if (reduction_status) reduction_status->has_multiple_paths = pop_count > 1;
   if (compact && invalid_path) {
     StackSliceArray result = stack__iter(self, version, callback, payload, goal_subtree_count, 0, NULL, NULL);
-    *is_ambiguous = result.size > 1;
+    reduction_status->has_multiple_paths = result.size > 1;
     return result;
   }
   return self->slices;
@@ -994,14 +995,14 @@ StackSliceArray ts_stack_pop_count_for_reduce(
   StackVersion version,
   uint32_t count,
   uint32_t max_reductions,
-  bool *is_ambiguous
+  StackReductionStatus *reduction_status
 ) {
+  *reduction_status = (StackReductionStatus) {0};
   // On a single path, compacting ambiguous extras has only one candidate to select, so the result is the same.
   if (stack__pop_count_on_single_path(self, version, count)) {
-    if (is_ambiguous) *is_ambiguous = false;
     return self->slices;
   }
-  return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, is_ambiguous, NULL);
+  return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, reduction_status, NULL);
 }
 
 forceinline StackAction pop_pending_callback(void *payload, const StackIterator *iterator) {
