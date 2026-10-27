@@ -6154,6 +6154,84 @@ fn test_contiguous_included_ranges_preserve_javascript_expressions() {
 }
 
 #[test]
+fn test_empty_included_range_changes_preserve_external_token_positions() {
+    let grammar = serde_json::json!({
+        "name": "empty_range_external_token",
+        "extras": [],
+        "externals": [{"type": "SYMBOL", "name": "marker"}],
+        "rules": {
+            "source_file": {"type": "SEQ", "members": [
+                {"type": "SYMBOL", "name": "marker"},
+                {"type": "SYMBOL", "name": "word"},
+                {"type": "SYMBOL", "name": "marker"}
+            ]},
+            "word": {"type": "PATTERN", "value": "[a-z_]+"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let scanner = r#"
+#include "tree_sitter/parser.h"
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+    if (!valid_symbols[0]) return false;
+    lexer->mark_end(lexer);
+    lexer->result_symbol = 0;
+    return true;
+}
+"#;
+    let language = get_test_language_with_scanner(&name, &code, scanner);
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "x_ax";
+    let configurations = [
+        vec![simple_range(0, 0)],
+        vec![simple_range(0, 0), simple_range(1, 1), simple_range(1, 2)],
+        vec![simple_range(1, 3)],
+        vec![simple_range(0, 0), simple_range(1, 3)],
+        vec![simple_range(1, 1), simple_range(1, 3)],
+        vec![simple_range(1, 3), simple_range(4, 4)],
+        vec![simple_range(0, 0), simple_range(1, 3), simple_range(4, 4)],
+        vec![simple_range(1, 2), simple_range(2, 2), simple_range(2, 3)],
+    ];
+    for old_ranges in &configurations {
+        for new_ranges in &configurations {
+            parser.set_included_ranges(old_ranges).unwrap();
+            let old_tree = parser.parse(source, None).unwrap();
+            parser.set_included_ranges(new_ranges).unwrap();
+            let incremental = parser.parse(source, Some(&old_tree)).unwrap();
+            let fresh = parser.parse(source, None).unwrap();
+            let incremental_root = incremental.root_node();
+            let fresh_root = fresh.root_node();
+            assert_eq!(incremental_root.has_error(), fresh_root.has_error());
+            assert_eq!(incremental_root.to_sexp(), fresh_root.to_sexp());
+            assert_eq!(
+                incremental_root.range(),
+                fresh_root.range(),
+                "{old_ranges:?} -> {new_ranges:?}"
+            );
+            let changes = old_tree.changed_ranges(&incremental).collect::<Vec<_>>();
+            assert!(
+                changes
+                    .iter()
+                    .all(|range| range.start_byte < range.end_byte),
+                "{changes:?}"
+            );
+            assert_eq!(changes, old_tree.changed_ranges(&fresh).collect::<Vec<_>>());
+            for i in 0..fresh_root.child_count() {
+                assert_eq!(
+                    incremental_root.child(i).unwrap().range(),
+                    fresh_root.child(i).unwrap().range(),
+                    "child {i}: {old_ranges:?} -> {new_ranges:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn test_empty_included_ranges_preserve_disjoint_statement_boundaries() {
     let range = |start, end| Range {
         start_byte: start,
