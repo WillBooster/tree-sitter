@@ -997,7 +997,7 @@ StackSliceArray ts_stack_pop_count_for_reduce(
   uint32_t max_reductions,
   StackReductionStatus *reduction_status
 ) {
-  *reduction_status = (StackReductionStatus) {0};
+  if (reduction_status) *reduction_status = (StackReductionStatus) {0};
   // On a single path, compacting ambiguous extras has only one candidate to select, so the result is the same.
   if (stack__pop_count_on_single_path(self, version, count)) {
     return self->slices;

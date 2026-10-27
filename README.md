@@ -94,7 +94,7 @@ Tree-sitter is a parser generator tool and an incremental parsing library. It ca
 
 ## Ambiguous parse limits
 
-The runtime normally retains at most six competing stack versions, with four temporary overflow versions while reducing. When that budget discards or halts a version, the parser logger emits `version_limit` with the operation, version index, and configured limit. Messages also report the overflow allowance and halted-version count. Use `tree-sitter parse --debug=normal` or the parser logger API to inspect these messages. A limit message identifies lost alternatives; it does not prove that the input is invalid or that the discarded alternative would succeed.
+The normal stack-version budget is six. Reductions permit an overflow allowance of four and account for halted versions separately. When that budget discards or halts a version, the parser logger emits `version_limit` with the operation, version index, and configured limit. Messages also report the overflow allowance and halted-version count. Use `tree-sitter parse --debug=normal` or the parser logger API to inspect these messages. A limit message identifies lost alternatives; it does not prove that the input is invalid or that the discarded alternative would succeed.
 
 Source builds can set `TREE_SITTER_MAX_VERSION_COUNT` when compiling the runtime. For example, to rebuild the CLI with a budget of 64:
 
