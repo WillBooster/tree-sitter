@@ -123,8 +123,10 @@ A locals query can associate independently matched bindings with a shared initia
 
 This handles arbitrary nesting without enumerating each destructuring depth. A definition
 inside the captured context inherits the value's end as its availability boundary when the
-definition ends at or before the value starts. References within that initializer can still
-resolve to an outer binding. Definitions inside the value and after it are unaffected.
+definition ends at or before the value starts and its current captured scope contains
+the context. References within that initializer can still
+resolve to an outer binding. Definitions inside the value, after it, or in a separately captured nested scope are
+unaffected.
 
 Each context pattern must capture exactly one `local.definition-context` and one
 `local.definition-value` per match. Configuration rejects missing, optional, or repeated

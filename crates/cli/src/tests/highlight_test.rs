@@ -107,6 +107,8 @@ fn test_highlighting_shared_definition_contexts() {
         ("function target() {} { var [target] = target(); target; } { var [[target]] = target(); target; }".into(), vec!["function", "variable", "function", "variable", "variable", "function", "variable"]),
         ("function target() {} var [target = target()] = target(); target;".into(), vec!["function", "variable", "function", "variable", "variable"]),
         ("function target() {} for (var [other] of target()) { var target; target(); }".into(), vec!["function", "function", "variable", "variable"]),
+        ("function target() {} var [other = (target) => target()] = source; target();".into(), vec!["function", "variable", "variable", "function"]),
+        ("function target() {} for (var [other = (target) => target()] of source) { target(); }".into(), vec!["function", "variable", "variable", "function"]),
     ];
     for locals in [
         format!("{definitions}{contexts}"),

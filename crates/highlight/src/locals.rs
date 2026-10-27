@@ -41,6 +41,7 @@ impl LocalDefinitionContexts {
     pub(super) fn value_range(
         &mut self,
         definition: &ops::Range<usize>,
+        scope: &ops::Range<usize>,
     ) -> Option<ops::Range<usize>> {
         while self
             .pending
@@ -53,7 +54,11 @@ impl LocalDefinitionContexts {
             .retain(|context| context.value_range.start >= definition.start);
         self.active
             .iter()
-            .filter(|context| definition.end <= context.value_range.start)
+            .filter(|context| {
+                definition.end <= context.value_range.start
+                    && scope.start <= context.range.start
+                    && context.range.end <= scope.end
+            })
             .min_by_key(|context| {
                 (
                     context.range.len(),

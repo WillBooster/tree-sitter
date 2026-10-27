@@ -1110,7 +1110,7 @@ where
                             capture.node,
                         )
                         .or(value_range)
-                        .or_else(|| layer.definition_contexts.value_range(&range))
+                        .or_else(|| layer.definition_contexts.value_range(&range, &scope.range))
                         .unwrap_or(0..0);
                     if let Ok(name) = str::from_utf8(&self.source[range.clone()]) {
                         scope.local_defs.push(LocalDef {
