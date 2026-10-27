@@ -512,7 +512,7 @@ TSNode ts_tree_cursor_current_node(const TSTreeCursor *_self) {
 
 // Private - Get various facts about the current node that are needed
 // when executing tree queries.
-void ts_tree_cursor_current_status(
+uint64_t ts_tree_cursor_current_status(
   const TSTreeCursor *_self,
   TSFieldId *field_id,
   bool *has_later_siblings,
@@ -522,6 +522,7 @@ void ts_tree_cursor_current_status(
   unsigned *supertype_count
 ) {
   const TreeCursor *self = (const TreeCursor *)_self;
+  uint64_t work = 0;
   unsigned max_supertypes = *supertype_count;
   *field_id = 0;
   *supertype_count = 0;
@@ -534,6 +535,7 @@ void ts_tree_cursor_current_status(
   // Walk up the tree, visiting the current node and its invisible ancestors,
   // because fields can refer to nodes through invisible *wrapper* nodes,
   for (unsigned i = self->stack.size - 1; i > 0; i--) {
+    work++;
     TreeCursorEntry *entry = array_get(&self->stack, i);
     TreeCursorEntry *parent_entry = array_get(&self->stack, i - 1);
 
@@ -578,6 +580,7 @@ void ts_tree_cursor_current_status(
       unsigned structural_child_index = entry->structural_child_index;
       if (!ts_subtree_extra(*entry->subtree)) structural_child_index++;
       for (unsigned j = entry->child_index + 1; j < sibling_count; j++) {
+        work++;
         Subtree sibling = ts_subtree_children(*parent_entry->subtree)[j];
         TSSymbolMetadata sibling_metadata = ts_language_symbol_metadata(
           self->tree->language,
@@ -612,6 +615,7 @@ void ts_tree_cursor_current_status(
 
       TSFieldId entry_field_id = 0;
       for (const TSFieldMapEntry *map = field_map; map < field_map_end; map++) {
+        work++;
         if (!map->inherited && map->child_index == entry->structural_child_index) {
           entry_field_id = map->field_id;
           break;
@@ -633,6 +637,7 @@ void ts_tree_cursor_current_status(
       // Determine if the current node can have later siblings with the same field name.
       if (*field_id) {
         for (const TSFieldMapEntry *map = field_map; map < field_map_end; map++) {
+          work++;
           if (
             map->field_id == *field_id &&
             map->child_index > entry->structural_child_index
@@ -652,6 +657,7 @@ void ts_tree_cursor_current_status(
         unsigned sibling_count = parent_entry->subtree->ptr->child_count;
         unsigned structural_child_index = entry->structural_child_index + 1;
         for (unsigned j = entry->child_index + 1; j < sibling_count; j++) {
+          work++;
           Subtree sibling = ts_subtree_children(*parent_entry->subtree)[j];
           TSSymbol sibling_symbol = ts_subtree_symbol(sibling);
           bool has_field = false;
@@ -660,6 +666,7 @@ void ts_tree_cursor_current_status(
               sibling_symbol = alias_sequence[structural_child_index];
             }
             for (const TSFieldMapEntry *map = field_map; map < field_map_end; map++) {
+              work++;
               if (!map->inherited && map->child_index == structural_child_index) {
                 has_field = true;
                 break;
@@ -679,6 +686,7 @@ void ts_tree_cursor_current_status(
       }
     }
   }
+  return work;
 }
 
 uint32_t ts_tree_cursor_current_depth(const TSTreeCursor *_self) {

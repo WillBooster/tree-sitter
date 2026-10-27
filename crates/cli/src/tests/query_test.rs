@@ -7962,6 +7962,42 @@ fn test_query_execution_with_timeout() {
 }
 
 #[test]
+fn test_query_progress_callback_accounts_for_hidden_ancestors() {
+    let language = get_language("javascript");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+    let source = "(".repeat(2000);
+    let tree = parser.parse(&source, None).unwrap();
+    let query = Query::new(&language, "\"(\" @delimiter").unwrap();
+    let mut cursor = QueryCursor::new();
+    let mut called = false;
+    let mut progress_callback = |_: &QueryCursorState| {
+        called = true;
+        ControlFlow::Break(())
+    };
+    let mut captures = cursor.captures_with_options(
+        &query,
+        tree.root_node(),
+        source.as_bytes(),
+        QueryCursorOptions::new().progress_callback(&mut progress_callback),
+    );
+    let mut count = 0;
+    while captures.next().is_some() {
+        count += 1;
+    }
+    drop(captures);
+    assert!(called);
+    assert!(count <= 2, "visited {count} delimiters before cancellation");
+
+    let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
+    let mut count = 0;
+    while captures.next().is_some() {
+        count += 1;
+    }
+    assert_eq!(count, source.len());
+}
+
+#[test]
 fn test_query_progress_callback_lives_as_long_as_matches() {
     let language = get_language("javascript");
     let mut parser = Parser::new();
