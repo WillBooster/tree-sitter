@@ -3518,10 +3518,10 @@ fn test_parsing_reports_version_budget_when_valid_alternatives_are_lost() {
     for i in 0..12 {
         let source = format!("abc{i}");
         let tree = parser.parse(&source, None).unwrap();
-        let limits = receiver.try_iter().collect::<Vec<_>>();
+        let limit_count = receiver.try_iter().count();
         if tree.root_node().has_error() {
             assert!(
-                !limits.is_empty(),
+                limit_count > 0,
                 "valid input {source:?} failed without a budget diagnostic"
             );
         }
