@@ -184,13 +184,29 @@ where
 struct HighlightIterLayer<'a> {
     _tree: Tree,
     cursor: QueryCursor,
-    captures: iter::Peekable<_QueryCaptures<'a, 'a, &'a [u8], &'a [u8]>>,
+    captures: iter::Peekable<HighlightCaptures<'a>>,
     config: &'a HighlightConfiguration,
     highlight_end_stack: Vec<usize>,
     scope_stack: Vec<LocalScope<'a>>,
     definition_contexts: LocalDefinitionContexts,
     ranges: Vec<Range>,
     depth: usize,
+}
+
+struct HighlightCaptures<'a> {
+    inner: _QueryCaptures<'a, 'a, &'a [u8], &'a [u8]>,
+    metadata: Option<[u32; 2]>,
+}
+
+impl<'a> Iterator for HighlightCaptures<'a> {
+    type Item = (QueryMatch<'a, 'a>, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.find(|(mat, index)| {
+            self.metadata
+                .is_none_or(|metadata| !metadata.contains(&mat.captures()[*index].index))
+        })
+    }
 }
 
 pub struct _QueryCaptures<'query, 'tree, T: TextProvider<I>, I: AsRef<[u8]>> {
@@ -443,7 +459,7 @@ impl HighlightConfiguration {
         let definition_context_query = LocalDefinitionContextQuery::new(
             &language,
             locals_query,
-            &mut query,
+            &query,
             locals_query_offset,
             &query_source,
         )?;
@@ -693,6 +709,22 @@ impl<'a> HighlightIterLayer<'a> {
                     std::mem::transmute::<QueryCaptures<_, _>, _QueryCaptures<_, _>>(
                         cursor_ref.captures(&config.query, tree_ref.root_node(), source),
                     )
+                };
+                let metadata = config.definition_context_query.as_ref().map(|_| {
+                    [
+                        config
+                            .query
+                            .capture_index_for_name("local.definition-context")
+                            .unwrap(),
+                        config
+                            .query
+                            .capture_index_for_name("local.definition-value")
+                            .unwrap(),
+                    ]
+                });
+                let captures = HighlightCaptures {
+                    inner: captures,
+                    metadata,
                 }
                 .peekable();
 

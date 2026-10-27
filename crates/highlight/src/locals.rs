@@ -10,7 +10,7 @@ use tree_sitter::{
     QueryError, QueryErrorKind, Tree,
 };
 
-pub(super) struct LocalDefinitionContextQuery {
+pub struct LocalDefinitionContextQuery {
     query: Query,
     context_capture: u32,
     value_capture: u32,
@@ -23,7 +23,7 @@ struct LocalDefinitionContext {
 }
 
 #[derive(Default)]
-pub(super) struct LocalDefinitionContexts {
+pub struct LocalDefinitionContexts {
     pending: VecDeque<LocalDefinitionContext>,
     active: Vec<LocalDefinitionContext>,
     explicit_values: HashMap<(usize, usize), ops::Range<usize>>,
@@ -142,7 +142,7 @@ impl LocalDefinitionContextQuery {
     pub(super) fn new(
         language: &Language,
         locals_query: &str,
-        main_query: &mut Query,
+        main_query: &Query,
         locals_offset: usize,
         query_source: &str,
     ) -> Result<Option<Self>, QueryError> {
@@ -152,20 +152,13 @@ impl LocalDefinitionContextQuery {
         {
             return Ok(None);
         }
-        Self::compile(language, locals_query)
-            .inspect(|contexts| {
-                if contexts.is_some() {
-                    main_query.disable_capture("local.definition-context");
-                    main_query.disable_capture("local.definition-value");
-                }
-            })
-            .map_err(|mut error| {
-                error.offset += locals_offset;
-                let prefix = &query_source[..error.offset];
-                error.row = prefix.bytes().filter(|byte| *byte == b'\n').count();
-                error.column = prefix.rsplit('\n').next().unwrap().len();
-                error
-            })
+        Self::compile(language, locals_query).map_err(|mut error| {
+            error.offset += locals_offset;
+            let prefix = &query_source[..error.offset];
+            error.row = prefix.bytes().filter(|byte| *byte == b'\n').count();
+            error.column = prefix.rsplit('\n').next().unwrap().len();
+            error
+        })
     }
 
     fn compile(language: &Language, locals_query: &str) -> Result<Option<Self>, QueryError> {

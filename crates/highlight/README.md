@@ -132,7 +132,8 @@ pairs. The value must be contained in the context; other pairs are ignored. Use 
 matches for multiple initializers. The smallest containing context takes precedence;
 equal-sized contexts use their byte ranges and then the value's byte range as a stable tie
 break. An explicit value in a definition's own match takes precedence over inherited values.
-Context patterns may also capture definitions, references, and scopes.
+Context patterns may also capture definitions, references, and scopes. Text predicates
+on context/value captures continue to filter those locals matches.
 
 Context/value metadata is collected before emitting highlight events, so locals pattern
 order does not affect inherited boundaries. Configurations using this convention also

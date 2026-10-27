@@ -95,11 +95,11 @@ fn test_highlighting_shared_definition_contexts() {
         (assignment_pattern right: (_) @local.definition-value) @local.definition-context
         (for_in_statement right: (_) @local.definition-value) @local.definition-context
     ";
-    let highlights = r#"
+    let highlights = r"
         (identifier) @variable
         (function_declaration name: (identifier) @function)
         ((call_expression function: (identifier) @function) (#is-not? local))
-    "#;
+    ";
     let deep_binding = format!("{}target{}", "[".repeat(12), "]".repeat(12));
     let cases = [
         (format!("function target() {{}} var {deep_binding} = target(); target;"), vec!["function", "variable", "function", "variable"]),
@@ -120,7 +120,7 @@ fn test_highlighting_shared_definition_contexts() {
             &locals,
         )
         .unwrap();
-        config.configure(&*HIGHLIGHT_NAMES);
+        config.configure(&HIGHLIGHT_NAMES);
         for (source, expected) in &cases {
             let tokens = to_token_vector(source, &config).unwrap();
             let actual = tokens
@@ -144,11 +144,11 @@ fn test_highlighting_definition_value_overrides_context() {
     ";
     let context =
         "(variable_declarator value: (_) @local.definition-value) @local.definition-context";
-    let highlights = r#"
+    let highlights = r"
         (identifier) @variable
         (function_declaration name: (identifier) @function)
         ((call_expression function: (identifier) @function) (#is-not? local))
-    "#;
+    ";
     let mixed_definitions = definitions.replace(
         "right: (_) @local.definition-value)",
         "right: (_) @local.definition-value) @local.definition-context",
@@ -171,7 +171,7 @@ fn test_highlighting_definition_value_overrides_context() {
             &locals,
         )
         .unwrap();
-        config.configure(&*HIGHLIGHT_NAMES);
+        config.configure(&HIGHLIGHT_NAMES);
         let tokens = to_token_vector(source, &config).unwrap();
         let actual = tokens
             .iter()
@@ -184,6 +184,60 @@ fn test_highlighting_definition_value_overrides_context() {
             ["function", "variable", "function", "variable", "variable"],
             "{locals}"
         );
+    }
+}
+
+#[test]
+fn test_highlighting_definition_context_predicates() {
+    let highlights = r"
+        (identifier) @variable
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function) (#is-not? local))
+    ";
+    for (predicate, context_capture) in [
+        (r#"(#eq? @local.definition-value "2")"#, ""),
+        (
+            r#"(#eq? @local.definition-value "2")"#,
+            "@local.definition-context",
+        ),
+        (
+            r#"(#eq? @local.definition-context "target = 2")"#,
+            "@local.definition-context",
+        ),
+    ] {
+        let locals = format!(
+            r"
+            (function_declaration name: (identifier) @local.definition)
+            ((variable_declarator name: (identifier) @local.definition
+                value: (_) @local.definition-value) {context_capture}
+                {predicate})
+            (identifier) @local.reference
+            (variable_declarator value: (_) @local.definition-value) @local.definition-context
+        "
+        );
+        let mut config = HighlightConfiguration::new(
+            get_language("javascript"),
+            "javascript",
+            highlights,
+            "",
+            &locals,
+        )
+        .unwrap();
+        config.configure(&HIGHLIGHT_NAMES);
+        for (value, expected) in [
+            (1, vec!["function", "function", "function"]),
+            (2, vec!["function", "variable", "variable"]),
+        ] {
+            let source = format!("function target() {{}} var target = {value}; target();");
+            let tokens = to_token_vector(&source, &config).unwrap();
+            let actual = tokens
+                .iter()
+                .flatten()
+                .filter(|(text, _)| *text == "target")
+                .map(|(_, names)| names.last().copied().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{predicate}: {source}");
+        }
     }
 }
 
