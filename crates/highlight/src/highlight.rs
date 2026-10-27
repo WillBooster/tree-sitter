@@ -3,7 +3,7 @@
 pub mod c_lib;
 mod locals;
 use core::slice;
-use locals::{LocalDefinitionContextQuery, LocalDefinitionContexts};
+use locals::{LocalDefinitionQuery, LocalDefinitions};
 use std::{
     collections::HashSet,
     iter,
@@ -118,7 +118,7 @@ pub struct HighlightConfiguration {
     pub language_name: String,
     pub query: Query,
     combined_injections_query: Option<Query>,
-    definition_context_query: Option<LocalDefinitionContextQuery>,
+    local_definition_query: Option<LocalDefinitionQuery>,
     locals_pattern_index: usize,
     highlights_pattern_index: usize,
     highlight_indices: Vec<Option<Highlight>>,
@@ -188,24 +188,22 @@ struct HighlightIterLayer<'a> {
     config: &'a HighlightConfiguration,
     highlight_end_stack: Vec<usize>,
     scope_stack: Vec<LocalScope<'a>>,
-    definition_contexts: LocalDefinitionContexts,
+    local_definitions: LocalDefinitions,
     ranges: Vec<Range>,
     depth: usize,
 }
 
 struct HighlightCaptures<'a> {
     inner: _QueryCaptures<'a, 'a, &'a [u8], &'a [u8]>,
-    metadata: Option<[u32; 2]>,
+    metadata: [Option<u32>; 2],
 }
 
 impl<'a> Iterator for HighlightCaptures<'a> {
     type Item = (QueryMatch<'a, 'a>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner.find(|(mat, index)| {
-            self.metadata
-                .is_none_or(|metadata| !metadata.contains(&mat.captures()[*index].index))
-        })
+        self.inner
+            .find(|(mat, index)| !self.metadata.contains(&Some(mat.captures()[*index].index)))
     }
 }
 
@@ -454,7 +452,7 @@ impl HighlightConfiguration {
             }
         }
 
-        let definition_context_query = LocalDefinitionContextQuery::new(
+        let local_definition_query = LocalDefinitionQuery::new(
             &language,
             locals_query,
             &query,
@@ -467,7 +465,7 @@ impl HighlightConfiguration {
             language_name: name.into(),
             query,
             combined_injections_query,
-            definition_context_query,
+            local_definition_query,
             locals_pattern_index,
             highlights_pattern_index,
             highlight_indices,
@@ -679,16 +677,10 @@ impl<'a> HighlightIterLayer<'a> {
                     }
                 }
 
-                let definition_contexts = if let Some(query) = &config.definition_context_query {
-                    LocalDefinitionContexts::collect(
-                        query,
-                        &mut cursor,
-                        &tree,
-                        source,
-                        cancellation_flag,
-                    )?
+                let local_definitions = if let Some(query) = &config.local_definition_query {
+                    LocalDefinitions::collect(query, &mut cursor, &tree, source, cancellation_flag)?
                 } else {
-                    LocalDefinitionContexts::default()
+                    LocalDefinitions::default()
                 };
 
                 // SAFETY:
@@ -708,18 +700,16 @@ impl<'a> HighlightIterLayer<'a> {
                         cursor_ref.captures(&config.query, tree_ref.root_node(), source),
                     )
                 };
-                let metadata = config.definition_context_query.as_ref().map(|_| {
+                let metadata = if config.local_definition_query.is_some() {
                     [
                         config
                             .query
-                            .capture_index_for_name("local.definition-context")
-                            .unwrap(),
-                        config
-                            .query
-                            .capture_index_for_name("local.definition-value")
-                            .unwrap(),
+                            .capture_index_for_name("local.definition-context"),
+                        config.local_def_value_capture_index,
                     ]
-                });
+                } else {
+                    [None; 2]
+                };
                 let captures = HighlightCaptures {
                     inner: captures,
                     metadata,
@@ -733,7 +723,7 @@ impl<'a> HighlightIterLayer<'a> {
                         range: 0..usize::MAX,
                         local_defs: Vec::new(),
                     }],
-                    definition_contexts,
+                    local_definitions,
                     cursor,
                     depth,
                     _tree: tree,
@@ -1094,21 +1084,13 @@ where
                     definition_highlight = None;
                     let scope = layer.scope_stack.last_mut().unwrap();
 
-                    let mut value_range = None;
-                    for capture in match_.captures() {
-                        if Some(capture.index) == layer.config.local_def_value_capture_index {
-                            value_range = Some(capture.node.byte_range());
-                        }
-                    }
-
                     let value_range = layer
-                        .definition_contexts
+                        .local_definitions
                         .explicit_value_range(
                             match_.pattern_index - layer.config.locals_pattern_index,
                             capture.node,
                         )
-                        .or(value_range)
-                        .or_else(|| layer.definition_contexts.value_range(&range, &scope.range))
+                        .or_else(|| layer.local_definitions.value_range(&range, &scope.range))
                         .unwrap_or(0..0);
                     if let Ok(name) = str::from_utf8(&self.source[range.clone()]) {
                         scope.local_defs.push(LocalDef {

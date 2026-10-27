@@ -319,6 +319,57 @@ fn test_highlighting_rejects_ambiguous_definition_context_pairs() {
 }
 
 #[test]
+fn test_highlighting_completed_definition_values() {
+    let definitions = r"
+        (function_declaration name: (identifier) @local.definition)
+        (assignment_pattern left: (identifier) @local.definition right: (_) @local.definition-value)
+        (variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)
+    ";
+    let references = "(identifier) @local.reference";
+    for locals in [
+        format!("{definitions}{references}"),
+        format!("{references}{definitions}"),
+    ] {
+        for source in [
+            "function target() {} var [target = target()] = source; target();",
+            "function target() {} var [target = target] = source; target();",
+            "function target() {} var target = target(); target();",
+            "function target() {} var target = target; target();",
+        ] {
+            assert_target_highlights(
+                source,
+                &locals,
+                &["function", "variable", "function", "variable"],
+            );
+        }
+    }
+}
+
+#[test]
+fn test_highlighting_completed_definition_values_with_siblings() {
+    let definitions = r"
+        (function_declaration name: (identifier) @local.definition)
+        (variable_declarator name: (array_pattern (identifier) @local.definition)
+            value: (array (_)+ @local.definition-value))
+    ";
+    let references = "(identifier) @local.reference";
+    for locals in [
+        format!("{definitions}{references}"),
+        format!("{references}{definitions}"),
+    ] {
+        let source =
+            "function target() {} var [target] = [target(), target(), target()]; target();";
+        assert_target_highlights(
+            source,
+            &locals,
+            &[
+                "function", "variable", "function", "function", "function", "variable",
+            ],
+        );
+    }
+}
+
+#[test]
 fn test_highlighting_reference_at_scope_end() {
     let locals = r"
         (statement_block) @local.scope
