@@ -78,11 +78,13 @@
 #ifndef TREE_SITTER_MAX_VERSION_COUNT
 #define TREE_SITTER_MAX_VERSION_COUNT 6
 #endif
-#if (TREE_SITTER_MAX_VERSION_COUNT) <= 0 || \
-    (TREE_SITTER_MAX_VERSION_COUNT) > UINT_MAX - MAX_VERSION_COUNT_OVERFLOW
-#error "TREE_SITTER_MAX_VERSION_COUNT must be a positive integer and leave room for overflow versions"
-#endif
-static const unsigned MAX_VERSION_COUNT = (TREE_SITTER_MAX_VERSION_COUNT);
+_Static_assert(
+  (TREE_SITTER_MAX_VERSION_COUNT) > 0 &&
+  (TREE_SITTER_MAX_VERSION_COUNT) <= UINT_MAX - MAX_VERSION_COUNT_OVERFLOW,
+  "TREE_SITTER_MAX_VERSION_COUNT must be positive and leave room for overflow versions"
+);
+// Bitwise OR requires an integer operand before the unsigned conversion.
+static const unsigned MAX_VERSION_COUNT = (TREE_SITTER_MAX_VERSION_COUNT) | 0;
 static const unsigned MAX_SUMMARY_DEPTH = 16;
 // Bounds how many reductions error recovery performs in a row on one stack version without reaching a shift, in case a
 // parse table's reductions never reach one. A chain that does reach one grows with the nesting depth of the input (about
