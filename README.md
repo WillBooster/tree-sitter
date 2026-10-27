@@ -92,6 +92,18 @@ Tree-sitter is a parser generator tool and an incremental parsing library. It ca
 - **Robust** enough to provide useful results even in the presence of syntax errors
 - **Dependency-free** so that the runtime library (which is written in pure C) can be embedded in any application
 
+## Ambiguous parse limits
+
+The normal stack-version budget is six. Reductions permit an overflow allowance of four and account for halted versions separately. When that budget discards or halts a version, the parser logger emits `version_limit` with the operation, version index, and configured limit. Messages also report the overflow allowance and halted-version count. Use `tree-sitter parse --debug=normal` or the parser logger API to inspect these messages. A limit message identifies lost alternatives; it does not prove that the input is invalid or that the discarded alternative would succeed.
+
+Source builds can set `TREE_SITTER_MAX_VERSION_COUNT` when compiling the runtime. For example, to rebuild the CLI with a budget of 64:
+
+```sh
+CFLAGS=-DTREE_SITTER_MAX_VERSION_COUNT=64 cargo build --release -p tree-sitter-cli
+```
+
+The value must be a positive C integer constant expression that leaves room for four overflow versions in an unsigned count; invalid values fail compilation. This define applies to the runtime, not generated grammar code. Published binaries and packages retain the default budget and require a runtime rebuild to change it. Raising the budget can preserve a valid interpretation of heavily ambiguous code, but increases memory use and parsing time, and does not remove other traversal limits or guarantee an error-free parse. Compare representative valid and malformed inputs before choosing a larger budget.
+
 ## External scanner positions
 
 Use `TSLexerPosition` with `get_position` or `get_mark_end` when a scanner inspects absolute byte offsets, rows, or

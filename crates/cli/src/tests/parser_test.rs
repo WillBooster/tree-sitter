@@ -3471,6 +3471,64 @@ fn test_parsing_simple_string() {
 }
 
 #[test]
+fn test_parsing_reports_version_budget_when_valid_alternatives_are_lost() {
+    let mut rules = serde_json::Map::new();
+    let mut alternatives = Vec::new();
+    let mut conflict = Vec::new();
+    for i in 0..12 {
+        let name = format!("prefix{i}");
+        rules.insert(
+            name.clone(),
+            serde_json::json!({"type": "STRING", "value": "a"}),
+        );
+        conflict.push(name.clone());
+        alternatives.push(serde_json::json!({"type": "SEQ", "members": [
+            {"type": "SYMBOL", "name": name},
+            {"type": "STRING", "value": "b"},
+            {"type": "STRING", "value": format!("c{i}")}
+        ]}));
+    }
+    alternatives.push(serde_json::json!({"type": "STRING", "value": "x"}));
+    rules.insert(
+        "source_file".into(),
+        serde_json::json!({"type": "CHOICE", "members": alternatives}),
+    );
+    let mut ordered_rules = serde_json::Map::new();
+    ordered_rules.insert("source_file".into(), rules.remove("source_file").unwrap());
+    ordered_rules.extend(rules);
+    let grammar = serde_json::json!({
+        "name": "parse_budget_diagnostics",
+        "extras": [],
+        "conflicts": [conflict],
+        "rules": ordered_rules
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_language(&name, &code, None))
+        .unwrap();
+    let (sender, receiver) = mpsc::channel();
+    parser.set_logger(Some(Box::new(move |kind, message| {
+        if kind == LogType::Parse && message.starts_with("version_limit ") {
+            sender.send(message.to_owned()).unwrap();
+        }
+    })));
+    assert!(!parser.parse("x", None).unwrap().root_node().has_error());
+    assert!(receiver.try_iter().next().is_none());
+    for i in 0..12 {
+        let source = format!("abc{i}");
+        let tree = parser.parse(&source, None).unwrap();
+        let limit_count = receiver.try_iter().count();
+        if tree.root_node().has_error() {
+            assert!(
+                limit_count > 0,
+                "valid input {source:?} failed without a budget diagnostic"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_parsing_with_logging() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
