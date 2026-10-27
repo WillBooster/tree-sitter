@@ -386,7 +386,7 @@ struct TSQueryCursor {
   uint32_t next_finished_state_id;
   const TSQueryCursorOptions *query_options;
   TSQueryCursorState query_state;
-  unsigned operation_count;
+  uint64_t operation_count;
   bool on_visible_node;
   bool ascending;
   bool halted;
@@ -4596,7 +4596,7 @@ static inline bool ts_query_cursor__advance(
 
     if (did_match || self->halted) return did_match;
 
-    if (++self->operation_count == OP_COUNT_PER_QUERY_CALLBACK_CHECK) {
+    if (++self->operation_count >= OP_COUNT_PER_QUERY_CALLBACK_CHECK) {
       self->operation_count = 0;
       if (self->query_options && self->query_options->progress_callback) {
         self->query_state.current_byte_offset = ts_node_start_byte(ts_tree_cursor_current_node(&self->cursor));
@@ -4731,7 +4731,7 @@ static inline bool ts_query_cursor__advance(
         TSFieldId field_id = 0;
         TSSymbol supertypes[8] = {0};
         unsigned supertype_count = 8;
-        ts_tree_cursor_current_status(
+        self->operation_count += ts_tree_cursor_current_status(
           &self->cursor,
           &field_id,
           &has_later_siblings,
@@ -5053,7 +5053,7 @@ static inline bool ts_query_cursor__advance(
                 TSFieldId unused_field;
                 bool unused_siblings, unused_field_siblings;
                 unsigned unused_supertype_count = 0;
-                ts_tree_cursor_current_status(
+                self->operation_count += ts_tree_cursor_current_status(
                   &child_cursor, &unused_field, &unused_siblings,
                   &child_has_later_named_siblings, &unused_field_siblings,
                   NULL, &unused_supertype_count
