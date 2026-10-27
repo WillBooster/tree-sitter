@@ -324,6 +324,7 @@ fn test_highlighting_completed_definition_values() {
         (function_declaration name: (identifier) @local.definition)
         (assignment_pattern left: (identifier) @local.definition right: (_) @local.definition-value)
         (variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)
+        (for_in_statement left: (identifier) @local.definition right: (_) @local.definition-value)
     ";
     let references = "(identifier) @local.reference";
     for locals in [
@@ -335,6 +336,8 @@ fn test_highlighting_completed_definition_values() {
             "function target() {} var [target = target] = source; target();",
             "function target() {} var target = target(); target();",
             "function target() {} var target = target; target();",
+            "function target() {} for (var target of target()) { target(); }",
+            "function target() {} for (var target of target) { target(); }",
         ] {
             assert_target_highlights(
                 source,
