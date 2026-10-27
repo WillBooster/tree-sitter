@@ -109,7 +109,6 @@ struct Stack {
   Array(StackHead) heads;
   StackSliceArray slices;
   Array(StackIterator) iterators;
-  // Stack graph logging reuses iterators while an acceptance walk is paused.
   Array(StackIterator) pop_all_iterators;
   StackSliceArray pop_all_slices;
   bool pop_all_started;
