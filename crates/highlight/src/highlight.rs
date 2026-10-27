@@ -1061,7 +1061,7 @@ where
             }
 
             // Remove from the local scope stack any local scopes that have already ended.
-            while range.start > layer.scope_stack.last().unwrap().range.end {
+            while range.start >= layer.scope_stack.last().unwrap().range.end {
                 layer.scope_stack.pop();
             }
 
