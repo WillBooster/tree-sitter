@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+compile_budget() {
+  clang -std=c11 -w -D_DEFAULT_SOURCE -Ilib/src -Ilib/include \
+    "-DTREE_SITTER_MAX_VERSION_COUNT=$1" -fsyntax-only lib/src/lib.c
+}
+
+for version_budget in 1 64; do
+  compile_budget "$version_budget"
+done
+
+for version_budget in 0 -1 0.5 2.5 2.0 '((UINT_MAX+1U)/2)' '((UINT_MAX+1U)!=0)' UINT_MAX; do
+  if compile_budget "$version_budget" >/dev/null 2>&1; then
+    printf 'Invalid parser version budget compiled: %s\n' "$version_budget" >&2
+    exit 1
+  fi
+done
+
+for version_budget in '(sizeof(unsigned)*16)' '(UINT_MAX-4)'; do
+  compile_budget "$version_budget"
+done
+
+printf 'Parser version budget configuration checks passed.\n'

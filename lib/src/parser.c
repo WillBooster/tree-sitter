@@ -83,7 +83,6 @@ _Static_assert(
   (TREE_SITTER_MAX_VERSION_COUNT) <= UINT_MAX - MAX_VERSION_COUNT_OVERFLOW,
   "TREE_SITTER_MAX_VERSION_COUNT must be positive and leave room for overflow versions"
 );
-// Bitwise OR requires an integer operand before the unsigned conversion.
 static const unsigned MAX_VERSION_COUNT = (TREE_SITTER_MAX_VERSION_COUNT) | 0;
 static const unsigned MAX_SUMMARY_DEPTH = 16;
 // Bounds how many reductions error recovery performs in a row on one stack version without reaching a shift, in case a

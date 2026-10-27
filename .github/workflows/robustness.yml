@@ -66,6 +66,8 @@ jobs:
           -Wpedantic -Werror=incompatible-pointer-types -Werror=strict-aliasing -Wstrict-aliasing=2
           -D_POSIX_C_SOURCE=200112L -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_DARWIN_C_SOURCE
           -Ilib/src -Ilib/src/wasm -Ilib/include lib/src/lib.c
+      - name: Check parser version budget configuration
+        run: script/check-version-budget
       - run: npm ci && npm run build:debug
         working-directory: lib/binding_web
       - run: cargo xtask check-wasm-exports
