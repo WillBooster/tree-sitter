@@ -109,6 +109,10 @@ struct Stack {
   Array(StackHead) heads;
   StackSliceArray slices;
   Array(StackIterator) iterators;
+  // Stack graph logging reuses iterators while an acceptance walk is paused.
+  Array(StackIterator) pop_all_iterators;
+  StackSliceArray pop_all_slices;
+  bool pop_all_started;
   StackNodeArray node_pool;
   StackNode *base_node;
   SubtreePool *subtree_pool;
@@ -498,6 +502,12 @@ static SubtreeArray stack__materialize_reduction(
 
 static void stack__skip_idle_steps(Stack *);
 
+typedef struct {
+  StackProgressCallback callback;
+  void *payload;
+  bool canceled;
+} StackIterationProgress;
+
 static StackSliceArray stack__iter(
   Stack *self,
   StackVersion version,
@@ -505,11 +515,9 @@ static StackSliceArray stack__iter(
   void *payload,
   int goal_subtree_count,
   uint32_t max_reductions,
-  bool *is_ambiguous
+  bool *is_ambiguous,
+  StackIterationProgress *progress
 ) {
-  array_clear(&self->slices);
-  array_clear(&self->iterators);
-
   StackHead *head = array_get(&self->heads, version);
   bool compact = is_ambiguous && self->has_ambiguous_extras;
   // The original head pins every borrowed path until the selected arrays retain it.
@@ -519,23 +527,29 @@ static StackSliceArray stack__iter(
   ReductionChoices winners = array_new();
   ReductionCandidates candidates = array_new();
   ReductionSlots slots = array_new();
-  StackIterator new_iterator = {
-    .node = head->node,
-    .subtrees = array_new(),
-    .subtree_count = 0,
-    .is_pending = true,
-    .path = UINT32_MAX,
-  };
-
-  bool include_subtrees = false;
-  if (goal_subtree_count >= 0) {
-    include_subtrees = true;
-    if (!compact) array_reserve(&new_iterator.subtrees, (uint32_t)ts_subtree_alloc_size(goal_subtree_count) / sizeof(Subtree));
+  bool include_subtrees = goal_subtree_count >= 0;
+  if (!progress || !self->pop_all_started) {
+    array_clear(&self->slices);
+    array_clear(&self->iterators);
+    StackIterator new_iterator = {
+      .node = head->node,
+      .subtrees = array_new(),
+      .subtree_count = 0,
+      .is_pending = true,
+      .path = UINT32_MAX,
+    };
+    if (include_subtrees && !compact) {
+      array_reserve(&new_iterator.subtrees, (uint32_t)ts_subtree_alloc_size(goal_subtree_count) / sizeof(Subtree));
+    }
+    array_push(&self->iterators, new_iterator);
   }
 
-  array_push(&self->iterators, new_iterator);
-
   while (self->iterators.size > 0) {
+    if (progress && progress->callback && !progress->callback(progress->payload, self->iterators.size)) {
+      ts_assert(!compact);
+      progress->canceled = true;
+      break;
+    }
     stack__skip_idle_steps(self);
     // Coalescing bounds summary-only traversal. The order-dependent summary callback
     // can change candidate selection when duplicate visits are removed.
@@ -687,10 +701,9 @@ static StackSliceArray stack__iter(
   array_delete(&paths);
   array_delete(&winners);
   array_delete(&candidates);
-  bool retry = compact && invalid_path;
   if (is_ambiguous) *is_ambiguous = pop_count > 1;
-  if (retry) {
-    StackSliceArray result = stack__iter(self, version, callback, payload, goal_subtree_count, 0, NULL);
+  if (compact && invalid_path) {
+    StackSliceArray result = stack__iter(self, version, callback, payload, goal_subtree_count, 0, NULL, NULL);
     *is_ambiguous = result.size > 1;
     return result;
   }
@@ -744,6 +757,18 @@ static SubtreeArray stack__materialize_reduction(
   return subtrees;
 }
 
+static void stack__clear_pop_all(Stack *self) {
+  for (uint32_t i = 0; i < self->pop_all_iterators.size; i++) {
+    ts_subtree_array_delete(self->subtree_pool, &array_get(&self->pop_all_iterators, i)->subtrees);
+  }
+  array_clear(&self->pop_all_iterators);
+  for (uint32_t i = 0; i < self->pop_all_slices.size; i++) {
+    ts_subtree_array_delete(self->subtree_pool, &array_get(&self->pop_all_slices, i)->subtrees);
+  }
+  array_clear(&self->pop_all_slices);
+  self->pop_all_started = false;
+}
+
 Stack *ts_stack_new(SubtreePool *subtree_pool) {
   Stack *self = ts_calloc(1, sizeof(Stack));
 
@@ -764,6 +789,9 @@ Stack *ts_stack_new(SubtreePool *subtree_pool) {
 }
 
 void ts_stack_delete(Stack *self) {
+  stack__clear_pop_all(self);
+  array_delete(&self->pop_all_iterators);
+  array_delete(&self->pop_all_slices);
   for (uint32_t i = 0; i < self->extra_chains.size; i++) {
     stack_node_release(array_get(&self->extra_chains, i)->start, &self->node_pool, self->subtree_pool);
   }
@@ -958,7 +986,7 @@ static bool stack__pop_count_on_single_path(Stack *self, StackVersion version, u
 
 StackSliceArray ts_stack_pop_count(Stack *self, StackVersion version, uint32_t count) {
   if (stack__pop_count_on_single_path(self, version, count)) return self->slices;
-  return stack__iter(self, version, pop_count_callback, &count, (int)count, 0, NULL);
+  return stack__iter(self, version, pop_count_callback, &count, (int)count, 0, NULL, NULL);
 }
 
 
@@ -974,7 +1002,7 @@ StackSliceArray ts_stack_pop_count_for_reduce(
     if (is_ambiguous) *is_ambiguous = false;
     return self->slices;
   }
-  return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, is_ambiguous);
+  return stack__iter(self, version, pop_count_callback, &count, (int)count, max_reductions, is_ambiguous, NULL);
 }
 
 forceinline StackAction pop_pending_callback(void *payload, const StackIterator *iterator) {
@@ -1012,7 +1040,7 @@ StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version) {
     array_clear(&self->slices);
     return self->slices;
   }
-  StackSliceArray pop = stack__iter(self, version, pop_pending_callback, NULL, 0, 0, NULL);
+  StackSliceArray pop = stack__iter(self, version, pop_pending_callback, NULL, 0, 0, NULL, NULL);
   if (pop.size > 0) {
     ts_stack_renumber_version(self, array_get(&pop, 0)->version, version);
     array_get(&pop, 0)->version = version;
@@ -1043,7 +1071,7 @@ SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version) {
   for (unsigned i = 0; i < node->link_count; i++) {
     if (node->links[i].subtree.ptr && ts_subtree_is_error(node->links[i].subtree)) {
       bool found_error = false;
-      StackSliceArray pop = stack__iter(self, version, pop_error_callback, &found_error, 1, 0, NULL);
+      StackSliceArray pop = stack__iter(self, version, pop_error_callback, &found_error, 1, 0, NULL, NULL);
       if (pop.size > 0) {
         ts_assert(pop.size == 1);
         ts_stack_renumber_version(self, array_get(&pop, 0)->version, version);
@@ -1060,8 +1088,24 @@ forceinline StackAction pop_all_callback(void *payload, const StackIterator *ite
   return iterator->node->link_count == 0 ? StackActionPop : StackActionNone;
 }
 
-StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version) {
-  return stack__iter(self, version, pop_all_callback, NULL, 0, 0, NULL);
+bool ts_stack_pop_all(
+  Stack *self,
+  StackVersion version,
+  StackSliceArray *result,
+  StackProgressCallback callback,
+  void *payload
+) {
+  array_swap(&self->iterators, &self->pop_all_iterators);
+  array_swap(&self->slices, &self->pop_all_slices);
+  StackIterationProgress progress = {
+    .callback = callback,
+    .payload = payload,
+  };
+  *result = stack__iter(self, version, pop_all_callback, NULL, 0, 0, NULL, &progress);
+  self->pop_all_started = progress.canceled;
+  array_swap(&self->iterators, &self->pop_all_iterators);
+  array_swap(&self->slices, &self->pop_all_slices);
+  return !progress.canceled;
 }
 
 typedef struct {
@@ -1116,7 +1160,7 @@ StackSummary ts_stack_current_summary(Stack *self, StackVersion version, unsigne
     .summary = &summary,
     .max_depth = max_depth
   };
-  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL);
+  stack__iter(self, version, summarize_stack_callback, &session, -1, 0, NULL, NULL);
   return summary;
 }
 
@@ -1253,6 +1297,7 @@ Subtree ts_stack_resume(Stack *self, StackVersion version) {
 }
 
 void ts_stack_clear(Stack *self) {
+  stack__clear_pop_all(self);
   self->has_pending_subtrees = false;
   self->has_ambiguous_extras = false;
   for (uint32_t i = 0; i < self->extra_chains.size; i++) {

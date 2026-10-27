@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     ops::ControlFlow,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -5804,6 +5805,128 @@ fn test_parsing_with_timeout_and_no_completion() {
         assert!(tree.is_none());
 
         // drop the parser when it has an unfinished parse
+    });
+}
+
+#[test]
+fn test_parsing_cancellation_limits_acceptance_allocation() {
+    let language = get_language("typescript/typescript");
+    let source = "a<b<".repeat(1000);
+    let (_, complete_bytes) = allocations::record_allocated_bytes(|| {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(&source, None).unwrap();
+        assert!(tree.root_node().has_error());
+    });
+    let (_, canceled_bytes) = allocations::record_allocated_bytes(|| {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse_with_options(
+            &mut |offset, _| source.as_bytes().get(offset..).unwrap_or_default(),
+            None,
+            Some(ParseOptions::new().progress_callback(&mut |state| {
+                if state.current_byte_offset() == source.len() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })),
+        );
+        assert!(tree.is_none());
+    });
+    assert!(
+        canceled_bytes < complete_bytes / 2,
+        "canceled parse allocated {canceled_bytes} bytes; complete parse allocated {complete_bytes}"
+    );
+}
+
+#[test]
+fn test_parsing_cancellation_resumes_acceptance() {
+    let language = get_language("typescript/typescript");
+    let source = "a<b<".repeat(1000);
+    allocations::record(|| {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let expected = parser.parse(&source, None).unwrap().root_node().to_sexp();
+        let end_checks = Cell::new(0);
+        let mut callback = |state: &ParseState| {
+            if state.current_byte_offset() == source.len() {
+                end_checks.set(end_checks.get() + 1);
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let mut read = |offset, _| source.as_bytes().get(offset..).unwrap_or_default();
+        assert!(
+            parser
+                .parse_with_options(
+                    &mut read,
+                    None,
+                    Some(ParseOptions::new().progress_callback(&mut callback)),
+                )
+                .is_none()
+        );
+        let mut completed = None;
+        for _ in 0..source.len() * 2 {
+            completed = parser.parse_with_options(
+                &mut read,
+                None,
+                Some(ParseOptions::new().progress_callback(&mut callback)),
+            );
+            if completed.is_some() {
+                break;
+            }
+        }
+        assert_eq!(completed.unwrap().root_node().to_sexp(), expected);
+        assert!(end_checks.get() > 1);
+
+        let mut uninterrupted_checks = 0;
+        let tree = parser
+            .parse_with_options(
+                &mut read,
+                None,
+                Some(ParseOptions::new().progress_callback(&mut |state| {
+                    if state.current_byte_offset() == source.len() {
+                        uninterrupted_checks += 1;
+                    }
+                    ControlFlow::Continue(())
+                })),
+            )
+            .unwrap();
+        assert_eq!(tree.root_node().to_sexp(), expected);
+        drop(tree);
+        for stop_after in (1..uninterrupted_checks).step_by((uninterrupted_checks / 32).max(1)) {
+            let mut checks = 0;
+            let tree = parser.parse_with_options(
+                &mut read,
+                None,
+                Some(ParseOptions::new().progress_callback(&mut |state| {
+                    if state.current_byte_offset() == source.len() {
+                        checks += 1;
+                    }
+                    if checks >= stop_after {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                })),
+            );
+            assert!(tree.is_none());
+            parser.reset();
+            let tree = parser.parse("const valid = 1;", None).unwrap();
+            assert!(!tree.root_node().has_error());
+        }
+
+        assert!(
+            parser
+                .parse_with_options(
+                    &mut read,
+                    None,
+                    Some(ParseOptions::new().progress_callback(&mut callback)),
+                )
+                .is_none()
+        );
     });
 }
 
