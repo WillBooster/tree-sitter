@@ -12,6 +12,8 @@ static void ts_range_array_add(
   Length start,
   Length end
 ) {
+  if (start.bytes >= end.bytes) return;
+
   if (self->size > 0) {
     TSRange *last_range = array_back(self);
     if (last_range->start_byte < last_range->end_byte && start.bytes <= last_range->end_byte) {
@@ -21,10 +23,8 @@ static void ts_range_array_add(
     }
   }
 
-  if (start.bytes < end.bytes) {
-    TSRange range = { start.extent, end.extent, start.bytes, end.bytes };
-    array_push(self, range);
-  }
+  TSRange range = { start.extent, end.extent, start.bytes, end.bytes };
+  array_push(self, range);
 }
 
 bool ts_range_array_intersects(

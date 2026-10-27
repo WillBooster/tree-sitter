@@ -6187,6 +6187,8 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
     parser.set_language(&language).unwrap();
     let source = "x_ax";
     let configurations = [
+        vec![simple_range(0, 0)],
+        vec![simple_range(0, 0), simple_range(1, 1), simple_range(1, 2)],
         vec![simple_range(1, 3)],
         vec![simple_range(0, 0), simple_range(1, 3)],
         vec![simple_range(1, 1), simple_range(1, 3)],
@@ -6203,13 +6205,21 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
             let fresh = parser.parse(source, None).unwrap();
             let incremental_root = incremental.root_node();
             let fresh_root = fresh.root_node();
-            assert!(!fresh_root.has_error());
+            assert_eq!(incremental_root.has_error(), fresh_root.has_error());
             assert_eq!(incremental_root.to_sexp(), fresh_root.to_sexp());
             assert_eq!(
                 incremental_root.range(),
                 fresh_root.range(),
                 "{old_ranges:?} -> {new_ranges:?}"
             );
+            let changes = old_tree.changed_ranges(&incremental).collect::<Vec<_>>();
+            assert!(
+                changes
+                    .iter()
+                    .all(|range| range.start_byte < range.end_byte),
+                "{changes:?}"
+            );
+            assert_eq!(changes, old_tree.changed_ranges(&fresh).collect::<Vec<_>>());
             for i in 0..fresh_root.child_count() {
                 assert_eq!(
                     incremental_root.child(i).unwrap().range(),
