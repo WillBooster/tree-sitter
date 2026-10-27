@@ -107,7 +107,13 @@ struct TSParser {
   void *external_scanner_payload;
   FILE *dot_graph_file;
   unsigned accept_count;
-  unsigned operation_count;
+  uint64_t operation_count;
+  StackVersion accept_version;
+  StackSliceArray accept_slices;
+  uint32_t accept_index;
+  bool accept_collected;
+  bool accept_from_condense;
+  unsigned accept_min_error_cost;
   Subtree old_tree;
   TSRangeArray included_range_differences;
   TSParseOptions parse_options;
@@ -1367,51 +1373,71 @@ static void ts_parser__accept(
   Subtree lookahead
 ) {
   ts_assert(ts_subtree_is_eof(lookahead));
+  ts_assert(self->accept_version == STACK_VERSION_NONE);
   ts_stack_push(self->stack, version, lookahead, false, 1);
+  self->accept_version = version;
+  self->accept_index = 0;
+  self->accept_collected = false;
+}
 
-  StackSliceArray pop = ts_stack_pop_all(self->stack, version);
-  for (uint32_t i = 0; i < pop.size; i++) {
-    SubtreeArray trees = array_get(&pop, i)->subtrees;
+static bool ts_parser__check_accept_progress(void *, unsigned);
+static Subtree ts_parser__root_from_stack(TSParser *, SubtreeArray *);
 
-    Subtree root = NULL_SUBTREE;
-    for (uint32_t j = trees.size - 1; j + 1 > 0; j--) {
-      Subtree tree = *array_get(&trees, j);
-      if (!ts_subtree_extra(tree)) {
-        ts_assert(!tree.data.is_inline);
-        uint32_t child_count = ts_subtree_child_count(tree);
-        const Subtree *children = ts_subtree_children(tree);
-        for (uint32_t k = 0; k < child_count; k++) {
-          ts_subtree_retain(children[k]);
-        }
-        array_splice(&trees, j, 1, child_count, children);
-        root = ts_subtree_from_mut(ts_subtree_new_node(
-          ts_subtree_symbol(tree),
-          &trees,
-          tree.ptr->production_id,
-          self->language
-        ));
-        ts_subtree_release(&self->tree_pool, tree);
-        break;
-      }
-    }
+static bool ts_parser__finish_accept(TSParser *self) {
+  if (!self->accept_collected && !ts_stack_pop_all(
+    self->stack, self->accept_version, &self->accept_slices,
+    self->parse_options.progress_callback ? ts_parser__check_accept_progress : NULL, self
+  )) return false;
+  self->accept_collected = true;
+  while (self->accept_index < self->accept_slices.size) {
+    StackSlice *slice = array_get(&self->accept_slices, self->accept_index);
+    SubtreeArray trees = slice->subtrees;
 
+    Subtree root = ts_parser__root_from_stack(self, &trees);
+
+    slice->subtrees = (SubtreeArray) array_new();
+    self->accept_index++;
     ts_assert(root.ptr);
     self->accept_count++;
 
-    if (self->finished_tree.ptr) {
-      if (ts_parser__select_tree(self, self->finished_tree, root)) {
-        ts_subtree_release(&self->tree_pool, self->finished_tree);
-        self->finished_tree = root;
-      } else {
-        ts_subtree_release(&self->tree_pool, root);
-      }
-    } else {
+    if (!self->finished_tree.ptr || ts_parser__select_tree(self, self->finished_tree, root)) {
+      if (self->finished_tree.ptr) ts_subtree_release(&self->tree_pool, self->finished_tree);
       self->finished_tree = root;
+    } else {
+      ts_subtree_release(&self->tree_pool, root);
     }
+    if (!ts_parser__check_accept_progress(self, trees.size)) return false;
   }
 
-  ts_stack_remove_version(self->stack, array_get(&pop, 0)->version);
-  ts_stack_halt(self->stack, version);
+  ts_stack_remove_version(self->stack, array_get(&self->accept_slices, 0)->version);
+  ts_stack_halt(self->stack, self->accept_version);
+  self->accept_version = STACK_VERSION_NONE;
+  self->accept_slices = (StackSliceArray) array_new();
+  return true;
+}
+
+static Subtree ts_parser__root_from_stack(TSParser *self, SubtreeArray *trees) {
+  for (uint32_t j = trees->size - 1; j + 1 > 0; j--) {
+    Subtree tree = *array_get(trees, j);
+    if (!ts_subtree_extra(tree)) {
+      ts_assert(!tree.data.is_inline);
+      uint32_t child_count = ts_subtree_child_count(tree);
+      const Subtree *children = ts_subtree_children(tree);
+      for (uint32_t k = 0; k < child_count; k++) {
+        ts_subtree_retain(children[k]);
+      }
+      array_splice(trees, j, 1, child_count, children);
+      Subtree root = ts_subtree_from_mut(ts_subtree_new_node(
+        ts_subtree_symbol(tree),
+        trees,
+        tree.ptr->production_id,
+        self->language
+      ));
+      ts_subtree_release(&self->tree_pool, tree);
+      return root;
+    }
+  }
+  return NULL_SUBTREE;
 }
 
 static bool ts_parser__process_candidate_recovery_actions(
@@ -2029,6 +2055,12 @@ static bool ts_parser__check_progress(TSParser *self, Subtree *lookahead, const 
   return true;
 }
 
+static bool ts_parser__check_accept_progress(void *payload, unsigned operations) {
+  TSParser *self = payload;
+  uint32_t position = ts_stack_position(self->stack, self->accept_version).bytes;
+  return ts_parser__check_progress(self, NULL, &position, operations);
+}
+
 static bool ts_parser__advance(
   TSParser *self,
   StackVersion version,
@@ -2362,6 +2394,15 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
       if (cost < min_error_cost) min_error_cost = cost;
       Subtree lookahead = ts_stack_resume(self->stack, i);
       ts_parser__handle_error(self, i, lookahead);
+      if (self->accept_version != STACK_VERSION_NONE) {
+        for (StackVersion j = i + 1; j < n; j++) {
+          if (ts_stack_is_paused(self->stack, j)) {
+            ts_stack_remove_version(self->stack, j--);
+            n--;
+          }
+        }
+        return min_error_cost;
+      }
       resumed_paused_version = true;
       has_active_version = true;
     }
@@ -2434,6 +2475,7 @@ static bool ts_parser__balance_subtree(TSParser *self) {
 
 static bool ts_parser_has_outstanding_parse(TSParser *self) {
   return (
+    self->accept_version != STACK_VERSION_NONE ||
     self->canceled_balancing ||
     self->external_scanner_payload ||
     ts_stack_state(self->stack, 0) != 1 ||
@@ -2459,6 +2501,7 @@ TSParser *ts_parser_new(void) {
   self->canceled_balancing = false;
   self->external_scanner_payload = NULL;
   self->operation_count = 0;
+  self->accept_version = STACK_VERSION_NONE;
   self->old_tree = NULL_SUBTREE;
   self->included_range_differences = (TSRangeArray) array_new();
   self->included_range_difference_index = 0;
@@ -2574,6 +2617,9 @@ void ts_parser_reset(TSParser *self) {
     self->finished_tree = NULL_SUBTREE;
   }
   self->accept_count = 0;
+  self->accept_version = STACK_VERSION_NONE;
+  self->accept_slices = (StackSliceArray) array_new();
+  self->accept_from_condense = false;
   self->has_scanner_error = false;
   self->has_error = false;
   self->canceled_balancing = false;
@@ -2631,6 +2677,17 @@ TSTree *ts_parser_parse(
     }
   }
 
+  if (self->accept_version != STACK_VERSION_NONE) {
+    if (!ts_parser__finish_accept(self)) return NULL;
+    if (self->accept_from_condense) {
+      self->accept_from_condense = false;
+      if (self->finished_tree.ptr && ts_subtree_error_cost(self->finished_tree) < self->accept_min_error_cost) {
+        ts_stack_clear(self->stack);
+        goto balance;
+      }
+    }
+  }
+
   uint32_t position = 0, last_position = 0, version_count = 0;
   do {
     for (
@@ -2654,6 +2711,7 @@ TSTree *ts_parser_parse(
           if (self->has_scanner_error) goto exit;
           return NULL;
         }
+        if (self->accept_version != STACK_VERSION_NONE && !ts_parser__finish_accept(self)) return NULL;
 
         LOG_STACK();
 
@@ -2668,6 +2726,12 @@ TSTree *ts_parser_parse(
     // After advancing each version of the stack, re-sort the versions by their cost,
     // removing any versions that are no longer worth pursuing.
     unsigned min_error_cost = ts_parser__condense_stack(self);
+    if (self->accept_version != STACK_VERSION_NONE) {
+      self->accept_from_condense = true;
+      self->accept_min_error_cost = min_error_cost;
+      if (!ts_parser__finish_accept(self)) return NULL;
+      self->accept_from_condense = false;
+    }
 
     // Clear stack references to the finished tree before balancing its subtrees in place.
     if (self->finished_tree.ptr && ts_subtree_error_cost(self->finished_tree) < min_error_cost) {

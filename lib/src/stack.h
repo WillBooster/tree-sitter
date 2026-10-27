@@ -84,8 +84,22 @@ SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version);
 // Remove any pending trees from the top of the given version of the stack.
 StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version);
 
-// Remove all trees from the given version of the stack.
-StackSliceArray ts_stack_pop_all(Stack *self, StackVersion version);
+/** Return false to pause the walk before its next traversal round. */
+typedef bool (*StackProgressCallback)(void *payload, unsigned operations);
+
+/**
+ * Return false when paused; call again with the same version and unchanged stack
+ * to resume. On true, result borrows Stack-owned slice storage. Clear each
+ * subtrees entry after transferring its ownership; reset/delete releases entries
+ * left unconsumed.
+ */
+bool ts_stack_pop_all(
+  Stack *self,
+  StackVersion version,
+  StackSliceArray *result,
+  StackProgressCallback progress,
+  void *payload
+);
 
 // Get the maximum number of tree nodes reachable from this version of the stack
 // since the last error was detected.
