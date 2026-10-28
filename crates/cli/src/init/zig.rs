@@ -79,7 +79,8 @@ fn repair_generated_zig_fingerprint(
     if !generated_identity {
         return Ok(());
     }
-    let fingerprints = Regex::new(r#"\.(?:fingerprint|@"fingerprint")\s*=\s*(0x[0-9a-f]+)\s*,"#)?;
+    let fingerprints =
+        Regex::new(r#"\.(?:fingerprint|@"fingerprint")\s*=\s*(0x[0-9a-f]+)\s*(?:[,}]|//)"#)?;
     let Some(fingerprint) = fingerprints.captures_iter(contents).find(|capture| {
         zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
             .is_some_and(|path| path == [None])
