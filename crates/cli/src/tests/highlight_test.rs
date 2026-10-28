@@ -724,9 +724,25 @@ fn sibling_highlight_html(source: &str, highlights: &str, locals: &str) -> Strin
     )
     .unwrap();
     config.configure(&names);
-    let mut highlighter = Highlighter::new();
+    configured_highlight_html(source, &config, &names)
+}
+
+fn configured_highlight_html(
+    source: &str,
+    config: &HighlightConfiguration,
+    names: &[&str],
+) -> String {
+    reused_highlight_html(source, config, names, &mut Highlighter::new())
+}
+
+fn reused_highlight_html(
+    source: &str,
+    config: &HighlightConfiguration,
+    names: &[&str],
+    highlighter: &mut Highlighter,
+) -> String {
     let events = highlighter
-        .highlight(&config, source.as_bytes(), None, None, |_| None)
+        .highlight(config, source.as_bytes(), None, None, |_| None)
         .unwrap();
     let mut renderer = HtmlRenderer::new();
     renderer
@@ -739,6 +755,291 @@ fn sibling_highlight_html(source: &str, highlights: &str, locals: &str) -> Strin
         .collect::<String>()
         .trim_end_matches('\n')
         .to_string()
+}
+
+#[test]
+fn test_highlighting_scope_links_regions() {
+    let locals = linked_scope_locals();
+    let source = "function target(){} class C {seed(target){} middle(){target();} linked(){target();} end(){target();}}target();";
+    let expected = "function <span class=function>target</span>(){} class C {seed(<span class=variable>target</span>){} middle(){<span class=function>target</span>();} linked(){<span class=variable>target</span>();} end(){<span class=function>target</span>();}}<span class=function>target</span>();";
+    assert_eq!(
+        sibling_highlight_html(source, linked_scope_highlights(), locals),
+        expected
+    );
+    let combined = locals
+        .replace("[(formal_parameters) (statement_block)] @local.scope", "")
+        .replace("@local.scope-source", "@local.scope @local.scope-source")
+        .replace("@local.scope-import", "@local.scope @local.scope-import");
+    assert_eq!(
+        sibling_highlight_html(source, linked_scope_highlights(), &combined),
+        expected
+    );
+    let combined_bindings = combined
+        .replace("(formal_parameters (identifier) @local.definition)", "")
+        .replace("parameters: (formal_parameters)", "parameters: (formal_parameters (identifier) @local.definition)")
+        .replace("body: (statement_block)", "body: (statement_block (expression_statement (call_expression function: (identifier) @local.reference)))");
+    assert_eq!(
+        sibling_highlight_html(source, linked_scope_highlights(), &combined_bindings),
+        expected
+    );
+    let duplicate = format!("{locals}{locals}");
+    assert_eq!(
+        sibling_highlight_html(source, linked_scope_highlights(), &duplicate),
+        expected
+    );
+    let another_owner = "function target(){} class C {seed(target){} linked(){target();}} class D {seed(other){} linked(){target();}}target();";
+    assert_eq!(
+        sibling_highlight_html(another_owner, linked_scope_highlights(), locals),
+        "function <span class=function>target</span>(){} class C {seed(<span class=variable>target</span>){} linked(){<span class=variable>target</span>();}} class D {seed(<span class=variable>other</span>){} linked(){<span class=function>target</span>();}}<span class=function>target</span>();"
+    );
+}
+
+#[test]
+fn test_highlighting_scope_links_conflicts_and_repetition() {
+    let base = r"
+        [(formal_parameters) (statement_block)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    let source = "function target(){} class C {seed(target){} other(other){} linked(){target();} linked(){target();}}";
+    let link = r#"
+        ((class_declaration body: (class_body
+            (method_definition name: (property_identifier) @_source
+                parameters: (formal_parameters) @local.scope-source)
+            (method_definition name: (property_identifier) @_recipient
+                body: (statement_block) @local.scope-import)
+            (method_definition name: (property_identifier) @_recipient
+                body: (statement_block) @local.scope-import)))
+            (#eq? @_source "seed") (#eq? @_recipient "linked"))
+    "#;
+    let expected = "function <span class=function>target</span>(){} class C {seed(<span class=variable>target</span>){} other(<span class=variable>other</span>){} linked(){<span class=variable>target</span>();} linked(){<span class=variable>target</span>();}}";
+    assert_eq!(
+        sibling_highlight_html(
+            source,
+            linked_scope_highlights(),
+            &format!("{base}{link}{link}")
+        ),
+        expected
+    );
+    let conflicting = link.replace("(#eq? @_source \"seed\")", "");
+    assert_eq!(
+        sibling_highlight_html(
+            source,
+            linked_scope_highlights(),
+            &format!("{base}{conflicting}")
+        ),
+        expected.replace(
+            "linked(){<span class=variable>target</span>",
+            "linked(){<span class=function>target</span>"
+        )
+    );
+}
+
+#[test]
+fn test_highlighting_scope_links_own_and_parent_bindings() {
+    let locals = r#"
+        [(class_declaration) (formal_parameters) (statement_block) (arrow_function)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        ((assignment_pattern left: (identifier) @local.definition right: (_) @local.definition-value)
+            (#set! local.definition-scope parent))
+        (variable_declarator name: (identifier) @local.definition)
+        (identifier) @local.reference
+        ((method_definition name: (property_identifier) @_name body: (statement_block) @local.scope)
+            (#eq? @_name "linked") (#set! local.scope-inherits false))
+        ((class_declaration body: (class_body
+            (method_definition name: (property_identifier) @_source
+                parameters: (formal_parameters) @local.scope-source)
+            (method_definition name: (property_identifier) @_recipient
+                body: (statement_block) @local.scope-import)))
+            (#eq? @_source "seed") (#eq? @_recipient "linked"))
+    "#;
+    let highlights = r"
+        (identifier) @variable
+        (class_declaration name: (identifier) @none)
+        (function_declaration name: (identifier) @type)
+        (call_expression function: (identifier) @function)
+        (variable_declarator name: (identifier) @number)
+    ";
+    let source = "function outer(){} class C {seed(target,field=(()=>{let hidden;})()){} linked(){target();field();hidden();outer();let target=target();target();} later(){target();field();outer();}}";
+    for definitions in [
+        "(variable_declarator name: (identifier) @local.definition value: (_)? @local.definition-value)",
+        "(variable_declarator name: (identifier) @local.definition) (variable_declarator value: (_) @local.definition-value) @local.definition-context",
+    ] {
+        let locals = locals.replace(
+            "(variable_declarator name: (identifier) @local.definition)",
+            definitions,
+        );
+        assert_eq!(
+            sibling_highlight_html(source, highlights, &locals),
+            "function <span class=type>outer</span>(){} class C {seed(<span class=variable>target</span>,<span class=variable>field</span>=(()=&gt;{let <span class=number>hidden</span>;})()){} linked(){<span class=variable>target</span>();<span class=function>field</span>();<span class=function>hidden</span>();<span class=function>outer</span>();let <span class=number>target</span>=<span class=variable>target</span>();<span class=number>target</span>();} later(){<span class=function>target</span>();<span class=variable>field</span>();<span class=type>outer</span>();}}"
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_scope_links_do_not_reexport_imports() {
+    let locals = r#"
+        [(formal_parameters) (statement_block)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        (variable_declarator name: (identifier) @local.definition)
+        (identifier) @local.reference
+        ((class_declaration body: (class_body
+            (method_definition name: (property_identifier) @_a parameters: (formal_parameters) @local.scope-source)
+            (method_definition name: (property_identifier) @_b body: (statement_block) @local.scope-import)))
+            (#eq? @_a "seed") (#eq? @_b "middle"))
+        ((class_declaration body: (class_body
+            (method_definition name: (property_identifier) @_a body: (statement_block) @local.scope-source)
+            (method_definition name: (property_identifier) @_b body: (statement_block) @local.scope-import)))
+            (#eq? @_a "middle") (#eq? @_b "linked"))
+    "#;
+    let highlights = r"
+        (identifier) @variable
+        (class_declaration name: (identifier) @none)
+        (function_declaration name: (identifier) @type)
+        (call_expression function: (identifier) @function)
+        (variable_declarator name: (identifier) @number)
+    ";
+    assert_eq!(
+        sibling_highlight_html(
+            "function target(){} class C {seed(target){} middle(){target();let own=1;} linked(){target();own();}}",
+            highlights,
+            locals
+        ),
+        "function <span class=type>target</span>(){} class C {seed(<span class=variable>target</span>){} middle(){<span class=variable>target</span>();let <span class=number>own</span>=1;} linked(){<span class=type>target</span>();<span class=number>own</span>();}}"
+    );
+}
+
+#[test]
+fn test_highlighting_scope_links_disabled() {
+    let association = r#"
+        ((method_definition parameters: (formal_parameters) @local.scope-source
+            body: (statement_block) @local.scope-import) @_method
+            (#match? @_method "^method"))
+    "#;
+    let locals = format!(
+        r"
+        {association}
+        [(formal_parameters) (statement_block)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+    "
+    );
+    let source = "function target(){} class C {method(target){target();}}";
+    let expected = "function <span class=function>target</span>(){} class C {method(<span class=variable>target</span>){<span class=variable>target</span>();}}";
+    for disabled in [
+        "enabled",
+        "local.scope-source",
+        "local.scope-import",
+        "pattern",
+    ] {
+        let mut config = HighlightConfiguration::new(
+            get_language("javascript"),
+            "javascript",
+            linked_scope_highlights(),
+            "(comment) @injection.content",
+            &locals,
+        )
+        .unwrap();
+        let names = ["function", "variable"];
+        config.configure(&names);
+        match disabled {
+            "enabled" => {}
+            "pattern" => config.disable_pattern(1),
+            capture => config.disable_capture(capture),
+        }
+        assert_eq!(
+            configured_highlight_html(source, &config, &names),
+            if disabled == "enabled" {
+                expected.to_string()
+            } else {
+                expected.replace(
+                    "{<span class=variable>target</span>();}",
+                    "{<span class=function>target</span>();}",
+                )
+            },
+            "{disabled}"
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_scope_links_invalid() {
+    for association in [
+        "(formal_parameters) @local.scope-source",
+        "(statement_block) @local.scope-import",
+        "(method_definition parameters: (formal_parameters)? @local.scope-source body: (statement_block) @local.scope-import)",
+        "(method_definition parameters: (formal_parameters) @local.scope-source body: (statement_block)? @local.scope-import)",
+        "((method_definition parameters: (formal_parameters) @local.scope-source body: (statement_block) @local.scope-import))+",
+    ] {
+        let locals = format!("(formal_parameters) @local.scope {association}");
+        assert!(
+            matches!(HighlightConfiguration::new(get_language("javascript"), "javascript", "", "", &locals),
+            Err(error) if error.kind == tree_sitter::QueryErrorKind::Structure),
+            "{association}"
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_scope_links_cancellation_and_reuse() {
+    let source = format!(
+        "function target(){{}} class C {{seed(target){{}} linked(){{target();{}}}}}",
+        "hidden;".repeat(256)
+    );
+    let mut config = HighlightConfiguration::new(
+        get_language("javascript"),
+        "javascript",
+        linked_scope_highlights(),
+        "",
+        linked_scope_locals(),
+    )
+    .unwrap();
+    let names = ["function", "variable"];
+    config.configure(&names);
+    let flag = AtomicUsize::new(0);
+    let mut highlighter = Highlighter::new();
+    let mut events = highlighter
+        .highlight(&config, source.as_bytes(), None, Some(&flag), |_| None)
+        .unwrap();
+    let reference_start = source.find("linked(){target").unwrap() + "linked(){".len();
+    assert!(events.any(|event| matches!(event, Ok(HighlightEvent::Source {start, end}) if start == reference_start && end == start + "target".len())));
+    flag.store(1, Ordering::SeqCst);
+    assert!(events.any(|event| matches!(event, Err(Error::Cancelled))));
+    assert!(events.next().is_none());
+    drop(events);
+    flag.store(0, Ordering::SeqCst);
+    let fresh = "function target(){} class D {seed(other){} linked(){target();}}";
+    assert_eq!(
+        reused_highlight_html(fresh, &config, &names, &mut highlighter),
+        "function <span class=function>target</span>(){} class D {seed(<span class=variable>other</span>){} linked(){<span class=function>target</span>();}}"
+    );
+}
+
+fn linked_scope_locals() -> &'static str {
+    r#"
+        [(formal_parameters) (statement_block)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+        ((class_declaration body: (class_body
+            (method_definition name: (property_identifier) @_source
+                parameters: (formal_parameters) @local.scope-source)
+            (method_definition name: (property_identifier) @_recipient
+                body: (statement_block) @local.scope-import)))
+            (#eq? @_source "seed") (#eq? @_recipient "linked"))
+    "#
+}
+
+fn linked_scope_highlights() -> &'static str {
+    r"
+        (identifier) @variable
+        (class_declaration name: (identifier) @none)
+        (function_declaration name: (identifier) @function)
+    "
 }
 
 #[test]

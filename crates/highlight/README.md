@@ -90,6 +90,46 @@ ignored. The last applicable setting wins. Only the exact value `parent` selects
 parent; absent or other values retain the active scope. Initializer-boundary rules use
 the selected destination scope. These settings do not create scopes or infer hoisting.
 
+## Linked local scopes
+
+To reuse a parameter scope in a separate body, capture both regions as ordinary scopes
+and link their exact nodes in a locals-query match:
+
+```scheme
+(formal_parameters) @local.scope
+(statement_block) @local.scope
+(function_declaration
+  parameters: (formal_parameters) @local.scope-source
+  body: (statement_block) @local.scope-import)
+(formal_parameters (identifier) @local.definition)
+(identifier) @local.reference
+```
+
+A link pattern must capture exactly one `local.scope-source` and one or more
+`local.scope-import` nodes. These metadata captures do not create scopes themselves.
+Source and recipient must also receive `local.scope` captures, in the same or separate
+patterns. The source must finish before the recipient starts; adjacent regions are
+allowed. Backward, overlapping and self links are ignored.
+
+Recipients reuse the source frame's direct bindings and recorded definition styles.
+Definitions in nested scopes, inherited bindings and definitions directed to a parent
+scope are not exported. A recipient resolves its own definitions first, then imported
+bindings, then its normal ancestors. Its `local.scope-inherits` setting still controls
+ancestor lookup. Imported bindings are not automatically re-exported.
+
+Associate regions through an explicit owner in the query when a language has separate
+header, initializer and body nodes. Node identity distinguishes owners; matching names
+alone does not associate scopes. Repeated matches for the same source and recipient
+deduplicate. A recipient linked to different sources imports nothing. Duplicate ordinary
+scope captures for a node retain the same import without duplicating binding storage.
+
+Completed matches and native text predicates determine the links before highlighting.
+Only link patterns participate in the additional metadata query. Queries without link
+captures perform no link query or snapshot allocation. Recipients share immutable binding
+snapshots; they do not copy all source definitions per recipient. Disabling link captures,
+association patterns or `local.scope` updates metadata collection along with the main query.
+Initializer-boundary metadata remains independent.
+
 ## Local initializer boundaries
 
 A pattern capturing both `local.definition` and `local.definition-value` makes the binding
@@ -129,6 +169,7 @@ on context/value captures continue to filter those locals matches.
 
 Complete definition/value and context/value matches are collected before streaming captures,
 so locals pattern order and partial capture delivery cannot shorten initializer boundaries.
-Only these patterns participate in the additional query. Configurations with neither a
-context pattern nor a pattern pairing definitions with values perform no additional query.
+Only these patterns participate in the initializer metadata query. Initializer metadata
+adds no query for configurations without a context pattern or a pattern pairing definitions
+with values.
 These captures specify availability; they do not infer lexical scopes or hoisting rules.
