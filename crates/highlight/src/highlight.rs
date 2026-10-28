@@ -1233,7 +1233,11 @@ where
                             value_range,
                             highlight: None,
                         });
-                        definition_location = Some((scope_index, scope.local_defs.len() - 1));
+                        let definition_index = scope.local_defs.len() - 1;
+                        definition_location = Some((scope_index, definition_index));
+                        if parent && let Some(links) = &mut layer.scope_links {
+                            links.exclude_parent_definition(scope_index, definition_index);
+                        }
                     }
                 }
                 // If the node represents a reference, then try to find the corresponding

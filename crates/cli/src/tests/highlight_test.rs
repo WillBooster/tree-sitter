@@ -825,6 +825,35 @@ fn test_highlighting_scope_links_interleaved_duplicate_source() {
 }
 
 #[test]
+fn test_highlighting_scope_links_duplicate_source_parent_exclusion() {
+    let locals = r#"
+        [(class_declaration) (formal_parameters) (statement_block)] @local.scope
+        (formal_parameters) @local.scope
+        (formal_parameters (identifier) @local.definition)
+        ((assignment_pattern left: (identifier) @local.definition) (#set! local.definition-scope parent))
+        (identifier) @local.reference
+        ((method_definition name: (property_identifier) @_name body: (statement_block) @local.scope)
+            (#eq? @_name "linked") (#set! local.scope-inherits false))
+        (class_declaration body: (class_body
+            (method_definition parameters: (formal_parameters) @local.scope-source)
+            (method_definition body: (statement_block) @local.scope-import)))
+    "#;
+    let highlights = r"
+        (identifier) @variable
+        (class_declaration name: (identifier) @none)
+        (call_expression function: (identifier) @function)
+    ";
+    assert_eq!(
+        sibling_highlight_html(
+            "class C{seed(direct,target=1){} linked(){direct();target();}}",
+            highlights,
+            locals
+        ),
+        "class C{seed(<span class=variable>direct</span>,<span class=variable>target</span>=1){} linked(){<span class=variable>direct</span>();<span class=function>target</span>();}}"
+    );
+}
+
+#[test]
 fn test_highlighting_scope_links_conflicts_and_repetition() {
     let base = r"
         [(formal_parameters) (statement_block)] @local.scope

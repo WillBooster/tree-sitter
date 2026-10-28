@@ -20,6 +20,7 @@ pub struct ScopeLinks<'a> {
     snapshots: HashMap<usize, Rc<Vec<LocalDef<'a>>>>,
     active_imports: HashMap<usize, ImportedBindings<'a>>,
     scope_nodes: Vec<usize>,
+    parent_definitions: HashMap<usize, Vec<usize>>,
 }
 
 impl ScopeLinkQuery {
@@ -157,7 +158,24 @@ impl<'a> ScopeLinks<'a> {
             snapshots: HashMap::new(),
             active_imports: HashMap::new(),
             scope_nodes: Vec::new(),
+            parent_definitions: HashMap::new(),
         })
+    }
+
+    pub(super) fn exclude_parent_definition(&mut self, depth: usize, index: usize) {
+        if let Some(id) = depth
+            .checked_sub(1)
+            .and_then(|index| self.scope_nodes.get(index))
+            && self
+                .remaining_imports
+                .get(id)
+                .is_some_and(|count| *count > 0)
+        {
+            self.parent_definitions
+                .entry(depth)
+                .or_default()
+                .push(index);
+        }
     }
 
     pub(super) fn is_duplicate_source(&self, node: Node) -> bool {
@@ -197,6 +215,18 @@ impl<'a> ScopeLinks<'a> {
             .get(&id)
             .is_some_and(|count| *count > 0)
         {
+            if let Some(excluded) = self.parent_definitions.remove(&depth) {
+                let mut excluded = excluded.into_iter().peekable();
+                let mut index = 0;
+                scope.local_defs.retain(|_| {
+                    let keep = excluded.peek() != Some(&index);
+                    if !keep {
+                        excluded.next();
+                    }
+                    index += 1;
+                    keep
+                });
+            }
             let mut definitions = std::mem::take(&mut scope.local_defs);
             if let Some(snapshot) = self.snapshots.get_mut(&id) {
                 let previous =
