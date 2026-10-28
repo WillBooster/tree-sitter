@@ -17,6 +17,7 @@ pub struct LocalDefinitionQuery {
 
 type ExplicitValues = HashMap<(usize, usize), ops::Range<usize>>;
 
+#[derive(Clone)]
 struct LocalDefinitionContext {
     range: ops::Range<usize>,
     value_range: ops::Range<usize>,
@@ -52,22 +53,21 @@ impl LocalDefinitions {
         }
         self.active
             .retain(|context| context.value_range.start >= definition.start);
-        self.active
+        closest_value_range(self.active.iter(), definition, scope)
+    }
+
+    pub(super) fn context_cursor(&self) -> Self {
+        let mut contexts = self
+            .pending
             .iter()
-            .filter(|context| {
-                definition.end <= context.value_range.start
-                    && scope.start <= context.range.start
-                    && context.range.end <= scope.end
-            })
-            .min_by_key(|context| {
-                (
-                    context.range.len(),
-                    context.range.start,
-                    context.value_range.start,
-                    context.value_range.end,
-                )
-            })
-            .map(|context| context.value_range.clone())
+            .chain(self.active.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        contexts.sort_unstable_by_key(|context| context.range.start);
+        Self {
+            pending: contexts.into(),
+            ..Self::default()
+        }
     }
 
     pub(super) fn collect(
@@ -245,4 +245,27 @@ impl LocalDefinitionQuery {
 fn include_range(region: &mut ops::Range<usize>, value: &ops::Range<usize>) {
     region.start = region.start.min(value.start);
     region.end = region.end.max(value.end);
+}
+
+fn closest_value_range<'a>(
+    contexts: impl Iterator<Item = &'a LocalDefinitionContext>,
+    definition: &ops::Range<usize>,
+    scope: &ops::Range<usize>,
+) -> Option<ops::Range<usize>> {
+    contexts
+        .filter(|context| {
+            context.range.start <= definition.start
+                && definition.end <= context.value_range.start
+                && scope.start <= context.range.start
+                && context.range.end <= scope.end
+        })
+        .min_by_key(|context| {
+            (
+                context.range.len(),
+                context.range.start,
+                context.value_range.start,
+                context.value_range.end,
+            )
+        })
+        .map(|context| context.value_range.clone())
 }

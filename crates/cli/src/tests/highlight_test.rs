@@ -1259,6 +1259,522 @@ fn target_highlight_config(locals: &str) -> HighlightConfiguration {
 }
 
 #[test]
+fn test_highlighting_predeclared_regions() {
+    let base = r"
+        (statement_block) @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    let region = r#"
+        ((statement_block (lexical_declaration (variable_declarator !value name: (identifier) @local.definition-predeclared))) @local.definition-region
+            (#set! local.definition-style "variable.parameter"))
+    "#;
+    let source = "function target(){} {target();let target;target();}target();";
+    for locals in [
+        format!("{base}{region}"),
+        format!(
+            "{}{region}",
+            base.replace("(statement_block) @local.scope", "")
+        ),
+        format!("{base}{region}{base}{region}"),
+        format!(
+            "{base}{region}((statement_block) @local.scope (#set! local.scope-inherits false))"
+        ),
+    ] {
+        assert_predeclared_roles(
+            source,
+            &locals,
+            &[
+                "function",
+                "variable.parameter",
+                "variable.parameter",
+                "variable.parameter",
+                "function",
+            ],
+        );
+    }
+    let multiple = region.replace("(variable_declarator !value name: (identifier) @local.definition-predeclared)", "(variable_declarator !value name: (identifier) @local.definition-predeclared) (variable_declarator !value name: (identifier) @local.definition-predeclared)");
+    let html = sibling_highlight_html(
+        "function target(){} function other(){} {target();other();let target,other;target();other();}target();other();",
+        predeclared_highlights(),
+        &format!("{base}{multiple}"),
+    );
+    assert_eq!(
+        html.matches("<span class=variable.parameter>other</span>();")
+            .count(),
+        2,
+        "{html}"
+    );
+    assert!(
+        html.ends_with(
+            "}<span class=function>target</span>();<span class=function>other</span>();"
+        )
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_projection() {
+    let locals = r#"
+        [(class_declaration) (formal_parameters) (statement_block)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (formal_parameters (identifier) @local.definition)
+        (identifier) @local.reference
+        ((class_declaration body: (class_body
+            (method_definition name: (property_identifier) @_source parameters: (formal_parameters (identifier) @local.definition-predeclared))
+            (method_definition name: (property_identifier) @_target body: (statement_block) @local.definition-region)))
+            (#eq? @_source "seed") (#eq? @_target "first")
+            (#set! local.definition-style "variable.parameter"))
+    "#;
+    assert_predeclared_roles(
+        "function target(){} class C{seed(target){} first(){target();} second(){target();}}class D{seed(other){}first(){target();}}target();",
+        locals,
+        &[
+            "function",
+            "variable.parameter",
+            "variable.parameter",
+            "function",
+            "function",
+            "function",
+        ],
+    );
+    let initializer = r#"
+        (statement_block) @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)
+        (identifier) @local.reference
+        ((variable_declarator name: (identifier) @local.definition-predeclared value: (_) @local.definition-region)
+            (#set! local.definition-style "type"))
+        (variable_declarator value: (_) @local.definition-value) @local.definition-context
+    "#;
+    assert_predeclared_roles(
+        "function target(){} {let target=target();target();}target();",
+        initializer,
+        &[
+            "function",
+            "variable.parameter",
+            "function",
+            "variable.parameter",
+            "function",
+        ],
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_nesting_and_barriers() {
+    let base = r"
+        [(class_declaration) (method_definition) (statement_block)] @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (variable_declarator name: (identifier) @local.definition value: (number) @local.definition-value)
+        (identifier) @local.reference
+    ";
+    let outer = r#"
+        ((method_definition name: (property_identifier) @_owner body: (statement_block
+            (lexical_declaration (variable_declarator !value name: (identifier) @local.definition-predeclared)))) @local.definition-region
+            (#eq? @_owner "outer") (#set! local.definition-style "variable.parameter"))
+    "#;
+    let inner = outer
+        .replace("\"outer\"", "\"inner\"")
+        .replace("variable.parameter", "type");
+    let source = "function target(){} class C{outer(){target();let target;{let target=1;target();}class D{inner(){target();let target;target();}}target();}}target();";
+    assert_predeclared_roles(
+        source,
+        &format!("{base}{outer}{inner}"),
+        &[
+            "function",
+            "variable.parameter",
+            "variable.parameter",
+            "number",
+            "number",
+            "type",
+            "type",
+            "type",
+            "variable.parameter",
+            "function",
+        ],
+    );
+    let barrier = r#"
+        ((function_declaration name: (identifier) @_name) @local.scope
+            (#eq? @_name "blocked") (#set! local.scope-inherits false))
+    "#;
+    assert_predeclared_roles(
+        "function target(){} class C{outer(){let target;function blocked(){target();}target();}}target();",
+        &format!("{base}{outer}{barrier}"),
+        &[
+            "function",
+            "variable.parameter",
+            "function.call",
+            "variable.parameter",
+            "function",
+        ],
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_initializers() {
+    let base = r"
+        (statement_block) @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (identifier) @local.reference
+    ";
+    let explicit = r#"
+        ((statement_block (lexical_declaration (variable_declarator name: (identifier) @local.definition-predeclared value: (_) @local.definition-value))) @local.definition-region
+            (#set! local.definition-style "variable.parameter"))
+    "#;
+    let context = explicit.replace(" value: (_) @local.definition-value", "");
+    let context = format!(
+        "{context}(variable_declarator value: (_) @local.definition-value) @local.definition-context"
+    );
+    for region in [explicit.to_string(), context] {
+        assert_predeclared_roles(
+            "function target(){} {target();let target=target();target();}target();",
+            &format!("{base}{region}"),
+            &[
+                "function",
+                "function",
+                "variable.parameter",
+                "function",
+                "variable.parameter",
+                "function",
+            ],
+        );
+    }
+    let unrelated = format!(
+        "{}(variable_declarator value: (_) @local.definition-value) @local.definition-context",
+        predeclared_fixture_locals()
+    );
+    assert_predeclared_roles(
+        "function target(){} {target();let target;let other=target();target();}target();",
+        &unrelated,
+        &[
+            "function",
+            "variable.parameter",
+            "variable.parameter",
+            "variable.parameter",
+            "variable.parameter",
+            "function",
+        ],
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_configuration() {
+    let names = [
+        "function",
+        "function.call",
+        "type",
+        "number",
+        "variable",
+        "variable.parameter",
+    ];
+    let locals = predeclared_fixture_locals();
+    let source = "function target(){} {target();let target;target();}target();";
+    let injections = r#"((string) @injection.content (#set! injection.language "not-loaded"))"#;
+    let mut config = predeclared_configuration(locals, injections, &names);
+    let expected = configured_highlight_html(source, &config, &names);
+    let plain = locals[..locals.find("((statement_block").unwrap()].to_string();
+    let baseline = configured_highlight_html(
+        source,
+        &predeclared_configuration(&plain, injections, &names),
+        &names,
+    );
+    assert_ne!(expected, baseline);
+    for capture in ["local.definition-region", "local.definition-predeclared"] {
+        let mut disabled = predeclared_configuration(locals, injections, &names);
+        disabled.disable_capture(capture);
+        assert_eq!(
+            configured_highlight_html(source, &disabled, &names),
+            baseline
+        );
+    }
+    let index = (0..config.query().pattern_count())
+        .find(|index| {
+            config
+                .query()
+                .property_settings(*index)
+                .iter()
+                .any(|property| property.key.as_ref() == "local.definition-style")
+        })
+        .unwrap();
+    config.disable_pattern(index);
+    assert_eq!(configured_highlight_html(source, &config, &names), baseline);
+    let denied = locals.replace(
+        "(#set! local.definition-style",
+        "(#eq? @local.definition-predeclared \"other\") (#set! local.definition-style",
+    );
+    assert_eq!(
+        configured_highlight_html(
+            source,
+            &predeclared_configuration(&denied, injections, &names),
+            &names
+        ),
+        baseline
+    );
+    let scoped = locals.replace(
+        "#set! local.definition-style",
+        "#set! @local.definition-predeclared local.definition-style",
+    );
+    assert_eq!(
+        configured_highlight_html(
+            source,
+            &predeclared_configuration(&scoped, injections, &names),
+            &names
+        ),
+        expected
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_theme_roles() {
+    let names = [
+        "function",
+        "function.call",
+        "type",
+        "number",
+        "variable",
+        "variable.parameter",
+    ];
+    let locals = predeclared_fixture_locals();
+    let source = "function target(){} {target();let target;target();}target();";
+    let plain = locals[..locals.find("((statement_block").unwrap()].to_string();
+    assert_predeclared_roles(
+        source,
+        &locals.replace("variable.parameter", "type"),
+        &["function", "type", "variable.parameter", "type", "function"],
+    );
+
+    let mut recolored = predeclared_configuration(locals, "", &names);
+    let fallback_names = ["function", "function.call", "variable"];
+    recolored.configure(&fallback_names);
+    assert_predeclared_html_roles(
+        &configured_highlight_html(source, &recolored, &fallback_names),
+        &["function", "variable", "variable", "variable", "function"],
+    );
+    let unknown_names = ["function", "function.call"];
+    recolored.configure(&unknown_names);
+    let ordinary_locals =
+        format!("{plain}(variable_declarator name: (identifier) @local.definition)");
+    let ordinary = predeclared_configuration(&ordinary_locals, "", &unknown_names);
+    let after_declaration = "function target(){} {let target;target();}target();";
+    assert_eq!(
+        configured_highlight_html(after_declaration, &recolored, &unknown_names),
+        configured_highlight_html(after_declaration, &ordinary, &unknown_names)
+    );
+    let without_scope = predeclared_configuration(
+        &locals.replace("(statement_block) @local.scope", ""),
+        "",
+        &unknown_names,
+    );
+    assert_eq!(
+        configured_highlight_html(source, &without_scope, &unknown_names),
+        configured_highlight_html(source, &recolored, &unknown_names)
+    );
+    assert_eq!(
+        configured_highlight_html(source, &recolored, &unknown_names),
+        "function <span class=function>target</span>(){} {<span class=function.call>target</span>();let target;<span class=function.call>target</span>();}<span class=function>target</span>();"
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_configuration_errors() {
+    let valid = predeclared_fixture_locals();
+    for locals in [
+        valid.replace(" @local.definition-region", ""),
+        valid.replace(
+            " @local.definition-region",
+            " @local.definition-region @local.definition-region",
+        ),
+        valid.replace(
+            "(identifier) @local.definition-predeclared",
+            "(identifier)? @local.definition-predeclared",
+        ),
+        valid.replace(
+            "#set! local.definition-style",
+            "#set! @local.definition-region local.definition-style",
+        ),
+        valid.replace(" @local.definition-predeclared", ""),
+        valid.replace("(#set! local.definition-style \"variable.parameter\")", ""),
+        valid.replace(
+            "local.definition-style \"variable.parameter\"",
+            "local.definition-style \"\"",
+        ),
+    ] {
+        let error = HighlightConfiguration::new(
+            get_language("javascript"),
+            "javascript",
+            predeclared_highlights(),
+            "",
+            &locals,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.kind,
+            tree_sitter::QueryErrorKind::Structure,
+            "{error}"
+        );
+    }
+    let mut ordinary = HighlightConfiguration::new(
+        get_language("javascript"),
+        "javascript",
+        "(identifier) @local.definition-predeclared",
+        "",
+        "",
+    )
+    .unwrap();
+    let names = ["local.definition-predeclared"];
+    ordinary.configure(&names);
+    assert_eq!(
+        configured_highlight_html("target", &ordinary, &names),
+        "<span class=local.definition-predeclared>target</span>"
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_cancellation_and_reuse() {
+    let names = [
+        "function",
+        "function.call",
+        "type",
+        "number",
+        "variable",
+        "variable.parameter",
+    ];
+    let config = predeclared_configuration(predeclared_fixture_locals(), "", &names);
+    let source = format!(
+        "function target(){{}} {{{}let target;}}target();",
+        "target();".repeat(200)
+    );
+    let flag = AtomicUsize::new(0);
+    let mut highlighter = Highlighter::new();
+    let mut events = highlighter
+        .highlight(&config, source.as_bytes(), None, Some(&flag), |_| None)
+        .unwrap();
+    let mut saw_region = false;
+    for event in events.by_ref() {
+        if matches!(event, Ok(HighlightEvent::HighlightStart(Highlight(index))) if names[index] == "variable.parameter")
+        {
+            saw_region = true;
+            flag.store(1, Ordering::SeqCst);
+            break;
+        }
+    }
+    assert!(saw_region);
+    assert!(
+        events
+            .by_ref()
+            .any(|event| matches!(event, Err(tree_sitter_highlight::Error::Cancelled)))
+    );
+    flag.store(0, Ordering::SeqCst);
+    assert!(events.next().is_none());
+    drop(events);
+    let fresh = "function target(){} {target();let other;}target();";
+    assert_predeclared_html_roles(
+        &reused_highlight_html(fresh, &config, &names, &mut highlighter),
+        &["function", "function", "function"],
+    );
+}
+
+#[test]
+fn test_highlighting_predeclared_injection() {
+    let names = [
+        "function",
+        "function.call",
+        "type",
+        "number",
+        "variable",
+        "variable.parameter",
+        "string",
+    ];
+    let inner = predeclared_configuration(predeclared_fixture_locals(), "", &names);
+    let injection = r#"((string (string_fragment) @injection.content) (#set! injection.language "regional-javascript"))"#;
+    let outer = predeclared_configuration(
+        "(function_declaration name: (identifier) @local.definition) (identifier) @local.reference",
+        injection,
+        &names,
+    );
+    let source = "function target(){} const embedded=\"function target(){} {target();let target;target();}target();\";target();";
+    let mut highlighter = Highlighter::new();
+    let events = highlighter
+        .highlight(&outer, source.as_bytes(), None, None, |language| {
+            (language == "regional-javascript").then_some(&inner)
+        })
+        .unwrap();
+    let mut renderer = HtmlRenderer::new();
+    renderer
+        .render(events, source.as_bytes(), &|highlight, output| {
+            output.extend(format!("class={}", names[highlight.0]).as_bytes());
+        })
+        .unwrap();
+    let html = renderer.lines().collect::<String>();
+    assert_predeclared_html_roles(
+        &html,
+        &[
+            "function",
+            "function",
+            "variable.parameter",
+            "variable.parameter",
+            "variable.parameter",
+            "function",
+            "function",
+        ],
+    );
+}
+
+fn assert_predeclared_roles(source: &str, locals: &str, expected: &[&str]) {
+    let html = sibling_highlight_html(source, predeclared_highlights(), locals);
+    assert_predeclared_html_roles(&html, expected);
+}
+
+fn assert_predeclared_html_roles(html: &str, expected: &[&str]) {
+    let expression = regex::Regex::new(r"<span class=([^>]+)>target</span>").unwrap();
+    let roles = expression
+        .captures_iter(html)
+        .map(|capture| capture[1].to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(roles, expected, "{html}");
+}
+
+fn predeclared_highlights() -> &'static str {
+    r#"
+        (identifier) @variable
+        (function_declaration name: (identifier) @function)
+        (formal_parameters (identifier) @variable.parameter)
+        (variable_declarator name: (identifier) @variable.parameter)
+        ((method_definition name: (property_identifier) @_owner body: (statement_block
+            (lexical_declaration (variable_declarator !value name: (identifier) @type)))) (#eq? @_owner "inner"))
+        (variable_declarator name: (identifier) @number value: (number))
+        ((call_expression function: (identifier) @function.call) (#is-not? local))
+    "#
+}
+
+fn predeclared_fixture_locals() -> &'static str {
+    r#"
+        (statement_block) @local.scope
+        (function_declaration name: (identifier) @local.definition)
+        (identifier) @local.reference
+        ((statement_block (lexical_declaration (variable_declarator !value name: (identifier) @local.definition-predeclared))) @local.definition-region
+            (#set! local.definition-style "variable.parameter"))
+    "#
+}
+
+fn predeclared_configuration(
+    locals: &str,
+    injections: &str,
+    names: &[&str],
+) -> HighlightConfiguration {
+    let mut config = HighlightConfiguration::new(
+        get_language("javascript"),
+        "javascript",
+        predeclared_highlights(),
+        injections,
+        locals,
+    )
+    .unwrap();
+    config.configure(names);
+    config
+}
+
+#[test]
 fn test_highlighting_javascript() {
     let source = "const a = function(b) { return b + c; }";
     assert_eq!(

@@ -130,6 +130,54 @@ snapshots; they do not copy all source definitions per recipient. Disabling link
 association patterns or `local.scope` updates metadata collection along with the main query.
 Initializer-boundary metadata remains independent.
 
+## Predeclared regional bindings
+
+Some names are visible before their declaration, or only inside selected regions outside
+the declaration's node. Pair those declarations with their exact visibility node in a
+completed locals-query match and assign the reference role explicitly:
+
+```scheme
+((function_declaration
+  parameters: (formal_parameters (identifier) @local.definition-predeclared))
+  @local.definition-region
+  (#set! local.definition-style "variable.parameter"))
+(identifier) @local.reference
+```
+
+Each pattern must capture exactly one `local.definition-region`, one or more
+`local.definition-predeclared` nodes and a nonempty `local.definition-style` setting.
+A setting targeted at `@local.definition-predeclared` also works. The role uses the
+configured highlight names and their normal component matching. An unconfigured role
+still binds the name and prevents fallback to a styled outer binding. Declaration nodes
+keep their syntax-query styles, including when also captured as references. The explicit
+role styles references, rather than predicting future syntax-query results.
+
+The region is the captured node's end-exclusive range. Declarations may be outside it;
+anchor their association to an actual owner in the query. Node identity distinguishes
+owners. A region does not create an ordinary scope or change parent-directed definitions.
+It acts as a lexical child of its nearest captured ancestor. Nested ordinary bindings
+and regions shadow enclosing regions; non-inheriting scopes block lookup outside them.
+When the region itself is an ordinary scope, its own definitions take precedence over
+its regional bindings, which precede imported and inherited bindings.
+
+Repeated matches for the same declaration and region deduplicate. Within one region,
+later declaration positions win for equal names; equal positions use later query
+patterns. For one physical declaration captured by several patterns, the last pattern's
+role applies across its regions. Ordinary `local.definition` captures remain independent;
+regional bindings are not automatically exported by linked scopes.
+
+Explicit `local.definition-value` captures delay availability until the greatest captured
+value end for that declaration and pattern. Otherwise, initializer contexts use the nearest
+common ancestor of the declaration and visibility node as their containing scope. Other
+initializer-boundary rules remain the same.
+
+Only regional patterns participate in the additional completed-match query. Native text
+predicates filter matches. Disabling captures and patterns updates this query too.
+Configurations without these captures add no regional query or binding/index allocation.
+Regional configurations retain shared ancestor paths for their matched nodes and store
+bindings per region. Projecting the same declarations into several regions stores those
+bindings separately. Cancellation applies during collection, ancestry traversal and highlighting.
+
 ## Local initializer boundaries
 
 A pattern capturing both `local.definition` and `local.definition-value` makes the binding

@@ -61,6 +61,6 @@ pub fn remap_error(mut error: QueryError, offset: usize, source: &str) -> QueryE
     error
 }
 
-fn is_cancelled(flag: Option<&AtomicUsize>) -> bool {
+pub fn is_cancelled(flag: Option<&AtomicUsize>) -> bool {
     flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0)
 }
