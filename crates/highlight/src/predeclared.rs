@@ -195,13 +195,14 @@ impl PredeclaredQuery {
             })
             .collect();
         let ancestry = Ancestry::new(tree.root_node(), &targets, cancellation)?;
-        Ok(PredeclaredLocals::new(
+        PredeclaredLocals::new(
             regions,
             declarations,
             tree.root_node().id(),
             ancestry,
             values,
-        ))
+            cancellation,
+        )
     }
 
     fn compile(language: &Language, locals: &str) -> Result<Option<Self>, QueryError> {
@@ -279,9 +280,39 @@ impl<'a> PredeclaredLocals<'a> {
         root: usize,
         ancestry: Ancestry,
         values: &LocalDefinitions,
-    ) -> Option<Box<Self>> {
+        cancellation: Option<&AtomicUsize>,
+    ) -> Result<Option<Box<Self>>, Error> {
+        let mut regions = regions.into_values().collect::<Vec<_>>();
+        let mut definitions = regions
+            .iter_mut()
+            .flat_map(|pending| {
+                let owner = pending.region.id;
+                pending
+                    .definitions
+                    .iter_mut()
+                    .map(move |(id, definition)| (owner, *id, definition))
+            })
+            .collect::<Vec<_>>();
+        definitions.sort_unstable_by_key(|(_, _, definition)| definition.start);
+        let mut values = values.context_cursor();
+        for (owner, id, definition) in definitions {
+            if metadata::is_cancelled(cancellation) {
+                return Err(Error::Cancelled);
+            }
+            let range = definition.start..definition.start + definition.definition.name.len();
+            let end = definition
+                .explicit_end
+                .or_else(|| {
+                    values
+                        .value_range(&range, ancestry.common_range(id, owner))
+                        .map(|range| range.end)
+                })
+                .unwrap_or(0);
+            definition.definition.value_range = 0..end;
+            definition.definition.highlight = declarations[&id].1;
+        }
         let mut regions = regions
-            .into_values()
+            .into_iter()
             .filter_map(|mut pending| {
                 let mut definitions = pending.definitions.into_iter().collect::<Vec<_>>();
                 definitions.sort_unstable_by_key(|(id, definition)| {
@@ -289,30 +320,13 @@ impl<'a> PredeclaredLocals<'a> {
                 });
                 pending.region.definitions = definitions
                     .into_iter()
-                    .map(|(id, mut definition)| {
-                        let range =
-                            definition.start..definition.start + definition.definition.name.len();
-                        let end = definition
-                            .explicit_end
-                            .or_else(|| {
-                                values
-                                    .value_range_at(
-                                        &range,
-                                        ancestry.common_range(id, pending.region.id),
-                                    )
-                                    .map(|range| range.end)
-                            })
-                            .unwrap_or(0);
-                        definition.definition.value_range = 0..end;
-                        definition.definition.highlight = declarations[&id].1;
-                        definition.definition
-                    })
+                    .map(|(_, definition)| definition.definition)
                     .collect();
                 (!pending.region.definitions.is_empty()).then_some(pending.region)
             })
             .collect::<Vec<_>>();
         if regions.is_empty() {
-            return None;
+            return Ok(None);
         }
         regions.sort_unstable_by_key(|region| {
             (
@@ -321,14 +335,14 @@ impl<'a> PredeclaredLocals<'a> {
                 ancestry.depth(region.id),
             )
         });
-        Some(Box::new(PredeclaredLocals {
+        Ok(Some(Box::new(PredeclaredLocals {
             pending: regions.into(),
             active: Vec::new(),
             scope_nodes: Vec::new(),
             root,
             declarations: declarations.into_keys().collect(),
             ancestry,
-        }))
+        })))
     }
 
     pub(super) fn advance(&mut self, start: usize) {

@@ -17,6 +17,7 @@ pub struct LocalDefinitionQuery {
 
 type ExplicitValues = HashMap<(usize, usize), ops::Range<usize>>;
 
+#[derive(Clone)]
 struct LocalDefinitionContext {
     range: ops::Range<usize>,
     value_range: ops::Range<usize>,
@@ -55,19 +56,18 @@ impl LocalDefinitions {
         closest_value_range(self.active.iter(), definition, scope)
     }
 
-    pub(super) fn value_range_at(
-        &self,
-        definition: &ops::Range<usize>,
-        scope: &ops::Range<usize>,
-    ) -> Option<ops::Range<usize>> {
-        closest_value_range(
-            self.pending
-                .iter()
-                .take_while(|context| context.range.start <= definition.start)
-                .chain(self.active.iter()),
-            definition,
-            scope,
-        )
+    pub(super) fn context_cursor(&self) -> Self {
+        let mut contexts = self
+            .pending
+            .iter()
+            .chain(self.active.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        contexts.sort_unstable_by_key(|context| context.range.start);
+        Self {
+            pending: contexts.into(),
+            ..Self::default()
+        }
     }
 
     pub(super) fn collect(
