@@ -710,9 +710,11 @@ fn sibling_highlight_html(source: &str, highlights: &str, locals: &str) -> Strin
     let names = [
         "function",
         "function.builtin",
+        "function.call",
         "type",
         "number",
         "variable",
+        "variable.parameter",
         "_context",
     ];
     let mut config = HighlightConfiguration::new(
@@ -1099,6 +1101,89 @@ fn linked_scope_highlights() -> &'static str {
         (class_declaration name: (identifier) @none)
         (function_declaration name: (identifier) @function)
     "
+}
+
+#[test]
+fn test_highlighting_definition_styles_in_multiple_scopes() {
+    let source = "function target(){target();}target();";
+    let current = "(function_declaration name: (identifier) @local.definition)";
+    let parent = "((function_declaration name: (identifier) @local.definition) (#set! local.definition-scope parent))";
+    let highlights = r"
+        (identifier) @variable
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function.call) (#is-not? local))
+    ";
+    for inherits in ["true", "false"] {
+        let scope = format!(
+            "((function_declaration) @local.scope (#set! local.scope-inherits {inherits}))"
+        );
+        for definitions in [format!("{current}{parent}"), format!("{parent}{current}")] {
+            let locals = format!("{scope}{definitions}(identifier) @local.reference");
+            assert_eq!(
+                sibling_highlight_html(source, highlights, &locals),
+                "function <span class=function>target</span>(){<span class=function>target</span>();}<span class=function>target</span>();",
+                "{inherits}: {definitions}"
+            );
+        }
+    }
+    let parent_only = format!(
+        "((function_declaration) @local.scope (#set! local.scope-inherits false)){parent}(identifier) @local.reference"
+    );
+    assert_eq!(
+        sibling_highlight_html(source, highlights, &parent_only),
+        "function <span class=function>target</span>(){<span class=function.call>target</span>();}<span class=function>target</span>();"
+    );
+}
+
+#[test]
+fn test_highlighting_definition_styles_with_initializer_aliases() {
+    let source = "function target(){} {let target=target(),result=target();target();}target();";
+    let scopes = "[(statement_block) (lexical_declaration)] @local.scope";
+    let current = "(variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)";
+    let parent = format!("({current} (#set! local.definition-scope parent))");
+    let highlights = r"
+        (identifier) @variable
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function.call) (#is-not? local))
+    ";
+    for definitions in [format!("{current}{parent}"), format!("{parent}{current}")] {
+        let locals = format!(
+            "{scopes}(function_declaration name: (identifier) @local.definition){definitions}(identifier) @local.reference"
+        );
+        assert_eq!(
+            sibling_highlight_html(source, highlights, &locals),
+            "function <span class=function>target</span>(){} {let <span class=variable>target</span>=<span class=function>target</span>(),<span class=variable>result</span>=<span class=variable>target</span>();<span class=variable>target</span>();}<span class=function>target</span>();",
+            "{definitions}"
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_definition_styles_in_scope_snapshots() {
+    let source = "function target(){} class C {seed(target){} linked(){target();} later(){target();}}target();";
+    let current = "(formal_parameters (identifier) @local.definition)";
+    let parent = format!("({current} (#set! local.definition-scope parent))");
+    let base = linked_scope_locals().replace(current, "");
+    let base = format!(
+        r#"{base}
+        (class_declaration) @local.scope
+        ((method_definition name: (property_identifier) @_name body: (statement_block) @local.scope)
+            (#eq? @_name "linked") (#set! local.scope-inherits false))
+    "#
+    );
+    let highlights = r"
+        (identifier) @variable.parameter
+        (class_declaration name: (identifier) @none)
+        (function_declaration name: (identifier) @function)
+        ((call_expression function: (identifier) @function.call) (#is-not? local))
+    ";
+    for definitions in [format!("{current}{parent}"), format!("{parent}{current}")] {
+        assert_eq!(
+            sibling_highlight_html(source, highlights, &format!("{base}{definitions}")),
+            "function <span class=function>target</span>(){} class C {seed(<span class=variable.parameter>target</span>){} linked(){<span class=variable.parameter>target</span>();} later(){<span class=variable.parameter>target</span>();}}<span class=function>target</span>();",
+            "{definitions}"
+        );
+    }
 }
 
 #[test]
