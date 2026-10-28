@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) !void {
     if (reuse_alloc) {
         grammar.addCMacro("TREE_SITTER_REUSE_ALLOCATOR", "");
     }
-    if (optimize == .Debug) {
+    if (optimize == .debug) {
         grammar.addCMacro("TREE_SITTER_DEBUG", "");
     }
 
@@ -63,30 +63,10 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     module.linkLibrary(lib);
-
-    const tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bindings/zig/test.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    tests.root_module.addImport(library_name, module);
-
-    // HACK: fetch tree-sitter dependency only when testing this module
-    if (b.option(bool, "test", "Fetch test dependencies") orelse false) {
-        const ts_dep = b.lazyDependency("tree_sitter", .{});
-        if (ts_dep) |dep|
-            tests.root_module.addImport("tree-sitter", dep.module("tree_sitter"));
-    }
-
-    const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
 }
 
 inline fn fileExists(b: *std.Build, io: std.Io, filename: []const u8) bool {
-    const dir = b.build_root.handle;
+    const dir = b.root;
     dir.access(io, filename, .{}) catch return false;
     return true;
 }

@@ -1,3 +1,5 @@
+mod zig;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -128,7 +130,6 @@ const TEST_JAVA_TEMPLATE: &str = include_str!("./templates/test.java");
 const BUILD_ZIG_TEMPLATE: &str = include_str!("./templates/build.zig");
 const BUILD_ZIG_ZON_TEMPLATE: &str = include_str!("./templates/build.zig.zon");
 const ROOT_ZIG_TEMPLATE: &str = include_str!("./templates/root.zig");
-const TEST_ZIG_TEMPLATE: &str = include_str!("./templates/test.zig");
 
 pub const TREE_SITTER_JSON_SCHEMA: &str =
     "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json";
@@ -798,13 +799,8 @@ fn generate_zig_bindings(
         ctx.allow_update,
         |path| generate_file(path, BUILD_ZIG_ZON_TEMPLATE, ctx.language_name, opts),
         |path| {
-            regenerate_if_missing(
-                path,
-                ".name = .tree_sitter_",
-                BUILD_ZIG_ZON_TEMPLATE,
-                ctx.language_name,
-                opts,
-            )
+            let current = render_file(path, BUILD_ZIG_ZON_TEMPLATE, ctx.language_name, opts);
+            zig::update_manifest(path, &current)
         },
     )?;
 
@@ -822,10 +818,6 @@ fn generate_zig_bindings(
                 Ok(())
             },
         )?;
-
-        missing_path(path.join("test.zig"), |path| {
-            generate_file(path, TEST_ZIG_TEMPLATE, ctx.language_name, opts)
-        })?;
 
         Ok(())
     })?;
@@ -1459,6 +1451,19 @@ fn generate_file(
     language_name: &str,
     generate_opts: &GenerateOpts,
 ) -> Result<()> {
+    write_file(
+        path,
+        render_file(path, template, language_name, generate_opts),
+    )?;
+    Ok(())
+}
+
+fn render_file(
+    path: &Path,
+    template: &str,
+    language_name: &str,
+    generate_opts: &GenerateOpts,
+) -> String {
     let filename = path.file_name().unwrap().to_str().unwrap();
 
     let lower_parser_name = if path
@@ -1716,8 +1721,7 @@ fn generate_file(
         );
     }
 
-    write_file(path, replacement)?;
-    Ok(())
+    replacement
 }
 
 fn create_dir(path: &Path) -> Result<()> {
