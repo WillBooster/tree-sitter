@@ -689,17 +689,20 @@ fn test_highlighting_sibling_captures_cancel_private_tail() {
         ));
         flag.store(1, Ordering::SeqCst);
         assert!(events.any(|event| matches!(event, Err(Error::Cancelled))));
+        assert!(events.next().is_none());
+        assert!(events.next().is_none());
         drop(events);
         flag.store(0, Ordering::SeqCst);
         let fresh = b"fresh;";
-        let events = highlighter
+        let mut events = highlighter
             .highlight(&config, fresh, None, Some(&flag), |_| None)
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
             .unwrap();
+        let rendered = events.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
         assert!(
-            matches!(events.as_slice(), [HighlightEvent::Source { start: 0, end }] if *end == fresh.len())
+            matches!(rendered.as_slice(), [HighlightEvent::Source { start: 0, end }] if *end == fresh.len())
         );
+        flag.store(1, Ordering::SeqCst);
+        assert!(events.next().is_none());
     }
 }
 

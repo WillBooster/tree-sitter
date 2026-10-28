@@ -930,6 +930,15 @@ impl<'a, F> HighlightIter<'a, F>
 where
     F: FnMut(&str) -> Option<&'a HighlightConfiguration> + 'a,
 {
+    fn cancel(&mut self) -> Option<Result<HighlightEvent, Error>> {
+        self.highlighter
+            .cursors
+            .extend(self.layers.drain(..).map(|layer| layer.cursor));
+        self.byte_offset = self.source.len();
+        self.next_event = None;
+        Some(Err(Error::Cancelled))
+    }
+
     fn emit_event(
         &mut self,
         offset: usize,
@@ -999,6 +1008,12 @@ where
     type Item = Result<HighlightEvent, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.layers.is_empty()
+            && self.byte_offset == self.source.len()
+            && self.next_event.is_none()
+        {
+            return None;
+        }
         'main: loop {
             // If we've already determined the next highlight boundary, just return it.
             if let Some(e) = self.next_event.take() {
@@ -1012,7 +1027,7 @@ where
                 if self.iter_count >= CANCELLATION_CHECK_INTERVAL || self.layers.is_empty() {
                     self.iter_count = 0;
                     if cancellation_flag.load(Ordering::Relaxed) != 0 {
-                        return Some(Err(Error::Cancelled));
+                        return self.cancel();
                     }
                 }
             }
@@ -1055,7 +1070,7 @@ where
                     .cancellation_flag
                     .is_some_and(|flag| flag.load(Ordering::Relaxed) != 0)
                 {
-                    return Some(Err(Error::Cancelled));
+                    return self.cancel();
                 }
                 if let Some(end_byte) = layer.highlight_end_stack.last().copied() {
                     layer.highlight_end_stack.pop();
