@@ -1,15 +1,6 @@
-use super::{Error, LocalDef, LocalScope};
-use std::{
-    collections::HashMap,
-    ops::ControlFlow,
-    rc::Rc,
-    sync::atomic::{AtomicUsize, Ordering},
-};
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{
-    CaptureQuantifier, Language, Node, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
-    QueryError, QueryErrorKind, Tree,
-};
+use super::{Error, LocalDef, LocalScope, metadata};
+use std::{collections::HashMap, rc::Rc, sync::atomic::AtomicUsize};
+use tree_sitter::{CaptureQuantifier, Language, Node, Query, QueryCursor, QueryError, Tree};
 
 pub struct ScopeLinkQuery {
     query: Query,
@@ -48,13 +39,8 @@ impl ScopeLinkQuery {
         {
             return Ok(None);
         }
-        Self::compile(language, locals_query).map_err(|mut error| {
-            error.offset += locals_offset;
-            let prefix = &query_source[..error.offset];
-            error.row = prefix.bytes().filter(|byte| *byte == b'\n').count();
-            error.column = prefix.rsplit('\n').next().unwrap().len();
-            error
-        })
+        Self::compile(language, locals_query)
+            .map_err(|error| metadata::remap_error(error, locals_offset, query_source))
     }
 
     pub(super) fn disable_capture(&mut self, name: &str) {
@@ -84,41 +70,32 @@ impl ScopeLinkQuery {
             return Ok(None);
         };
         let mut imports = HashMap::new();
-        let mut progress = |_: &QueryCursorState| {
-            if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        let options = QueryCursorOptions::new().progress_callback(&mut progress);
-        let mut matches =
-            cursor.matches_with_options(&self.query, tree.root_node(), source, options);
-        while let Some(mat) = matches.next() {
-            if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
-                return Err(Error::Cancelled);
-            }
-            let Some(origin) = mat.captures().iter().find(|c| c.index == source_capture) else {
-                continue;
-            };
-            let source_id = origin.node.id();
-            let source_end = origin.node.end_byte();
-            for target in mat.captures().iter().filter(|c| c.index == import_capture) {
-                let target_id = target.node.id();
-                if source_id == target_id || source_end > target.node.start_byte() {
-                    continue;
+        metadata::for_each_match(
+            &self.query,
+            cursor,
+            tree,
+            source,
+            cancellation_flag,
+            |mat| {
+                let Some(origin) = mat.captures().iter().find(|c| c.index == source_capture) else {
+                    return;
+                };
+                let source_id = origin.node.id();
+                let source_end = origin.node.end_byte();
+                for target in mat.captures().iter().filter(|c| c.index == import_capture) {
+                    let target_id = target.node.id();
+                    if source_id == target_id || source_end > target.node.start_byte() {
+                        continue;
+                    }
+                    imports
+                        .entry(target_id)
+                        .and_modify(|previous: &mut Option<usize>| {
+                            *previous = previous.filter(|id| *id == source_id);
+                        })
+                        .or_insert_with(|| Some(source_id));
                 }
-                imports
-                    .entry(target_id)
-                    .and_modify(|previous: &mut Option<usize>| {
-                        *previous = previous.filter(|id| *id == source_id);
-                    })
-                    .or_insert_with(|| Some(source_id));
-            }
-        }
-        if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
-            return Err(Error::Cancelled);
-        }
+            },
+        )?;
         Ok(ScopeLinks::from_associations(imports))
     }
 
@@ -145,15 +122,11 @@ impl ScopeLinkQuery {
                     CaptureQuantifier::One | CaptureQuantifier::OneOrMore
                 )
             {
-                let offset = query.start_byte_for_pattern(pattern);
-                let prefix = &locals_query[..offset];
-                return Err(QueryError {
-                    row: prefix.bytes().filter(|b| *b == b'\n').count(),
-                    column: prefix.rsplit('\n').next().unwrap().len(),
-                    offset,
-                    message: "Each scope-link pattern requires exactly one local.scope-source and one or more local.scope-import nodes; local.scope captures must also be configured".into(),
-                    kind: QueryErrorKind::Structure,
-                });
+                return Err(metadata::structure_error(
+                    locals_query,
+                    query.start_byte_for_pattern(pattern),
+                    "Each scope-link pattern requires exactly one local.scope-source and one or more local.scope-import nodes; local.scope captures must also be configured",
+                ));
             }
         }
         Ok(Some(Self {

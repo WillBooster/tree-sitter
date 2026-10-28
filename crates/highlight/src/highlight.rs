@@ -2,6 +2,7 @@
 
 pub mod c_lib;
 mod locals;
+mod metadata;
 mod scope_links;
 use core::slice;
 use locals::{LocalDefinitionQuery, LocalDefinitions};
