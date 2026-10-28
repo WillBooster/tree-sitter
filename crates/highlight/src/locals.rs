@@ -52,22 +52,22 @@ impl LocalDefinitions {
         }
         self.active
             .retain(|context| context.value_range.start >= definition.start);
-        self.active
-            .iter()
-            .filter(|context| {
-                definition.end <= context.value_range.start
-                    && scope.start <= context.range.start
-                    && context.range.end <= scope.end
-            })
-            .min_by_key(|context| {
-                (
-                    context.range.len(),
-                    context.range.start,
-                    context.value_range.start,
-                    context.value_range.end,
-                )
-            })
-            .map(|context| context.value_range.clone())
+        closest_value_range(self.active.iter(), definition, scope)
+    }
+
+    pub(super) fn value_range_at(
+        &self,
+        definition: &ops::Range<usize>,
+        scope: &ops::Range<usize>,
+    ) -> Option<ops::Range<usize>> {
+        closest_value_range(
+            self.pending
+                .iter()
+                .take_while(|context| context.range.start <= definition.start)
+                .chain(self.active.iter()),
+            definition,
+            scope,
+        )
     }
 
     pub(super) fn collect(
@@ -245,4 +245,27 @@ impl LocalDefinitionQuery {
 fn include_range(region: &mut ops::Range<usize>, value: &ops::Range<usize>) {
     region.start = region.start.min(value.start);
     region.end = region.end.max(value.end);
+}
+
+fn closest_value_range<'a>(
+    contexts: impl Iterator<Item = &'a LocalDefinitionContext>,
+    definition: &ops::Range<usize>,
+    scope: &ops::Range<usize>,
+) -> Option<ops::Range<usize>> {
+    contexts
+        .filter(|context| {
+            context.range.start <= definition.start
+                && definition.end <= context.value_range.start
+                && scope.start <= context.range.start
+                && context.range.end <= scope.end
+        })
+        .min_by_key(|context| {
+            (
+                context.range.len(),
+                context.range.start,
+                context.value_range.start,
+                context.value_range.end,
+            )
+        })
+        .map(|context| context.value_range.clone())
 }
