@@ -1,115 +1,63 @@
 # Tree-sitter Highlight
 
-[![crates.io badge]][crates.io]
-
-[crates.io]: https://crates.io/crates/tree-sitter-highlight
-[crates.io badge]: https://img.shields.io/crates/v/tree-sitter-highlight.svg?color=%23B48723
+This fork's released CLI includes the highlighter. For Rust embedding, use the source
+crate and a grammar generated for the fork's runtime ABI. See the root README's
+[parser generation instructions](../../README.md#parser-generation-and-tuning).
 
 ## Usage
 
-Add this crate, and the language-specific crates for whichever languages you want
-to parse, to your `Cargo.toml`:
+Add source dependencies to `Cargo.toml`:
 
 ```toml
 [dependencies]
-tree-sitter-highlight = "0.25.4"
-tree-sitter-javascript = "0.23.1"
+tree-sitter-highlight = { git = "https://github.com/WillBooster/tree-sitter" }
+tree-sitter-javascript = { package = "willbooster-tree-sitter-javascript", git = "https://github.com/WillBooster/tree-sitter-javascript" }
 ```
 
-Define the list of highlight names that you will recognize:
+Configure the capture names your application recognizes and consume the highlight events:
 
 ```rust
-let highlight_names = [
-    "attribute",
-    "comment",
-    "constant",
-    "constant.builtin",
-    "constructor",
-    "embedded",
-    "function",
-    "function.builtin",
-    "keyword",
-    "module",
-    "number",
-    "operator",
-    "property",
-    "property.builtin",
-    "punctuation",
-    "punctuation.bracket",
-    "punctuation.delimiter",
-    "punctuation.special",
-    "string",
-    "string.special",
-    "tag",
-    "type",
-    "type.builtin",
-    "variable",
-    "variable.builtin",
-    "variable.parameter",
-];
-```
+use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
-Create a highlighter. You need one of these for each thread that you're using for
-syntax highlighting:
-
-```rust
-use tree_sitter_highlight::Highlighter;
+let mut configuration = HighlightConfiguration::new(
+    tree_sitter_javascript::LANGUAGE.into(),
+    "javascript",
+    "(identifier) @variable",
+    "",
+    "",
+).unwrap();
+configuration.configure(&["variable"]);
 
 let mut highlighter = Highlighter::new();
-```
-
-Load some highlighting queries from the `queries` directory of the language repository:
-
-```rust
-use tree_sitter_highlight::HighlightConfiguration;
-
-let javascript_language = tree_sitter_javascript::LANGUAGE.into();
-
-let mut javascript_config = HighlightConfiguration::new(
-    javascript_language,
-    "javascript",
-    tree_sitter_javascript::HIGHLIGHT_QUERY,
-    tree_sitter_javascript::INJECTIONS_QUERY,
-    tree_sitter_javascript::LOCALS_QUERY,
-).unwrap();
-```
-
-Configure the recognized names:
-
-```rust
-javascript_config.configure(&highlight_names);
-```
-
-Highlight some code:
-
-```rust
-use tree_sitter_highlight::HighlightEvent;
-
-let highlights = highlighter.highlight(
-    &javascript_config,
-    b"const x = new Y();",
+let events = highlighter.highlight(
+    &configuration,
+    b"const value = 1;",
     None,
-    |_| None
+    None,
+    |_| None,
 ).unwrap();
-
-for event in highlights {
+for event in events {
     match event.unwrap() {
-        HighlightEvent::Source {start, end} => {
-            eprintln!("source: {start}-{end}");
-        },
-        HighlightEvent::HighlightStart(s) => {
-            eprintln!("highlight style started: {s:?}");
-        },
-        HighlightEvent::HighlightEnd => {
-            eprintln!("highlight style ended");
-        },
+        HighlightEvent::Source { start, end } => eprintln!("source: {start}-{end}"),
+        HighlightEvent::HighlightStart(style) => eprintln!("style: {style:?}"),
+        HighlightEvent::HighlightEnd => eprintln!("style ended"),
     }
 }
 ```
 
-The last parameter to `highlight` is a _language injection_ callback. This allows
-other languages to be retrieved when Tree-sitter detects an embedded document
-(for example, a piece of JavaScript code inside a `script` tag within HTML).
+Replace the example query with query strings from the grammar's `queries` directory.
+The next two query arguments configure language injections and locals. The final
+`highlight` callback resolves an injected language name to its highlighting configuration.
+Reuse one `Highlighter` per thread.
+
+## Query customization
+
+Inspect the combined query with `configuration.query()`. Disable captures with
+`configuration.disable_capture(name)` and patterns with `configuration.disable_pattern(index)`.
+Pattern indices use that combined query's injection, locals, and highlights order.
+These methods update the internal metadata and combined-injection queries together with
+the main query. The query accessor is read-only. Disabling `local.definition-value` also
+skips initializer metadata collection.
 
 ## Local definition scopes
 
@@ -137,7 +85,14 @@ the selected destination scope. These settings do not create scopes or infer hoi
 
 ## Local initializer boundaries
 
-A locals query can associate independently matched bindings with a shared initializer:
+A pattern capturing both `local.definition` and `local.definition-value` makes the binding
+available after its initializer ends. All value captures for the same definition node and
+pattern, including across completed matches, define one initializer region from their
+minimum start to maximum end. Capture every sibling value of a flattened expression.
+References inside the region can resolve to an earlier binding, including when the
+reference and value are the same node or start at the same byte.
+
+A locals query can also associate independently matched bindings with a shared initializer:
 
 ```scheme
 (array_pattern (identifier) @local.definition)
@@ -147,9 +102,9 @@ A locals query can associate independently matched bindings with a shared initia
 
 This handles arbitrary nesting without enumerating each destructuring depth. A definition
 inside the captured context inherits the value's end as its availability boundary when the
-definition ends at or before the value starts and its current captured scope contains
+definition ends at or before the value starts and its destination captured scope contains
 the context. References within that initializer can still resolve to an outer binding.
-Definitions inside the value, after it, or in a separately captured nested scope are unaffected.
+Definitions inside the value or after it do not inherit this boundary.
 
 Each context pattern must capture exactly one `local.definition-context` and one or more
 `local.definition-value` nodes per match. All values captured for the same context node,
@@ -162,13 +117,11 @@ other pairs are ignored. Use distinct context nodes for distinct declarators/ini
 rather than a broad lexical declaration containing unrelated initializers. The smallest
 containing context takes precedence. Equal-sized contexts use their byte ranges and then
 the value's byte range as a stable tie break. An explicit value in a definition's own match takes precedence over inherited values.
-Explicit patterns without a context retain their last captured value behavior.
 Context patterns may also capture definitions, references, and scopes. Text predicates
 on context/value captures continue to filter those locals matches.
 
-Context/value metadata is collected before emitting highlight events, so locals pattern
-order does not affect inherited boundaries. Configurations using this convention also
-collect complete same-match definition/value pairs before streaming captures. Configurations
-without `local.definition-context` retain their existing query execution path and do not
-perform this additional query. This convention changes availability only where the locals
-query opts in; it does not infer lexical scopes or hoisting rules.
+Complete definition/value and context/value matches are collected before streaming captures,
+so locals pattern order and partial capture delivery cannot shorten initializer boundaries.
+Only these patterns participate in the additional query. Configurations with neither a
+context pattern nor a pattern pairing definitions with values perform no additional query.
+These captures specify availability; they do not infer lexical scopes or hoisting rules.

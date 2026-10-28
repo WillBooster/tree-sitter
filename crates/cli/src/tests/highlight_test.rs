@@ -319,6 +319,104 @@ fn test_highlighting_rejects_ambiguous_definition_context_pairs() {
 }
 
 #[test]
+fn test_highlighting_completed_definition_values() {
+    let definitions = r"
+        (function_declaration name: (identifier) @local.definition)
+        (assignment_pattern left: (identifier) @local.definition right: (_) @local.definition-value)
+        (variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)
+        (for_in_statement left: (identifier) @local.definition right: (_) @local.definition-value)
+    ";
+    let references = "(identifier) @local.reference";
+    for locals in [
+        format!("{definitions}{references}"),
+        format!("{references}{definitions}"),
+    ] {
+        for source in [
+            "function target() {} var [target = target()] = source; target();",
+            "function target() {} var [target = target] = source; target();",
+            "function target() {} var target = target(); target();",
+            "function target() {} var target = target; target();",
+            "function target() {} for (var target of target()) { target(); }",
+            "function target() {} for (var target of target) { target(); }",
+        ] {
+            assert_target_highlights(
+                source,
+                &locals,
+                &["function", "variable", "function", "variable"],
+            );
+        }
+    }
+}
+
+#[test]
+fn test_highlighting_completed_definition_values_with_siblings() {
+    let definitions = r"
+        (function_declaration name: (identifier) @local.definition)
+        (variable_declarator name: (array_pattern (identifier) @local.definition)
+            value: (array (_)+ @local.definition-value))
+    ";
+    let references = "(identifier) @local.reference";
+    for locals in [
+        format!("{definitions}{references}"),
+        format!("{references}{definitions}"),
+    ] {
+        let source =
+            "function target() {} var [target] = [target(), target(), target()]; target();";
+        assert_target_highlights(
+            source,
+            &locals,
+            &[
+                "function", "variable", "function", "function", "function", "variable",
+            ],
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_disabled_initializer_captures() {
+    let source = "function target() {} var target = target(); target();";
+    for initializer in [
+        "(variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)",
+        "(variable_declarator name: (identifier) @local.definition) (variable_declarator value: (_) @local.definition-value) @local.definition-context",
+    ] {
+        let locals = format!(
+            "(function_declaration name: (identifier) @local.definition){initializer}(identifier) @local.reference"
+        );
+        let mut config = target_highlight_config(&locals);
+        config.disable_capture("local.definition-value");
+        assert_target_highlights_with_config(
+            source,
+            &config,
+            &["function", "variable", "variable", "variable"],
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_disabled_initializer_patterns() {
+    let source = "function target() {} var target = target(); target();";
+    for (initializer, index, expected) in [
+        (
+            "(variable_declarator name: (identifier) @local.definition value: (_) @local.definition-value)",
+            1,
+            ["function", "function", "function", "function"],
+        ),
+        (
+            "(variable_declarator name: (identifier) @local.definition) (variable_declarator value: (_) @local.definition-value) @local.definition-context",
+            2,
+            ["function", "variable", "variable", "variable"],
+        ),
+    ] {
+        let locals = format!(
+            "(function_declaration name: (identifier) @local.definition){initializer}(identifier) @local.reference"
+        );
+        let mut config = target_highlight_config(&locals);
+        config.disable_pattern(index);
+        assert_target_highlights_with_config(source, &config, &expected);
+    }
+}
+
+#[test]
 fn test_highlighting_parent_definition_scopes() {
     let scopes = "(function_declaration) @local.scope";
     let definitions = r"
@@ -503,6 +601,25 @@ fn test_highlighting_new_scope_at_scope_end() {
 }
 
 fn assert_target_highlights(source: &str, locals: &str, expected: &[&str]) {
+    assert_target_highlights_with_config(source, &target_highlight_config(locals), expected);
+}
+
+fn assert_target_highlights_with_config(
+    source: &str,
+    config: &HighlightConfiguration,
+    expected: &[&str],
+) {
+    let tokens = to_token_vector(source, config).unwrap();
+    let actual = tokens
+        .iter()
+        .flatten()
+        .filter(|(text, _)| *text == "target")
+        .map(|(_, names)| names.last().copied().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected, "{source}");
+}
+
+fn target_highlight_config(locals: &str) -> HighlightConfiguration {
     let highlights = r"
         (identifier) @variable
         (formal_parameters (identifier) @variable.parameter)
@@ -518,14 +635,7 @@ fn assert_target_highlights(source: &str, locals: &str, expected: &[&str]) {
     )
     .unwrap();
     config.configure(&HIGHLIGHT_NAMES);
-    let tokens = to_token_vector(source, &config).unwrap();
-    let actual = tokens
-        .iter()
-        .flatten()
-        .filter(|(text, _)| *text == "target")
-        .map(|(_, names)| names.last().copied().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected, "{source}\n{locals}");
+    config
 }
 
 #[test]
@@ -1235,6 +1345,46 @@ fn test_highlighting_combined_injections_in_source_order() {
                 "pattern order {order:?}"
             );
         }
+    }
+}
+
+#[test]
+fn test_highlighting_disabled_combined_injections() {
+    let source = "'let target = 1;'";
+    for disabled in ["capture", "pattern"] {
+        let mut config = HighlightConfiguration::new(
+            get_language("javascript"),
+            "javascript",
+            "(string_fragment) @string",
+            r#"
+                ((string_fragment) @injection.content
+                    (#set! injection.language "javascript")
+                    (#set! injection.combined))
+            "#,
+            "",
+        )
+        .unwrap();
+        config.configure(&HIGHLIGHT_NAMES);
+        let tokens = to_token_vector(source, &config).unwrap();
+        assert!(
+            tokens
+                .iter()
+                .flatten()
+                .any(|(text, names)| *text == "let" && names.contains(&"keyword"))
+        );
+        if disabled == "capture" {
+            config.disable_capture("injection.content");
+        } else {
+            config.disable_pattern(0);
+        }
+        assert_eq!(
+            to_token_vector(source, &config).unwrap(),
+            [vec![
+                ("'", vec![]),
+                ("let target = 1;", vec!["string"]),
+                ("'", vec![])
+            ]]
+        );
     }
 }
 
