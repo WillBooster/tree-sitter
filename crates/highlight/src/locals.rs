@@ -1,13 +1,11 @@
-use super::Error;
+use super::{Error, metadata};
 use std::{
     collections::{HashMap, VecDeque},
-    ops::{self, ControlFlow},
-    sync::atomic::{AtomicUsize, Ordering},
+    ops,
+    sync::atomic::AtomicUsize,
 };
-use streaming_iterator::StreamingIterator;
 use tree_sitter::{
-    CaptureQuantifier, Language, Node, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
-    QueryError, QueryErrorKind, QueryMatch, Tree,
+    CaptureQuantifier, Language, Node, Query, QueryCursor, QueryError, QueryMatch, Tree,
 };
 
 pub struct LocalDefinitionQuery {
@@ -84,52 +82,43 @@ impl LocalDefinitions {
         };
         let mut contexts: HashMap<usize, LocalDefinitionContext> = HashMap::new();
         let mut explicit_values = HashMap::new();
-        let mut progress = |_: &QueryCursorState| {
-            if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        let options = QueryCursorOptions::new().progress_callback(&mut progress);
-        let mut matches =
-            cursor.matches_with_options(&query.query, tree.root_node(), source, options);
-        while let Some(mat) = matches.next() {
-            if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
-                return Err(Error::Cancelled);
-            }
-            let mut values = mat
-                .captures()
-                .iter()
-                .filter(|capture| capture.index == value_capture)
-                .map(|capture| capture.node.byte_range());
-            let Some(mut value) = values.next() else {
-                continue;
-            };
-            for next in values {
-                include_range(&mut value, &next);
-            }
-            if let Some(context) = mat
-                .captures()
-                .iter()
-                .find(|capture| Some(capture.index) == query.context_capture)
-                .map(|capture| capture.node)
-                && context.start_byte() <= value.start
-                && value.end <= context.end_byte()
-            {
-                contexts
-                    .entry(context.id())
-                    .and_modify(|previous| include_range(&mut previous.value_range, &value))
-                    .or_insert_with(|| LocalDefinitionContext {
-                        range: context.byte_range(),
-                        value_range: value.clone(),
-                    });
-            }
-            query.record_explicit_values(mat, &mut explicit_values, value);
-        }
-        if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
-            return Err(Error::Cancelled);
-        }
+        metadata::for_each_match(
+            &query.query,
+            cursor,
+            tree,
+            source,
+            cancellation_flag,
+            |mat| {
+                let mut values = mat
+                    .captures()
+                    .iter()
+                    .filter(|capture| capture.index == value_capture)
+                    .map(|capture| capture.node.byte_range());
+                let Some(mut value) = values.next() else {
+                    return;
+                };
+                for next in values {
+                    include_range(&mut value, &next);
+                }
+                if let Some(context) = mat
+                    .captures()
+                    .iter()
+                    .find(|capture| Some(capture.index) == query.context_capture)
+                    .map(|capture| capture.node)
+                    && context.start_byte() <= value.start
+                    && value.end <= context.end_byte()
+                {
+                    contexts
+                        .entry(context.id())
+                        .and_modify(|previous| include_range(&mut previous.value_range, &value))
+                        .or_insert_with(|| LocalDefinitionContext {
+                            range: context.byte_range(),
+                            value_range: value.clone(),
+                        });
+                }
+                query.record_explicit_values(mat, &mut explicit_values, value);
+            },
+        )?;
         let mut contexts = contexts.into_values().collect::<Vec<_>>();
         contexts.sort_unstable_by_key(|context| {
             (
@@ -168,13 +157,8 @@ impl LocalDefinitionQuery {
         {
             return Ok(None);
         }
-        Self::compile(language, locals_query).map_err(|mut error| {
-            error.offset += locals_offset;
-            let prefix = &query_source[..error.offset];
-            error.row = prefix.bytes().filter(|byte| *byte == b'\n').count();
-            error.column = prefix.rsplit('\n').next().unwrap().len();
-            error
-        })
+        Self::compile(language, locals_query)
+            .map_err(|error| metadata::remap_error(error, locals_offset, query_source))
     }
 
     pub(super) fn disable_capture(&mut self, name: &str) {
@@ -238,15 +222,11 @@ impl LocalDefinitionQuery {
                     )
                 })
             {
-                let offset = query.start_byte_for_pattern(pattern);
-                let prefix = &locals_query[..offset];
-                return Err(QueryError {
-                    row: prefix.bytes().filter(|b| *b == b'\n').count(),
-                    column: prefix.rsplit('\n').next().unwrap().len(),
-                    offset,
-                    message: "Each local.definition-context pattern must capture exactly one context and one or more local.definition-value nodes".into(),
-                    kind: QueryErrorKind::Structure,
-                });
+                return Err(metadata::structure_error(
+                    locals_query,
+                    query.start_byte_for_pattern(pattern),
+                    "Each local.definition-context pattern must capture exactly one context and one or more local.definition-value nodes",
+                ));
             }
             enabled = true;
         }
