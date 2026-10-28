@@ -160,6 +160,11 @@ impl<'a> ScopeLinks<'a> {
         })
     }
 
+    pub(super) fn is_duplicate_source(&self, node: Node) -> bool {
+        self.scope_nodes.last() == Some(&node.id())
+            && self.remaining_imports.contains_key(&node.id())
+    }
+
     pub(super) fn enter(&mut self, node: Node, depth: usize) {
         debug_assert_eq!(depth, self.scope_nodes.len() + 1);
         let id = node.id();
@@ -192,9 +197,15 @@ impl<'a> ScopeLinks<'a> {
             .get(&id)
             .is_some_and(|count| *count > 0)
         {
-            self.snapshots
-                .entry(id)
-                .or_insert_with(|| Rc::new(std::mem::take(&mut scope.local_defs)));
+            let mut definitions = std::mem::take(&mut scope.local_defs);
+            if let Some(snapshot) = self.snapshots.get_mut(&id) {
+                let previous =
+                    Rc::get_mut(snapshot).expect("source scopes finish before recipients enter");
+                definitions.append(previous);
+                *previous = definitions;
+            } else {
+                self.snapshots.insert(id, Rc::new(definitions));
+            }
         }
         if let Some(imported) = self.active_imports.get_mut(&id) {
             imported.frames -= 1;

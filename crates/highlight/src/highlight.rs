@@ -1180,12 +1180,18 @@ where
             // If this capture is for tracking local variables, then process the
             // local variable info.
             let mut reference_highlight = None;
-            let mut definition_highlight = None;
+            let mut definition_location = None;
             while match_.pattern_index < layer.config.highlights_pattern_index {
                 // If the node represents a local scope, push a new local scope onto
                 // the scope stack.
                 if Some(capture.index) == layer.config.local_scope_capture_index {
-                    definition_highlight = None;
+                    if !layer
+                        .scope_links
+                        .as_ref()
+                        .is_some_and(|links| links.is_duplicate_source(capture.node))
+                    {
+                        definition_location = None;
+                    }
                     let mut scope = LocalScope {
                         inherits: true,
                         range: range.clone(),
@@ -1203,7 +1209,7 @@ where
                     layer.scope_stack.push(scope);
                 } else if Some(capture.index) == layer.config.local_def_capture_index {
                     reference_highlight = None;
-                    definition_highlight = None;
+                    definition_location = None;
                     let parent = layer
                         .config
                         .definition_uses_parent_scope(match_.pattern_index, capture.index);
@@ -1227,16 +1233,15 @@ where
                             value_range,
                             highlight: None,
                         });
-                        definition_highlight =
-                            scope.local_defs.last_mut().map(|s| &mut s.highlight);
+                        definition_location = Some((scope_index, scope.local_defs.len() - 1));
                     }
                 }
                 // If the node represents a reference, then try to find the corresponding
                 // definition in the scope stack.
                 else if Some(capture.index) == layer.config.local_ref_capture_index
-                    && definition_highlight.is_none()
+                    && definition_location.is_none()
                 {
-                    definition_highlight = None;
+                    definition_location = None;
                     if let Ok(name) = str::from_utf8(&self.source[range.clone()]) {
                         for (depth, scope) in layer.scope_stack.iter().enumerate().rev() {
                             let definition =
@@ -1294,7 +1299,7 @@ where
                     // If the current node was found to be a local variable, then ignore
                     // the following match if it's a highlighting pattern that is disabled
                     // for local variables.
-                    if (definition_highlight.is_some() || reference_highlight.is_some())
+                    if (definition_location.is_some() || reference_highlight.is_some())
                         && layer.config.non_local_variable_patterns[following_match.pattern_index]
                     {
                         continue;
@@ -1309,8 +1314,9 @@ where
 
             // If this node represents a local definition, then store the current
             // highlight value on the local scope entry representing this node.
-            if let Some(definition_highlight) = definition_highlight {
-                *definition_highlight = current_highlight;
+            if let Some((scope_index, definition_index)) = definition_location {
+                layer.scope_stack[scope_index].local_defs[definition_index].highlight =
+                    current_highlight;
             }
 
             // Emit a scope start event and push the node's end position to the stack.

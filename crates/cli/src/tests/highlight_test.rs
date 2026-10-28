@@ -795,6 +795,36 @@ fn test_highlighting_scope_links_regions() {
 }
 
 #[test]
+fn test_highlighting_scope_links_interleaved_duplicate_source() {
+    let scope = "(arrow_function parameter: (identifier) @local.scope)";
+    let definition = "(arrow_function parameter: (identifier) @local.definition)";
+    let base = r"
+        (statement_block) @local.scope
+        (identifier) @local.reference
+        (arrow_function parameter: (identifier) @local.scope-source
+            body: (statement_block) @local.scope-import)
+    ";
+    let highlights = r"
+        (identifier) @variable
+        (call_expression function: (identifier) @function)
+    ";
+    for scopes in [
+        format!("{scope}{definition}{scope}"),
+        format!("{scope}{scope}{definition}"),
+    ] {
+        assert_eq!(
+            sibling_highlight_html(
+                "const f=target=>{target();};",
+                highlights,
+                &format!("{scopes}{base}")
+            ),
+            "const <span class=variable>f</span>=<span class=variable>target</span>=&gt;{<span class=variable>target</span>();};",
+            "{scopes}"
+        );
+    }
+}
+
+#[test]
 fn test_highlighting_scope_links_conflicts_and_repetition() {
     let base = r"
         [(formal_parameters) (statement_block)] @local.scope
