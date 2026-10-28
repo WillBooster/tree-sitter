@@ -1181,6 +1181,7 @@ where
             // local variable info.
             let mut reference_highlight = None;
             let mut definition_location = None;
+            let mut previous_definition_locations = Vec::new();
             while match_.pattern_index < layer.config.highlights_pattern_index {
                 // If the node represents a local scope, push a new local scope onto
                 // the scope stack.
@@ -1191,6 +1192,7 @@ where
                         .is_some_and(|links| links.is_duplicate_source(capture.node))
                     {
                         definition_location = None;
+                        previous_definition_locations.clear();
                     }
                     let mut scope = LocalScope {
                         inherits: true,
@@ -1209,7 +1211,6 @@ where
                     layer.scope_stack.push(scope);
                 } else if Some(capture.index) == layer.config.local_def_capture_index {
                     reference_highlight = None;
-                    definition_location = None;
                     let parent = layer
                         .config
                         .definition_uses_parent_scope(match_.pattern_index, capture.index);
@@ -1234,7 +1235,11 @@ where
                             highlight: None,
                         });
                         let definition_index = scope.local_defs.len() - 1;
-                        definition_location = Some((scope_index, definition_index));
+                        if let Some(previous) =
+                            definition_location.replace((scope_index, definition_index))
+                        {
+                            previous_definition_locations.push(previous);
+                        }
                         if parent && let Some(links) = &mut layer.scope_links {
                             links.exclude_parent_definition(scope_index, definition_index);
                         }
@@ -1244,28 +1249,27 @@ where
                 // definition in the scope stack.
                 else if Some(capture.index) == layer.config.local_ref_capture_index
                     && definition_location.is_none()
+                    && let Ok(name) = str::from_utf8(&self.source[range.clone()])
                 {
-                    definition_location = None;
-                    if let Ok(name) = str::from_utf8(&self.source[range.clone()]) {
-                        for (depth, scope) in layer.scope_stack.iter().enumerate().rev() {
-                            let definition =
-                                find_local_definition(&scope.local_defs, name, range.start)
-                                    .or_else(|| {
-                                        layer
-                                            .scope_links
-                                            .as_ref()
-                                            .and_then(|links| links.bindings(depth))
-                                            .and_then(|defs| {
-                                                find_local_definition(defs, name, range.start)
-                                            })
-                                    });
-                            if let Some(definition) = definition {
-                                reference_highlight = definition.highlight;
-                                break;
-                            }
-                            if !scope.inherits {
-                                break;
-                            }
+                    for (depth, scope) in layer.scope_stack.iter().enumerate().rev() {
+                        let definition = find_local_definition(
+                            &scope.local_defs,
+                            name,
+                            range.start,
+                        )
+                        .or_else(|| {
+                            layer
+                                .scope_links
+                                .as_ref()
+                                .and_then(|links| links.bindings(depth))
+                                .and_then(|defs| find_local_definition(defs, name, range.start))
+                        });
+                        if let Some(definition) = definition {
+                            reference_highlight = definition.highlight;
+                            break;
+                        }
+                        if !scope.inherits {
+                            break;
                         }
                     }
                 }
@@ -1316,9 +1320,10 @@ where
 
             let current_highlight = layer.config.highlight_indices[capture.index as usize];
 
-            // If this node represents a local definition, then store the current
-            // highlight value on the local scope entry representing this node.
-            if let Some((scope_index, definition_index)) = definition_location {
+            for (scope_index, definition_index) in definition_location
+                .into_iter()
+                .chain(previous_definition_locations)
+            {
                 layer.scope_stack[scope_index].local_defs[definition_index].highlight =
                     current_highlight;
             }
