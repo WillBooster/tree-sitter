@@ -13,20 +13,8 @@ fn test_init_preserves_custom_zig_manifest_data_and_is_idempotent() {
     create_project(&fresh);
     init(&fresh);
     let generated = fs::read_to_string(fresh.join("build.zig.zon")).unwrap();
-    let minimum_line = generated
-        .lines()
-        .find(|line| line.contains(".minimum_zig_version ="))
-        .unwrap();
-    let minimum = minimum_line.split('"').nth(1).unwrap();
-    let fingerprint = generated
-        .lines()
-        .find(|line| line.contains(".fingerprint ="))
-        .unwrap()
-        .split('=')
-        .nth(1)
-        .unwrap()
-        .trim()
-        .trim_end_matches(',');
+    let minimum = field(&generated, "minimum_zig_version").trim_matches('"');
+    let fingerprint = field(&generated, "fingerprint");
     let manifest = format!(
         r#".{{
     .name = .tree_sitter_zig_manifest,
@@ -71,6 +59,49 @@ fn test_init_preserves_custom_zig_manifest_data_and_is_idempotent() {
             );
         }
     }
+}
+
+#[test]
+fn test_init_upgrades_legacy_zig_identity_without_losing_custom_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let fresh = directory.path().join("fresh");
+    create_project(&fresh);
+    init(&fresh);
+    let current = fs::read_to_string(fresh.join("build.zig.zon")).unwrap();
+    let legacy = directory.path().join("legacy");
+    create_project(&legacy);
+    let custom = r#"    // Retain this user metadata.
+    .version = "9.9.9",
+    .metadata = .{ .name = "Keep { strings }", .fingerprint = 123 },
+    .paths = .{ "custom.txt", "src" },"#;
+    fs::write(
+        legacy.join("build.zig.zon"),
+        format!(".{{\n{custom}\n    .name = \"tree-sitter-zig_manifest\",\n}}\n"),
+    )
+    .unwrap();
+    init(&legacy);
+    let updated = fs::read_to_string(legacy.join("build.zig.zon")).unwrap();
+    assert_eq!(field(&updated, "name"), field(&current, "name"));
+    assert_eq!(
+        field(&updated, "minimum_zig_version"),
+        field(&current, "minimum_zig_version")
+    );
+    u64::from_str_radix(field(&updated, "fingerprint").trim_start_matches("0x"), 16).unwrap();
+    assert!(updated.contains(custom), "{updated}");
+    init(&legacy);
+    assert_eq!(
+        fs::read_to_string(legacy.join("build.zig.zon")).unwrap(),
+        updated
+    );
+}
+
+fn field<'a>(manifest: &'a str, name: &str) -> &'a str {
+    let prefix = format!(".{name} = ");
+    manifest
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix))
+        .unwrap()
+        .trim_end_matches(',')
 }
 
 fn create_project(path: &Path) {

@@ -14,6 +14,7 @@ pub(super) fn update_manifest(path: &Path, template: &str) -> Result<()> {
     let tokens = Regex::new(
         r#"(?m)//[^\n]*|\\\\[^\n]*|"(?:\\.|[^"\\])*"|([{}])|\.(?:([A-Za-z_][A-Za-z_0-9]*)|@"((?:\\.|[^"\\])*)")\s*="#,
     )?;
+    upgrade_legacy_zig_identity(&tokens, &mut contents, template)?;
     if let Some(version) = versions.captures_iter(&contents).find(|capture| {
         zig_manifest_path(&tokens, &contents, capture.get(0).unwrap().start())
             .is_some_and(|path| path == [None])
@@ -23,16 +24,62 @@ pub(super) fn update_manifest(path: &Path, template: &str) -> Result<()> {
             contents.replace_range(value, &floor[2]);
         }
     } else {
-        let root = Regex::new(r"(?m)^[ \t]*\.\{")?
-            .find(&contents)
-            .ok_or_else(|| anyhow!("Invalid Zig package manifest: missing root struct"))?;
-        contents.insert_str(
-            root.end(),
-            &format!("\n    .minimum_zig_version = \"{minimum}\","),
-        );
+        insert_zig_root_field(
+            &mut contents,
+            "minimum_zig_version",
+            &format!("\"{minimum}\""),
+        )?;
     }
     contents = remove_legacy_zig_dependency(&tokens, &contents)?;
     write_file(path, contents)?;
+    Ok(())
+}
+
+fn upgrade_legacy_zig_identity(
+    tokens: &Regex,
+    contents: &mut String,
+    template: &str,
+) -> Result<()> {
+    let names = Regex::new(r#"\.(?:name|@"name")\s*=\s*("(?:\\.|[^"\\])*")"#)?;
+    let Some(name) = names.captures_iter(contents).find(|capture| {
+        zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
+            .is_some_and(|path| path == [None])
+    }) else {
+        return Ok(());
+    };
+    let value = name.get(1).unwrap().range();
+    contents.replace_range(value, rendered_zig_field(template, "name")?);
+    let fingerprints = Regex::new(r#"\.(?:fingerprint|@"fingerprint")\s*="#)?;
+    let existing = fingerprints.find_iter(contents).any(|field| {
+        zig_manifest_path(tokens, contents, field.start()).is_some_and(|path| path == [None])
+    });
+    if !existing {
+        insert_zig_root_field(
+            contents,
+            "fingerprint",
+            rendered_zig_field(template, "fingerprint")?,
+        )?;
+    }
+    Ok(())
+}
+
+fn rendered_zig_field<'a>(template: &'a str, name: &str) -> Result<&'a str> {
+    let field = Regex::new(&format!(
+        r"(?m)^[ \t]*\.{}\s*=\s*([^,\r\n]+)",
+        regex::escape(name)
+    ))?;
+    field
+        .captures(template)
+        .and_then(|capture| capture.get(1))
+        .map(|value| value.as_str().trim())
+        .ok_or_else(|| anyhow!("Zig template is missing {name}"))
+}
+
+fn insert_zig_root_field(contents: &mut String, name: &str, encoded_value: &str) -> Result<()> {
+    let root = Regex::new(r"(?m)^[ \t]*\.\{")?
+        .find(contents)
+        .ok_or_else(|| anyhow!("Invalid Zig package manifest: missing root struct"))?;
+    contents.insert_str(root.end(), &format!("\n    .{name} = {encoded_value},"));
     Ok(())
 }
 

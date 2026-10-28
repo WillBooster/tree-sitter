@@ -798,7 +798,10 @@ fn generate_zig_bindings(
         ctx.repo_path.join("build.zig.zon"),
         ctx.allow_update,
         |path| generate_file(path, BUILD_ZIG_ZON_TEMPLATE, ctx.language_name, opts),
-        |path| zig::update_manifest(path, BUILD_ZIG_ZON_TEMPLATE),
+        |path| {
+            let current = render_file(path, BUILD_ZIG_ZON_TEMPLATE, ctx.language_name, opts);
+            zig::update_manifest(path, &current)
+        },
     )?;
 
     missing_path(bindings_dir.join("zig"), create_dir)?.apply(|path| {
@@ -1448,6 +1451,19 @@ fn generate_file(
     language_name: &str,
     generate_opts: &GenerateOpts,
 ) -> Result<()> {
+    write_file(
+        path,
+        render_file(path, template, language_name, generate_opts),
+    )?;
+    Ok(())
+}
+
+fn render_file(
+    path: &Path,
+    template: &str,
+    language_name: &str,
+    generate_opts: &GenerateOpts,
+) -> String {
     let filename = path.file_name().unwrap().to_str().unwrap();
 
     let lower_parser_name = if path
@@ -1705,8 +1721,7 @@ fn generate_file(
         );
     }
 
-    write_file(path, replacement)?;
-    Ok(())
+    replacement
 }
 
 fn create_dir(path: &Path) -> Result<()> {
