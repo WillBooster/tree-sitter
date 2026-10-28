@@ -10,10 +10,10 @@ use tree_sitter::{
     QueryError, QueryErrorKind, QueryMatch, Tree,
 };
 
-pub struct LocalDefinitionContextQuery {
+pub struct LocalDefinitionQuery {
     query: Query,
-    context_capture: u32,
-    value_capture: u32,
+    context_capture: Option<u32>,
+    value_capture: Option<u32>,
     definition_capture: Option<u32>,
 }
 
@@ -25,13 +25,13 @@ struct LocalDefinitionContext {
 }
 
 #[derive(Default)]
-pub struct LocalDefinitionContexts {
+pub struct LocalDefinitions {
     pending: VecDeque<LocalDefinitionContext>,
     active: Vec<LocalDefinitionContext>,
     explicit_values: ExplicitValues,
 }
 
-impl LocalDefinitionContexts {
+impl LocalDefinitions {
     pub(super) fn explicit_value_range(
         &self,
         pattern: usize,
@@ -73,12 +73,15 @@ impl LocalDefinitionContexts {
     }
 
     pub(super) fn collect(
-        query: &LocalDefinitionContextQuery,
+        query: &LocalDefinitionQuery,
         cursor: &mut QueryCursor,
         tree: &Tree,
         source: &[u8],
         cancellation_flag: Option<&AtomicUsize>,
     ) -> Result<Self, Error> {
+        let Some(value_capture) = query.value_capture else {
+            return Ok(Self::default());
+        };
         let mut contexts: HashMap<usize, LocalDefinitionContext> = HashMap::new();
         let mut explicit_values = HashMap::new();
         let mut progress = |_: &QueryCursorState| {
@@ -98,20 +101,18 @@ impl LocalDefinitionContexts {
             let mut values = mat
                 .captures()
                 .iter()
-                .filter(|capture| capture.index == query.value_capture)
+                .filter(|capture| capture.index == value_capture)
                 .map(|capture| capture.node.byte_range());
             let Some(mut value) = values.next() else {
                 continue;
             };
-            let mut last_value = value.clone();
             for next in values {
                 include_range(&mut value, &next);
-                last_value = next;
             }
             if let Some(context) = mat
                 .captures()
                 .iter()
-                .find(|capture| capture.index == query.context_capture)
+                .find(|capture| Some(capture.index) == query.context_capture)
                 .map(|capture| capture.node)
                 && context.start_byte() <= value.start
                 && value.end <= context.end_byte()
@@ -124,7 +125,7 @@ impl LocalDefinitionContexts {
                         value_range: value.clone(),
                     });
             }
-            query.record_explicit_values(mat, &mut explicit_values, value, last_value);
+            query.record_explicit_values(mat, &mut explicit_values, value);
         }
         if cancellation_flag.is_some_and(|flag| flag.load(Ordering::Relaxed) != 0) {
             return Err(Error::Cancelled);
@@ -147,7 +148,7 @@ impl LocalDefinitionContexts {
     }
 }
 
-impl LocalDefinitionContextQuery {
+impl LocalDefinitionQuery {
     pub(super) fn new(
         language: &Language,
         locals_query: &str,
@@ -158,6 +159,12 @@ impl LocalDefinitionContextQuery {
         if main_query
             .capture_index_for_name("local.definition-context")
             .is_none()
+            && (main_query
+                .capture_index_for_name("local.definition")
+                .is_none()
+                || main_query
+                    .capture_index_for_name("local.definition-value")
+                    .is_none())
         {
             return Ok(None);
         }
@@ -170,18 +177,25 @@ impl LocalDefinitionContextQuery {
         })
     }
 
+    pub(super) fn disable_capture(&mut self, name: &str) {
+        self.query.disable_capture(name);
+        match name {
+            "local.definition-value" => self.value_capture = None,
+            "local.definition-context" => self.context_capture = None,
+            _ => {}
+        }
+    }
+
+    pub(super) fn disable_pattern(&mut self, index: usize) {
+        self.query.disable_pattern(index);
+    }
+
     fn record_explicit_values(
         &self,
         mat: &QueryMatch,
         values: &mut ExplicitValues,
         region: ops::Range<usize>,
-        last_value: ops::Range<usize>,
     ) {
-        let has_context = mat
-            .captures()
-            .iter()
-            .any(|capture| capture.index == self.context_capture);
-        let value = if has_context { region } else { last_value };
         for definition in mat
             .captures()
             .iter()
@@ -189,37 +203,34 @@ impl LocalDefinitionContextQuery {
         {
             values
                 .entry((mat.pattern_index, definition.node.id()))
-                .and_modify(|previous| {
-                    if has_context {
-                        include_range(previous, &value);
-                    } else {
-                        *previous = value.clone();
-                    }
-                })
-                .or_insert_with(|| value.clone());
+                .and_modify(|previous| include_range(previous, &region))
+                .or_insert_with(|| region.clone());
         }
     }
 
     fn compile(language: &Language, locals_query: &str) -> Result<Option<Self>, QueryError> {
         let mut query = Query::new(language, locals_query)?;
-        let Some(context_capture) = query.capture_index_for_name("local.definition-context") else {
-            return Ok(None);
-        };
+        let context_capture = query.capture_index_for_name("local.definition-context");
         let value_capture = query.capture_index_for_name("local.definition-value");
         let definition_capture = query.capture_index_for_name("local.definition");
+        let mut enabled = false;
         for pattern in 0..query.pattern_count() {
             let quantifiers = query.capture_quantifiers(pattern);
-            if quantifiers[context_capture as usize] == CaptureQuantifier::Zero {
+            if !context_capture
+                .is_some_and(|context| quantifiers[context as usize] != CaptureQuantifier::Zero)
+            {
                 if !definition_capture.is_some_and(|definition| {
                     quantifiers[definition as usize] != CaptureQuantifier::Zero
                 }) || !value_capture
                     .is_some_and(|value| quantifiers[value as usize] != CaptureQuantifier::Zero)
                 {
                     query.disable_pattern(pattern);
+                } else {
+                    enabled = true;
                 }
                 continue;
             }
-            if quantifiers[context_capture as usize] != CaptureQuantifier::One
+            if quantifiers[context_capture.unwrap() as usize] != CaptureQuantifier::One
                 || value_capture.is_none_or(|value| {
                     !matches!(
                         quantifiers[value as usize],
@@ -237,11 +248,15 @@ impl LocalDefinitionContextQuery {
                     kind: QueryErrorKind::Structure,
                 });
             }
+            enabled = true;
+        }
+        if !enabled {
+            return Ok(None);
         }
         Ok(Some(Self {
             query,
             context_capture,
-            value_capture: value_capture.unwrap(),
+            value_capture,
             definition_capture,
         }))
     }

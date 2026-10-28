@@ -111,9 +111,25 @@ The last parameter to `highlight` is a _language injection_ callback. This allow
 other languages to be retrieved when Tree-sitter detects an embedded document
 (for example, a piece of JavaScript code inside a `script` tag within HTML).
 
+## Query customization
+
+Inspect the combined query with `configuration.query()`. Disable captures with
+`configuration.disable_capture(name)` and patterns with `configuration.disable_pattern(index)`.
+Pattern indices use that combined query's injection, locals, and highlights order.
+These methods update the internal metadata and combined-injection queries together with
+the main query. The query accessor is read-only. Disabling `local.definition-value` also
+skips initializer metadata collection.
+
 ## Local initializer boundaries
 
-A locals query can associate independently matched bindings with a shared initializer:
+A pattern capturing both `local.definition` and `local.definition-value` makes the binding
+available after its initializer ends. All value captures for the same definition node and
+pattern, including across completed matches, define one initializer region from their
+minimum start to maximum end. Capture every sibling value of a flattened expression.
+References inside the region can resolve to an earlier binding, including when the
+reference and value are the same node or start at the same byte.
+
+A locals query can also associate independently matched bindings with a shared initializer:
 
 ```scheme
 (array_pattern (identifier) @local.definition)
@@ -138,13 +154,11 @@ other pairs are ignored. Use distinct context nodes for distinct declarators/ini
 rather than a broad lexical declaration containing unrelated initializers. The smallest
 containing context takes precedence. Equal-sized contexts use their byte ranges and then
 the value's byte range as a stable tie break. An explicit value in a definition's own match takes precedence over inherited values.
-Explicit patterns without a context retain their last captured value behavior.
 Context patterns may also capture definitions, references, and scopes. Text predicates
 on context/value captures continue to filter those locals matches.
 
-Context/value metadata is collected before emitting highlight events, so locals pattern
-order does not affect inherited boundaries. Configurations using this convention also
-collect complete same-match definition/value pairs before streaming captures. Configurations
-without `local.definition-context` retain their existing query execution path and do not
-perform this additional query. This convention changes availability only where the locals
-query opts in; it does not infer lexical scopes or hoisting rules.
+Complete definition/value and context/value matches are collected before streaming captures,
+so locals pattern order and partial capture delivery cannot shorten initializer boundaries.
+Only these patterns participate in the additional query. Configurations with neither a
+context pattern nor a pattern pairing definitions with values perform no additional query.
+These captures specify availability; they do not infer lexical scopes or hoisting rules.
