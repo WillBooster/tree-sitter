@@ -796,16 +796,7 @@ fn generate_zig_bindings(
         ctx.repo_path.join("build.zig.zon"),
         ctx.allow_update,
         |path| generate_file(path, BUILD_ZIG_ZON_TEMPLATE, ctx.language_name, opts),
-        |path| {
-            regenerate_if_missing(
-                path,
-                ".name = .tree_sitter_",
-                BUILD_ZIG_ZON_TEMPLATE,
-                ctx.language_name,
-                opts,
-            )?;
-            update_zig_manifest(path)
-        },
+        update_zig_manifest,
     )?;
 
     missing_path(bindings_dir.join("zig"), create_dir)?.apply(|path| {
@@ -829,15 +820,17 @@ fn generate_zig_bindings(
 }
 
 fn update_zig_manifest(path: &Path) -> Result<()> {
-    let versions = Regex::new(r#"(?m)(^[ \t]*\.minimum_zig_version[ \t]*=[ \t]*")([^"]+)(")"#)?;
+    let versions =
+        Regex::new(r#"(\.(?:minimum_zig_version|@"minimum_zig_version")\s*=\s*")([^"]+)(")"#)?;
     let floor = versions.captures(BUILD_ZIG_ZON_TEMPLATE).unwrap();
     let minimum = Version::parse(&floor[2])?;
     let mut contents = fs::read_to_string(path)?;
     let tokens = Regex::new(
-        r#"(?m)//[^\n]*|\\\\[^\n]*|"(?:\\.|[^"\\])*"|([{}])|\.([A-Za-z_][A-Za-z_0-9]*)\s*="#,
+        r#"(?m)//[^\n]*|\\\\[^\n]*|"(?:\\.|[^"\\])*"|([{}])|\.(?:([A-Za-z_][A-Za-z_0-9]*)|@"((?:\\.|[^"\\])*)")\s*="#,
     )?;
     if let Some(version) = versions.captures_iter(&contents).find(|capture| {
-        zig_manifest_path(&tokens, &contents, capture.get(0).unwrap().start()) == [None]
+        zig_manifest_path(&tokens, &contents, capture.get(0).unwrap().start())
+            .is_some_and(|path| path == [None])
     }) {
         if Version::parse(&version[2])? < minimum {
             let value = version.get(2).unwrap().range();
@@ -858,17 +851,22 @@ fn update_zig_manifest(path: &Path) -> Result<()> {
 }
 
 fn remove_legacy_zig_dependency(tokens: &Regex, contents: &str) -> Result<String> {
-    let dependency = Regex::new(r"(?m)^[ \t]*\.tree_sitter[ \t]*=[ \t]*\.\{")?;
+    let dependency = Regex::new(r#"\.(?:tree_sitter|@"tree_sitter")\s*=\s*\.\{"#)?;
     let legacy_url = Regex::new(
-        r#"(?m)^[ \t]*\.url[ \t]*=[ \t]*"git\+https://github\.com/tree-sitter/zig-tree-sitter#0cf58172e61f6fdd16f681cde42b4acb531a23db""#,
+        r#"\.(?:url|@"url")\s*=\s*"git\+https://github\.com/tree-sitter/zig-tree-sitter#0cf58172e61f6fdd16f681cde42b4acb531a23db""#,
     )?;
     let mut removed = Vec::new();
     for field in dependency.find_iter(contents) {
-        if zig_manifest_path(tokens, contents, field.start()) != [None, Some("dependencies")] {
+        if zig_manifest_path(tokens, contents, field.start())
+            .is_none_or(|path| path != [None, Some("dependencies")])
+        {
             continue;
         }
         let end = zig_manifest_object_end(tokens, contents, field.end())?;
-        if legacy_url.is_match(&contents[field.end()..end - 1]) {
+        let body = &contents[field.end()..end - 1];
+        if legacy_url.find_iter(body).any(|url| {
+            zig_manifest_path(tokens, body, url.start()).is_some_and(|path| path.is_empty())
+        }) {
             let tail = &contents[end..];
             let separator = tail.trim_start_matches(char::is_whitespace);
             let suffix = if separator.starts_with(',') {
@@ -877,7 +875,15 @@ fn remove_legacy_zig_dependency(tokens: &Regex, contents: &str) -> Result<String
                 0
             };
             let suffix = suffix + usize::from(contents[end + suffix..].starts_with('\n'));
-            removed.push(field.start()..end + suffix);
+            let line = contents[..field.start()]
+                .rfind('\n')
+                .map_or(0, |start| start + 1);
+            let start = if contents[line..field.start()].trim().is_empty() {
+                line
+            } else {
+                field.start()
+            };
+            removed.push(start..end + suffix);
         }
     }
     let mut updated = contents.to_owned();
@@ -907,11 +913,22 @@ fn zig_manifest_object_end(tokens: &Regex, contents: &str, start: usize) -> Resu
     ))
 }
 
-fn zig_manifest_path<'a>(tokens: &Regex, contents: &'a str, end: usize) -> Vec<Option<&'a str>> {
+fn zig_manifest_path<'a>(
+    tokens: &Regex,
+    contents: &'a str,
+    end: usize,
+) -> Option<Vec<Option<&'a str>>> {
     let mut path = Vec::new();
     let mut field = None;
-    for token in tokens.captures_iter(&contents[..end]) {
-        if let Some(name) = token.get(2) {
+    for token in tokens.captures_iter(contents) {
+        let span = token.get(0).unwrap();
+        if span.start() >= end {
+            break;
+        }
+        if span.end() > end {
+            return None;
+        }
+        if let Some(name) = token.get(2).or_else(|| token.get(3)) {
             field = Some(name.as_str());
         } else if let Some(brace) = token.get(1) {
             if brace.as_str() == "{" {
@@ -922,7 +939,7 @@ fn zig_manifest_path<'a>(tokens: &Regex, contents: &'a str, end: usize) -> Vec<O
             }
         }
     }
-    path
+    Some(path)
 }
 
 fn generate_java_bindings(

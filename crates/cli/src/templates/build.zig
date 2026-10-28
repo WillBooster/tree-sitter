@@ -63,7 +63,6 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     module.linkLibrary(lib);
-
 }
 
 inline fn fileExists(b: *std.Build, io: std.Io, filename: []const u8) bool {
