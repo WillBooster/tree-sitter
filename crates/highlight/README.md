@@ -1,115 +1,54 @@
 # Tree-sitter Highlight
 
-[![crates.io badge]][crates.io]
-
-[crates.io]: https://crates.io/crates/tree-sitter-highlight
-[crates.io badge]: https://img.shields.io/crates/v/tree-sitter-highlight.svg?color=%23B48723
+This fork's released CLI includes the highlighter. For Rust embedding, use the source
+crate and a grammar generated for the fork's runtime ABI. See the root README's
+[parser generation instructions](../../README.md#parser-generation-and-tuning).
 
 ## Usage
 
-Add this crate, and the language-specific crates for whichever languages you want
-to parse, to your `Cargo.toml`:
+Add source dependencies to `Cargo.toml`:
 
 ```toml
 [dependencies]
-tree-sitter-highlight = "0.25.4"
-tree-sitter-javascript = "0.23.1"
+tree-sitter-highlight = { git = "https://github.com/WillBooster/tree-sitter" }
+tree-sitter-javascript = { package = "willbooster-tree-sitter-javascript", git = "https://github.com/WillBooster/tree-sitter-javascript" }
 ```
 
-Define the list of highlight names that you will recognize:
+Configure the capture names your application recognizes and consume the highlight events:
 
 ```rust
-let highlight_names = [
-    "attribute",
-    "comment",
-    "constant",
-    "constant.builtin",
-    "constructor",
-    "embedded",
-    "function",
-    "function.builtin",
-    "keyword",
-    "module",
-    "number",
-    "operator",
-    "property",
-    "property.builtin",
-    "punctuation",
-    "punctuation.bracket",
-    "punctuation.delimiter",
-    "punctuation.special",
-    "string",
-    "string.special",
-    "tag",
-    "type",
-    "type.builtin",
-    "variable",
-    "variable.builtin",
-    "variable.parameter",
-];
-```
+use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
-Create a highlighter. You need one of these for each thread that you're using for
-syntax highlighting:
-
-```rust
-use tree_sitter_highlight::Highlighter;
+let mut configuration = HighlightConfiguration::new(
+    tree_sitter_javascript::LANGUAGE.into(),
+    "javascript",
+    "(identifier) @variable",
+    "",
+    "",
+).unwrap();
+configuration.configure(&["variable"]);
 
 let mut highlighter = Highlighter::new();
-```
-
-Load some highlighting queries from the `queries` directory of the language repository:
-
-```rust
-use tree_sitter_highlight::HighlightConfiguration;
-
-let javascript_language = tree_sitter_javascript::LANGUAGE.into();
-
-let mut javascript_config = HighlightConfiguration::new(
-    javascript_language,
-    "javascript",
-    tree_sitter_javascript::HIGHLIGHT_QUERY,
-    tree_sitter_javascript::INJECTIONS_QUERY,
-    tree_sitter_javascript::LOCALS_QUERY,
-).unwrap();
-```
-
-Configure the recognized names:
-
-```rust
-javascript_config.configure(&highlight_names);
-```
-
-Highlight some code:
-
-```rust
-use tree_sitter_highlight::HighlightEvent;
-
-let highlights = highlighter.highlight(
-    &javascript_config,
-    b"const x = new Y();",
+let events = highlighter.highlight(
+    &configuration,
+    b"const value = 1;",
     None,
-    |_| None
+    None,
+    |_| None,
 ).unwrap();
-
-for event in highlights {
+for event in events {
     match event.unwrap() {
-        HighlightEvent::Source {start, end} => {
-            eprintln!("source: {start}-{end}");
-        },
-        HighlightEvent::HighlightStart(s) => {
-            eprintln!("highlight style started: {s:?}");
-        },
-        HighlightEvent::HighlightEnd => {
-            eprintln!("highlight style ended");
-        },
+        HighlightEvent::Source { start, end } => eprintln!("source: {start}-{end}"),
+        HighlightEvent::HighlightStart(style) => eprintln!("style: {style:?}"),
+        HighlightEvent::HighlightEnd => eprintln!("style ended"),
     }
 }
 ```
 
-The last parameter to `highlight` is a _language injection_ callback. This allows
-other languages to be retrieved when Tree-sitter detects an embedded document
-(for example, a piece of JavaScript code inside a `script` tag within HTML).
+Replace the example query with query strings from the grammar's `queries` directory.
+The next two query arguments configure language injections and locals. The final
+`highlight` callback resolves an injected language name to its highlighting configuration.
+Reuse one `Highlighter` per thread.
 
 ## Query customization
 
@@ -119,6 +58,37 @@ Pattern indices use that combined query's injection, locals, and highlights orde
 These methods update the internal metadata and combined-injection queries together with
 the main query. The query accessor is read-only. Disabling `local.definition-value` also
 skips initializer metadata collection.
+
+For a highlighted node, later applicable patterns take precedence. Resolving its style
+leaves captures for other nodes in those valid matches available.
+
+Unconfigured captures whose names start with `_` are private helpers. Predicates still
+read them, while emitted style grouping ignores them. Configured private captures retain
+their styles. Other unconfigured captures, such as `@none`, can mask the current node.
+
+## Local definition scopes
+
+By default, `local.definition` adds a binding to the active captured scope. To capture an
+entire function for its parameters while binding its name in the enclosing scope:
+
+```scheme
+(function_declaration) @local.scope
+((function_declaration name: (identifier) @local.definition)
+  (#set! local.definition-scope "parent"))
+(formal_parameters (identifier) @local.definition)
+(identifier) @local.reference
+```
+
+The name moves to the immediately enclosing scope, using the implicit root when there
+is no enclosing captured scope. A definition already in the implicit root stays there.
+Parameters remain in the function scope. Reference lookup still follows
+`local.scope-inherits`; an inheriting function scope can resolve its name recursively.
+
+A capture-targeted setting, `(#set! @local.definition local.definition-scope "parent")`,
+applies only to the matching definition capture. Settings targeting other captures are
+ignored. The last applicable setting wins. Only the exact value `parent` selects the
+parent; absent or other values retain the active scope. Initializer-boundary rules use
+the selected destination scope. These settings do not create scopes or infer hoisting.
 
 ## Local initializer boundaries
 
@@ -139,9 +109,9 @@ A locals query can also associate independently matched bindings with a shared i
 
 This handles arbitrary nesting without enumerating each destructuring depth. A definition
 inside the captured context inherits the value's end as its availability boundary when the
-definition ends at or before the value starts and its current captured scope contains
+definition ends at or before the value starts and its destination captured scope contains
 the context. References within that initializer can still resolve to an outer binding.
-Definitions inside the value, after it, or in a separately captured nested scope are unaffected.
+Definitions inside the value or after it do not inherit this boundary.
 
 Each context pattern must capture exactly one `local.definition-context` and one or more
 `local.definition-value` nodes per match. All values captured for the same context node,

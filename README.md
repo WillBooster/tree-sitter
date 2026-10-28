@@ -155,3 +155,4 @@ rules: {
 - [Tree-sitter documentation](https://tree-sitter.github.io) (upstream)
 - [Rust binding](lib/binding_rust/README.md)
 - [Wasm binding](lib/binding_web/README.md)
+- [Highlighting queries and Rust embedding](crates/highlight/README.md) — when configuring CLI locals or embedding the source highlighter.
