@@ -111,7 +111,7 @@ fn repair_short_zig_fingerprint(encoded: &str, template: &str) -> Result<Option<
     } else {
         value as u32
     };
-    if existing_checksum == checksum_value {
+    if (value >> 32) as u32 == checksum_value || existing_checksum == checksum_value {
         return Ok(None);
     }
     let old_checksum = format!("{checksum_value:x}");
