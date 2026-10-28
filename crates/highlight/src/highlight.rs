@@ -196,14 +196,30 @@ struct HighlightIterLayer<'a> {
 struct HighlightCaptures<'a> {
     inner: _QueryCaptures<'a, 'a, &'a [u8], &'a [u8]>,
     metadata: [Option<u32>; 2],
+    config: &'a HighlightConfiguration,
+    cancellation_flag: Option<&'a AtomicUsize>,
 }
 
 impl<'a> Iterator for HighlightCaptures<'a> {
     type Item = (QueryMatch<'a, 'a>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner
-            .find(|(mat, index)| !self.metadata.contains(&Some(mat.captures()[*index].index)))
+        for (mat, index) in self.inner.by_ref() {
+            let capture = mat.captures()[index].index;
+            let ignored = self.metadata.contains(&Some(capture))
+                || (self.config.highlight_indices[capture as usize].is_none()
+                    && self.config.query.capture_names()[capture as usize].starts_with('_'));
+            if !ignored {
+                return Some((mat, index));
+            }
+            if self
+                .cancellation_flag
+                .is_some_and(|flag| flag.load(Ordering::Relaxed) != 0)
+            {
+                return None;
+            }
+        }
+        None
     }
 }
 
@@ -744,6 +760,8 @@ impl<'a> HighlightIterLayer<'a> {
                 let captures = HighlightCaptures {
                     inner: captures,
                     metadata,
+                    config,
+                    cancellation_flag,
                 }
                 .peekable();
 
@@ -979,7 +997,7 @@ where
             // cancellation flag was flipped.
             if let Some(cancellation_flag) = self.cancellation_flag {
                 self.iter_count += 1;
-                if self.iter_count >= CANCELLATION_CHECK_INTERVAL {
+                if self.iter_count >= CANCELLATION_CHECK_INTERVAL || self.layers.is_empty() {
                     self.iter_count = 0;
                     if cancellation_flag.load(Ordering::Relaxed) != 0 {
                         return Some(Err(Error::Cancelled));
@@ -1021,6 +1039,12 @@ where
             // If there are no more captures, then emit any remaining highlight end events.
             // And if there are none of those, then just advance to the end of the document.
             else {
+                if self
+                    .cancellation_flag
+                    .is_some_and(|flag| flag.load(Ordering::Relaxed) != 0)
+                {
+                    return Some(Err(Error::Cancelled));
+                }
                 if let Some(end_byte) = layer.highlight_end_stack.last().copied() {
                     layer.highlight_end_stack.pop();
                     return self.emit_event(end_byte, Some(HighlightEvent::HighlightEnd));
@@ -1184,11 +1208,6 @@ where
                 continue 'main;
             }
 
-            // Once a highlighting pattern is found for the current node, keep iterating over
-            // any later highlighting patterns that also match this node and set the match to it.
-            // Captures for a given node are ordered by pattern index, so these subsequent
-            // captures are guaranteed to be for highlighting, not injections or
-            // local variables.
             while let Some((next_match, next_capture_index)) = layer.captures.peek() {
                 let next_capture = next_match.captures()[*next_capture_index];
                 if next_capture.node == capture.node {
@@ -1201,9 +1220,7 @@ where
                     {
                         continue;
                     }
-                    match_.remove();
                     capture = next_capture;
-                    match_ = following_match;
                 } else {
                     break;
                 }

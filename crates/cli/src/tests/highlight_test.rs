@@ -417,6 +417,178 @@ fn test_highlighting_disabled_initializer_patterns() {
 }
 
 #[test]
+fn test_highlighting_sibling_captures_after_repeated_contexts() {
+    let source = "class C { C() {} first() {} second() {} }";
+    for (name_capture, context_capture, expected) in [
+        (
+            "@_class",
+            "",
+            "class C { C() {} <span class=function>first</span>() {} <span class=function>second</span>() {} }",
+        ),
+        (
+            "@type",
+            "",
+            "class <span class=type>C</span> { C() {} <span class=function>first</span>() {} <span class=function>second</span>() {} }",
+        ),
+        (
+            "@_class",
+            "@type",
+            "<span class=type>class C { C() {} <span class=function>first</span>() {} <span class=function>second</span>() {} }</span>",
+        ),
+        (
+            "@_class",
+            "@_context",
+            "<span class=_context>class C { C() {} <span class=function>first</span>() {} <span class=function>second</span>() {} }</span>",
+        ),
+    ] {
+        let query = format!(
+            r"
+            ((class_declaration name: (identifier) {name_capture}
+                body: (class_body (method_definition name: (property_identifier) @function)))
+                {context_capture}
+                (#not-eq? {name_capture} @function))
+        "
+        );
+        assert_eq!(
+            sibling_highlight_html(source, &query, ""),
+            expected,
+            "{query}"
+        );
+    }
+}
+
+#[test]
+fn test_highlighting_sibling_captures_after_style_priority() {
+    let query = r#"
+        (call_expression function: (identifier) @function arguments: (arguments (number) @number))
+        ((call_expression function: (identifier) @function.builtin)
+            (#eq? @function.builtin "run"))
+    "#;
+    assert_eq!(
+        sibling_highlight_html("run(1); other(2);", query, ""),
+        "<span class=function.builtin>run</span>(<span class=number>1</span>); <span class=function>other</span>(<span class=number>2</span>);"
+    );
+}
+
+#[test]
+fn test_highlighting_sibling_captures_with_non_local_priority() {
+    let locals =
+        "(variable_declarator name: (identifier) @local.definition) (identifier) @local.reference";
+    let query = r"
+        (identifier) @variable
+        (call_expression function: (identifier) @function arguments: (arguments (number) @number))
+        ((call_expression function: (identifier) @function.builtin) (#is-not? local))
+    ";
+    assert_eq!(
+        sibling_highlight_html("let local = 1; local(2); external(3);", query, locals),
+        "let <span class=variable>local</span> = 1; <span class=variable>local</span>(<span class=number>2</span>); <span class=function.builtin>external</span>(<span class=number>3</span>);"
+    );
+}
+
+#[test]
+fn test_highlighting_sibling_captures_with_interleaved_helpers() {
+    let query = r#"
+        (call_expression function: (identifier) @function)
+        ((call_expression arguments: (arguments (number) @number)) @_call (#match? @_call "^run"))
+        ((call_expression function: (identifier) @function.builtin) (#eq? @function.builtin "run"))
+    "#;
+    assert_eq!(
+        sibling_highlight_html("run(1); other(2);", query, ""),
+        "<span class=function.builtin>run</span>(<span class=number>1</span>); <span class=function>other</span>(2);"
+    );
+}
+
+#[test]
+fn test_highlighting_sibling_captures_with_masked_or_private_styles() {
+    let base = "(call_expression function: (identifier) @function arguments: (arguments (number) @number))";
+    for (capture, expected) in [
+        ("none", "run(<span class=number>1</span>);"),
+        (
+            "_context",
+            "<span class=_context>run</span>(<span class=number>1</span>);",
+        ),
+    ] {
+        let query = format!("{base} (call_expression function: (identifier) @{capture})");
+        assert_eq!(sibling_highlight_html("run(1);", &query, ""), expected);
+    }
+}
+
+#[test]
+fn test_highlighting_sibling_captures_cancel_private_tail() {
+    let source = format!("one; two; {}", "hidden;".repeat(256));
+    for second_capture in ["function", "none"] {
+        let query = format!(
+            r#"
+            (identifier) @_helper
+            ((identifier) @function (#eq? @function "one"))
+            ((identifier) @{second_capture} (#eq? @{second_capture} "two"))
+        "#
+        );
+        let mut config =
+            HighlightConfiguration::new(get_language("javascript"), "javascript", &query, "", "")
+                .unwrap();
+        config.configure(&["function"]);
+        let flag = AtomicUsize::new(0);
+        let mut highlighter = Highlighter::new();
+        let mut events = highlighter
+            .highlight(&config, source.as_bytes(), None, Some(&flag), |_| None)
+            .unwrap();
+        assert!(matches!(
+            events.next(),
+            Some(Ok(HighlightEvent::HighlightStart(_)))
+        ));
+        flag.store(1, Ordering::SeqCst);
+        assert!(events.any(|event| matches!(event, Err(Error::Cancelled))));
+        drop(events);
+        flag.store(0, Ordering::SeqCst);
+        let fresh = b"fresh;";
+        let events = highlighter
+            .highlight(&config, fresh, None, Some(&flag), |_| None)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            matches!(events.as_slice(), [HighlightEvent::Source { start: 0, end }] if *end == fresh.len())
+        );
+    }
+}
+
+fn sibling_highlight_html(source: &str, highlights: &str, locals: &str) -> String {
+    let names = [
+        "function",
+        "function.builtin",
+        "type",
+        "number",
+        "variable",
+        "_context",
+    ];
+    let mut config = HighlightConfiguration::new(
+        get_language("javascript"),
+        "javascript",
+        highlights,
+        "",
+        locals,
+    )
+    .unwrap();
+    config.configure(&names);
+    let mut highlighter = Highlighter::new();
+    let events = highlighter
+        .highlight(&config, source.as_bytes(), None, None, |_| None)
+        .unwrap();
+    let mut renderer = HtmlRenderer::new();
+    renderer
+        .render(events, source.as_bytes(), &|highlight, output| {
+            output.extend(format!("class={}", names[highlight.0]).as_bytes());
+        })
+        .unwrap();
+    renderer
+        .lines()
+        .collect::<String>()
+        .trim_end_matches('\n')
+        .to_string()
+}
+
+#[test]
 fn test_highlighting_reference_at_scope_end() {
     let locals = r"
         (statement_block) @local.scope
