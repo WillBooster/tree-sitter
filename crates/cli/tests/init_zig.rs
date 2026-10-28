@@ -95,6 +95,99 @@ fn test_init_upgrades_legacy_zig_identity_without_losing_custom_data() {
     );
 }
 
+#[test]
+fn test_init_repairs_generated_fingerprints_without_replacing_custom_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let fresh = directory.path().join("fresh");
+    create_project(&fresh);
+    init(&fresh);
+    let generated = fs::read_to_string(fresh.join("build.zig.zon")).unwrap();
+    let name = field(&generated, "name");
+    let fingerprint = field(&generated, "fingerprint");
+    let checksum = if cfg!(target_endian = "little") {
+        &fingerprint[2..10]
+    } else {
+        &fingerprint[10..18]
+    };
+    let checksum = u32::from_str_radix(checksum, 16).unwrap();
+    let (broken, padded) = if cfg!(target_endian = "little") {
+        (
+            format!("0x{checksum:x}1"),
+            format!("0x{checksum:08x}00000001"),
+        )
+    } else {
+        (
+            format!("0x1{checksum:x}"),
+            format!("0x00000001{checksum:08x}"),
+        )
+    };
+    let repaired = if u64::from_str_radix(&broken[2..], 16).unwrap()
+        == u64::from_str_radix(&padded[2..], 16).unwrap()
+    {
+        &broken
+    } else {
+        &padded
+    };
+    for (layout, (terminator, final_name)) in [
+        (",", None),
+        ("", None),
+        (" // Keep this field comment.", None),
+        (",", Some(" ")),
+        (",", Some(" // Keep this name comment.\n")),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (label, identity, before, after) in [
+            ("repair", name, broken.as_str(), repaired.as_str()),
+            ("valid", name, fingerprint, fingerprint),
+            (
+                "custom-name",
+                ".custom_package",
+                broken.as_str(),
+                broken.as_str(),
+            ),
+            ("custom-value", name, "0x12345678", "0x12345678"),
+        ] {
+            let project = directory.path().join(format!("{label}-{layout}"));
+            create_project(&project);
+            let mut manifest = format!("// Keep this package comment.\n{generated}")
+                .replacen(
+                    ".{\n",
+                    ".{\n    .metadata = .{ .name = \"Keep\", .fingerprint = 123 },\n",
+                    1,
+                )
+                .replace(&format!(".name = {name},"), &format!(".name = {identity},"))
+                .replace(&format!("    .fingerprint = {fingerprint},\n"), "");
+            let end = manifest.rfind('}').unwrap();
+            manifest.insert_str(end, &format!("    .fingerprint = {before}{terminator}\n"));
+            if let Some(ending) = final_name {
+                manifest = manifest.replace(&format!("    .name = {identity},\n"), "");
+                let end = manifest.rfind('}').unwrap();
+                manifest.insert_str(end, &format!("    .name = {identity}{ending}"));
+            }
+            fs::write(project.join("build.zig.zon"), &manifest).unwrap();
+            fs::write(project.join("custom.txt"), "Keep this user file.\n").unwrap();
+            let expected = manifest.replace(
+                &format!(".fingerprint = {before}"),
+                &format!(".fingerprint = {after}"),
+            );
+            for _ in 0..2 {
+                init(&project);
+                assert_eq!(
+                    fs::read_to_string(project.join("build.zig.zon")).unwrap(),
+                    expected,
+                    "{label}-{layout}"
+                );
+                assert_eq!(
+                    fs::read_to_string(project.join("custom.txt")).unwrap(),
+                    "Keep this user file.\n"
+                );
+            }
+        }
+    }
+}
+
 fn field<'a>(manifest: &'a str, name: &str) -> &'a str {
     let prefix = format!(".{name} = ");
     manifest
