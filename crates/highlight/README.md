@@ -59,6 +59,13 @@ These methods update the internal metadata and combined-injection queries togeth
 the main query. The query accessor is read-only. Disabling `local.definition-value` also
 skips initializer metadata collection.
 
+For a highlighted node, later applicable patterns take precedence. Resolving its style
+leaves captures for other nodes in those valid matches available.
+
+Unconfigured captures whose names start with `_` are private helpers. Predicates still
+read them, while emitted style grouping ignores them. Configured private captures retain
+their styles. Other unconfigured captures, such as `@none`, can mask the current node.
+
 ## Local definition scopes
 
 By default, `local.definition` adds a binding to the active captured scope. To capture an
