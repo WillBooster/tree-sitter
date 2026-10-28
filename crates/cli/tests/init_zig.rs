@@ -128,9 +128,15 @@ fn test_init_repairs_generated_fingerprints_without_replacing_custom_data() {
     } else {
         &padded
     };
-    for (layout, terminator) in [",", "", " // Keep this field comment."]
-        .into_iter()
-        .enumerate()
+    for (layout, (terminator, final_name)) in [
+        (",", None),
+        ("", None),
+        (" // Keep this field comment.", None),
+        (",", Some(" ")),
+        (",", Some(" // Keep this name comment.\n")),
+    ]
+    .into_iter()
+    .enumerate()
     {
         for (label, identity, before, after) in [
             ("repair", name, broken.as_str(), repaired.as_str()),
@@ -155,6 +161,11 @@ fn test_init_repairs_generated_fingerprints_without_replacing_custom_data() {
                 .replace(&format!("    .fingerprint = {fingerprint},\n"), "");
             let end = manifest.rfind('}').unwrap();
             manifest.insert_str(end, &format!("    .fingerprint = {before}{terminator}\n"));
+            if let Some(ending) = final_name {
+                manifest = manifest.replace(&format!("    .name = {identity},\n"), "");
+                let end = manifest.rfind('}').unwrap();
+                manifest.insert_str(end, &format!("    .name = {identity}{ending}"));
+            }
             fs::write(project.join("build.zig.zon"), &manifest).unwrap();
             fs::write(project.join("custom.txt"), "Keep this user file.\n").unwrap();
             let expected = manifest.replace(

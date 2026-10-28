@@ -16,10 +16,7 @@ pub(super) fn update_manifest(path: &Path, template: &str) -> Result<()> {
     )?;
     upgrade_legacy_zig_identity(&tokens, &mut contents, template)?;
     repair_generated_zig_fingerprint(&tokens, &mut contents, template)?;
-    if let Some(version) = versions.captures_iter(&contents).find(|capture| {
-        zig_manifest_path(&tokens, &contents, capture.get(0).unwrap().start())
-            .is_some_and(|path| path == [None])
-    }) {
+    if let Some(version) = zig_root_field(&tokens, &versions, &contents) {
         if Version::parse(&version[2])? < minimum {
             let value = version.get(2).unwrap().range();
             contents.replace_range(value, &floor[2]);
@@ -42,18 +39,13 @@ fn upgrade_legacy_zig_identity(
     template: &str,
 ) -> Result<()> {
     let names = Regex::new(r#"\.(?:name|@"name")\s*=\s*("(?:\\.|[^"\\])*")"#)?;
-    let Some(name) = names.captures_iter(contents).find(|capture| {
-        zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
-            .is_some_and(|path| path == [None])
-    }) else {
+    let Some(name) = zig_root_field(tokens, &names, contents) else {
         return Ok(());
     };
     let value = name.get(1).unwrap().range();
     contents.replace_range(value, rendered_zig_field(template, "name")?);
     let fingerprints = Regex::new(r#"\.(?:fingerprint|@"fingerprint")\s*="#)?;
-    let existing = fingerprints.find_iter(contents).any(|field| {
-        zig_manifest_path(tokens, contents, field.start()).is_some_and(|path| path == [None])
-    });
+    let existing = zig_root_field(tokens, &fingerprints, contents).is_some();
     if !existing {
         insert_zig_root_field(
             contents,
@@ -69,22 +61,18 @@ fn repair_generated_zig_fingerprint(
     contents: &mut String,
     template: &str,
 ) -> Result<()> {
-    let names = Regex::new(r#"\.(?:name|@"name")\s*=\s*([^,\r\n]+)"#)?;
     let generated_name = rendered_zig_field(template, "name")?;
-    let generated_identity = names.captures_iter(contents).any(|capture| {
-        capture[1].trim() == generated_name
-            && zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
-                .is_some_and(|path| path == [None])
-    });
+    let names = Regex::new(&format!(
+        r#"\.(?:name|@"name")\s*=\s*{}\s*(?:[,}}]|//)"#,
+        regex::escape(generated_name)
+    ))?;
+    let generated_identity = zig_root_field(tokens, &names, contents).is_some();
     if !generated_identity {
         return Ok(());
     }
     let fingerprints =
         Regex::new(r#"\.(?:fingerprint|@"fingerprint")\s*=\s*(0x[0-9a-f]+)\s*(?:[,}]|//)"#)?;
-    let Some(fingerprint) = fingerprints.captures_iter(contents).find(|capture| {
-        zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
-            .is_some_and(|path| path == [None])
-    }) else {
+    let Some(fingerprint) = zig_root_field(tokens, &fingerprints, contents) else {
         return Ok(());
     };
     let encoded = fingerprint.get(1).unwrap();
@@ -132,6 +120,17 @@ fn repair_short_zig_fingerprint(encoded: &str, template: &str) -> Result<Option<
     };
     repaired.replace_range(range, &format!("{id:08x}"));
     Ok(Some(repaired))
+}
+
+fn zig_root_field<'a>(
+    tokens: &Regex,
+    fields: &Regex,
+    contents: &'a str,
+) -> Option<regex::Captures<'a>> {
+    fields.captures_iter(contents).find(|capture| {
+        zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
+            .is_some_and(|path| path == [None])
+    })
 }
 
 fn rendered_zig_field<'a>(template: &'a str, name: &str) -> Result<&'a str> {
