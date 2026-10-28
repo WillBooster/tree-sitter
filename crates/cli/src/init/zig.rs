@@ -15,6 +15,7 @@ pub(super) fn update_manifest(path: &Path, template: &str) -> Result<()> {
         r#"(?m)//[^\n]*|\\\\[^\n]*|"(?:\\.|[^"\\])*"|([{}])|\.(?:([A-Za-z_][A-Za-z_0-9]*)|@"((?:\\.|[^"\\])*)")\s*="#,
     )?;
     upgrade_legacy_zig_identity(&tokens, &mut contents, template)?;
+    repair_generated_zig_fingerprint(&tokens, &mut contents, template)?;
     if let Some(version) = versions.captures_iter(&contents).find(|capture| {
         zig_manifest_path(&tokens, &contents, capture.get(0).unwrap().start())
             .is_some_and(|path| path == [None])
@@ -61,6 +62,75 @@ fn upgrade_legacy_zig_identity(
         )?;
     }
     Ok(())
+}
+
+fn repair_generated_zig_fingerprint(
+    tokens: &Regex,
+    contents: &mut String,
+    template: &str,
+) -> Result<()> {
+    let names = Regex::new(r#"\.(?:name|@"name")\s*=\s*([^,\r\n]+)"#)?;
+    let generated_name = rendered_zig_field(template, "name")?;
+    let generated_identity = names.captures_iter(contents).any(|capture| {
+        capture[1].trim() == generated_name
+            && zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
+                .is_some_and(|path| path == [None])
+    });
+    if !generated_identity {
+        return Ok(());
+    }
+    let fingerprints = Regex::new(r#"\.(?:fingerprint|@"fingerprint")\s*=\s*(0x[0-9a-f]+)\s*,"#)?;
+    let Some(fingerprint) = fingerprints.captures_iter(contents).find(|capture| {
+        zig_manifest_path(tokens, contents, capture.get(0).unwrap().start())
+            .is_some_and(|path| path == [None])
+    }) else {
+        return Ok(());
+    };
+    let encoded = fingerprint.get(1).unwrap();
+    let Some(repaired) = repair_short_zig_fingerprint(encoded.as_str(), template)? else {
+        return Ok(());
+    };
+    contents.replace_range(encoded.range(), &repaired);
+    Ok(())
+}
+
+fn repair_short_zig_fingerprint(encoded: &str, template: &str) -> Result<Option<String>> {
+    let generated = rendered_zig_field(template, "fingerprint")?;
+    let checksum = if cfg!(target_endian = "little") {
+        &generated[2..10]
+    } else {
+        &generated[10..18]
+    };
+    let checksum_value = u32::from_str_radix(checksum, 16)?;
+    let Ok(value) = u64::from_str_radix(&encoded[2..], 16) else {
+        return Ok(None);
+    };
+    let existing_checksum = if cfg!(target_endian = "little") {
+        (value >> 32) as u32
+    } else {
+        value as u32
+    };
+    if existing_checksum == checksum_value {
+        return Ok(None);
+    }
+    let old_checksum = format!("{checksum_value:x}");
+    let id = if cfg!(target_endian = "little") {
+        encoded[2..].strip_prefix(&old_checksum)
+    } else {
+        encoded[2..].strip_suffix(&old_checksum)
+    };
+    let Some(id) = id.filter(|id| !id.is_empty() && id.len() <= 8 && !id.starts_with('0')) else {
+        return Ok(None);
+    };
+    let id = u32::from_str_radix(id, 16)?;
+    let mut repaired = generated.to_owned();
+    let range = if cfg!(target_endian = "little") {
+        10..18
+    } else {
+        2..10
+    };
+    repaired.replace_range(range, &format!("{id:08x}"));
+    Ok(Some(repaired))
 }
 
 fn rendered_zig_field<'a>(template: &'a str, name: &str) -> Result<&'a str> {

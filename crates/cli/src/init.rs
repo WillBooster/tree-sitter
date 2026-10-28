@@ -1715,9 +1715,9 @@ fn render_file(
         replacement = replacement.replace(
             PARSER_FINGERPRINT_PLACEHOLDER,
             #[cfg(target_endian = "little")]
-            &format!("0x{checksum:x}{id:x}"),
+            &format!("0x{checksum:08x}{id:08x}"),
             #[cfg(target_endian = "big")]
-            &format!("0x{id:x}{checksum:x}"),
+            &format!("0x{id:08x}{checksum:08x}"),
         );
     }
 
