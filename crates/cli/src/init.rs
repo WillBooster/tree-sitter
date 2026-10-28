@@ -128,7 +128,6 @@ const TEST_JAVA_TEMPLATE: &str = include_str!("./templates/test.java");
 const BUILD_ZIG_TEMPLATE: &str = include_str!("./templates/build.zig");
 const BUILD_ZIG_ZON_TEMPLATE: &str = include_str!("./templates/build.zig.zon");
 const ROOT_ZIG_TEMPLATE: &str = include_str!("./templates/root.zig");
-const TEST_ZIG_TEMPLATE: &str = include_str!("./templates/test.zig");
 
 pub const TREE_SITTER_JSON_SCHEMA: &str =
     "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json";
@@ -804,7 +803,8 @@ fn generate_zig_bindings(
                 BUILD_ZIG_ZON_TEMPLATE,
                 ctx.language_name,
                 opts,
-            )
+            )?;
+            update_zig_manifest(path)
         },
     )?;
 
@@ -823,13 +823,106 @@ fn generate_zig_bindings(
             },
         )?;
 
-        missing_path(path.join("test.zig"), |path| {
-            generate_file(path, TEST_ZIG_TEMPLATE, ctx.language_name, opts)
-        })?;
-
         Ok(())
     })?;
     Ok(())
+}
+
+fn update_zig_manifest(path: &Path) -> Result<()> {
+    let versions = Regex::new(r#"(?m)(^[ \t]*\.minimum_zig_version[ \t]*=[ \t]*")([^"]+)(")"#)?;
+    let floor = versions.captures(BUILD_ZIG_ZON_TEMPLATE).unwrap();
+    let minimum = Version::parse(&floor[2])?;
+    let mut contents = fs::read_to_string(path)?;
+    let tokens = Regex::new(
+        r#"(?m)//[^\n]*|\\\\[^\n]*|"(?:\\.|[^"\\])*"|([{}])|\.([A-Za-z_][A-Za-z_0-9]*)\s*="#,
+    )?;
+    if let Some(version) = versions.captures_iter(&contents).find(|capture| {
+        zig_manifest_path(&tokens, &contents, capture.get(0).unwrap().start()) == [None]
+    }) {
+        if Version::parse(&version[2])? < minimum {
+            let value = version.get(2).unwrap().range();
+            contents.replace_range(value, &floor[2]);
+        }
+    } else {
+        let root = Regex::new(r"(?m)^[ \t]*\.\{")?
+            .find(&contents)
+            .ok_or_else(|| anyhow!("Invalid Zig package manifest: missing root struct"))?;
+        contents.insert_str(
+            root.end(),
+            &format!("\n    .minimum_zig_version = \"{minimum}\","),
+        );
+    }
+    contents = remove_legacy_zig_dependency(&tokens, &contents)?;
+    write_file(path, contents)?;
+    Ok(())
+}
+
+fn remove_legacy_zig_dependency(tokens: &Regex, contents: &str) -> Result<String> {
+    let dependency = Regex::new(r"(?m)^[ \t]*\.tree_sitter[ \t]*=[ \t]*\.\{")?;
+    let legacy_url = Regex::new(
+        r#"(?m)^[ \t]*\.url[ \t]*=[ \t]*"git\+https://github\.com/tree-sitter/zig-tree-sitter#0cf58172e61f6fdd16f681cde42b4acb531a23db""#,
+    )?;
+    let mut removed = Vec::new();
+    for field in dependency.find_iter(contents) {
+        if zig_manifest_path(tokens, contents, field.start()) != [None, Some("dependencies")] {
+            continue;
+        }
+        let end = zig_manifest_object_end(tokens, contents, field.end())?;
+        if legacy_url.is_match(&contents[field.end()..end - 1]) {
+            let tail = &contents[end..];
+            let separator = tail.trim_start_matches(char::is_whitespace);
+            let suffix = if separator.starts_with(',') {
+                tail.len() - separator.len() + 1
+            } else {
+                0
+            };
+            let suffix = suffix + usize::from(contents[end + suffix..].starts_with('\n'));
+            removed.push(field.start()..end + suffix);
+        }
+    }
+    let mut updated = contents.to_owned();
+    for range in removed.into_iter().rev() {
+        updated.replace_range(range, "");
+    }
+    Ok(updated)
+}
+
+fn zig_manifest_object_end(tokens: &Regex, contents: &str, start: usize) -> Result<usize> {
+    let mut depth = 1;
+    for token in tokens.captures_iter(&contents[start..]) {
+        let Some(brace) = token.get(1) else {
+            continue;
+        };
+        if brace.as_str() == "{" {
+            depth += 1;
+        } else {
+            depth -= 1;
+        }
+        if depth == 0 {
+            return Ok(start + brace.end());
+        }
+    }
+    Err(anyhow!(
+        "Invalid Zig package manifest: unterminated dependency"
+    ))
+}
+
+fn zig_manifest_path<'a>(tokens: &Regex, contents: &'a str, end: usize) -> Vec<Option<&'a str>> {
+    let mut path = Vec::new();
+    let mut field = None;
+    for token in tokens.captures_iter(&contents[..end]) {
+        if let Some(name) = token.get(2) {
+            field = Some(name.as_str());
+        } else if let Some(brace) = token.get(1) {
+            if brace.as_str() == "{" {
+                path.push(field.take());
+            } else {
+                path.pop();
+                field = None;
+            }
+        }
+    }
+    path
 }
 
 fn generate_java_bindings(
