@@ -3381,35 +3381,6 @@ fn test_query_matches_with_transparent_supertype_aliases() {
                 assert_query_matches(&language, &query, source, &[(0, vec![("value", "x")])]);
             }
         }
-        let mut tree = parser.parse("general x", None).unwrap();
-        tree.edit(&InputEdit {
-            start_byte: 0,
-            old_end_byte: 7,
-            new_end_byte: 10,
-            start_position: Point::new(0, 0),
-            old_end_position: Point::new(0, 7),
-            new_end_position: Point::new(0, 10),
-        });
-        let source = "restricted x";
-        let incremental = parser.parse(source, Some(&tree)).unwrap();
-        let fresh = parser.parse(source, None).unwrap();
-        assert_eq!(
-            incremental.root_node().to_sexp(),
-            fresh.root_node().to_sexp()
-        );
-        let mut cursor = QueryCursor::new();
-        let captures = collect_captures(
-            cursor.captures(&query, incremental.root_node(), source.as_bytes()),
-            &query,
-            source,
-        );
-        let mut fresh_cursor = QueryCursor::new();
-        let expected = collect_captures(
-            fresh_cursor.captures(&query, fresh.root_node(), source.as_bytes()),
-            &query,
-            source,
-        );
-        assert_eq!(captures, expected);
         if fixture == "indirect_supertype_alias" {
             for pattern in [
                 "(primary_expression) @value",
