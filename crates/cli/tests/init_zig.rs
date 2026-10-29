@@ -104,30 +104,13 @@ fn test_init_repairs_generated_fingerprints_without_replacing_custom_data() {
     let generated = fs::read_to_string(fresh.join("build.zig.zon")).unwrap();
     let name = field(&generated, "name");
     let fingerprint = field(&generated, "fingerprint");
-    let checksum = if cfg!(target_endian = "little") {
-        &fingerprint[2..10]
-    } else {
-        &fingerprint[10..18]
-    };
-    let checksum = u32::from_str_radix(checksum, 16).unwrap();
-    let (broken, padded) = if cfg!(target_endian = "little") {
-        (
-            format!("0x{checksum:x}1"),
-            format!("0x{checksum:08x}00000001"),
-        )
-    } else {
-        (
-            format!("0x1{checksum:x}"),
-            format!("0x00000001{checksum:08x}"),
-        )
-    };
-    let repaired = if u64::from_str_radix(&broken[2..], 16).unwrap()
-        == u64::from_str_radix(&padded[2..], 16).unwrap()
-    {
-        &broken
-    } else {
-        &padded
-    };
+    let checksum = u32::from_str_radix(&fingerprint[2..10], 16).unwrap();
+    let broken = format!("0x{checksum:x}1");
+    let repaired = format!("0x{checksum:08x}00000001");
+    let reversed = format!("0x2{checksum:x}");
+    let repaired_reversed = format!("0x{checksum:08x}00000002");
+    let padded_reversed = format!("0x00000003{checksum:08x}");
+    let repaired_padded = format!("0x{checksum:08x}00000003");
     for (layout, (terminator, final_name)) in [
         (",", None),
         ("", None),
@@ -140,6 +123,18 @@ fn test_init_repairs_generated_fingerprints_without_replacing_custom_data() {
     {
         for (label, identity, before, after) in [
             ("repair", name, broken.as_str(), repaired.as_str()),
+            (
+                "reversed",
+                name,
+                reversed.as_str(),
+                repaired_reversed.as_str(),
+            ),
+            (
+                "padded-reversed",
+                name,
+                padded_reversed.as_str(),
+                repaired_padded.as_str(),
+            ),
             ("valid", name, fingerprint, fingerprint),
             (
                 "custom-name",
@@ -188,6 +183,21 @@ fn test_init_repairs_generated_fingerprints_without_replacing_custom_data() {
     }
 }
 
+#[test]
+fn test_init_preserves_a_fingerprint_with_ambiguous_legacy_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    create_named_project(directory.path(), "fp_ambiguity_3542");
+    init(directory.path());
+    let path = directory.path().join("build.zig.zon");
+    let generated = fs::read_to_string(&path).unwrap();
+    let manifest = generated.replace(field(&generated, "fingerprint"), "0x36c1f36c1f36c");
+    fs::write(&path, &manifest).unwrap();
+    for _ in 0..2 {
+        init(directory.path());
+        assert_eq!(fs::read_to_string(&path).unwrap(), manifest);
+    }
+}
+
 fn field<'a>(manifest: &'a str, name: &str) -> &'a str {
     let prefix = format!(".{name} = ");
     manifest
@@ -198,11 +208,19 @@ fn field<'a>(manifest: &'a str, name: &str) -> &'a str {
 }
 
 fn create_project(path: &Path) {
+    create_named_project(path, "zig_manifest");
+}
+
+fn create_named_project(path: &Path, name: &str) {
     fs::create_dir_all(path).unwrap();
-    fs::write(path.join("tree-sitter.json"), CONFIG).unwrap();
+    fs::write(
+        path.join("tree-sitter.json"),
+        CONFIG.replace("zig_manifest", name),
+    )
+    .unwrap();
     fs::write(
         path.join("grammar.js"),
-        "export default grammar({name: 'zig_manifest', rules: {source_file: _ => 'ok'}});\n",
+        format!("export default grammar({{name: '{name}', rules: {{source_file: _ => 'ok'}}}});\n"),
     )
     .unwrap();
 }
