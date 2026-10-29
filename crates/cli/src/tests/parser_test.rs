@@ -727,6 +727,34 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 }
 
 #[test]
+fn test_recovery_with_missing_tokens() {
+    for (language, source) in [
+        (
+            "typescript/typescript",
+            "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
+        ),
+        (
+            "typescript/typescript",
+            "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
+        ),
+        (
+            "typescript/typescript",
+            "bar satisfies number]\n\"foobar\" as const\n",
+        ),
+        (
+            "javascript",
+            "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
+        ),
+        (
+            "javascript",
+            "export { name1, name2, name3, nameN };\nexport { variable1 as name1, variable2 as name2, nameN };\nexport[ { variable1 as \"string name\" };\nexport let name1, name2, nameN;\nexport let name1 = value1, name2 = value2, name3, nameN;\n\nexport default expression;\nexport default { field1: 42, field2: [] }\nexport default function () { }\nexport default function name1() { }\nexport { name1 as default };\n\nexport * from 'foo';\nexport * as someIdentifier from \"someModule\";\nexport * as \"string name\" from \"someModule\";\nexport { name1, name2, nameN } from 'foo';\nexport { import1 as name1, import2 as name2, nameN } from 'foo';\nexport { import1 as \"string name\" } from 'foo';\nexport { \"string import\" as \"string export\" } from 'foo';\n\n",
+        ),
+    ] {
+        assert_recovery_after_newline_prefixes(language, source);
+    }
+}
+
+#[test]
 fn test_missing_token_recovery_does_not_change_later_ambiguities() {
     let statement = "if (x.foo < 0 || bar >= 1) break;\n";
     let source = format!(
@@ -787,6 +815,20 @@ fn test_nested_json_error_recovery_preserves_following_token_ranges() {
 }
 
 #[test]
+fn test_recovery_inserts_missing_opening_delimiter() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("go")).unwrap();
+    let tree = parser
+        .parse("package p\nconst a = []string{\"a\", \"b\"}\n", None)
+        .unwrap();
+    assert!(!tree.root_node().has_error());
+    let tree = parser
+        .parse("package p\nconst a = []stri\"a\", \"b\"}\n", None)
+        .unwrap();
+    assert!(tree.root_node().to_sexp().contains("(MISSING \"{\")"));
+}
+
+#[test]
 fn test_recovery_wraps_skipped_extras_in_one_error() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
@@ -825,6 +867,20 @@ fn test_recovery_respects_completed_prefixes() {
 }
 
 #[test]
+fn test_recovery_after_malformed_class_prefix() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
+        for prefix in ["", "class C implements A, B<C\n"] {
+            let source = format!("{before}{prefix}struct b c;{after}");
+            let tree = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().has_error(), !prefix.is_empty(), "{source}");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
 fn test_recovery_after_incomplete_generics() {
     let languages = [
         get_test_fixture_language("keyword_recovery_priority"),
@@ -832,6 +888,18 @@ fn test_recovery_after_incomplete_generics() {
         super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
     ];
     for mut parser in parsers_for_languages(languages) {
+        for following in [
+            "export function f() {}\nconst sentinel = 1;",
+            "function f() {}\nconst sentinel = 1;",
+            "const sentinel = 1;",
+        ] {
+            for ending in ["> {}", ";", "", " {}"] {
+                let source = format!("class C implements A, number<B{ending}\n{following}");
+                let tree = parser.parse(&source, None).unwrap();
+                assert_eq!(tree.root_node().has_error(), ending != "> {}", "{source}");
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+            }
+        }
         let source = "class C \n implements number<B; \n export function f() {} const x = export";
         let tree = parser.parse(source, None).unwrap();
         assert!(tree.root_node().has_error());
@@ -846,6 +914,197 @@ fn test_recovery_after_incomplete_generics() {
                 tree.root_node().to_sexp()
             );
         }
+    }
+}
+
+#[test]
+fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_language("typescript/typescript"))
+        .unwrap();
+    for prefix in ["", "export = Linter;\n", "const first = 0;\n"] {
+        let annotation = format!("{prefix}const a: Foo<Bar");
+        for ending in ["", ">;"] {
+            let source = format!("{annotation}{ending}\nexport = {{}};\nconst sentinel = 1;");
+            let tree = parser.parse(&source, None).unwrap();
+            assert_eq!(tree.root_node().has_error(), ending.is_empty());
+            let root = tree.root_node();
+            let mut cursor = tree.walk();
+            let following = root
+                .named_children(&mut cursor)
+                .filter(|node| node.start_byte() > annotation.len())
+                .map(|node| (node.utf8_text(source.as_bytes()).unwrap(), node.has_error()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                following,
+                [("export = {};", false), ("const sentinel = 1;", false)]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_after_restarting_an_error() {
+    for (language, source) in [
+        (
+            "javascript",
+            "const before = 0;\n=a=]\nexport function following() {}\nconst sentinel = 1;",
+        ),
+        (
+            "javascript",
+            "function before() {}\nimport> const ( const ?)\nexport function following() {}\nconst sentinel = 1;",
+        ),
+        (
+            "javascript",
+            "function before() {}\nclass C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
+        ),
+        (
+            "javascript",
+            "class C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\nclass Following { int X; }",
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\n\nclass Following { int X; }",
+        ),
+        (
+            "c-sharp",
+            "class C { object x = x as\n}\n\n\nclass Following { int X; }",
+        ),
+        (
+            "c-sharp",
+            "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
+        ),
+        (
+            "c-sharp",
+            "var r = () => {\nx?o;}\nclass Following { int Value => 1; }",
+        ),
+        ("c-sharp", "void b()\n  var z = __refvalue(g, int);\n}"),
+        ("c-sharp", "int b()\n  var z = F(g, 1);\n}"),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\nclass Example { }",
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\n[A(b: \"y\")]\n[B]\nusing System.Linq;",
+        ),
+        (
+            "c-sharp",
+            "class Before {}\nclass C implements A, number<B\n[A]\nnamespace Example { }",
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nlet v = 1;\nexport default function q() {}\nnamespace M {}",
+        ),
+        (
+            "c-sharp",
+            "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
+        ),
+        (
+            "javascript",
+            "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
+        ),
+        (
+            "javascript",
+            "class C extends B<\nexport default function q() {}",
+        ),
+        (
+            "typescript/typescript",
+            "for (const x of y<\nexport default class A {}\nexport function f() {}\nconst sentinel = 1;",
+        ),
+    ] {
+        assert_recovery_after_newline_prefixes(language, source);
+    }
+}
+
+fn assert_recovery_after_newline_prefixes(language: &str, source: &str) {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language(language)).unwrap();
+    for prefix in ["", "\n", "\n\n"] {
+        let source = format!("{prefix}{source}");
+        let tree = parser.parse(&source, None).unwrap();
+        assert!(tree.root_node().has_error(), "{source:?}");
+        crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+    }
+}
+
+#[test]
+fn test_recovery_after_malformed_generic_arguments() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for (source, has_error) in [
+            ("class C implements Box<const> {}", false),
+            ("class C implements Box(t> {}", true),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().has_error(), has_error, "{source}");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_recovery_after_malformed_declarator() {
+    let languages = [
+        get_test_fixture_language("recovery_reused_statement"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_reused_statement"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for (source, has_error) in [
+            ("i(x){if(x){case 1:[[a]]e:[[a]];;}e k;}", false),
+            ("i x){if(x){case 1:[[a]]e:[[a]];;}e k;}", true),
+        ] {
+            let tree = parser.parse(source, None).unwrap();
+            assert_eq!(tree.root_node().has_error(), has_error, "{source}");
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_recovery_with_unbalanced_delimiters_in_an_object() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let tree = parser
+        .parse("export default grammar({s:{,),)x}});", None)
+        .unwrap();
+    assert!(tree.root_node().has_error());
+}
+
+#[test]
+fn test_recovery_retains_following_declaration_keywords() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    for newline_count in [1, 2, 3] {
+        let newlines = "\n".repeat(newline_count);
+        let source =
+            format!("typedef int my_int;\n\nint f(int a{newlines}typedef unsigned long ulong_t;\n");
+        let tree = parser.parse(&source, None).unwrap();
+        let mut cursor = tree.walk();
+        let declarations = tree
+            .root_node()
+            .named_children(&mut cursor)
+            .filter(|node| node.kind() == "type_definition" && !node.has_error())
+            .map(|node| node.utf8_text(source.as_bytes()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declarations,
+            ["typedef int my_int;", "typedef unsigned long ulong_t;"]
+        );
     }
 }
 
@@ -874,6 +1133,25 @@ fn test_recovery_keeps_visibility_after_missing_token() {
                 following.utf8_text(source.as_bytes()).unwrap(),
                 suffix.trim()
             );
+        }
+    }
+}
+
+#[test]
+fn test_recovery_in_statement_lists() {
+    let languages = [
+        get_test_fixture_language("keyword_recovery_priority"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for prefix in ["function f() {}", "const a = 1;"] {
+            for heritage in ["", " implements A"] {
+                let source =
+                    format!("{prefix}\nnumber<B;\nclass E{heritage} {{}}\nconst sentinel = 1;");
+                let tree = parser.parse(&source, None).unwrap();
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+            }
         }
     }
 }
@@ -2353,6 +2631,24 @@ fn test_nonterminal_extras_preserve_eof_gated_reductions() {
 }
 
 #[test]
+fn test_parsing_empty_input_with_a_named_eof_rule() {
+    let grammar = serde_json::json!({
+        "name": "named_eof_empty_input",
+        "rules": {
+            "document": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "("},
+                {"type": "SYMBOL", "name": "end"}
+            ]},
+            "end": {"type": "EOF"}
+        }
+    });
+    for mut parser in parsers_for_grammar(&grammar.to_string()) {
+        let tree = parser.parse("", None).unwrap();
+        assert_eq!(tree.root_node().end_byte(), 0);
+    }
+}
+
+#[test]
 fn test_completed_nodes_before_unfinished_nonterminal_extras() {
     let languages = [
         get_test_fixture_language("unfinished_nonterminal_extra"),
@@ -2457,6 +2753,54 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
 }
 
 #[test]
+fn test_recovery_extra_groups_with_multibyte_text_keep_consistent_sizes() {
+    let languages = [
+        get_test_fixture_language("recovery_extra_groups"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_extra_groups"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        let fragment = "b:/*é*/?";
+        for first in ["b:x;", "b:/*漢*/?", "b:/*é*/]", fragment] {
+            let source = format!("a{{{first}{}}}tail;", fragment.repeat(63));
+            let tree = parser.parse(&source, None).unwrap();
+            crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_parsing_text_around_nonterminal_extras() {
+    let languages = [
+        get_test_fixture_language("nonterminal_extra_append"),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_fixture_language_wasm("nonterminal_extra_append"),
+    ];
+    for mut parser in parsers_for_languages(languages) {
+        for initial in ["c&#\n", "c&!hé\n", "c&first&#\n", "c&!one\n#two\n"] {
+            let mut source = initial.to_string();
+            for appended in ["", "e", "&f", "&!漢\ng"] {
+                source.push_str(appended);
+                let tree = parser.parse(&source, None).unwrap();
+                assert!(
+                    !tree.root_node().has_error(),
+                    "{}",
+                    tree.root_node().to_sexp()
+                );
+                crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+            }
+        }
+        let source = "a& #x\n a#\n&\n!\na";
+        let tree = parser.parse(source, None).unwrap();
+        assert!(!tree.root_node().has_error());
+        crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        let source = "a& #x\n a#\na\n!\na";
+        let tree = parser.parse(source, None).unwrap();
+        crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+    }
+}
+
+#[test]
 fn test_recovery_through_many_nonterminal_extras() {
     let language = get_test_fixture_language("recovery_extra_chain");
     let mut parser = Parser::new();
@@ -2500,6 +2844,47 @@ fn test_recovery_through_many_nonterminal_extras() {
             "blocks: {blocks}, small: {small:?}, large: {large:?}"
         );
     }
+}
+
+#[test]
+fn test_recovery_before_malformed_nonterminal_extra() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("incremental_extra_recovery"))
+        .unwrap();
+    for prefix in ["a ", "a /*gap*/ ", "a #pragma warning disable y\n "] {
+        for (directive, has_error) in [("warning", false), (" arning", true)] {
+            let source = format!("{prefix}#pragma {directive} disable x\n b;");
+            for tree in parse_utf8_and_utf16(&mut parser, &source) {
+                assert_eq!(tree.root_node().has_error(), has_error, "{source:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn test_recovery_with_ambiguous_lookahead() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("ambiguous_reuse"))
+        .unwrap();
+    for source in [
+        "{switch(x){f\ny+;}return;}",
+        "{switch(x)#else\n{f\ny+;}return;}",
+    ] {
+        for tree in parse_utf8_and_utf16(&mut parser, source) {
+            assert!(tree.root_node().has_error(), "{source:?}");
+        }
+    }
+}
+
+fn parse_utf8_and_utf16(parser: &mut Parser, source: &str) -> [Tree; 2] {
+    [
+        parser.parse(source, None).unwrap(),
+        parser
+            .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+            .unwrap(),
+    ]
 }
 
 #[test]
@@ -3248,6 +3633,17 @@ fn test_parsing_after_editing_end_of_code() {
 }
 
 #[test]
+fn test_parsing_keyword_context_reaches_end_of_input() {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&get_test_fixture_language("keyword_reuse"))
+        .unwrap();
+    let source = "\"``\"&while'';esacif;then;elif;then``;fi";
+    let tree = parser.parse(source, None).unwrap();
+    assert_eq!(tree.root_node().end_byte(), source.len());
+}
+
+#[test]
 fn test_parsing_multibyte_characters_after_an_identifier() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
@@ -3351,6 +3747,28 @@ fn test_keyword_relex_column_checkpoints_with_included_ranges() {
 }
 
 #[test]
+fn test_column_replay_after_leading_whitespace_is_linear() {
+    for mut parser in column_keyword_parsers() {
+        for word in ["x", "whilex", "while", "λx", "😀x", "dx", "sx"] {
+            for chunk_size in [1, 7, 256] {
+                for count in [128, 256, 512] {
+                    let source = format!("{word} = 1\r").repeat(count);
+                    for source in [format!(" {source}"), source] {
+                        let (tree, reads) =
+                            parse_column_keyword_input(&mut parser, source.as_bytes(), chunk_size);
+                        assert!(!tree.root_node().has_error());
+                        assert!(
+                            reads < source.len() * 8,
+                            "{word:?} chunk={chunk_size}: {reads}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn test_keyword_relex_column_checkpoints_with_utf16_input() {
     for mut parser in column_keyword_parsers() {
         for word in ["x", "whilex", "while", "λx", "😀x", "dx", "sx"] {
@@ -3449,6 +3867,197 @@ fn parse_column_keyword_input(
         )
         .unwrap();
     (tree, reads)
+}
+
+#[test]
+fn test_position_dependent_scanners() {
+    for reader in ["get_position", "get_mark_end"] {
+        for field in ["bytes", "row", "column"] {
+            for failed_scan in [false, true] {
+                for mut parser in position_dependent_parsers(reader, field, failed_scan) {
+                    for included in [false, true] {
+                        let body = if field == "column" {
+                            "x x x x x x"
+                        } else {
+                            "x\nx\nx\nx\nx\nx"
+                        };
+                        let source = if included {
+                            format!("@{body}@{body}@")
+                        } else {
+                            body.to_owned()
+                        };
+                        let prefix = if field == "row" { "\n" } else { " " };
+                        for source in [format!("{prefix}{source}"), source] {
+                            let source = source.into_bytes();
+                            parser
+                                .set_included_ranges(&if included {
+                                    position_test_ranges(&source)
+                                } else {
+                                    Vec::new()
+                                })
+                                .unwrap();
+                            let tree = parser.parse(&source, None).unwrap();
+                            assert!(
+                                !tree.root_node().has_error(),
+                                "{reader} {field} failed={failed_scan} included={included}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_position_checkpoint_restore_scanner() {
+    for mut parser in position_dependent_parsers("restore", "bytes", false) {
+        for included in [false, true] {
+            let body = " x".repeat(128);
+            let source = if included {
+                format!(" @{body}@{body}@")
+            } else {
+                body
+            };
+            for source in [
+                format!("\t{}", &source[1..]),
+                format!(" {source}"),
+                format!("\n{source}"),
+                source,
+            ] {
+                let source = source.into_bytes();
+                parser
+                    .set_included_ranges(&if included {
+                        position_test_ranges(&source)
+                    } else {
+                        Vec::new()
+                    })
+                    .unwrap();
+                let tree = parser.parse(&source, None).unwrap();
+                assert!(!tree.root_node().has_error(), "included={included}");
+            }
+        }
+    }
+}
+
+fn position_dependent_parsers(
+    reader: &str,
+    field: &str,
+    failed_scan: bool,
+) -> impl Iterator<Item = Parser> {
+    let name = format!("position_{reader}_{field}_{}", u8::from(failed_scan));
+    let directory = tempfile::tempdir().unwrap();
+    let read_position = match reader {
+        "get_position" => {
+            "lexer->get_position(lexer, &position); lexer->advance(lexer, false); lexer->mark_end(lexer);"
+        }
+        "get_mark_end" => {
+            "lexer->advance(lexer, false); lexer->mark_end(lexer); lexer->get_mark_end(lexer, &position);"
+        }
+        "restore" => {
+            "lexer->get_checkpoint(lexer, &start); lexer->advance(lexer, false); lexer->mark_end(lexer); lexer->get_mark_end_checkpoint(lexer, &end); if (!lexer->eof(lexer)) lexer->advance(lexer, false); lexer->mark_start(lexer, &start); lexer->mark_end_at(lexer, &end);"
+        }
+        _ => unreachable!(),
+    };
+    let scanner = r#"
+        #include "tree_sitter/parser.h"
+        void *tree_sitter_NAME_external_scanner_create(void) { return NULL; }
+        void tree_sitter_NAME_external_scanner_destroy(void *p) {}
+        unsigned tree_sitter_NAME_external_scanner_serialize(void *p, char *b) { return 0; }
+        void tree_sitter_NAME_external_scanner_deserialize(void *p, const char *b, unsigned n) {}
+        bool tree_sitter_NAME_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
+            while (lexer->lookahead == ' ' || lexer->lookahead == '\t' || lexer->lookahead == '\n') lexer->advance(lexer, true);
+            if (lexer->lookahead != 'x') return false;
+            DECLARATIONS
+            READ_POSITION
+            REJECT
+            lexer->result_symbol = RESULT;
+            return true;
+        }
+    "#;
+    std::fs::write(
+        directory.path().join("scanner.c"),
+        scanner
+            .replace("NAME", &name)
+            .replace(
+                "DECLARATIONS",
+                if reader == "restore" {
+                    "TSLexerCheckpoint start, end;"
+                } else {
+                    "TSLexerPosition position;"
+                },
+            )
+            .replace("READ_POSITION", read_position)
+            .replace(
+                "REJECT",
+                if failed_scan {
+                    "if (position.FIELD % 2 == 0) return false;"
+                } else {
+                    ""
+                },
+            )
+            .replace("FIELD", field)
+            .replace(
+                "RESULT",
+                if reader == "restore" {
+                    "0"
+                } else {
+                    "position.FIELD % 2"
+                },
+            )
+            .replace("FIELD", field),
+    )
+    .unwrap();
+    let grammar = serde_json::json!({
+        "name": name,
+        "extras": [{"type": "PATTERN", "value": "[ \\t\\n]"}],
+        "externals": [{"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}],
+        "rules": {
+            "document": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}, {"type": "SYMBOL", "name": "fallback"}
+            ]}},
+            "fallback": {"type": "STRING", "value": "x"}
+        }
+    });
+    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+    parsers_for_languages([
+        get_test_language(&name, &code, Some(directory.path())),
+        #[cfg(feature = "wasm")]
+        super::helpers::fixtures::get_test_language_wasm_with_scanner(
+            &name,
+            &code,
+            Some(directory.path()),
+        ),
+    ])
+}
+
+fn position_test_ranges(source: &[u8]) -> Vec<Range> {
+    let boundaries = source
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &byte)| (byte == b'@').then_some(index))
+        .collect::<Vec<_>>();
+    boundaries
+        .windows(2)
+        .map(|pair| {
+            let point = |index: usize| {
+                let prefix = &source[..index];
+                Point::new(
+                    memchr::memchr_iter(b'\n', prefix).count(),
+                    prefix
+                        .iter()
+                        .rposition(|&byte| byte == b'\n')
+                        .map_or(index, |newline| index - newline - 1),
+                )
+            };
+            Range {
+                start_byte: pair[0] + 1,
+                end_byte: pair[1],
+                start_point: point(pair[0] + 1),
+                end_point: point(pair[1]),
+            }
+        })
+        .collect()
 }
 
 #[test]
