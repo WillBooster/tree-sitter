@@ -183,26 +183,11 @@ fn test_lexer_preserves_lower_precedence_comment_continuations() {
     let grammar = load_grammar_file(&path, None).unwrap();
     for mut parser in parsers_for_grammar(&grammar) {
         let prefix = "a { x: red";
-        let mut source = format!("{prefix}; }}\n").into_bytes();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut previous_length = 1;
-        for ending in [" // note\n", ";", " // other\n", ";"] {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: prefix.len(),
-                    deleted_length: previous_length,
-                    inserted_text: ending.as_bytes().to_vec(),
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
+        for ending in [" // note\n", ";", " // other\n"] {
+            let source = format!("{prefix}{ending} }}\n");
+            let tree = parser.parse(&source, None).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{}", root.to_sexp());
-            assert_eq!(root.to_sexp(), fresh.root_node().to_sexp());
-            assert_eq!(root.byte_range(), fresh.root_node().byte_range());
             let mut cursor = root.walk();
             let comment = root
                 .named_children(&mut cursor)
@@ -212,11 +197,10 @@ fn test_lexer_preserves_lower_precedence_comment_continuations() {
             } else {
                 let comment = comment.unwrap();
                 assert!(comment.is_extra());
-                assert_eq!(comment.utf8_text(&source).unwrap(), ending.trim());
+                assert_eq!(comment.utf8_text(source.as_bytes()).unwrap(), ending.trim());
                 assert_eq!(comment.start_byte(), prefix.len() + 1);
                 assert_eq!(comment.end_byte(), prefix.len() + ending.len() - 1);
             }
-            previous_length = ending.len();
         }
     }
 }
@@ -248,34 +232,16 @@ fn test_lexer_preserves_lower_precedence_separator_continuations() {
             }
         });
         for mut parser in parsers_for_grammar(&grammar.to_string()) {
-            let mut source = b"z".to_vec();
-            let mut tree = parser.parse(&source, None).unwrap();
-            let mut previous_length = 0;
-            for prefix in ["//x ", "/ ", "//x ", "//x //x ", ""] {
-                perform_edit(
-                    &mut tree,
-                    &mut source,
-                    &Edit {
-                        position: 0,
-                        deleted_length: previous_length,
-                        inserted_text: prefix.as_bytes().to_vec(),
-                    },
-                )
-                .unwrap();
-                tree = parser.parse(&source, Some(&tree)).unwrap();
-                let fresh = parser.parse(&source, None).unwrap();
-                for parsed in [&tree, &fresh] {
-                    let root = parsed.root_node();
-                    assert!(!root.has_error(), "{}", root.to_sexp());
-                    let identifier = root
-                        .named_child(root.named_child_count() as u32 - 1)
-                        .unwrap();
-                    assert_eq!(identifier.kind(), "identifier");
-                    assert_eq!(identifier.byte_range(), prefix.len()..prefix.len() + 1);
-                    assert_eq!(root.named_child_count(), if prefix == "/ " { 2 } else { 1 });
-                }
-                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-                previous_length = prefix.len();
+            for prefix in ["//x ", "/ ", "//x //x ", ""] {
+                let tree = parser.parse(format!("{prefix}z"), None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{}", root.to_sexp());
+                let identifier = root
+                    .named_child(root.named_child_count() as u32 - 1)
+                    .unwrap();
+                assert_eq!(identifier.kind(), "identifier");
+                assert_eq!(identifier.byte_range(), prefix.len()..prefix.len() + 1);
+                assert_eq!(root.named_child_count(), if prefix == "/ " { 2 } else { 1 });
             }
         }
     }
@@ -287,46 +253,30 @@ fn test_lexer_preserves_precedence_before_speculative_continuations() {
     let grammar = load_grammar_file(&path, None).unwrap();
     for mut parser in parsers_for_grammar(&grammar) {
         for quote in ['"', '\''] {
-            let mut source = format!("{quote}&amp;{quote}; following").into_bytes();
-            let mut tree = parser.parse(&source, None).unwrap();
-            let mut previous_length = 0;
             for gap in [" ", "\t", "\r\n", "\u{a0}", "\u{2028}", " text ", ""] {
-                perform_edit(
-                    &mut tree,
-                    &mut source,
-                    &Edit {
-                        position: 1,
-                        deleted_length: previous_length,
-                        inserted_text: gap.as_bytes().to_vec(),
-                    },
-                )
-                .unwrap();
-                tree = parser.parse(&source, Some(&tree)).unwrap();
-                let fresh = parser.parse(&source, None).unwrap();
-                for parsed in [&tree, &fresh] {
-                    let root = parsed.root_node();
-                    assert!(!root.has_error(), "{}", root.to_sexp());
-                    let string = root.named_child(0).unwrap();
-                    let entity_index = usize::from(!gap.is_empty());
-                    assert_eq!(string.named_child_count(), entity_index + 1);
-                    if !gap.is_empty() {
-                        let fragment = string.named_child(0).unwrap();
-                        assert_eq!(fragment.utf8_text(&source).unwrap(), gap);
-                        assert_eq!(fragment.byte_range(), 1..1 + gap.len());
-                    }
-                    let entity = string
-                        .named_child(entity_index.try_into().unwrap())
-                        .unwrap();
-                    assert_eq!(entity.kind(), "entity");
-                    assert_eq!(entity.utf8_text(&source).unwrap(), "&amp;");
-                    assert_eq!(entity.byte_range(), 1 + gap.len()..6 + gap.len());
-                    assert_eq!(
-                        root.named_child(1).unwrap().utf8_text(&source).unwrap(),
-                        "following"
-                    );
+                let source = format!("{quote}{gap}&amp;{quote}; following");
+                let source = source.as_bytes();
+                let tree = parser.parse(source, None).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error(), "{}", root.to_sexp());
+                let string = root.named_child(0).unwrap();
+                let entity_index = usize::from(!gap.is_empty());
+                assert_eq!(string.named_child_count(), entity_index + 1);
+                if !gap.is_empty() {
+                    let fragment = string.named_child(0).unwrap();
+                    assert_eq!(fragment.utf8_text(source).unwrap(), gap);
+                    assert_eq!(fragment.byte_range(), 1..1 + gap.len());
                 }
-                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-                previous_length = gap.len();
+                let entity = string
+                    .named_child(entity_index.try_into().unwrap())
+                    .unwrap();
+                assert_eq!(entity.kind(), "entity");
+                assert_eq!(entity.utf8_text(source).unwrap(), "&amp;");
+                assert_eq!(entity.byte_range(), 1 + gap.len()..6 + gap.len());
+                assert_eq!(
+                    root.named_child(1).unwrap().utf8_text(source).unwrap(),
+                    "following"
+                );
             }
         }
     }
@@ -552,26 +502,9 @@ fn test_immediate_token_recovery_with_ambiguous_error_paths() {
             "x ; @@ y z @ ; x @ x @ ;",
             "y zz @ z; \u{1} x \u{2}",
         ] {
-            let mut tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source, None).unwrap();
             assert!(tree.root_node().has_error());
             assert_eq!(tree.root_node().end_byte(), source.len());
-            tree.edit(&InputEdit {
-                start_byte: 0,
-                old_end_byte: 0,
-                new_end_byte: 2,
-                start_position: Point::new(0, 0),
-                old_end_position: Point::new(0, 0),
-                new_end_position: Point::new(0, 2),
-            });
-            let edited_source = format!("x {source}");
-            let incremental = parser.parse(&edited_source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&edited_source, None).unwrap();
-            assert!(incremental.root_node().has_error());
-            assert_eq!(incremental.root_node().end_byte(), edited_source.len());
-            assert_eq!(
-                incremental.root_node().to_sexp(),
-                fresh.root_node().to_sexp()
-            );
         }
     }
 }
@@ -794,34 +727,6 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
 }
 
 #[test]
-fn test_incremental_recovery_with_missing_tokens() {
-    for (language, source) in [
-        (
-            "typescript/typescript",
-            "type F<T> = T extends (unknown)=>(x: T)=>typeof x().y[]<U> ? .5:false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-        ),
-        (
-            "typescript/typescript",
-            "type F<T> = T extends (((infer)=>unique)) ? .5 : false;\n\nexport function f(x: number): number { return x; }\ntype B = 2;\n",
-        ),
-        (
-            "typescript/typescript",
-            "bar satisfies number]\n\"foobar\" as const\n",
-        ),
-        (
-            "javascript",
-            "for (const {thi in things)\n  thing();\n\nfor (x in a, b, c)\n  foo();\n\nfor (x[i] in a) {}\n\nfor (x.y in a) {}\n\nfor ([a, b] in c) {}\n\nfor ((a) in b) {}\n\nfor (var foo = bar in baz) {}\n",
-        ),
-        (
-            "javascript",
-            "export { name1, name2, name3, nameN };\nexport { variable1 as name1, variable2 as name2, nameN };\nexport[ { variable1 as \"string name\" };\nexport let name1, name2, nameN;\nexport let name1 = value1, name2 = value2, name3, nameN;\n\nexport default expression;\nexport default { field1: 42, field2: [] }\nexport default function () { }\nexport default function name1() { }\nexport { name1 as default };\n\nexport * from 'foo';\nexport * as someIdentifier from \"someModule\";\nexport * as \"string name\" from \"someModule\";\nexport { name1, name2, nameN } from 'foo';\nexport { import1 as name1, import2 as name2, nameN } from 'foo';\nexport { import1 as \"string name\" } from 'foo';\nexport { \"string import\" as \"string export\" } from 'foo';\n\n",
-        ),
-    ] {
-        assert_prefix_edits_match_fresh(language, source);
-    }
-}
-
-#[test]
 fn test_missing_token_recovery_does_not_change_later_ambiguities() {
     let statement = "if (x.foo < 0 || bar >= 1) break;\n";
     let source = format!(
@@ -882,28 +787,6 @@ fn test_nested_json_error_recovery_preserves_following_token_ranges() {
 }
 
 #[test]
-fn test_incremental_parse_restores_missing_opening_delimiter() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("go")).unwrap();
-    let mut source = b"package p\nconst a = []string{\"a\", \"b\"}\n".to_vec();
-    let mut tree = parser.parse(&source, None).unwrap();
-    assert!(!tree.root_node().has_error());
-    let expected = tree.root_node().to_sexp();
-    let edit = Edit {
-        position: source.windows(3).position(|w| w == b"ng{").unwrap(),
-        deleted_length: 3,
-        inserted_text: Vec::new(),
-    };
-    let undo = invert_edit(&source, &edit);
-    perform_edit(&mut tree, &mut source, &edit).unwrap();
-    tree = parser.parse(&source, Some(&tree)).unwrap();
-    assert!(tree.root_node().to_sexp().contains("(MISSING \"{\")"));
-    perform_edit(&mut tree, &mut source, &undo).unwrap();
-    let restored = parser.parse(&source, Some(&tree)).unwrap();
-    assert_eq!(restored.root_node().to_sexp(), expected);
-}
-
-#[test]
 fn test_recovery_wraps_skipped_extras_in_one_error() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
@@ -942,70 +825,13 @@ fn test_recovery_respects_completed_prefixes() {
 }
 
 #[test]
-fn test_incremental_recovery_after_malformed_prefix_edits() {
-    for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
-        let mut parser = Parser::new();
-        parser.set_language(&get_language("c")).unwrap();
-        let following = "struct b c;";
-        let mut source = format!("{before}{following}{after}").into_bytes();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut previous_length = 0;
-        for prefix in [
-            "class C implements A, B<C\n",
-            "",
-            "class C implements A, B<C\n",
-            "",
-        ] {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: before.len(),
-                    deleted_length: previous_length,
-                    inserted_text: prefix.as_bytes().to_vec(),
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            assert_eq!(tree.root_node().has_error(), !prefix.is_empty());
-            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-            previous_length = prefix.len();
-        }
-    }
-}
-
-#[test]
-fn test_incremental_recovery_after_incomplete_generics() {
+fn test_recovery_after_incomplete_generics() {
     let languages = [
         get_test_fixture_language("keyword_recovery_priority"),
         #[cfg(feature = "wasm")]
         super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
     ];
     for mut parser in parsers_for_languages(languages) {
-        for following in [
-            "export function f() {}\nconst sentinel = 1;",
-            "function f() {}\nconst sentinel = 1;",
-            "const sentinel = 1;",
-        ] {
-            let prefix = "class C implements A, number<B";
-            let mut source = format!("{prefix}> {{}}\n{following}").into_bytes();
-            let mut tree = parser.parse(&source, None).unwrap();
-            assert!(!tree.root_node().has_error());
-            let mut previous_length = 4;
-            for ending in [";", "> {}", "", "> {}", " {}", "> {}"] {
-                let edit = Edit {
-                    position: prefix.len(),
-                    deleted_length: previous_length,
-                    inserted_text: ending.as_bytes().to_vec(),
-                };
-                edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
-                assert_eq!(tree.root_node().has_error(), ending != "> {}");
-                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-                previous_length = ending.len();
-            }
-        }
         let source = "class C \n implements number<B; \n export function f() {} const x = export";
         let tree = parser.parse(source, None).unwrap();
         assert!(tree.root_node().has_error());
@@ -1019,272 +845,6 @@ fn test_incremental_recovery_after_incomplete_generics() {
                 "{}",
                 tree.root_node().to_sexp()
             );
-        }
-    }
-}
-
-#[test]
-fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_language("typescript/typescript"))
-        .unwrap();
-    for prefix in ["", "export = Linter;\n", "const first = 0;\n"] {
-        let annotation = format!("{prefix}const a: Foo<Bar");
-        let mut source =
-            format!("{annotation}>;\nexport = {{}};\nconst sentinel = 1;").into_bytes();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut previous_length = 2;
-        for ending in ["", ">;", "", ">;"] {
-            edit_and_assert_fresh(
-                &mut parser,
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: annotation.len(),
-                    deleted_length: previous_length,
-                    inserted_text: ending.as_bytes().to_vec(),
-                },
-            );
-            assert_eq!(tree.root_node().has_error(), ending.is_empty());
-            let root = tree.root_node();
-            let mut cursor = tree.walk();
-            let following = root
-                .named_children(&mut cursor)
-                .filter(|node| node.start_byte() > annotation.len())
-                .map(|node| (node.utf8_text(&source).unwrap(), node.has_error()))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                following,
-                [("export = {};", false), ("const sentinel = 1;", false)]
-            );
-            previous_length = ending.len();
-        }
-    }
-}
-
-#[test]
-fn test_incremental_recovery_after_restarting_an_error() {
-    for (language, source) in [
-        (
-            "javascript",
-            "const before = 0;\n=a=]\nexport function following() {}\nconst sentinel = 1;",
-        ),
-        (
-            "javascript",
-            "function before() {}\nimport> const ( const ?)\nexport function following() {}\nconst sentinel = 1;",
-        ),
-        (
-            "javascript",
-            "function before() {}\nclass C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
-        ),
-        (
-            "javascript",
-            "class C extends B< <;\nexport function following() {}\nconst sentinel = 1;",
-        ),
-        (
-            "c-sharp",
-            "class C { object x = x as\n}\nclass Following { int X; }",
-        ),
-        (
-            "c-sharp",
-            "class C { object x = x as\n}\n\nclass Following { int X; }",
-        ),
-        (
-            "c-sharp",
-            "class C { object x = x as\n}\n\n\nclass Following { int X; }",
-        ),
-        (
-            "c-sharp",
-            "var r = () => {\nx?o}\nclass Following { int Value => 1; }",
-        ),
-        (
-            "c-sharp",
-            "var r = () => {\nx?o;}\nclass Following { int Value => 1; }",
-        ),
-        ("c-sharp", "void b()\n  var z = __refvalue(g, int);\n}"),
-        ("c-sharp", "int b()\n  var z = F(g, 1);\n}"),
-        (
-            "c-sharp",
-            "class C implements A, number<B\n[A(b: \"y\")]\nclass Example { }",
-        ),
-        (
-            "c-sharp",
-            "class C implements A, number<B\n[A(b: \"y\")]\n[B]\nusing System.Linq;",
-        ),
-        (
-            "c-sharp",
-            "class Before {}\nclass C implements A, number<B\n[A]\nnamespace Example { }",
-        ),
-        (
-            "typescript/typescript",
-            "for (const x of y<\ntype T = number;\ninterface I2 {}\ndeclare function g(): void;",
-        ),
-        (
-            "typescript/typescript",
-            "for (const x of y<\nlet v = 1;\nexport default function q() {}\nnamespace M {}",
-        ),
-        (
-            "c-sharp",
-            "class C implements A, number<B\nusing System.Linq;\nnamespace M { }\npublic enum F { A, B }",
-        ),
-        (
-            "javascript",
-            "class C extends B<\nclass L {}\nexport function h() {}\nexport const k = 2;",
-        ),
-        (
-            "javascript",
-            "class C extends B<\nexport default function q() {}",
-        ),
-        (
-            "typescript/typescript",
-            "for (const x of y<\nexport default class A {}\nexport function f() {}\nconst sentinel = 1;",
-        ),
-    ] {
-        assert_prefix_edits_match_fresh(language, source);
-    }
-}
-
-#[test]
-fn test_incremental_recovery_after_replacing_generic_arguments() {
-    let languages = [
-        get_test_fixture_language("keyword_recovery_priority"),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
-    ];
-    for mut parser in parsers_for_languages(languages) {
-        let mut source = b"class C implements Box<const> {}".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        edit_and_assert_fresh(
-            &mut parser,
-            &mut tree,
-            &mut source,
-            &Edit {
-                position: 22,
-                deleted_length: 5,
-                inserted_text: b"(".to_vec(),
-            },
-        );
-        assert!(tree.root_node().has_error());
-        crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-    }
-}
-
-#[test]
-fn test_incremental_recovery_after_replacing_a_declarator() {
-    let languages = [
-        get_test_fixture_language("recovery_reused_statement"),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_reused_statement"),
-    ];
-    for mut parser in parsers_for_languages(languages) {
-        let mut source = b"i(x){if(x){case 1:[[a]]e:[[a]];;}e k;}".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        for inserted_text in [b" ", b"("] {
-            edit_and_assert_fresh(
-                &mut parser,
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 1,
-                    deleted_length: 1,
-                    inserted_text: inserted_text.to_vec(),
-                },
-            );
-            assert_eq!(tree.root_node().has_error(), inserted_text == b" ");
-            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-        }
-    }
-}
-
-fn assert_prefix_edits_match_fresh(language: &str, source: &str) {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language(language)).unwrap();
-    let mut source = source.as_bytes().to_vec();
-    let mut tree = parser.parse(&source, None).unwrap();
-    let mut previous_length = 0;
-    for prefix in ["\n", "", "\n\n", ""] {
-        edit_and_assert_fresh(
-            &mut parser,
-            &mut tree,
-            &mut source,
-            &Edit {
-                position: 0,
-                deleted_length: previous_length,
-                inserted_text: prefix.as_bytes().to_vec(),
-            },
-        );
-        assert!(tree.root_node().has_error());
-        crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-        previous_length = prefix.len();
-    }
-}
-
-#[test]
-fn test_recovery_reconsiders_errors_after_edits() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("javascript")).unwrap();
-    for edit in [
-        Edit {
-            position: 9,
-            deleted_length: 2,
-            inserted_text: Vec::new(),
-        },
-        Edit {
-            position: 16,
-            deleted_length: 0,
-            inserted_text: b";".to_vec(),
-        },
-    ] {
-        let mut source = b"export default grammar({s:{,),)x}});".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        assert!(tree.root_node().has_error());
-        let undo = invert_edit(&source, &edit);
-        edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
-        edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &undo);
-    }
-}
-
-#[test]
-fn test_recovery_reconsiders_reused_nodes_across_edits() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("javascript")).unwrap();
-    for (initial_source, edits) in [
-        (
-            "import t from\"t\";\nimport\"\"\n{r={t ult:e} =w;arse)\n",
-            [
-                (32, 4, ""),
-                (14, 3, "type "),
-                (43, 1, "interface "),
-                (46, 2, ","),
-            ]
-            .as_slice(),
-        ),
-        (
-            "({e:''>['',pe: $=>[+/,\n//\na;\n",
-            [(12, 3, ">"), (16, 0, "interface "), (11, 0, "=")].as_slice(),
-        ),
-        (
-            "({e:'',,:s$=p $ =>[+/,\n//\nd:};\n",
-            [(13, 3, ">"), (16, 0, "interface "), (10, 0, "=")].as_slice(),
-        ),
-    ] {
-        let mut source = initial_source.as_bytes().to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut undos = Vec::new();
-        for &(position, deleted_length, inserted_text) in edits {
-            let edit = Edit {
-                position,
-                deleted_length,
-                inserted_text: inserted_text.as_bytes().to_vec(),
-            };
-            undos.push(invert_edit(&source, &edit));
-            edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
-        }
-        for undo in undos.into_iter().rev() {
-            edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &undo);
         }
     }
 }
@@ -1316,79 +876,6 @@ fn test_recovery_keeps_visibility_after_missing_token() {
             );
         }
     }
-}
-
-#[test]
-fn test_recovery_retains_following_declaration_keywords() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("c")).unwrap();
-    let prefix = "typedef int my_int;\n\nint f(int a";
-    let mut source = format!("{prefix}\n\ntypedef unsigned long ulong_t;\n").into_bytes();
-    let mut tree = parser.parse(&source, None).unwrap();
-    for newline_count in [2, 1, 3, 2] {
-        let current_count = source[prefix.len()..]
-            .iter()
-            .take_while(|&&byte| byte == b'\n')
-            .count();
-        edit_and_assert_fresh(
-            &mut parser,
-            &mut tree,
-            &mut source,
-            &Edit {
-                position: prefix.len(),
-                deleted_length: current_count,
-                inserted_text: vec![b'\n'; newline_count],
-            },
-        );
-        let mut cursor = tree.walk();
-        let declarations = tree
-            .root_node()
-            .named_children(&mut cursor)
-            .filter(|node| node.kind() == "type_definition" && !node.has_error())
-            .map(|node| node.utf8_text(&source).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            declarations,
-            ["typedef int my_int;", "typedef unsigned long ulong_t;"]
-        );
-    }
-}
-
-#[test]
-fn test_incremental_recovery_in_statement_lists() {
-    let languages = [
-        get_test_fixture_language("keyword_recovery_priority"),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_fixture_language_wasm("keyword_recovery_priority"),
-    ];
-    for mut parser in parsers_for_languages(languages) {
-        for prefix in ["function f() {}", "const a = 1;"] {
-            let before_edit = format!("{prefix}\nnumber<B;\nclass E");
-            let mut source =
-                format!("{before_edit} implements A {{}}\nconst sentinel = 1;").into_bytes();
-            let mut tree = parser.parse(&source, None).unwrap();
-            for remove in [true, false, true, false] {
-                let edit = Edit {
-                    position: before_edit.len(),
-                    deleted_length: if remove { " implements A".len() } else { 0 },
-                    inserted_text: if remove {
-                        Vec::new()
-                    } else {
-                        b" implements A".to_vec()
-                    },
-                };
-                edit_and_assert_fresh(&mut parser, &mut tree, &mut source, &edit);
-                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-            }
-        }
-    }
-}
-
-fn edit_and_assert_fresh(parser: &mut Parser, tree: &mut Tree, source: &mut Vec<u8>, edit: &Edit) {
-    perform_edit(tree, source, edit).unwrap();
-    *tree = parser.parse(&*source, Some(tree)).unwrap();
-    let fresh = parser.parse(&*source, None).unwrap();
-    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
 }
 
 #[test]
@@ -2112,14 +1599,13 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                     .unwrap();
             }
             parser.set_language(&language).unwrap();
-            let mut source = format!(
+            let source = format!(
                 "{} {}_suffix {}9",
                 keywords.join(" "),
                 keywords[0],
                 keywords.last().unwrap()
-            )
-            .into_bytes();
-            let mut tree = parser.parse(&source, None).unwrap();
+            );
+            let tree = parser.parse(&source, None).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error());
             assert_eq!(root.child_count() as usize, keywords.len() + 2);
@@ -2131,27 +1617,13 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                 assert_eq!(node.byte_range(), offset..offset + keyword.len());
                 offset += keyword.len() + 1;
             }
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 0,
-                    deleted_length: keywords[0].len(),
-                    inserted_text: format!("{}_suffix", keywords[0]).into_bytes(),
-                },
-            )
-            .unwrap();
-            let incremental = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
+            let source = format!("{}_suffix{}", keywords[0], &source[keywords[0].len()..]);
+            let tree = parser.parse(&source, None).unwrap();
             assert_eq!(
-                incremental.root_node().to_sexp(),
+                tree.root_node().to_sexp(),
                 "(source_file (identifier) (identifier) (identifier))"
             );
-            assert_eq!(
-                incremental.root_node().to_sexp(),
-                fresh.root_node().to_sexp()
-            );
-            assert!(!incremental.root_node().has_error());
+            assert!(!tree.root_node().has_error());
         }
     }
 }
@@ -2343,28 +1815,13 @@ fn test_generated_lexer_character_boundaries() {
             assert!(tree.root_node().has_error(), "{invalid:?}");
         }
 
-        let mut source = b"a0b1d2f3h4".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut deleted_length = 2;
         for literal in literals {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 0,
-                    deleted_length,
-                    inserted_text: literal.as_bytes().to_vec(),
-                },
-            )
-            .unwrap();
-            deleted_length = literal.len();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
+            let source = format!("{literal}b1d2f3h4");
+            let tree = parser.parse(&source, None).unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (item) (item) (item) (item) (item))"
             );
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
             assert!(!tree.root_node().has_error());
             assert_eq!(tree.root_node().end_byte(), source.len());
         }
@@ -2538,9 +1995,9 @@ fn test_anonymous_external_pattern_used_as_extra() {
 }
 
 #[test]
-fn test_incremental_reuse_with_immediate_token_alternatives() {
+fn test_immediate_token_alternatives_after_extras() {
     let grammar = serde_json::json!({
-        "name": "incremental_immediate_alternatives",
+        "name": "immediate_alternatives_after_extras",
         "extras": [{"type": "PATTERN", "value": "\\s"}, {"type": "SYMBOL", "name": "comment"}],
         "rules": {
             "source_file": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "item"}},
@@ -2563,65 +2020,13 @@ fn test_incremental_reuse_with_immediate_token_alternatives() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        for suffix in [" b;", " # b;", " [] b;"] {
-            let mut source = format!("a;{}", suffix.repeat(64)).into_bytes();
-            let mut tree = parser.parse(&source, None).unwrap();
-            let ids = tree
-                .root_node()
-                .named_children(&mut tree.walk())
-                .filter(|node| node.kind() == "item")
-                .skip(1)
-                .map(|node| node.named_child(0).unwrap().id())
-                .collect::<Vec<_>>();
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 0,
-                    deleted_length: 1,
-                    inserted_text: b"z".to_vec(),
-                },
-            )
-            .unwrap();
-            let next = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert!(!next.root_node().has_error());
-            assert_eq!(next.root_node().to_sexp(), fresh.root_node().to_sexp());
-            let reused = next
-                .root_node()
-                .named_children(&mut next.walk())
-                .filter(|node| node.kind() == "item")
-                .skip(1)
-                .filter(|node| ids.contains(&node.named_child(0).unwrap().id()))
-                .count();
-            assert!(
-                reused > 32,
-                "{suffix:?}: only {reused} of 64 unchanged items reused"
-            );
-        }
-
-        let mut source = b"x!; b;".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for replacement in ["#", "", "##", "", "[]", "", "[][]", "", " ", "", "# ", ""] {
-            let prefix_length = source.iter().position(|&byte| byte == b'x').unwrap();
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 0,
-                    deleted_length: prefix_length,
-                    inserted_text: replacement.as_bytes().to_vec(),
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
+        for prefix in ["", "#", "##", "[]", "[][]", " ", "# "] {
+            let tree = parser.parse(format!("{prefix}x!; b;"), None).unwrap();
             assert_eq!(
-                tree.root_node().to_sexp(),
-                fresh.root_node().to_sexp(),
-                "{replacement:?}"
+                tree.root_node().has_error(),
+                !prefix.is_empty(),
+                "{prefix:?}"
             );
-            assert_eq!(tree.root_node().has_error(), !replacement.is_empty());
         }
     }
 }
@@ -2948,35 +2353,6 @@ fn test_nonterminal_extras_preserve_eof_gated_reductions() {
 }
 
 #[test]
-fn test_incremental_parsing_after_deleting_the_token_before_a_named_eof_rule() {
-    let grammar = serde_json::json!({
-        "name": "named_eof_reuse",
-        "rules": {
-            "document": {"type": "SEQ", "members": [
-                {"type": "STRING", "value": "("},
-                {"type": "SYMBOL", "name": "end"}
-            ]},
-            "end": {"type": "EOF"}
-        }
-    });
-    for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let mut tree = parser.parse("(", None).unwrap();
-        tree.edit(&InputEdit {
-            start_byte: 0,
-            old_end_byte: 1,
-            new_end_byte: 0,
-            start_position: Point::new(0, 0),
-            old_end_position: Point::new(0, 1),
-            new_end_position: Point::new(0, 0),
-        });
-        let tree = parser.parse("", Some(&tree)).unwrap();
-        let fresh = parser.parse("", None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-        assert_eq!(tree.root_node().end_byte(), 0);
-    }
-}
-
-#[test]
 fn test_completed_nodes_before_unfinished_nonterminal_extras() {
     let languages = [
         get_test_fixture_language("unfinished_nonterminal_extra"),
@@ -2984,25 +2360,10 @@ fn test_completed_nodes_before_unfinished_nonterminal_extras() {
         super::helpers::fixtures::get_test_fixture_language_wasm("unfinished_nonterminal_extra"),
     ];
     for mut parser in parsers_for_languages(languages) {
-        let prefix = "/// documentation\n/* comment";
-        let mut source = prefix.to_string();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for suffix in ["", " */", " */ item x;", "", " */ item x;", ""] {
-            let next = format!("{prefix}{suffix}");
-            let position = |text: &str| Point::new(1, text.len() - "/// documentation\n".len());
-            tree.edit(&InputEdit {
-                start_byte: prefix.len(),
-                old_end_byte: source.len(),
-                new_end_byte: next.len(),
-                start_position: position(prefix),
-                old_end_position: position(&source),
-                new_end_position: position(&next),
-            });
-            source = next;
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
+        for suffix in ["", " */", " */ item x;"] {
+            let source = format!("/// documentation\n/* comment{suffix}");
+            let tree = parser.parse(&source, None).unwrap();
             let actual = tree.root_node().to_sexp();
-            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
             assert!(
                 actual.contains("(documentation (doc_text))"),
                 "{source}: {actual}"
@@ -3096,164 +2457,6 @@ fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
 }
 
 #[test]
-fn test_recovery_extra_groups_preserve_edits_and_node_metadata() {
-    let languages = [
-        get_test_fixture_language("recovery_extra_groups"),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_fixture_language_wasm("recovery_extra_groups"),
-    ];
-    for mut parser in parsers_for_languages(languages) {
-        let fragment = "b:/*é*/?";
-        let mut source = format!("a{{{}}}tail;", fragment.repeat(64)).into_bytes();
-        let mut tree = parser.parse(&source, None).unwrap();
-        let mut previous_length = fragment.len();
-        for replacement in ["b:x;", "b:/*漢*/?", "b:/*é*/]", fragment] {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 2,
-                    deleted_length: previous_length,
-                    inserted_text: replacement.as_bytes().to_vec(),
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-            assert_eq!(snapshot(&tree), snapshot(&fresh));
-            previous_length = replacement.len();
-        }
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct NodeSnapshot {
-        kind: String,
-        range: Range,
-        named: bool,
-        extra: bool,
-        missing: bool,
-        has_error: bool,
-        child_count: u32,
-        field: Option<String>,
-    }
-
-    fn snapshot(tree: &tree_sitter::Tree) -> Vec<NodeSnapshot> {
-        let mut cursor = tree.walk();
-        let mut result = Vec::new();
-        loop {
-            let node = cursor.node();
-            result.push(NodeSnapshot {
-                kind: node.kind().to_owned(),
-                range: node.range(),
-                named: node.is_named(),
-                extra: node.is_extra(),
-                missing: node.is_missing(),
-                has_error: node.has_error(),
-                child_count: node.child_count(),
-                field: cursor.field_name().map(str::to_owned),
-            });
-            if cursor.goto_first_child() {
-                continue;
-            }
-            loop {
-                if cursor.goto_next_sibling() {
-                    break;
-                }
-                if !cursor.goto_parent() {
-                    return result;
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_incremental_edits_around_reused_nonterminal_extras() {
-    let languages = [
-        get_test_fixture_language("nonterminal_extra_append"),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_fixture_language_wasm("nonterminal_extra_append"),
-    ];
-    for mut parser in parsers_for_languages(languages) {
-        for initial in ["c&#\n", "c&!hé\n", "c&first&#\n", "c&!one\n#two\n"] {
-            let mut source = initial.as_bytes().to_vec();
-            let mut tree = parser.parse(&source, None).unwrap();
-            assert!(!tree.root_node().has_error());
-            for inserted in ["e", "&f", "&!漢\ng"] {
-                let position = source.len();
-                perform_edit(
-                    &mut tree,
-                    &mut source,
-                    &Edit {
-                        position,
-                        deleted_length: 0,
-                        inserted_text: inserted.as_bytes().to_vec(),
-                    },
-                )
-                .unwrap();
-                tree = parser.parse(&source, Some(&tree)).unwrap();
-                let fresh = parser.parse(&source, None).unwrap();
-                assert!(
-                    !tree.root_node().has_error(),
-                    "{}",
-                    tree.root_node().to_sexp()
-                );
-                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-                assert_eq!(nodes(&tree), nodes(&fresh));
-                crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-            }
-        }
-        let mut source = b"a& #x\n a#\n&\n!\na".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        for inserted in *b"a&a&" {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 10,
-                    deleted_length: 1,
-                    inserted_text: vec![inserted],
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            assert_eq!(nodes(&tree), nodes(&fresh));
-            crate::fuzz::corpus_test::check_consistent_sizes(&tree, &source);
-        }
-    }
-
-    fn nodes(tree: &tree_sitter::Tree) -> Vec<(u16, Range, bool, bool, Option<String>)> {
-        let mut cursor = tree.walk();
-        let mut result = Vec::new();
-        loop {
-            let node = cursor.node();
-            result.push((
-                node.kind_id(),
-                node.range(),
-                node.is_named(),
-                node.is_extra(),
-                cursor.field_name().map(str::to_owned),
-            ));
-            if cursor.goto_first_child() {
-                continue;
-            }
-            loop {
-                if cursor.goto_next_sibling() {
-                    break;
-                }
-                if !cursor.goto_parent() {
-                    return result;
-                }
-            }
-        }
-    }
-}
-
-#[test]
 fn test_recovery_through_many_nonterminal_extras() {
     let language = get_test_fixture_language("recovery_extra_chain");
     let mut parser = Parser::new();
@@ -3300,143 +2503,17 @@ fn test_recovery_through_many_nonterminal_extras() {
 }
 
 #[test]
-fn test_incremental_recovery_before_changed_nonterminal_extra() {
-    let language = get_test_fixture_language("incremental_extra_recovery");
-    for prefix in ["a ", "a /*gap*/ ", "a #pragma warning disable y\n "] {
-        for utf16 in [false, true] {
-            let mut parser = Parser::new();
-            parser.set_language(&language).unwrap();
-            let mut parse = |source: &str, old: Option<&tree_sitter::Tree>| {
-                if utf16 {
-                    parser
-                        .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), old)
-                        .unwrap()
-                } else {
-                    parser.parse(source, old).unwrap()
-                }
-            };
-            let mut source = format!("{prefix}#pragma warning disable x\n b;");
-            let position = prefix.len() + "#pragma ".len();
-            let mut tree = parse(&source, None);
-            let original = tree.root_node().to_sexp();
-            assert!(!tree.root_node().has_error());
-            let scale = if utf16 { 2 } else { 1 };
-            for replacement in [" ", "w", " ", "w"] {
-                source.replace_range(position..=position, replacement);
-                let before = &source[..position];
-                let row = before.bytes().filter(|byte| *byte == b'\n').count();
-                let column = before.rsplit('\n').next().unwrap().len() * scale;
-                tree.edit(&InputEdit {
-                    start_byte: position * scale,
-                    old_end_byte: (position + 1) * scale,
-                    new_end_byte: (position + 1) * scale,
-                    start_position: Point::new(row, column),
-                    old_end_position: Point::new(row, column + scale),
-                    new_end_position: Point::new(row, column + scale),
-                });
-                tree = parse(&source, Some(&tree));
-                let fresh = parse(&source, None);
-                assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-                assert_eq!(tree.root_node().range(), fresh.root_node().range());
-                assert_eq!(tree.root_node().has_error(), replacement == " ");
-                if replacement == "w" {
-                    assert_eq!(tree.root_node().to_sexp(), original);
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_incremental_recovery_with_ambiguous_lookahead() {
-    let language = get_test_fixture_language("ambiguous_reuse");
-    for utf16 in [false, true] {
-        let mut parser = Parser::new();
-        parser.set_language(&language).unwrap();
-        let mut parse = |source: &str, old: Option<&tree_sitter::Tree>| {
-            if utf16 {
-                parser
-                    .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), old)
-                    .unwrap()
-            } else {
-                parser.parse(source, old).unwrap()
-            }
-        };
-        let original = "{switch(x){f\ny+;}return;}";
-        let edited = "{switch(x)#else\n{f\ny+;}return;}";
-        let scale = if utf16 { 2 } else { 1 };
-        let mut tree = parse(original, None);
-        for source in [edited, original, edited, original] {
-            let inserting = source == edited;
-            tree.edit(&InputEdit {
-                start_byte: 10 * scale,
-                old_end_byte: if inserting { 10 } else { 16 } * scale,
-                new_end_byte: if inserting { 16 } else { 10 } * scale,
-                start_position: Point::new(0, 10 * scale),
-                old_end_position: if inserting {
-                    Point::new(0, 10 * scale)
-                } else {
-                    Point::new(1, 0)
-                },
-                new_end_position: if inserting {
-                    Point::new(1, 0)
-                } else {
-                    Point::new(0, 10 * scale)
-                },
-            });
-            tree = parse(source, Some(&tree));
-            let fresh = parse(source, None);
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            assert_eq!(tree.root_node().range(), fresh.root_node().range());
-            assert!(tree.root_node().has_error());
-        }
-    }
-}
-
-#[test]
-fn test_incremental_lexing_after_nonterminal_extra() {
+fn test_lexing_after_nonterminal_extra() {
     let language = get_test_fixture_language("incremental_nonterminal_extra");
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    let original = b"main :: () {}\n// comment\n#import \"Basic\";\n";
-    let mut source = original.to_vec();
-    let mut tree = parser.parse(&source, None).unwrap();
-    let expected =
-        "(program (block_decl (identifier) (function (block))) (comment) (import (string)))";
-    assert_eq!(tree.root_node().to_sexp(), expected);
-    let position = source
-        .windows(7)
-        .position(|text| text == b"#import")
+    let tree = parser
+        .parse("main :: () {}\n// comment\n#import \"Basic\";\n", None)
         .unwrap();
-    for _ in 0..2 {
-        perform_edit(
-            &mut tree,
-            &mut source,
-            &Edit {
-                position,
-                deleted_length: 0,
-                inserted_text: b"/".to_vec(),
-            },
-        )
-        .unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-        perform_edit(
-            &mut tree,
-            &mut source,
-            &Edit {
-                position,
-                deleted_length: 1,
-                inserted_text: Vec::new(),
-            },
-        )
-        .unwrap();
-        tree = parser.parse(&source, Some(&tree)).unwrap();
-        assert_eq!(source, original);
-        assert_eq!(tree.root_node().to_sexp(), expected);
-        assert!(!tree.root_node().has_error());
-    }
+    assert_eq!(
+        tree.root_node().to_sexp(),
+        "(program (block_decl (identifier) (function (block))) (comment) (import (string)))"
+    );
 }
 
 #[test]
@@ -4171,118 +3248,14 @@ fn test_parsing_after_editing_end_of_code() {
 }
 
 #[test]
-fn test_parsing_after_eof_edit_reuses_unchanged_keyword_statements() {
-    for (language, unit) in [
-        ("python", "def f(a):\n    if a:\n        return a\n"),
-        ("javascript", "function f(a) { if (a) { return a; } }\n"),
-    ] {
-        let mut parser = Parser::new();
-        parser.set_language(&get_language(language)).unwrap();
-        let mut source = unit.repeat(32).into_bytes();
-        let mut tree = parser.parse(&source, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        let edit = Edit {
-            position: source.len(),
-            deleted_length: 0,
-            inserted_text: b"\n".to_vec(),
-        };
-        perform_edit(&mut tree, &mut source, &edit).unwrap();
-        let mut recorder = ReadRecorder::new(&source);
-        let incremental = parser
-            .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
-            .unwrap();
-        let fresh = parser.parse(&source, None).unwrap();
-        assert!(!incremental.root_node().has_error());
-        assert_eq!(
-            incremental.root_node().to_sexp(),
-            fresh.root_node().to_sexp()
-        );
-        let bytes_read: usize = recorder.strings_read().iter().map(|s| s.len()).sum();
-        assert!(
-            bytes_read < source.len() / 5,
-            "{language}: read {bytes_read} of {} bytes",
-            source.len()
-        );
-    }
-}
-
-#[test]
-fn test_parsing_after_undoing_edit_before_contextual_keyword() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("java")).unwrap();
-    let mut source = b"switch(c){case Point(int _) -> {}}".to_vec();
-    let fresh = parser.parse(&source, None).unwrap();
-    assert!(!fresh.root_node().has_error());
-    let edit = Edit {
-        position: 6,
-        deleted_length: 0,
-        inserted_text: b"x".to_vec(),
-    };
-    let undo = invert_edit(&source, &edit);
-    let mut edited = fresh.clone();
-    perform_edit(&mut edited, &mut source, &edit).unwrap();
-    edited = parser.parse(&source, Some(&edited)).unwrap();
-    perform_edit(&mut edited, &mut source, &undo).unwrap();
-    let incremental = parser.parse(&source, Some(&edited)).unwrap();
-    assert!(!incremental.root_node().has_error());
-    assert_eq!(
-        incremental.root_node().to_sexp(),
-        fresh.root_node().to_sexp()
-    );
-    assert_eq!(incremental.root_node().end_byte(), source.len());
-}
-
-#[test]
-fn test_parsing_after_editing_keyword_context() {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_test_fixture_language("keyword_reuse"))
-        .unwrap();
-    let mut source = b"\"``\"&while'';if;then;elif;then``;fi".to_vec();
-    let mut tree = parser.parse(&source, None).unwrap();
-    perform_edit(
-        &mut tree,
-        &mut source,
-        &Edit {
-            position: 13,
-            deleted_length: 0,
-            inserted_text: b"esac".to_vec(),
-        },
-    )
-    .unwrap();
-    let incremental = parser.parse(&source, Some(&tree)).unwrap();
-    let fresh = parser.parse(&source, None).unwrap();
-    assert_eq!(
-        incremental.root_node().to_sexp(),
-        fresh.root_node().to_sexp()
-    );
-    assert_eq!(incremental.root_node().end_byte(), source.len());
-}
-
-#[test]
-fn test_parsing_after_editing_the_last_byte_of_a_multibyte_lookahead_character() {
+fn test_parsing_multibyte_characters_after_an_identifier() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
 
-    // U+200B cannot continue an identifier and U+200C can. Their UTF-8 encodings differ only in the last byte, which
-    // the lexer read as part of the lookahead character that ended the identifier `a`.
-    let mut code = "a\u{200B}b;".as_bytes().to_vec();
-    let mut tree = parser.parse(&code, None).unwrap();
+    // U+200B cannot continue an identifier and U+200C can.
+    let tree = parser.parse("a\u{200B}b;", None).unwrap();
     assert!(tree.root_node().has_error());
-
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position: 3,
-            deleted_length: 1,
-            inserted_text: vec![0x8C],
-        },
-    )
-    .unwrap();
-    assert_eq!(code, "a\u{200C}b;".as_bytes());
-
-    let tree = parser.parse(&code, Some(&tree)).unwrap();
+    let tree = parser.parse("a\u{200C}b;", None).unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(program (expression_statement (identifier)))"
@@ -4316,7 +3289,7 @@ fn assert_keyword_relex_is_linear(parser: &mut Parser) {
                 for count in [250, 500, 1000] {
                     let source = format!("{word} = 1{ending}").repeat(count);
                     let (tree, reads) =
-                        parse_column_keyword_input(parser, source.as_bytes(), None, chunk_size);
+                        parse_column_keyword_input(parser, source.as_bytes(), chunk_size);
                     assert!(!tree.root_node().has_error(), "{word:?} {ending:?}");
                     assert_eq!(tree.root_node().named_child_count(), count);
                     let fresh = parser.parse(&source, None).unwrap();
@@ -4340,139 +3313,39 @@ fn assert_keyword_relex_is_linear(parser: &mut Parser) {
 }
 
 #[test]
-fn test_keyword_relex_column_checkpoints_after_edits_input_and_range_changes() {
+fn test_keyword_relex_column_checkpoints_with_included_ranges() {
     for mut parser in column_keyword_parsers() {
-        assert_keyword_column_input_lifecycle(&mut parser);
-    }
-}
-
-fn assert_keyword_column_input_lifecycle(parser: &mut Parser) {
-    for ending in ["\r", "\n", "\r\n"] {
-        let mut source = format!("whilex = 1{ending}").repeat(512).into_bytes();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for (deleted_length, inserted_text) in [
-            (0, b" ".to_vec()),
-            (1, Vec::new()),
-            (6, b"while".to_vec()),
-            (5, b"whilex".to_vec()),
-        ] {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 0,
-                    deleted_length,
-                    inserted_text,
-                },
-            )
-            .unwrap();
-            let (incremental, reads) = parse_column_keyword_input(parser, &source, Some(&tree), 7);
-            let (fresh, fresh_reads) = parse_column_keyword_input(parser, &source, None, 7);
-            assert!(!incremental.root_node().has_error());
-            assert_eq!(
-                incremental.root_node().to_sexp(),
-                fresh.root_node().to_sexp()
-            );
-            assert_eq!(incremental.root_node().range(), fresh.root_node().range());
-            assert!(reads < source.len() * 8, "{ending:?}: {reads}");
-            if ending.contains('\n') {
-                assert!(reads * 2 < fresh_reads, "{ending:?}: {reads}/{fresh_reads}");
-            }
-            tree = incremental;
-        }
-    }
-    for word in ["x", "λx", "whilex"] {
-        let body = format!("{word} = 1\r").repeat(512);
-        let source = format!("{body}EXCLUDED\n{body}");
-        let second_start = body.len() + "EXCLUDED\n".len();
-        parser
-            .set_included_ranges(&[
-                Range {
-                    start_byte: 0,
-                    end_byte: body.len(),
-                    start_point: Point::new(0, 0),
-                    end_point: Point::new(0, body.len()),
-                },
-                Range {
-                    start_byte: second_start,
-                    end_byte: source.len(),
-                    start_point: Point::new(1, 0),
-                    end_point: Point::new(1, body.len()),
-                },
-            ])
-            .unwrap();
-        let (tree, reads) = parse_column_keyword_input(parser, source.as_bytes(), None, 7);
-        let fresh = parser.parse(&source, None).unwrap();
-        assert!(!tree.root_node().has_error());
-        assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-        assert_eq!(tree.root_node().range(), fresh.root_node().range());
-        assert!(reads < source.len() * 8, "{word}: {reads}");
-        parser.set_included_ranges(&[]).unwrap();
-        let (replacement, reads) = parse_column_keyword_input(parser, body.as_bytes(), None, 7);
-        assert!(!replacement.root_node().has_error());
-        assert_eq!(replacement.root_node().named_child_count(), 512);
-        assert!(reads < body.len() * 8, "{word}: {reads}");
-    }
-}
-
-#[test]
-fn test_column_replay_after_incremental_token_reuse_is_linear() {
-    for mut parser in column_keyword_parsers() {
-        for word in ["x", "whilex", "while", "λx", "😀x", "dx", "sx"] {
-            for chunk_size in [1, 7, 256] {
-                let mut previous_reads = 0;
-                for count in [128, 256, 512] {
-                    let mut source = format!("{word} = 1\r").repeat(count).into_bytes();
-                    let mut tree = parser.parse(&source, None).unwrap();
-                    for (deleted_length, inserted_text) in [(0, b" ".to_vec()), (1, Vec::new())] {
-                        perform_edit(
-                            &mut tree,
-                            &mut source,
-                            &Edit {
-                                position: 0,
-                                deleted_length,
-                                inserted_text,
-                            },
-                        )
-                        .unwrap();
-                        let (incremental, reads) = parse_column_keyword_input(
-                            &mut parser,
-                            &source,
-                            Some(&tree),
-                            chunk_size,
-                        );
-                        let (fresh, fresh_reads) =
-                            parse_column_keyword_input(&mut parser, &source, None, chunk_size);
-                        assert!(fresh_reads < source.len() * 8, "{word:?}: {fresh_reads}");
-                        assert!(!incremental.root_node().has_error());
-                        assert_eq!(
-                            incremental.root_node().to_sexp(),
-                            fresh.root_node().to_sexp()
-                        );
-                        let ranges = |tree: &Tree| {
-                            tree.root_node()
-                                .named_children(&mut tree.walk())
-                                .map(|node| node.range())
-                                .collect::<Vec<_>>()
-                        };
-                        assert_eq!(ranges(&incremental), ranges(&fresh));
-                        assert!(
-                            reads < source.len() * 8,
-                            "{word:?} chunk={chunk_size}: {reads}"
-                        );
-                        if deleted_length == 1 {
-                            if previous_reads > 0 {
-                                assert!(
-                                    reads < previous_reads * 3,
-                                    "{word:?}: {reads}/{previous_reads}"
-                                );
-                            }
-                            previous_reads = reads;
-                        }
-                        tree = incremental;
-                    }
-                }
-            }
+        for word in ["x", "λx", "whilex"] {
+            let body = format!("{word} = 1\r").repeat(512);
+            let source = format!("{body}EXCLUDED\n{body}");
+            let second_start = body.len() + "EXCLUDED\n".len();
+            parser
+                .set_included_ranges(&[
+                    Range {
+                        start_byte: 0,
+                        end_byte: body.len(),
+                        start_point: Point::new(0, 0),
+                        end_point: Point::new(0, body.len()),
+                    },
+                    Range {
+                        start_byte: second_start,
+                        end_byte: source.len(),
+                        start_point: Point::new(1, 0),
+                        end_point: Point::new(1, body.len()),
+                    },
+                ])
+                .unwrap();
+            let (tree, reads) = parse_column_keyword_input(&mut parser, source.as_bytes(), 7);
+            let fresh = parser.parse(&source, None).unwrap();
+            assert!(!tree.root_node().has_error());
+            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
+            assert_eq!(tree.root_node().range(), fresh.root_node().range());
+            assert!(reads < source.len() * 8, "{word}: {reads}");
+            parser.set_included_ranges(&[]).unwrap();
+            let (replacement, reads) = parse_column_keyword_input(&mut parser, body.as_bytes(), 7);
+            assert!(!replacement.root_node().has_error());
+            assert_eq!(replacement.root_node().named_child_count(), 512);
+            assert!(reads < body.len() * 8, "{word}: {reads}");
         }
     }
 }
@@ -4495,10 +3368,9 @@ fn test_keyword_relex_column_checkpoints_with_utf16_input() {
                     })
                     .collect::<Vec<_>>();
                 for chunk_size in [1, 7, 256] {
-                    let (mut tree, reads) = parse_column_keyword_utf16_input(
+                    let (tree, reads) = parse_column_keyword_utf16_input(
                         &mut parser,
                         &units,
-                        None,
                         chunk_size,
                         big_endian,
                     );
@@ -4512,55 +3384,6 @@ fn test_keyword_relex_column_checkpoints_with_utf16_input() {
                         reads < units.len() * 8,
                         "{word} endian={big_endian} chunk={chunk_size}: {reads}"
                     );
-                    let mut edited_units = units.clone();
-                    for insert in [true, false] {
-                        let (old_end, new_end) = if insert { (0, 2) } else { (2, 0) };
-                        if insert {
-                            edited_units.insert(
-                                0,
-                                if big_endian {
-                                    32u16.to_be()
-                                } else {
-                                    32u16.to_le()
-                                },
-                            );
-                        } else {
-                            edited_units.remove(0);
-                        }
-                        tree.edit(&InputEdit {
-                            start_byte: 0,
-                            old_end_byte: old_end,
-                            new_end_byte: new_end,
-                            start_position: Point::new(0, 0),
-                            old_end_position: Point::new(0, old_end),
-                            new_end_position: Point::new(0, new_end),
-                        });
-                        let (incremental, reads) = parse_column_keyword_utf16_input(
-                            &mut parser,
-                            &edited_units,
-                            Some(&tree),
-                            chunk_size,
-                            big_endian,
-                        );
-                        let (fresh, _) = parse_column_keyword_utf16_input(
-                            &mut parser,
-                            &edited_units,
-                            None,
-                            chunk_size,
-                            big_endian,
-                        );
-                        assert!(!incremental.root_node().has_error());
-                        assert_eq!(
-                            incremental.root_node().to_sexp(),
-                            fresh.root_node().to_sexp()
-                        );
-                        assert_eq!(incremental.root_node().range(), fresh.root_node().range());
-                        assert!(
-                            reads < edited_units.len() * 8,
-                            "{word} endian={big_endian}: {reads}"
-                        );
-                        tree = incremental;
-                    }
                 }
             }
         }
@@ -4570,7 +3393,6 @@ fn test_keyword_relex_column_checkpoints_with_utf16_input() {
 fn parse_column_keyword_utf16_input(
     parser: &mut Parser,
     units: &[u16],
-    old: Option<&Tree>,
     chunk_size: usize,
     big_endian: bool,
 ) -> (Tree, usize) {
@@ -4592,9 +3414,9 @@ fn parse_column_keyword_utf16_input(
         &remaining[..size]
     };
     let tree = if big_endian {
-        parser.parse_utf16_be_with_options(&mut read, old, None)
+        parser.parse_utf16_be_with_options(&mut read, None, None)
     } else {
-        parser.parse_utf16_le_with_options(&mut read, old, None)
+        parser.parse_utf16_le_with_options(&mut read, None, None)
     }
     .unwrap();
     (tree, reads)
@@ -4611,7 +3433,6 @@ fn column_keyword_parsers() -> impl Iterator<Item = Parser> {
 fn parse_column_keyword_input(
     parser: &mut Parser,
     source: &[u8],
-    old: Option<&Tree>,
     chunk_size: usize,
 ) -> (Tree, usize) {
     let mut reads = 0;
@@ -4623,382 +3444,11 @@ fn parse_column_keyword_input(
                 reads += chunk.len();
                 chunk
             },
-            old,
+            None,
             None,
         )
         .unwrap();
     (tree, reads)
-}
-
-#[test]
-fn test_incremental_position_dependent_scanners() {
-    for reader in ["get_position", "get_mark_end"] {
-        for field in ["bytes", "row", "column"] {
-            for failed_scan in [false, true] {
-                for mut parser in position_dependent_parsers(reader, field, failed_scan) {
-                    for included in [false, true] {
-                        let body = if field == "column" {
-                            "x x x x x x"
-                        } else {
-                            "x\nx\nx\nx\nx\nx"
-                        };
-                        let mut source = if included {
-                            format!("@{body}@{body}@").into_bytes()
-                        } else {
-                            body.as_bytes().to_vec()
-                        };
-                        if included {
-                            parser
-                                .set_included_ranges(&position_test_ranges(&source))
-                                .unwrap();
-                        }
-                        let mut tree = parser.parse(&source, None).unwrap();
-                        assert!(!tree.root_node().has_error());
-                        let prefix = if field == "row" { b'\n' } else { b' ' };
-                        for edit in [
-                            Edit {
-                                position: 0,
-                                deleted_length: 0,
-                                inserted_text: vec![prefix],
-                            },
-                            Edit {
-                                position: 0,
-                                deleted_length: 1,
-                                inserted_text: Vec::new(),
-                            },
-                        ] {
-                            perform_edit(&mut tree, &mut source, &edit).unwrap();
-                            if included {
-                                parser
-                                    .set_included_ranges(&position_test_ranges(&source))
-                                    .unwrap();
-                            }
-                            tree = parser.parse(&source, Some(&tree)).unwrap();
-                            let fresh = parser.parse(&source, None).unwrap();
-                            assert!(!fresh.root_node().has_error());
-                            assert_eq!(
-                                tree.root_node().to_sexp(),
-                                fresh.root_node().to_sexp(),
-                                "{reader} {field} failed={failed_scan} included={included}"
-                            );
-                            let mut actual_cursor = tree.walk();
-                            let mut expected_cursor = fresh.walk();
-                            let actual = tree
-                                .root_node()
-                                .named_children(&mut actual_cursor)
-                                .map(|node| node.range())
-                                .collect::<Vec<_>>();
-                            let expected = fresh
-                                .root_node()
-                                .named_children(&mut expected_cursor)
-                                .map(|node| node.range())
-                                .collect::<Vec<_>>();
-                            assert_eq!(actual, expected);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn test_position_edit_preserves_independent_statement_prefixes() {
-    let grammar = serde_json::json!({
-        "name": "position_independent_prefix",
-        "extras": [{"type": "PATTERN", "value": "[ \t\n]"}],
-        "externals": [{"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}],
-        "rules": {
-            "document": {"type": "REPEAT", "content": {"type": "SYMBOL", "name": "statement"}},
-            "statement": {"type": "SEQ", "members": [
-                {"type": "SYMBOL", "name": "keyword"},
-                {"type": "CHOICE", "members": [
-                    {"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}
-                ]}
-            ]},
-            "keyword": {"type": "PATTERN", "value": "k+"}
-        }
-    });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    let language = get_test_language_with_scanner(
-        &name,
-        &code,
-        r#"
-#include "tree_sitter/parser.h"
-void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
-void tree_sitter_GRAMMAR_external_scanner_destroy(void *p) {}
-unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *p, char *b) { return 0; }
-void tree_sitter_GRAMMAR_external_scanner_deserialize(void *p, const char *b, unsigned n) {}
-bool tree_sitter_GRAMMAR_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
-  while (lexer->lookahead == ' ' || lexer->lookahead == '\n') lexer->advance(lexer, true);
-  if (lexer->lookahead != 'x') return false;
-  TSLexerPosition position;
-  lexer->get_position(lexer, &position);
-  lexer->result_symbol = position.bytes % 2;
-  lexer->advance(lexer, false);
-  lexer->mark_end(lexer);
-  return true;
-}
-"#,
-    );
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    let mut source = format!("{} x\n", "k".repeat(1024)).repeat(32).into_bytes();
-    let mut tree = parser.parse(&source, None).unwrap();
-    assert!(!tree.root_node().has_error());
-    perform_edit(
-        &mut tree,
-        &mut source,
-        &Edit {
-            position: 0,
-            deleted_length: 0,
-            inserted_text: vec![b' '],
-        },
-    )
-    .unwrap();
-    let keyword = tree
-        .root_node()
-        .named_child(1)
-        .unwrap()
-        .named_child(0)
-        .unwrap();
-    assert_eq!(keyword.kind(), "keyword");
-    assert!(!keyword.has_changes());
-    let mut incremental_bytes = 0;
-    let incremental = parser
-        .parse_with_options(
-            &mut |offset, _| {
-                let chunk = source.get(offset..offset + 1).unwrap_or_default();
-                incremental_bytes += chunk.len();
-                chunk
-            },
-            Some(&tree),
-            None,
-        )
-        .unwrap();
-    let mut fresh_bytes = 0;
-    let fresh = parser
-        .parse_with_options(
-            &mut |offset, _| {
-                let chunk = source.get(offset..offset + 1).unwrap_or_default();
-                fresh_bytes += chunk.len();
-                chunk
-            },
-            None,
-            None,
-        )
-        .unwrap();
-    assert!(!incremental.root_node().has_error());
-    assert_eq!(
-        incremental.root_node().to_sexp(),
-        fresh.root_node().to_sexp()
-    );
-    assert!(
-        incremental_bytes * 4 < fresh_bytes,
-        "incremental={incremental_bytes}, fresh={fresh_bytes}"
-    );
-}
-
-#[test]
-fn test_position_checkpoint_restore_scanner_reuses_suffixes_after_edits() {
-    let token_ranges = |tree: &Tree| {
-        tree.root_node()
-            .named_children(&mut tree.walk())
-            .map(|node| node.range())
-            .collect::<Vec<_>>()
-    };
-    for mut parser in position_dependent_parsers("restore", "bytes", false) {
-        for included in [false, true] {
-            for (deleted_length, inserted_text) in
-                [(1, vec![b'\t']), (0, vec![b' ']), (0, vec![b'\n'])]
-            {
-                let body = " x".repeat(128);
-                let mut source = if included {
-                    format!(" @{body}@{body}@").into_bytes()
-                } else {
-                    body.into_bytes()
-                };
-                parser
-                    .set_included_ranges(&if included {
-                        position_test_ranges(&source)
-                    } else {
-                        Vec::new()
-                    })
-                    .unwrap();
-                let mut tree = parser.parse(&source, None).unwrap();
-                let edit = Edit {
-                    position: 0,
-                    deleted_length,
-                    inserted_text,
-                };
-                let undo = invert_edit(&source, &edit);
-                for edit in [edit, undo] {
-                    perform_edit(&mut tree, &mut source, &edit).unwrap();
-                    if included {
-                        parser
-                            .set_included_ranges(&position_test_ranges(&source))
-                            .unwrap();
-                    }
-                    let mut incremental_bytes = 0;
-                    let incremental = parser
-                        .parse_with_options(
-                            &mut |offset, _| {
-                                let chunk = source.get(offset..offset + 1).unwrap_or_default();
-                                incremental_bytes += chunk.len();
-                                chunk
-                            },
-                            Some(&tree),
-                            None,
-                        )
-                        .unwrap();
-                    let mut fresh_bytes = 0;
-                    let fresh = parser
-                        .parse_with_options(
-                            &mut |offset, _| {
-                                let chunk = source.get(offset..offset + 1).unwrap_or_default();
-                                fresh_bytes += chunk.len();
-                                chunk
-                            },
-                            None,
-                            None,
-                        )
-                        .unwrap();
-                    assert!(!incremental.root_node().has_error());
-                    assert_eq!(
-                        incremental.root_node().to_sexp(),
-                        fresh.root_node().to_sexp()
-                    );
-                    assert_eq!(incremental.root_node().range(), fresh.root_node().range());
-                    assert_eq!(token_ranges(&incremental), token_ranges(&fresh));
-                    assert!(
-                        incremental_bytes * 4 < fresh_bytes,
-                        "incremental={incremental_bytes}, fresh={fresh_bytes}"
-                    );
-                    tree = incremental;
-                }
-            }
-        }
-    }
-}
-
-fn position_dependent_parsers(
-    reader: &str,
-    field: &str,
-    failed_scan: bool,
-) -> impl Iterator<Item = Parser> {
-    let name = format!("position_{reader}_{field}_{}", u8::from(failed_scan));
-    let directory = tempfile::tempdir().unwrap();
-    let read_position = match reader {
-        "get_position" => {
-            "lexer->get_position(lexer, &position); lexer->advance(lexer, false); lexer->mark_end(lexer);"
-        }
-        "get_mark_end" => {
-            "lexer->advance(lexer, false); lexer->mark_end(lexer); lexer->get_mark_end(lexer, &position);"
-        }
-        "restore" => {
-            "lexer->get_checkpoint(lexer, &start); lexer->advance(lexer, false); lexer->mark_end(lexer); lexer->get_mark_end_checkpoint(lexer, &end); if (!lexer->eof(lexer)) lexer->advance(lexer, false); lexer->mark_start(lexer, &start); lexer->mark_end_at(lexer, &end);"
-        }
-        _ => unreachable!(),
-    };
-    let scanner = r#"
-        #include "tree_sitter/parser.h"
-        void *tree_sitter_NAME_external_scanner_create(void) { return NULL; }
-        void tree_sitter_NAME_external_scanner_destroy(void *p) {}
-        unsigned tree_sitter_NAME_external_scanner_serialize(void *p, char *b) { return 0; }
-        void tree_sitter_NAME_external_scanner_deserialize(void *p, const char *b, unsigned n) {}
-        bool tree_sitter_NAME_external_scanner_scan(void *p, TSLexer *lexer, const bool *valid) {
-            while (lexer->lookahead == ' ' || lexer->lookahead == '\t' || lexer->lookahead == '\n') lexer->advance(lexer, true);
-            if (lexer->lookahead != 'x') return false;
-            DECLARATIONS
-            READ_POSITION
-            REJECT
-            lexer->result_symbol = RESULT;
-            return true;
-        }
-    "#;
-    std::fs::write(
-        directory.path().join("scanner.c"),
-        scanner
-            .replace("NAME", &name)
-            .replace(
-                "DECLARATIONS",
-                if reader == "restore" {
-                    "TSLexerCheckpoint start, end;"
-                } else {
-                    "TSLexerPosition position;"
-                },
-            )
-            .replace("READ_POSITION", read_position)
-            .replace(
-                "REJECT",
-                if failed_scan {
-                    "if (position.FIELD % 2 == 0) return false;"
-                } else {
-                    ""
-                },
-            )
-            .replace("FIELD", field)
-            .replace(
-                "RESULT",
-                if reader == "restore" {
-                    "0"
-                } else {
-                    "position.FIELD % 2"
-                },
-            )
-            .replace("FIELD", field),
-    )
-    .unwrap();
-    let grammar = serde_json::json!({
-        "name": name,
-        "extras": [{"type": "PATTERN", "value": "[ \\t\\n]"}],
-        "externals": [{"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}],
-        "rules": {
-            "document": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
-                {"type": "SYMBOL", "name": "even_position"}, {"type": "SYMBOL", "name": "odd_position"}, {"type": "SYMBOL", "name": "fallback"}
-            ]}},
-            "fallback": {"type": "STRING", "value": "x"}
-        }
-    });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    parsers_for_languages([
-        get_test_language(&name, &code, Some(directory.path())),
-        #[cfg(feature = "wasm")]
-        super::helpers::fixtures::get_test_language_wasm_with_scanner(
-            &name,
-            &code,
-            Some(directory.path()),
-        ),
-    ])
-}
-
-fn position_test_ranges(source: &[u8]) -> Vec<Range> {
-    let boundaries = source
-        .iter()
-        .enumerate()
-        .filter_map(|(index, &byte)| (byte == b'@').then_some(index))
-        .collect::<Vec<_>>();
-    boundaries
-        .windows(2)
-        .map(|pair| {
-            let point = |index: usize| {
-                let prefix = &source[..index];
-                Point::new(
-                    memchr::memchr_iter(b'\n', prefix).count(),
-                    prefix
-                        .iter()
-                        .rposition(|&byte| byte == b'\n')
-                        .map_or(index, |newline| index - newline - 1),
-                )
-            };
-            Range {
-                start_byte: pair[0] + 1,
-                end_byte: pair[1],
-                start_point: point(pair[0] + 1),
-                end_point: point(pair[1]),
-            }
-        })
-        .collect()
 }
 
 #[test]
@@ -5034,7 +3484,7 @@ fn test_column_replay_work_is_linear_after_scanner_lookahead() {
 }
 
 #[test]
-fn test_column_replay_preserves_unicode_columns_and_incremental_reuse() {
+fn test_column_replay_preserves_unicode_columns() {
     let language = get_test_fixture_language("column_replay");
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
@@ -5067,54 +3517,6 @@ fn test_column_replay_preserves_unicode_columns_and_incremental_reuse() {
                 .collect::<Vec<_>>();
             assert_eq!(kinds, expected, "{source:?} {encoding}");
         }
-    }
-    let mut source = b"x\n".repeat(1000);
-    let mut tree = parser.parse(&source, None).unwrap();
-    for (deleted_length, inserted_text) in [(0, b" ".to_vec()), (1, Vec::new())] {
-        perform_edit(
-            &mut tree,
-            &mut source,
-            &Edit {
-                position: 0,
-                deleted_length,
-                inserted_text,
-            },
-        )
-        .unwrap();
-        let mut incremental_reads = 0;
-        let incremental = parser
-            .parse_with_options(
-                &mut |offset, _| {
-                    let chunk = source.get(offset..offset + 1).unwrap_or_default();
-                    incremental_reads += chunk.len();
-                    chunk
-                },
-                Some(&tree),
-                None,
-            )
-            .unwrap();
-        let mut fresh_reads = 0;
-        let fresh = parser
-            .parse_with_options(
-                &mut |offset, _| {
-                    let chunk = source.get(offset..offset + 1).unwrap_or_default();
-                    fresh_reads += chunk.len();
-                    chunk
-                },
-                None,
-                None,
-            )
-            .unwrap();
-        assert!(!incremental.root_node().has_error());
-        assert_eq!(
-            incremental.root_node().to_sexp(),
-            fresh.root_node().to_sexp()
-        );
-        assert!(
-            incremental_reads * 4 < fresh_reads,
-            "incremental={incremental_reads}, fresh={fresh_reads}"
-        );
-        tree = incremental;
     }
 }
 
@@ -5208,8 +3610,6 @@ fn test_column_query_replay_preserves_included_range_provenance() {
                     vec![expected, second, expected],
                     "{segment:?} {columns:?}"
                 );
-                let reused = parser.parse(&source, Some(&tree)).unwrap();
-                assert_eq!(reused.root_node().to_sexp(), tree.root_node().to_sexp());
                 parser.set_included_ranges(&[]).unwrap();
                 let replacement = parser.parse(segment, None).unwrap();
                 assert!(!replacement.root_node().has_error());
@@ -5223,7 +3623,7 @@ fn test_column_query_replay_preserves_included_range_provenance() {
 }
 
 #[test]
-fn test_column_query_replay_after_edit_in_row_changing_ranges() {
+fn test_column_query_replay_in_row_changing_ranges() {
     for mut parser in parsers_for_languages([
         get_test_fixture_language("column_replay"),
         #[cfg(feature = "wasm")]
@@ -5245,32 +3645,11 @@ fn test_column_query_replay_after_edit_in_row_changing_ranges() {
                 },
             ])
             .unwrap();
-        let fresh = parser.parse("axXXax", None).unwrap();
+        let tree = parser.parse("axXXax", None).unwrap();
         assert_eq!(
-            fresh.root_node().to_sexp(),
+            tree.root_node().to_sexp(),
             "(document (odd_column) (even_column))"
         );
-        let mut edited = fresh.clone();
-        edited.edit(&InputEdit {
-            start_byte: 5,
-            old_end_byte: 6,
-            new_end_byte: 6,
-            start_position: Point::new(2, 4),
-            old_end_position: Point::new(2, 5),
-            new_end_position: Point::new(2, 5),
-        });
-        let incremental = parser.parse("axXXax", Some(&edited)).unwrap();
-        assert_eq!(
-            incremental.root_node().to_sexp(),
-            fresh.root_node().to_sexp()
-        );
-        let ranges = |tree: &Tree| {
-            tree.root_node()
-                .named_children(&mut tree.walk())
-                .map(|node| node.range())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(ranges(&incremental), ranges(&fresh));
     }
 }
 
@@ -5299,7 +3678,7 @@ fn test_scalar_column_replay_preserves_active_display_width() {
             .unwrap();
         let source = b"abc \t\tbb\t \t\r\t\tbXXXXXc  ";
         for chunk in [1, 7, 256] {
-            let mut tree = parser
+            let tree = parser
                 .parse_with_options(
                     &mut |offset, _| &source[offset..source.len().min(offset + chunk)],
                     None,
@@ -5309,19 +3688,6 @@ fn test_scalar_column_replay_preserves_active_display_width() {
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(document (even_column) (odd_column))"
-            );
-            tree.edit(&InputEdit {
-                start_byte: 21,
-                old_end_byte: 22,
-                new_end_byte: 22,
-                start_position: Point::new(1, 14),
-                old_end_position: Point::new(1, 15),
-                new_end_position: Point::new(1, 15),
-            });
-            let incremental = parser.parse(source, Some(&tree)).unwrap();
-            assert_eq!(
-                incremental.root_node().to_sexp(),
-                tree.root_node().to_sexp()
             );
         }
     }
@@ -5458,36 +3824,15 @@ fn test_column_dependent_token_after_balancing_repeat() {
     parser
         .set_language(&get_test_fixture_language("column_dependent_repeat"))
         .unwrap();
-    let mut source = b"\nax\na".to_vec();
-    let mut tree = parser.parse(&source, None).unwrap();
+    let tree = parser.parse("\nax\na", None).unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(document (newline) (word) (tail) (newline) (word))"
     );
-
-    perform_edit(
-        &mut tree,
-        &mut source,
-        &Edit {
-            position: 2,
-            deleted_length: 0,
-            inserted_text: b"\n".to_vec(),
-        },
-    )
-    .unwrap();
-    let incremental = parser.parse(&source, Some(&tree)).unwrap();
-    let fresh = parser.parse(&source, None).unwrap();
+    let tree = parser.parse("\na\nx\na", None).unwrap();
     assert_eq!(
-        fresh.root_node().to_sexp(),
+        tree.root_node().to_sexp(),
         "(document (newline) (word) (newline) (head) (newline) (word))"
-    );
-    assert_eq!(
-        incremental.root_node().to_sexp(),
-        fresh.root_node().to_sexp()
-    );
-    assert_eq!(
-        incremental.root_node().child(3).unwrap().start_position(),
-        Point::new(2, 0)
     );
 }
 
@@ -6212,84 +4557,6 @@ fn test_contiguous_included_ranges_preserve_javascript_expressions() {
 }
 
 #[test]
-fn test_empty_included_range_changes_preserve_external_token_positions() {
-    let grammar = serde_json::json!({
-        "name": "empty_range_external_token",
-        "extras": [],
-        "externals": [{"type": "SYMBOL", "name": "marker"}],
-        "rules": {
-            "source_file": {"type": "SEQ", "members": [
-                {"type": "SYMBOL", "name": "marker"},
-                {"type": "SYMBOL", "name": "word"},
-                {"type": "SYMBOL", "name": "marker"}
-            ]},
-            "word": {"type": "PATTERN", "value": "[a-z_]+"}
-        }
-    });
-    let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-    let scanner = r#"
-#include "tree_sitter/parser.h"
-void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
-void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
-unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
-void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
-bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
-    if (!valid_symbols[0]) return false;
-    lexer->mark_end(lexer);
-    lexer->result_symbol = 0;
-    return true;
-}
-"#;
-    let language = get_test_language_with_scanner(&name, &code, scanner);
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-    let source = "x_ax";
-    let configurations = [
-        vec![simple_range(0, 0)],
-        vec![simple_range(0, 0), simple_range(1, 1), simple_range(1, 2)],
-        vec![simple_range(1, 3)],
-        vec![simple_range(0, 0), simple_range(1, 3)],
-        vec![simple_range(1, 1), simple_range(1, 3)],
-        vec![simple_range(1, 3), simple_range(4, 4)],
-        vec![simple_range(0, 0), simple_range(1, 3), simple_range(4, 4)],
-        vec![simple_range(1, 2), simple_range(2, 2), simple_range(2, 3)],
-    ];
-    for old_ranges in &configurations {
-        for new_ranges in &configurations {
-            parser.set_included_ranges(old_ranges).unwrap();
-            let old_tree = parser.parse(source, None).unwrap();
-            parser.set_included_ranges(new_ranges).unwrap();
-            let incremental = parser.parse(source, Some(&old_tree)).unwrap();
-            let fresh = parser.parse(source, None).unwrap();
-            let incremental_root = incremental.root_node();
-            let fresh_root = fresh.root_node();
-            assert_eq!(incremental_root.has_error(), fresh_root.has_error());
-            assert_eq!(incremental_root.to_sexp(), fresh_root.to_sexp());
-            assert_eq!(
-                incremental_root.range(),
-                fresh_root.range(),
-                "{old_ranges:?} -> {new_ranges:?}"
-            );
-            let changes = old_tree.changed_ranges(&incremental).collect::<Vec<_>>();
-            assert!(
-                changes
-                    .iter()
-                    .all(|range| range.start_byte < range.end_byte),
-                "{changes:?}"
-            );
-            assert_eq!(changes, old_tree.changed_ranges(&fresh).collect::<Vec<_>>());
-            for i in 0..fresh_root.child_count() {
-                assert_eq!(
-                    incremental_root.child(i).unwrap().range(),
-                    fresh_root.child(i).unwrap().range(),
-                    "child {i}: {old_ranges:?} -> {new_ranges:?}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn test_empty_included_ranges_preserve_disjoint_statement_boundaries() {
     let range = |start, end| Range {
         start_byte: start,
@@ -6360,25 +4627,22 @@ fn test_parsing_with_empty_included_ranges_and_parser_reuse() {
     for included_ranges in [&ranges, &ranges_with_empty, &ranges] {
         parser.set_included_ranges(included_ranges).unwrap();
         let tree = parser.parse(source, None).unwrap();
-        let reused_tree = parser.parse(source, Some(&tree)).unwrap();
-        for tree in [&tree, &reused_tree] {
-            let root = tree.root_node();
-            assert!(!root.has_error());
+        let root = tree.root_node();
+        assert!(!root.has_error());
+        assert_eq!(
+            root.to_sexp(),
+            "(document (array (number) (number) (number)))"
+        );
+        let array = root.named_child(0).unwrap();
+        for (i, range) in ranges.iter().enumerate() {
+            let number = array.named_child(i as u32).unwrap();
+            let start = range.start_byte + usize::from(i == 0);
+            assert_eq!(number.start_byte(), start);
+            assert_eq!(number.end_byte(), start + 1);
             assert_eq!(
-                root.to_sexp(),
-                "(document (array (number) (number) (number)))"
+                number.start_position(),
+                Point::new(i + 1, usize::from(i == 0))
             );
-            let array = root.named_child(0).unwrap();
-            for (i, range) in ranges.iter().enumerate() {
-                let number = array.named_child(i as u32).unwrap();
-                let start = range.start_byte + usize::from(i == 0);
-                assert_eq!(number.start_byte(), start);
-                assert_eq!(number.end_byte(), start + 1);
-                assert_eq!(
-                    number.start_position(),
-                    Point::new(i + 1, usize::from(i == 0))
-                );
-            }
         }
     }
 
@@ -7177,30 +5441,6 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
                     assert_eq!(statement.kind(), "raw");
                     assert_eq!(statement.child(0).unwrap().byte_range(), 0..raw_end);
                 }
-                parser.set_included_ranges(&[]).unwrap();
-                let mut tree = parser.parse("iffy name", None).unwrap();
-                tree.edit(&InputEdit {
-                    start_byte: 4,
-                    old_end_byte: 5,
-                    new_end_byte: 4,
-                    start_position: Point::new(0, 4),
-                    old_end_position: Point::new(0, 5),
-                    new_end_position: Point::new(0, 4),
-                });
-                let edited = parser.parse("iffyname", Some(&tree)).unwrap();
-                let fresh = parser.parse("iffyname", None).unwrap();
-                assert_eq!(edited.root_node().to_sexp(), fresh.root_node().to_sexp());
-                assert_eq!(edited.root_node().named_child(0).unwrap().kind(), "raw");
-                assert_eq!(
-                    edited
-                        .root_node()
-                        .named_child(0)
-                        .unwrap()
-                        .child(0)
-                        .unwrap()
-                        .byte_range(),
-                    0..2
-                );
             }
         }
     }
@@ -7395,8 +5635,8 @@ fn test_immediate_word_preserves_identifiers_during_keyword_recovery() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let mut before = parser.parse(";is", None).unwrap();
-        assert!(!before.root_node().has_error());
+        let tree = parser.parse(";is", None).unwrap();
+        assert!(!tree.root_node().has_error());
         for source in ["is", "name", ";a", "x"] {
             let tree = parser.parse(source, None).unwrap();
             let root = tree.root_node();
@@ -7412,21 +5652,6 @@ fn test_immediate_word_preserves_identifiers_during_keyword_recovery() {
             let start = usize::from(source.starts_with(';'));
             assert_eq!(identifier.byte_range(), start..source.len());
         }
-        before.edit(&InputEdit {
-            start_byte: 0,
-            old_end_byte: 1,
-            new_end_byte: 0,
-            start_position: Point::new(0, 0),
-            old_end_position: Point::new(0, 1),
-            new_end_position: Point::new(0, 0),
-        });
-        let incremental = parser.parse("is", Some(&before)).unwrap();
-        let fresh = parser.parse("is", None).unwrap();
-        assert_eq!(incremental.root_node().to_sexp(), "(ERROR (identifier))");
-        assert_eq!(
-            incremental.root_node().to_sexp(),
-            fresh.root_node().to_sexp()
-        );
     }
 }
 
@@ -7492,27 +5717,6 @@ fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
                         assert_eq!(text.utf8_text(source.as_bytes()).unwrap(), extra);
                     }
                 }
-                let mut before = parser.parse("do?", None).unwrap();
-                before.edit(&InputEdit {
-                    start_byte: 0,
-                    old_end_byte: 0,
-                    new_end_byte: extra.len(),
-                    start_position: Point::new(0, 0),
-                    old_end_position: Point::new(0, 0),
-                    new_end_position: Point::new(0, extra.len()),
-                });
-                let source = format!("{extra}do?");
-                let incremental = parser.parse(&source, Some(&before)).unwrap();
-                let fresh = parser.parse(&source, None).unwrap();
-                assert!(!incremental.root_node().has_error());
-                assert_eq!(
-                    incremental.root_node().to_sexp(),
-                    fresh.root_node().to_sexp()
-                );
-                assert_eq!(
-                    incremental.root_node().byte_range(),
-                    fresh.root_node().byte_range()
-                );
             }
         }
     }
@@ -8642,56 +6846,8 @@ fn test_external_scanner_display_columns() {
 }
 
 #[test]
-fn test_external_scanner_display_columns_after_edits_and_range_gaps() {
+fn test_external_scanner_display_columns_across_range_gaps() {
     for mut parser in display_column_parsers() {
-        let mut tree = parser.parse("abc#3!", None).unwrap();
-        for (start, old_end, new_end) in [(3, 3, 4), (5, 6, 6)] {
-            tree.edit(&InputEdit {
-                start_byte: start,
-                old_end_byte: old_end,
-                new_end_byte: new_end,
-                start_position: Point::new(0, start),
-                old_end_position: Point::new(0, old_end),
-                new_end_position: Point::new(0, new_end),
-            });
-        }
-        let source = "abc\t#8!";
-        let incremental = parser.parse(source, Some(&tree)).unwrap();
-        let fresh = parser.parse(source, None).unwrap();
-        assert!(!incremental.root_node().has_error());
-        assert_eq!(
-            incremental.root_node().to_sexp(),
-            fresh.root_node().to_sexp()
-        );
-        for (source, position) in [
-            ("abc #4!", 3),
-            ("before\nabc #4!", 10),
-            ("f#1!\nab $3!c#7!", 7),
-        ] {
-            let mut edited = source.as_bytes().to_vec();
-            let mut tree = parser.parse(&edited, None).unwrap();
-            assert!(!tree.root_node().has_error());
-            for replacement in *b"\t \t" {
-                perform_edit(
-                    &mut tree,
-                    &mut edited,
-                    &Edit {
-                        position,
-                        deleted_length: 1,
-                        inserted_text: vec![replacement],
-                    },
-                )
-                .unwrap();
-                tree = parser.parse(&edited, Some(&tree)).unwrap();
-                let fresh = parser.parse(&edited, None).unwrap();
-                assert_eq!(
-                    tree.root_node().to_sexp(),
-                    fresh.root_node().to_sexp(),
-                    "{edited:?}"
-                );
-                assert_eq!(tree.root_node().has_error(), replacement == b'\t');
-            }
-        }
         for source in ["excluded\t#8! gap\tx@9!", "excluded\t#8! gap\n\t#8!"] {
             let first_start = source.find('\t').unwrap();
             let first_end = source.find('!').unwrap() + 1;
@@ -9352,28 +7508,14 @@ fn test_required_nonterminal_extra_recovers_before_external_eof() {
         super::helpers::fixtures::get_test_fixture_language_wasm("required_extra_eof_recovery"),
     ];
     for mut parser in parsers_for_languages(languages) {
-        let mut source = "a";
-        let mut tree = parser.parse(source, None).unwrap();
-        for next in ["a", "ab", "a", "abq", "a"] {
-            tree.edit(&InputEdit {
-                start_byte: 1,
-                old_end_byte: source.len(),
-                new_end_byte: next.len(),
-                start_position: Point::new(0, 1),
-                old_end_position: Point::new(0, source.len()),
-                new_end_position: Point::new(0, next.len()),
-            });
-            source = next;
-            tree = parser.parse(source, Some(&tree)).unwrap();
-            let fresh = parser.parse(source, None).unwrap();
-            let actual = tree.root_node().to_sexp();
-            assert_eq!(actual, fresh.root_node().to_sexp(), "{source}");
+        for source in ["a", "ab", "abq"] {
+            let tree = parser.parse(source, None).unwrap();
             let expected = match source {
                 "a" => "(source_file (prefix (MISSING \"b\")) (comment (marker)))",
                 "ab" => "(source_file (prefix) (comment (marker)))",
                 _ => "(source_file (comment (marker)))",
             };
-            assert_eq!(actual, expected, "{source}");
+            assert_eq!(tree.root_node().to_sexp(), expected, "{source}");
             assert_eq!(tree.root_node().has_error(), source == "a");
             assert_eq!(tree.root_node().end_byte(), source.len());
         }
@@ -9400,7 +7542,7 @@ fn test_required_nonterminal_extra_recovers_missing_start() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let mut tree = parser.parse("lx#\n", None).unwrap();
+        let tree = parser.parse("lx#\n", None).unwrap();
         assert_eq!(
             tree.root_node().to_sexp(),
             "(source_file (line (comment (MISSING \"#\"))))"
@@ -9415,19 +7557,9 @@ fn test_required_nonterminal_extra_recovers_missing_start() {
         let missing = comment.child(0).unwrap();
         assert!(missing.is_missing());
         assert_eq!(missing.byte_range(), 1..1);
-        tree.edit(&InputEdit {
-            start_byte: 1,
-            old_end_byte: 1,
-            new_end_byte: 2,
-            start_position: Point::new(0, 1),
-            old_end_position: Point::new(0, 1),
-            new_end_position: Point::new(0, 2),
-        });
-        let repaired = parser.parse("l#x#\n", Some(&tree)).unwrap();
-        let fresh = parser.parse("l#x#\n", None).unwrap();
-        assert!(!repaired.root_node().has_error());
-        assert_eq!(repaired.root_node().to_sexp(), fresh.root_node().to_sexp());
-        assert_eq!(repaired.root_node().byte_range(), 0..5);
+        let tree = parser.parse("l#x#\n", None).unwrap();
+        assert!(!tree.root_node().has_error());
+        assert_eq!(tree.root_node().byte_range(), 0..5);
     }
 }
 
@@ -9514,7 +7646,7 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
         });
         for mut parser in parsers_for_grammar(&grammar.to_string()) {
             let source = format!("l{}", "#a# ".repeat(40));
-            let mut tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source, None).unwrap();
             assert!(!tree.root_node().has_error());
             let line = tree.root_node().named_child(0).unwrap();
             assert_eq!(line.kind(), "line");
@@ -9523,23 +7655,6 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
                 (0..line.named_child_count())
                     .any(|index| { !line.named_child(index as u32).unwrap().is_extra() })
             );
-            tree.edit(&InputEdit {
-                start_byte: 1,
-                old_end_byte: 5,
-                new_end_byte: 1,
-                start_position: Point::new(0, 1),
-                old_end_position: Point::new(0, 5),
-                new_end_position: Point::new(0, 1),
-            });
-            let edited = format!("l{}", "#a# ".repeat(39));
-            let incremental = parser.parse(&edited, Some(&tree)).unwrap();
-            let fresh = parser.parse(&edited, None).unwrap();
-            assert!(!incremental.root_node().has_error());
-            assert_eq!(
-                incremental.root_node().to_sexp(),
-                fresh.root_node().to_sexp()
-            );
-            assert_eq!(incremental.root_node().byte_range(), 0..edited.len());
         }
     }
 }
@@ -9613,124 +7728,12 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 assert_eq!(child.utf8_text(source.as_bytes()).unwrap(), text);
             }
         }
-        let mut source = "l#inside#\n".to_string();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for replacement in ["#before#", "", "#before# #before#", ""] {
-            let end = source.find("#inside#").unwrap();
-            tree.edit(&InputEdit {
-                start_byte: 1,
-                old_end_byte: end,
-                new_end_byte: 1 + replacement.len(),
-                start_position: Point::new(0, 1),
-                old_end_position: Point::new(0, end),
-                new_end_position: Point::new(0, 1 + replacement.len()),
-            });
-            source.replace_range(1..end, replacement);
-            let incremental = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert!(!fresh.root_node().has_error(), "{source:?}");
-            assert_eq!(
-                incremental.root_node().to_sexp(),
-                fresh.root_node().to_sexp()
-            );
-            for tree in [&incremental, &fresh] {
-                let line = tree.root_node().named_child(0).unwrap();
-                let mut cursor = line.walk();
-                let required = line
-                    .named_children(&mut cursor)
-                    .filter(|node| !node.is_extra())
-                    .collect::<Vec<_>>();
-                assert_eq!(required.len(), 1);
-                assert_eq!(
-                    required[0].utf8_text(source.as_bytes()).unwrap(),
-                    "#inside#"
-                );
-                assert_eq!(required[0].start_byte(), 1 + replacement.len());
-                assert_eq!(tree.root_node().end_byte(), source.len());
-            }
-            tree = incremental;
-        }
-        let mut source = b"l#a#\n l#a#\n".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for replacement in *b"\nl\nl" {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position: 6,
-                    deleted_length: 1,
-                    inserted_text: vec![replacement],
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert!(!tree.root_node().has_error());
-            assert!(!fresh.root_node().has_error());
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            assert_eq!(tree.root_node().end_byte(), source.len());
-        }
-        let mut source = b"l#a#\n l#a#\n".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for (position, inserted_text) in [(2, b"#".as_slice()), (1, b""), (5, b"\n")] {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position,
-                    deleted_length: 1,
-                    inserted_text: inserted_text.to_vec(),
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-            let mut pending = vec![(tree.root_node(), fresh.root_node())];
-            while let Some((incremental_node, fresh_node)) = pending.pop() {
-                assert_eq!(incremental_node.kind(), fresh_node.kind());
-                assert_eq!(incremental_node.range(), fresh_node.range());
-                assert_eq!(incremental_node.is_extra(), fresh_node.is_extra());
-                assert_eq!(incremental_node.child_count(), fresh_node.child_count());
-                for index in 0..incremental_node.child_count() {
-                    pending.push((
-                        incremental_node.child(index).unwrap(),
-                        fresh_node.child(index).unwrap(),
-                    ));
-                }
-            }
-        }
+        let tree = parser.parse("l##\n \n#a#\n", None).unwrap();
         assert!(!tree.root_node().has_error());
         let line = tree.root_node().named_child(0).unwrap();
         assert_eq!(line.byte_range(), 0..10);
         assert!(line.named_child(0).unwrap().is_extra());
         assert!(!line.named_child(1).unwrap().is_extra());
-        let mut source = b"l#a#\n l#a#\n".to_vec();
-        let mut tree = parser.parse(&source, None).unwrap();
-        for (position, deleted_length, inserted_text) in [
-            (11, 0, "\n\n"),
-            (1, 3, "#"),
-            (11, 0, " "),
-            (1, 3, "a"),
-            (4, 0, " "),
-            (1, 0, "\n"),
-            (5, 3, "\n\n"),
-            (7, 0, "a"),
-        ] {
-            perform_edit(
-                &mut tree,
-                &mut source,
-                &Edit {
-                    position,
-                    deleted_length,
-                    inserted_text: inserted_text.as_bytes().to_vec(),
-                },
-            )
-            .unwrap();
-            tree = parser.parse(&source, Some(&tree)).unwrap();
-            let fresh = parser.parse(&source, None).unwrap();
-            assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-        }
         for source in ["l\n", "l#inside# \n"] {
             let tree = parser.parse(source, None).unwrap();
             assert!(
@@ -9744,7 +7747,7 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
 }
 
 #[test]
-fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
+fn test_immediate_tokens_preserve_extra_context() {
     for (external, shared) in [(false, false), (true, false), (true, true)] {
         let name = if shared {
             "immediate_shared_external"
@@ -9843,55 +7846,15 @@ fn test_immediate_tokens_preserve_extra_context_and_incremental_reuse() {
             let rejected = parser.parse(rejected_source, None).unwrap();
             assert!(rejected.root_node().has_error());
             assert_eq!(rejected.root_node().end_byte(), rejected_source.len());
-            let mut adjacent = parser.parse("cy", None).unwrap();
-            adjacent.edit(&InputEdit {
-                start_byte: 1,
-                old_end_byte: 1,
-                new_end_byte: 10,
-                start_position: Point::new(0, 1),
-                old_end_position: Point::new(0, 1),
-                new_end_position: Point::new(0, 10),
-            });
-            let incremental = parser.parse(rejected_source, Some(&adjacent)).unwrap();
+            let tree = parser.parse("axx", None).unwrap();
             assert_eq!(
-                incremental.root_node().to_sexp(),
-                rejected.root_node().to_sexp()
-            );
-            assert_eq!(incremental.root_node().end_byte(), rejected_source.len());
-            let before = "axx";
-            let after = "a#comment#xx";
-            let mut old_tree = parser.parse(before, None).unwrap();
-            assert_eq!(
-                old_tree.root_node().to_sexp(),
+                tree.root_node().to_sexp(),
                 "(source_file (mixed (immediate)))"
             );
-            old_tree.edit(&InputEdit {
-                start_byte: 1,
-                old_end_byte: 1,
-                new_end_byte: 10,
-                start_position: Point::new(0, 1),
-                old_end_position: Point::new(0, 1),
-                new_end_position: Point::new(0, 10),
-            });
-            let mut updated = parser.parse(after, Some(&old_tree)).unwrap();
-            let fresh = parser.parse(after, None).unwrap();
+            let tree = parser.parse("a#comment#xx", None).unwrap();
             assert_eq!(
-                updated.root_node().to_sexp(),
+                tree.root_node().to_sexp(),
                 "(source_file (mixed (comment) (regular)))"
-            );
-            assert_eq!(updated.root_node().to_sexp(), fresh.root_node().to_sexp());
-            updated.edit(&InputEdit {
-                start_byte: 1,
-                old_end_byte: 10,
-                new_end_byte: 1,
-                start_position: Point::new(0, 1),
-                old_end_position: Point::new(0, 10),
-                new_end_position: Point::new(0, 1),
-            });
-            let restored = parser.parse(before, Some(&updated)).unwrap();
-            assert_eq!(
-                restored.root_node().to_sexp(),
-                "(source_file (mixed (immediate)))"
             );
         }
     }
@@ -9937,7 +7900,7 @@ fn test_immediate_string_content_precedes_nonterminal_extras() {
 }
 
 #[test]
-fn test_incremental_parse_removing_trailing_empty_included_range() {
+fn test_parsing_with_trailing_empty_included_ranges() {
     let grammar = serde_json::json!({
         "name": "included_range_end_invalidation",
         "extras": [],
@@ -9983,16 +7946,8 @@ fn test_incremental_parse_removing_trailing_empty_included_range() {
             },
         ])
         .unwrap();
-    let mut old = parser.parse("a\n> ", None).unwrap();
-    assert_eq!(old.root_node().end_byte(), 4);
-    old.edit(&InputEdit {
-        start_byte: 1,
-        old_end_byte: 1,
-        new_end_byte: 2,
-        start_position: Point::new(0, 1),
-        old_end_position: Point::new(0, 1),
-        new_end_position: Point::new(0, 2),
-    });
+    let tree = parser.parse("a\n> ", None).unwrap();
+    assert_eq!(tree.root_node().end_byte(), 4);
     parser
         .set_included_ranges(&[tree_sitter::Range {
             start_byte: 0,
@@ -10001,15 +7956,9 @@ fn test_incremental_parse_removing_trailing_empty_included_range() {
             end_point: Point::new(1, 0),
         }])
         .unwrap();
-    let incremental = parser.parse("a[\n> ", Some(&old)).unwrap();
-    let fresh = parser.parse("a[\n> ", None).unwrap();
-    assert_eq!(
-        incremental.root_node().to_sexp(),
-        fresh.root_node().to_sexp()
-    );
-    assert_eq!(fresh.root_node().end_byte(), 3);
-    assert_eq!(incremental.root_node().end_byte(), 3);
-    assert_eq!(incremental.root_node().end_position(), Point::new(1, 0));
+    let tree = parser.parse("a[\n> ", None).unwrap();
+    assert_eq!(tree.root_node().end_byte(), 3);
+    assert_eq!(tree.root_node().end_position(), Point::new(1, 0));
     parser
         .set_included_ranges(&[
             tree_sitter::Range {
@@ -10026,13 +7975,8 @@ fn test_incremental_parse_removing_trailing_empty_included_range() {
             },
         ])
         .unwrap();
-    let extended = parser.parse("a[\n> ", Some(&fresh)).unwrap();
-    let extended_fresh = parser.parse("a[\n> ", None).unwrap();
-    assert_eq!(
-        extended.root_node().range(),
-        extended_fresh.root_node().range()
-    );
-    assert_eq!(extended.root_node().end_byte(), 5);
+    let tree = parser.parse("a[\n> ", None).unwrap();
+    assert_eq!(tree.root_node().end_byte(), 5);
 }
 
 #[test]

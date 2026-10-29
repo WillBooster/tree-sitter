@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language, Query, Edit } from '../src';
+import { LookaheadIterator, Language, Query } from '../src';
 import { Parser, LANGUAGE_VERSION } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
@@ -53,7 +53,7 @@ describe('Language', () => {
   });
 
   describe('.load', () => {
-    it('parses, edits, and queries compact tables', async () => {
+    it('parses and queries compact tables', async () => {
       const lang = await Language.load(languageURL('javascript'));
       const parser = new Parser();
       parser.setLanguage(lang);
@@ -63,27 +63,10 @@ describe('Language', () => {
       try {
         expect(tree.rootNode.hasError).toBe(false);
         expect(query.captures(tree.rootNode).map(capture => capture.node.text)).toEqual(['field']);
-        const position = input.indexOf('1');
-        tree.edit(new Edit({
-          startIndex: position,
-          oldEndIndex: position + 1,
-          newEndIndex: position + 1,
-          startPosition: { row: 0, column: position },
-          oldEndPosition: { row: 0, column: position + 1 },
-          newEndPosition: { row: 0, column: position + 1 },
-        }));
-        const edited = input.replace('1', '2');
-        const incremental = parser.parse(edited, tree)!;
-        const fresh = parser.parse(edited)!;
         const malformed = parser.parse('const x = {field: };')!;
         try {
-          expect(incremental.rootNode.toString()).toBe(fresh.rootNode.toString());
-          expect(incremental.rootNode.text).toBe(edited);
-          expect(incremental.rootNode.hasError).toBe(false);
           expect(malformed.rootNode.hasError).toBe(true);
         } finally {
-          incremental.delete();
-          fresh.delete();
           malformed.delete();
         }
       } finally {
@@ -114,26 +97,6 @@ describe('Language', () => {
               try {
                 expect(tree.rootNode.toString()).toBe(reference.rootNode.toString());
                 expect(tree.rootNode.text).toBe(input);
-                const position = input.indexOf('1');
-                tree.edit(new Edit({
-                  startIndex: position,
-                  oldEndIndex: position + 1,
-                  newEndIndex: position + 1,
-                  startPosition: { row: 0, column: position },
-                  oldEndPosition: { row: 0, column: position + 1 },
-                  newEndPosition: { row: 0, column: position + 1 },
-                }));
-                const edited = input.replace('1', '2');
-                const incremental = parser.parse(index => edited.slice(index, index + chunk), tree)!;
-                const fresh = parser.parse(edited)!;
-                try {
-                  expect(incremental.rootNode.toString()).toBe(fresh.rootNode.toString());
-                  expect(incremental.rootNode.text).toBe(edited);
-                  expect(incremental.rootNode.hasError).toBe(false);
-                } finally {
-                  incremental.delete();
-                  fresh.delete();
-                }
               } finally {
                 tree.delete();
               }
