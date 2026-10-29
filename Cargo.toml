@@ -95,7 +95,7 @@ etcetera = "0.11.0"
 glob = "0.3.3"
 hashbrown = { default-features = false, version = "0.17.1" }
 heck = "0.5.0"
-html-escape = "0.2.13"
+html-escape = "0.3.0"
 indexmap = "2.13.0"
 indoc = "2.0.7"
 libloading = "0.9.0"
@@ -119,7 +119,7 @@ tiny_http = "0.12.0"
 topological-sort = "0.3.0"
 unindent = "0.2.4"
 walkdir = "2.5.0"
-wasmparser = "0.261.0"
+wasmparser = "0.262.0"
 webbrowser = "1.2.1"
 
 tree-sitter = { package = "willbooster-tree-sitter", path = "./lib", version = "0.27.0" }
