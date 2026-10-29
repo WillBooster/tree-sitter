@@ -1714,10 +1714,7 @@ fn render_file(
         let checksum = crc32(format!("tree_sitter_{language_name}").as_bytes());
         replacement = replacement.replace(
             PARSER_FINGERPRINT_PLACEHOLDER,
-            #[cfg(target_endian = "little")]
             &format!("0x{checksum:08x}{id:08x}"),
-            #[cfg(target_endian = "big")]
-            &format!("0x{id:08x}{checksum:08x}"),
         );
     }
 

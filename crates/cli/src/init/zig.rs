@@ -76,50 +76,60 @@ fn repair_generated_zig_fingerprint(
         return Ok(());
     };
     let encoded = fingerprint.get(1).unwrap();
-    let Some(repaired) = repair_short_zig_fingerprint(encoded.as_str(), template)? else {
+    let Some(repaired) = repair_legacy_zig_fingerprint(encoded.as_str(), template)? else {
         return Ok(());
     };
     contents.replace_range(encoded.range(), &repaired);
     Ok(())
 }
 
-fn repair_short_zig_fingerprint(encoded: &str, template: &str) -> Result<Option<String>> {
+fn repair_legacy_zig_fingerprint(encoded: &str, template: &str) -> Result<Option<String>> {
     let generated = rendered_zig_field(template, "fingerprint")?;
-    let checksum = if cfg!(target_endian = "little") {
-        &generated[2..10]
-    } else {
-        &generated[10..18]
-    };
-    let checksum_value = u32::from_str_radix(checksum, 16)?;
+    let checksum = u32::from_str_radix(&generated[2..10], 16)?;
     let Ok(value) = u64::from_str_radix(&encoded[2..], 16) else {
         return Ok(None);
     };
-    let existing_checksum = if cfg!(target_endian = "little") {
-        (value >> 32) as u32
-    } else {
-        value as u32
-    };
-    if (value >> 32) as u32 == checksum_value || existing_checksum == checksum_value {
+    if (value >> 32) as u32 == checksum {
         return Ok(None);
     }
-    let old_checksum = format!("{checksum_value:x}");
-    let id = if cfg!(target_endian = "little") {
-        encoded[2..].strip_prefix(&old_checksum)
-    } else {
-        encoded[2..].strip_suffix(&old_checksum)
-    };
-    let Some(id) = id.filter(|id| !id.is_empty() && id.len() <= 8 && !id.starts_with('0')) else {
+    let Some(id) = legacy_zig_random_id(&encoded[2..], checksum, value) else {
         return Ok(None);
     };
-    let id = u32::from_str_radix(id, 16)?;
     let mut repaired = generated.to_owned();
-    let range = if cfg!(target_endian = "little") {
-        10..18
-    } else {
-        2..10
-    };
-    repaired.replace_range(range, &format!("{id:08x}"));
+    repaired.replace_range(10..18, &format!("{id:08x}"));
     Ok(Some(repaired))
+}
+
+fn legacy_zig_random_id(digits: &str, checksum: u32, value: u64) -> Option<u32> {
+    let old_checksum = format!("{checksum:x}");
+    let candidates = [
+        digits
+            .strip_prefix(&old_checksum)
+            .and_then(unpadded_zig_random_id),
+        digits
+            .strip_suffix(&old_checksum)
+            .and_then(unpadded_zig_random_id),
+        (digits.len() == 16 && value as u32 == checksum)
+            .then_some((value >> 32) as u32)
+            .filter(|id| (1..u32::MAX).contains(id)),
+    ];
+    let mut selected = None;
+    for id in candidates.into_iter().flatten() {
+        if selected.is_some_and(|previous| previous != id) {
+            return None;
+        }
+        selected = Some(id);
+    }
+    selected
+}
+
+fn unpadded_zig_random_id(digits: &str) -> Option<u32> {
+    if digits.starts_with('0') {
+        return None;
+    }
+    u32::from_str_radix(digits, 16)
+        .ok()
+        .filter(|id| (1..u32::MAX).contains(id))
 }
 
 fn zig_root_field<'a>(
