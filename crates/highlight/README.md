@@ -56,7 +56,7 @@ use tree_sitter_highlight::Highlighter;
 let mut highlighter = Highlighter::new();
 ```
 
-Load some highlighting queries from the `queries` directory of the language repository:
+Pass the highlight, injection, and locals queries as strings. The fork's grammar crates ship no queries, so write your own:
 
 ```rust
 use tree_sitter_highlight::HighlightConfiguration;
@@ -66,9 +66,9 @@ let javascript_language = tree_sitter_javascript::LANGUAGE.into();
 let mut javascript_config = HighlightConfiguration::new(
     javascript_language,
     "javascript",
-    tree_sitter_javascript::HIGHLIGHT_QUERY,
-    tree_sitter_javascript::INJECTIONS_QUERY,
-    tree_sitter_javascript::LOCALS_QUERY,
+    "(identifier) @variable",
+    "",
+    "",
 ).unwrap();
 ```
 
