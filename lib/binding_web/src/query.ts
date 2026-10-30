@@ -1,7 +1,7 @@
 import { Point, ZERO_POINT, SIZE_OF_INT, C } from './constants';
 import { Node } from './node';
 import { marshalNode, unmarshalCaptures } from './marshal';
-import { TRANSFER_BUFFER } from './parser';
+import { TRANSFER_BUFFER, assertSupportedLanguage } from './parser';
 import { Language } from './language';
 import { newFinalizer } from './finalization_registry';
 
@@ -562,6 +562,7 @@ export class Query {
    * @link {@see https://tree-sitter.github.io/tree-sitter/using-parsers/queries}
    */
   constructor(language: Language, source: string) {
+    assertSupportedLanguage(language);
     const sourceLength = C.lengthBytesUTF8(source);
     const sourceAddress = C._malloc(sourceLength + 1);
     C.stringToUTF8(source, sourceAddress, sourceLength + 1);

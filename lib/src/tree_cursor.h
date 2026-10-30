@@ -24,7 +24,7 @@ typedef enum {
 } TreeCursorStep;
 
 void ts_tree_cursor_init(TreeCursor *self, TSNode node);
-uint64_t ts_tree_cursor_current_status(
+void ts_tree_cursor_current_status(
   const TSTreeCursor *_self,
   TSFieldId *field_id,
   bool *has_later_siblings,

@@ -3,7 +3,7 @@
 [![Test](https://github.com/WillBooster/tree-sitter/actions/workflows/test.yml/badge.svg)](https://github.com/WillBooster/tree-sitter/actions/workflows/test.yml)
 [![Test rust](https://github.com/WillBooster/tree-sitter/actions/workflows/test-rust.yml/badge.svg)](https://github.com/WillBooster/tree-sitter/actions/workflows/test-rust.yml)
 [![semantic-release](https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg)](https://github.com/semantic-release/semantic-release)
-[![wbfy](https://img.shields.io/badge/wbfy-20.49.0-1e90ff.svg)](https://github.com/WillBooster/shared/tree/main/packages/wbfy)
+[![wbfy](https://img.shields.io/badge/wbfy-21.0.0-1e90ff.svg)](https://github.com/WillBooster/shared/tree/main/packages/wbfy)
 
 This is a fork of [tree-sitter/tree-sitter](https://github.com/tree-sitter/tree-sitter). We are grateful to its authors and
 contributors. This is not an official release of that project.
@@ -21,6 +21,13 @@ Releases from v1.0.7 on carry the CLI as `tree-sitter-cli-<platform>.tar.gz` for
 `macos-arm64`, and `macos-x64`, so that the grammar repositories can generate their parsers with this generator and run
 `tree-sitter fuzz` on this runtime without building it. A workflow attaches the archives after a release is published,
 so the newest release lacks them for a while.
+
+## Support Scope
+
+This fork maintains only full parsing: valid input yields a correct tree, and invalid input yields `ERROR` or `MISSING`
+nodes without crashing, hanging, or taking more than linear time. Incremental parsing works as in upstream tree-sitter
+but is not tested here, and no queries (highlights, locals, injections, tags) are shipped. Node types, field names, and
+the trees that error recovery produces may change; such changes are released as new major versions.
 
 ## Development setup
 
@@ -124,11 +131,10 @@ Only included source ranges contribute: columns accumulate across gaps on the sa
 included range starts on a different row. The call preserves the lexer position, lookahead, and token boundaries;
 `get_column` retains its existing scalar-column behavior.
 
-## Restricted rules with canonical supertype queries
+## Restricted rules with canonical supertypes
 
-This fork supports aliasing one declared supertype to another while keeping both hidden in the syntax tree. This lets a
-restricted grammar context retain queries such as `(expression/identifier)` without introducing a visible wrapper node.
-Generate the parser and run its queries with this fork's generator and runtime.
+This fork supports aliasing one declared supertype to another while keeping both hidden in the syntax tree, so that a
+restricted grammar context needs no visible wrapper node.
 
 Declare both rules in `supertypes`, use the same named alias at every reference to the restricted rule, and leave the
 canonical supertype unaliased. Reference the canonical rule as a symbol in a reachable production, as `$.expression`
@@ -155,4 +161,3 @@ rules: {
 - [Tree-sitter documentation](https://tree-sitter.github.io) (upstream)
 - [Rust binding](lib/binding_rust/README.md)
 - [Wasm binding](lib/binding_web/README.md)
-- [Highlighting queries and Rust embedding](crates/highlight/README.md) — when configuring CLI locals or embedding the source highlighter.

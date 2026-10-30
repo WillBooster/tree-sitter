@@ -921,9 +921,6 @@ TSTreeCursor ts_tree_cursor_copy(const TSTreeCursor *cursor);
  * patterns. The query is associated with a particular language, and can
  * only be run on syntax nodes parsed with that language.
  *
- * Patterns are limited to 100 levels of nesting, including groups, alternations,
- * and field constraints. Exceeding this limit produces `TSQueryErrorStructure`.
- *
  * If all of the given patterns are valid, this returns a [`TSQuery`].
  * If a pattern is invalid, this returns `NULL`, and provides two pieces
  * of information about the problem:
@@ -1094,12 +1091,6 @@ void ts_query_cursor_exec(TSQueryCursor *self, const TSQuery *query, TSNode node
 
 /**
  * Start running a given query on a given node, with some options.
- *
- * If a progress callback is given, it is called periodically while the query
- * runs. If it returns `true`, query execution halts. Matches that were still in
- * progress are discarded, matches that had already finished can still be
- * returned, and after that the cursor returns nothing more until it is started
- * again with [`ts_query_cursor_exec`] or [`ts_query_cursor_exec_with_options`].
  */
 void ts_query_cursor_exec_with_options(
   TSQueryCursor *self,
