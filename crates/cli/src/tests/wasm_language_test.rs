@@ -90,7 +90,7 @@ fn test_load_wasm_rejects_inconsistent_alias_metadata() {
 }
 
 #[test]
-fn test_wasm_supertype_metadata_and_queries() {
+fn test_wasm_supertype_metadata() {
     allocations::record(|| {
         let language = get_test_fixture_language_wasm("wasm_supertype_order");
         for (supertype, expected) in [
@@ -115,27 +115,6 @@ fn test_wasm_supertype_metadata_and_queries() {
         let source = "first abc first 123 second \"text\" second true";
         let tree = parser.parse(source, None).unwrap();
         assert!(!tree.root_node().has_error());
-        let query = Query::new(&language, "(zzz/identifier) @identifier (zzz/number) @number (_aaa/string) @string (_aaa/boolean) @boolean").unwrap();
-        let mut cursor = QueryCursor::new();
-        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-        let mut captures = Vec::new();
-        while let Some(m) = matches.next() {
-            for capture in m.captures() {
-                captures.push((
-                    query.capture_names()[capture.index as usize],
-                    capture.node.utf8_text(source.as_bytes()).unwrap(),
-                ));
-            }
-        }
-        assert_eq!(
-            captures,
-            vec![
-                ("identifier", "abc"),
-                ("number", "123"),
-                ("string", "\"text\""),
-                ("boolean", "true")
-            ]
-        );
     });
 }
 

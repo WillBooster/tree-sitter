@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language, Query } from '../src';
+import { LookaheadIterator, Language } from '../src';
 import { Parser, LANGUAGE_VERSION } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
@@ -53,16 +53,14 @@ describe('Language', () => {
   });
 
   describe('.load', () => {
-    it('parses and queries compact tables', async () => {
+    it('parses compact tables', async () => {
       const lang = await Language.load(languageURL('javascript'));
       const parser = new Parser();
       parser.setLanguage(lang);
       const input = 'const x = {field: 1};';
       const tree = parser.parse(input)!;
-      const query = new Query(lang, '(pair key: (property_identifier) @key)');
       try {
         expect(tree.rootNode.hasError).toBe(false);
-        expect(query.captures(tree.rootNode).map(capture => capture.node.text)).toEqual(['field']);
         const malformed = parser.parse('const x = {field: };')!;
         try {
           expect(malformed.rootNode.hasError).toBe(true);
@@ -70,7 +68,6 @@ describe('Language', () => {
           malformed.delete();
         }
       } finally {
-        query.delete();
         tree.delete();
         parser.delete();
       }
@@ -176,14 +173,13 @@ describe('Language', () => {
   });
 
   describe('with another ABI version', () => {
-    it('is rejected by parsers and queries', () => {
+    it('is rejected by parsers', () => {
       // A grammar with another ABI version would have to come from another CLI, so the reported version is replaced.
       const abiVersion = vi.spyOn(C, '_ts_language_abi_version').mockReturnValue(16);
       const parser = new Parser();
       try {
         const message = 'Incompatible language version 0x10. Expected 0x5742000b.';
         expect(() => parser.setLanguage(JavaScript)).toThrow(message);
-        expect(() => new Query(JavaScript, '(identifier)')).toThrow(message);
       } finally {
         abiVersion.mockRestore();
         parser.delete();

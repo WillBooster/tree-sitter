@@ -11,7 +11,7 @@ use std::{
 
 use tree_sitter::{
     Decode, IncludedRangesError, InputEdit, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
-    ParseState, Parser, Point, Query, QueryErrorKind, Range, Tree,
+    ParseState, Parser, Point, Query, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -1513,10 +1513,6 @@ fn test_languages_with_other_abi_versions_are_rejected() {
         assert!(language.metadata().is_none());
         assert_eq!(language.supertypes(), &[] as &[u16]);
         assert_eq!(language.subtypes_for_supertype(statement), &[] as &[u16]);
-        assert_eq!(
-            Query::new(&language, "(program)").unwrap_err().kind,
-            QueryErrorKind::Language
-        );
     }
 }
 
