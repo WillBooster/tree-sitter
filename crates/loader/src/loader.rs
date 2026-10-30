@@ -2192,7 +2192,7 @@ impl LanguageConfiguration<'_> {
                     })?;
                     let mut all_highlight_names = self.highlight_names.lock().unwrap();
                     if self.use_all_highlight_names {
-                        for capture_name in result.names() {
+                        for capture_name in result.query.capture_names() {
                             if !all_highlight_names.iter().any(|x| x == capture_name) {
                                 all_highlight_names.push((*capture_name).to_string());
                             }

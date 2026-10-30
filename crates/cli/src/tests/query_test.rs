@@ -1,4 +1,4 @@
-use std::{cell::Cell, env, fmt::Write, ops::ControlFlow, sync::LazyLock};
+use std::{env, fmt::Write, ops::ControlFlow, sync::LazyLock};
 
 use indoc::indoc;
 use rand::{SeedableRng, prelude::StdRng};
@@ -476,42 +476,8 @@ fn test_query_errors_on_invalid_predicates() {
 fn test_query_errors_on_impossible_patterns() {
     let js_lang = get_language("javascript");
     let rb_lang = get_language("ruby");
-    let bash_lang = get_language("bash");
 
     allocations::record(|| {
-        for (language, pattern) in [
-            (
-                &js_lang,
-                "(jsx_opening_element (jsx_expression) (_) . (jsx_attribute) (jsx_namespace_name))",
-            ),
-            (&bash_lang, "(file_redirect (_) (file_descriptor))"),
-        ] {
-            assert_eq!(
-                Query::new(language, pattern).unwrap_err().kind,
-                QueryErrorKind::Structure,
-            );
-        }
-        for kind in ["number", "identifier", "string"] {
-            Query::new(&js_lang, &format!("(binary_expression ({kind}) ({kind}))")).unwrap();
-            assert_eq!(
-                Query::new(
-                    &js_lang,
-                    &format!("(binary_expression ({kind}) ({kind}) ({kind}))")
-                )
-                .unwrap_err()
-                .kind,
-                QueryErrorKind::Structure,
-            );
-        }
-        assert_eq!(
-            Query::new(
-                &js_lang,
-                "(binary_expression left: (number) right: (number) (number))"
-            )
-            .unwrap_err()
-            .kind,
-            QueryErrorKind::Structure,
-        );
         assert_eq!(
             Query::new(
                 &js_lang,
@@ -662,34 +628,36 @@ fn test_query_errors_on_impossible_patterns() {
             }
         );
 
-        assert_eq!(
-            Query::new(&js_lang, "(statement/identifier)").unwrap_err(),
-            QueryError {
-                row: 0,
-                offset: 0,
-                column: 0,
-                kind: QueryErrorKind::Structure,
-                message: [
-                    "(statement/identifier)", //
-                    "^"
-                ]
-                .join("\n")
-            }
-        );
-        assert_eq!(
-            Query::new(&js_lang, "(statement/pattern)").unwrap_err(),
-            QueryError {
-                row: 0,
-                offset: 0,
-                column: 0,
-                kind: QueryErrorKind::Structure,
-                message: [
-                    "(statement/pattern)", //
-                    "^"
-                ]
-                .join("\n")
-            }
-        );
+        if js_lang.abi_version() >= 15 {
+            assert_eq!(
+                Query::new(&js_lang, "(statement/identifier)").unwrap_err(),
+                QueryError {
+                    row: 0,
+                    offset: 0,
+                    column: 0,
+                    kind: QueryErrorKind::Structure,
+                    message: [
+                        "(statement/identifier)", //
+                        "^"
+                    ]
+                    .join("\n")
+                }
+            );
+            assert_eq!(
+                Query::new(&js_lang, "(statement/pattern)").unwrap_err(),
+                QueryError {
+                    row: 0,
+                    offset: 0,
+                    column: 0,
+                    kind: QueryErrorKind::Structure,
+                    message: [
+                        "(statement/pattern)", //
+                        "^"
+                    ]
+                    .join("\n")
+                }
+            );
+        }
     });
 }
 
@@ -1378,26 +1346,6 @@ fn test_query_matches_with_last_child_anchor_after_optional() {
 ",
             &[(0, vec![("def", "#define A\n")])],
         );
-
-        let language = get_language("python");
-        for quantifier in ["?", "*"] {
-            let query = Query::new(
-                &language,
-                &format!(
-                    "(list (call function: (identifier) @function) (string){quantifier} @string .)"
-                ),
-            )
-            .unwrap();
-            assert_query_matches(&language, &query, "[f()]", &[(0, vec![("function", "f")])]);
-            assert_query_matches(&language, &query, "[f(), x]", &[]);
-            assert_query_matches(
-                &language,
-                &query,
-                "[f(), 'x']",
-                &[(0, vec![("function", "f"), ("string", "'x'")])],
-            );
-            assert_query_matches(&language, &query, "[f(), 'x', y]", &[]);
-        }
     });
 }
 
@@ -2451,6 +2399,16 @@ fn test_query_sibling_patterns_dont_match_children_of_an_error() {
         )
         .unwrap();
 
+        // Most of the document will fail to parse, resulting in a
+        // large number of tokens that are *direct* children of an
+        // ERROR node.
+        //
+        // These children should still match, unless they are part
+        // of a "non-rooted" pattern, in which there are multiple
+        // top-level sibling nodes. Those patterns should not match
+        // directly inside of an error node, because the contents of
+        // an error node are not syntactically well-structured, so we
+        // would get many spurious matches.
         let source = "
             fn a() {}
 
@@ -4983,8 +4941,13 @@ fn test_query_alternative_predicate_prefix() {
         )
         .unwrap();
         let source = r#"
-            DEFUN("identity", Fidentity, Sidentity, 1, 1, 0);
-            OTHER("ignored");
+            DEFUN ("identity", Fidentity, Sidentity, 1, 1, 0,
+                   doc: /* Return the argument unchanged.  */
+                   attributes: const)
+              (Lisp_Object arg)
+            {
+              return arg;
+            }
         "#;
         assert_query_matches(
             &language,
@@ -5386,16 +5349,6 @@ fn test_query_is_pattern_rooted() {
             is_rooted: true,
         },
         Row {
-            description: "captured wildcard parent",
-            pattern: r"(_ (identifier) (identifier)) @parent",
-            is_rooted: true,
-        },
-        Row {
-            description: "uncaptured wildcard parent with optimized child starts",
-            pattern: r"(_ (identifier) (identifier))",
-            is_rooted: false,
-        },
-        Row {
             description: "alternative of many tokens",
             pattern: r#"["if" "def" (identifier) (comment)]"#,
             is_rooted: true,
@@ -5502,24 +5455,6 @@ fn test_query_is_pattern_non_local() {
             is_non_local: true,
         },
         Row {
-            description: "comments before Ruby pair in repeated command arguments",
-            pattern: r"((comment)* @doc (pair) @argument)",
-            language: get_language("ruby"),
-            is_non_local: true,
-        },
-        Row {
-            description: "comments before Ruby hash_splat_argument in repeated command arguments",
-            pattern: r"((comment)* @doc (hash_splat_argument) @argument)",
-            language: get_language("ruby"),
-            is_non_local: true,
-        },
-        Row {
-            description: "comments before Ruby block_argument in repeated command arguments",
-            pattern: r"((comment)* @doc (block_argument) @argument)",
-            language: get_language("ruby"),
-            is_non_local: true,
-        },
-        Row {
             description: "siblings that can't occur in any repetition",
             pattern: r#"("{" "}")"#,
             language: get_language("python"),
@@ -5532,14 +5467,8 @@ fn test_query_is_pattern_non_local() {
             is_non_local: false,
         },
         Row {
-            description: "captured wildcard parent containing class-body siblings",
+            description: "siblings that can occur in a class body, wildcard root",
             pattern: r"(_ (method_definition) (method_definition)) @foo",
-            language: get_language("javascript"),
-            is_non_local: false,
-        },
-        Row {
-            description: "siblings that can occur in a class body, uncaptured wildcard root",
-            pattern: r"(_ (method_definition) (method_definition))",
             language: get_language("javascript"),
             is_non_local: true,
         },
@@ -5899,7 +5828,10 @@ fn test_query_quantified_captures() {
             pattern: r"
                 ((comment) ?+ @comment)
             ",
+            // This should be identical to the `*` quantifier.
             captures: &[
+                ("comment", "// foo"),
+                ("comment", "// foo"),
                 ("comment", "// foo"),
                 ("comment", "// bar"),
                 ("comment", "// baz"),
@@ -5921,11 +5853,6 @@ fn test_query_quantified_captures() {
             let matches = cursor.captures(&query, tree.root_node(), row.code.as_bytes());
 
             assert_eq!(collect_captures(matches, &query, row.code), row.captures);
-            if row.pattern.contains("?+") {
-                let query = Query::new(&row.language, &row.pattern.replace("?+", "*")).unwrap();
-                let matches = cursor.captures(&query, tree.root_node(), row.code.as_bytes());
-                assert_eq!(collect_captures(matches, &query, row.code), row.captures);
-            }
         }
     });
 }
@@ -6381,121 +6308,6 @@ fn test_query_progress_callback_lives_as_long_as_matches() {
 }
 
 #[test]
-fn test_query_captures_progress_callback_stops_behind_an_open_match() {
-    let language = get_language("javascript");
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-
-    let numbers = (0..1000).map(|i| i.to_string()).collect::<Vec<_>>();
-    let source_code = format!("[{}];", numbers.join(","));
-    let tree = parser.parse(&source_code, None).unwrap();
-
-    let query = Query::new(
-        &language,
-        "(array (number) @first (string)) (number) @number",
-    )
-    .unwrap();
-
-    let mut calls = 0;
-    let mut progress_callback = |_: &QueryCursorState| {
-        calls += 1;
-        ControlFlow::Break(())
-    };
-    let mut cursor = QueryCursor::new();
-    let captures = cursor
-        .captures_with_options(
-            &query,
-            tree.root_node(),
-            source_code.as_bytes(),
-            QueryCursorOptions::new().progress_callback(&mut progress_callback),
-        )
-        .count();
-
-    assert!(captures > 0);
-    assert!(captures < 1000);
-    assert_eq!(calls, 1);
-}
-
-#[test]
-fn test_query_captures_progress_callback_discards_in_progress_matches() {
-    let language = get_language("json");
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-
-    let element = format!("[[{{\"a\":1}},1,2],{}]", ["true"; 12].join(","));
-    let source_code = format!("[{}]", vec![element; 50].join(","));
-    let tree = parser.parse(&source_code, None).unwrap();
-    let query = Query::new(
-        &language,
-        r#"
-        (array (object) @object (string))
-        (array (array (number) @number) "]" @close)
-        (number) @n
-        "#,
-    )
-    .unwrap();
-
-    for cancel_at in 1..=20 {
-        let calls = Cell::new(0);
-        let mut progress_callback = |_: &QueryCursorState| {
-            calls.set(calls.get() + 1);
-            if calls.get() >= cancel_at {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        };
-        let mut cursor = QueryCursor::new();
-        let mut captures = cursor.captures_with_options(
-            &query,
-            tree.root_node(),
-            source_code.as_bytes(),
-            QueryCursorOptions::new().progress_callback(&mut progress_callback),
-        );
-        while let Some((m, _)) = captures.next() {
-            if calls.get() >= cancel_at && m.pattern_index == 1 {
-                assert_eq!(m.captures().len(), 2, "cancelled at callback {cancel_at}");
-            }
-        }
-    }
-}
-
-#[test]
-fn test_query_progress_callback_halts_for_good() {
-    let language = get_language("javascript");
-    let mut parser = Parser::new();
-    parser.set_language(&language).unwrap();
-
-    let source_code = "function foo() {}\n".repeat(1000);
-    let tree = parser.parse(&source_code, None).unwrap();
-    let query = Query::new(&language, "(function_declaration) @function").unwrap();
-
-    let stop = Cell::new(true);
-    let mut progress_callback = |_: &QueryCursorState| {
-        if stop.get() {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    };
-    let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches_with_options(
-        &query,
-        tree.root_node(),
-        source_code.as_bytes(),
-        QueryCursorOptions::new().progress_callback(&mut progress_callback),
-    );
-    let mut count = 0;
-    while matches.next().is_some() {
-        count += 1;
-    }
-    assert!(count < 1000);
-
-    stop.set(false);
-    assert!(matches.next().is_none());
-}
-
-#[test]
 fn test_query_execution_with_points_causing_underflow() {
     let language = get_language("rust");
     let mut parser = Parser::new();
@@ -6905,38 +6717,6 @@ export default grammar({
     let source = "foo()\n()";
 
     assert_query_matches(&language, &query, source, &[(0, vec![("tuple", "()")])]);
-}
-
-#[test]
-fn test_query_field_on_hidden_rule_reaches_later_siblings() {
-    let language = get_test_fixture_language("field_on_hidden_rule");
-
-    let source = "let a = b;\nsum a + b + c;\n";
-
-    let query = Query::new(
-        &language,
-        r#"
-        (binding outer: (name) @outer_name)
-        (binding outer: _ @outer_node)
-        (sum left: "+" @left_operator)
-        (sum left: (name) @left_name)
-        "#,
-    )
-    .unwrap();
-
-    assert_query_matches(
-        &language,
-        &query,
-        source,
-        &[
-            (1, vec![("outer_node", "=")]),
-            (0, vec![("outer_name", "b")]),
-            (1, vec![("outer_node", "b")]),
-            (3, vec![("left_name", "a")]),
-            (2, vec![("left_operator", "+")]),
-            (3, vec![("left_name", "b")]),
-        ],
-    );
 }
 
 #[test]

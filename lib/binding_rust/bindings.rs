@@ -583,7 +583,7 @@ unsafe extern "C" {
     pub fn ts_tree_cursor_copy(cursor: *const TSTreeCursor) -> TSTreeCursor;
 }
 unsafe extern "C" {
-    #[doc = " Create a new query from a string containing one or more S-expression\n patterns. The query is associated with a particular language, and can\n only be run on syntax nodes parsed with that language.\n\n Patterns are limited to 100 levels of nesting, including groups, alternations,\n and field constraints. Exceeding this limit produces `TSQueryErrorStructure`.\n\n If all of the given patterns are valid, this returns a [`TSQuery`].\n If a pattern is invalid, this returns `NULL`, and provides two pieces\n of information about the problem:\n 1. The byte offset of the error is written to the `error_offset` parameter.\n 2. The type of error is written to the `error_type` parameter."]
+    #[doc = " Create a new query from a string containing one or more S-expression\n patterns. The query is associated with a particular language, and can\n only be run on syntax nodes parsed with that language.\n\n If all of the given patterns are valid, this returns a [`TSQuery`].\n If a pattern is invalid, this returns `NULL`, and provides two pieces\n of information about the problem:\n 1. The byte offset of the error is written to the `error_offset` parameter.\n 2. The type of error is written to the `error_type` parameter."]
     pub fn ts_query_new(
         language: *const TSLanguage,
         source: *const ::core::ffi::c_char,
@@ -683,7 +683,7 @@ unsafe extern "C" {
     pub fn ts_query_cursor_exec(self_: *mut TSQueryCursor, query: *const TSQuery, node: TSNode);
 }
 unsafe extern "C" {
-    #[doc = " Start running a given query on a given node, with some options.\n\n If a progress callback is given, it is called periodically while the query\n runs. If it returns `true`, query execution halts. Matches that were still in\n progress are discarded, matches that had already finished can still be\n returned, and after that the cursor returns nothing more until it is started\n again with [`ts_query_cursor_exec`] or [`ts_query_cursor_exec_with_options`]."]
+    #[doc = " Start running a given query on a given node, with some options."]
     pub fn ts_query_cursor_exec_with_options(
         self_: *mut TSQueryCursor,
         query: *const TSQuery,
