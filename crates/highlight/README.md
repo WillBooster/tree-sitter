@@ -1,19 +1,17 @@
 # Tree-sitter Highlight
 
-[![crates.io badge]][crates.io]
-
-[crates.io]: https://crates.io/crates/tree-sitter-highlight
-[crates.io badge]: https://img.shields.io/crates/v/tree-sitter-highlight.svg?color=%23B48723
+This fork's released CLI includes the highlighter. For Rust embedding, use the source
+crate and a grammar generated for the fork's runtime ABI. See the root README's
+[parser generation instructions](../../README.md#parser-generation-and-tuning).
 
 ## Usage
 
-Add this crate, and the language-specific crates for whichever languages you want
-to parse, to your `Cargo.toml`:
+Add source dependencies to `Cargo.toml`:
 
 ```toml
 [dependencies]
-tree-sitter-highlight = "0.25.4"
-tree-sitter-javascript = "0.23.1"
+tree-sitter-highlight = { git = "https://github.com/WillBooster/tree-sitter" }
+tree-sitter-javascript = { package = "willbooster-tree-sitter-javascript", git = "https://github.com/WillBooster/tree-sitter-javascript" }
 ```
 
 Define the list of highlight names that you will recognize:
@@ -88,6 +86,7 @@ use tree_sitter_highlight::HighlightEvent;
 let highlights = highlighter.highlight(
     &javascript_config,
     b"const x = new Y();",
+    None,
     None,
     |_| None
 ).unwrap();
