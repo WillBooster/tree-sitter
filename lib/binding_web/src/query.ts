@@ -1,7 +1,7 @@
 import { Point, ZERO_POINT, SIZE_OF_INT, C } from './constants';
 import { Node } from './node';
 import { marshalNode, unmarshalCaptures } from './marshal';
-import { TRANSFER_BUFFER, assertSupportedLanguage } from './parser';
+import { TRANSFER_BUFFER } from './parser';
 import { Language } from './language';
 import { newFinalizer } from './finalization_registry';
 
@@ -76,11 +76,6 @@ export interface QueryOptions {
    * if query execution should be cancelled. You can also use this to instrument query execution
    * and check where the query is at in the document. The progress callback takes a single argument,
    * which is a {@link QueryState} representing the current state of the query.
-   * Return `true` to cancel execution, or `false` or nothing to continue.
-   * Capture observers may return incidental values; only `true` cancels capture execution.
-   * For matches, legacy WebAssembly conversion can treat incidental numeric returns, such as
-   * the length returned by Array.push, as cancellation. Use a block body with no return value
-   * when observing progress. Nested queries preserve the outer execution and its callback.
    */
   progressCallback?: (state: QueryState) => void;
 }
@@ -512,16 +507,6 @@ function parsePattern(
   }
 }
 
-/**
- * Converts a UTF-8 byte offset into a query's source, which is what the C API
- * reports, into an index into the source string.
- */
-function indexForByteOffset(source: string, byteOffset: number): number {
-  // encodeInto stops before the first character that doesn't fit, so `read` is
-  // the number of UTF-16 code units in the first `byteOffset` bytes.
-  return new TextEncoder().encodeInto(source, new Uint8Array(byteOffset)).read;
-}
-
 const finalizer = newFinalizer((address: number) => {
   C._ts_query_delete(address);
 });
@@ -535,9 +520,6 @@ export class Query {
 
   /** @internal */
   private textPredicates: TextPredicate[][];
-
-  /** @internal */
-  private readonly source: string;
 
   /** The names of the captures used in the query. */
   readonly captureNames: string[];
@@ -580,7 +562,6 @@ export class Query {
    * @link {@see https://tree-sitter.github.io/tree-sitter/using-parsers/queries}
    */
   constructor(language: Language, source: string) {
-    assertSupportedLanguage(language);
     const sourceLength = C.lengthBytesUTF8(source);
     const sourceAddress = C._malloc(sourceLength + 1);
     C.stringToUTF8(source, sourceAddress, sourceLength + 1);
@@ -706,7 +687,6 @@ export class Query {
     this.captureNames = captureNames;
     this.captureQuantifiers = captureQuantifiers;
     this.textPredicates = textPredicates;
-    this.source = source;
     this.predicates = predicates;
     this.setProperties = setProperties;
     this.assertedProperties = assertedProperties;
@@ -738,77 +718,104 @@ export class Query {
     node: Node,
     options: QueryOptions = {}
   ): QueryMatch[] {
-    const {
-      startPosition,
-      endPosition,
+    const startPosition = options.startPosition ?? ZERO_POINT;
+    const endPosition = options.endPosition ?? ZERO_POINT;
+    const startIndex = options.startIndex ?? 0;
+    const endIndex = options.endIndex ?? 0;
+    const startContainingPosition = options.startContainingPosition ?? ZERO_POINT;
+    const endContainingPosition = options.endContainingPosition ?? ZERO_POINT;
+    const startContainingIndex = options.startContainingIndex ?? 0;
+    const endContainingIndex = options.endContainingIndex ?? 0;
+    const matchLimit = options.matchLimit ?? 0xFFFFFFFF;
+    const maxStartDepth = options.maxStartDepth ?? 0xFFFFFFFF;
+    const progressCallback = options.progressCallback;
+
+    if (typeof matchLimit !== 'number') {
+      throw new Error('Arguments must be numbers');
+    }
+    this.matchLimit = matchLimit;
+
+    if (endIndex !== 0 && startIndex > endIndex) {
+      throw new Error('`startIndex` cannot be greater than `endIndex`');
+    }
+
+    if (endPosition !== ZERO_POINT && (
+      startPosition.row > endPosition.row ||
+      (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
+    )) {
+      throw new Error('`startPosition` cannot be greater than `endPosition`');
+    }
+
+    if (endContainingIndex !== 0 && startContainingIndex > endContainingIndex) {
+      throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
+    }
+
+    if (endContainingPosition !== ZERO_POINT && (
+      startContainingPosition.row > endContainingPosition.row ||
+      (startContainingPosition.row === endContainingPosition.row &&
+        startContainingPosition.column > endContainingPosition.column)
+    )) {
+      throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
+    }
+
+    if (progressCallback) {
+      C.currentQueryProgressCallback = progressCallback;
+    }
+
+    marshalNode(node);
+
+    C._ts_query_matches_wasm(
+      this[0],
+      node.tree[0],
+      startPosition.row,
+      startPosition.column,
+      endPosition.row,
+      endPosition.column,
       startIndex,
       endIndex,
-      startContainingPosition,
-      endContainingPosition,
+      startContainingPosition.row,
+      startContainingPosition.column,
+      endContainingPosition.row,
+      endContainingPosition.column,
       startContainingIndex,
       endContainingIndex,
       matchLimit,
       maxStartDepth,
-      progressCallback,
-    } = prepareQuery(this, options);
-
-    return executeQuery(
-      progressCallback,
-      () => {
-        marshalNode(node);
-
-        C._ts_query_matches_wasm(
-          this[0],
-          node.tree[0],
-          startPosition.row,
-          startPosition.column,
-          endPosition.row,
-          endPosition.column,
-          startIndex,
-          endIndex,
-          startContainingPosition.row,
-          startContainingPosition.column,
-          endContainingPosition.row,
-          endContainingPosition.column,
-          startContainingIndex,
-          endContainingIndex,
-          matchLimit,
-          maxStartDepth,
-        );
-      },
-      exceededMatchLimit => {
-        this.matchLimit = matchLimit;
-        this.exceededMatchLimit = exceededMatchLimit;
-      },
-      (rawCount, startAddress) => {
-        const result = new Array<QueryMatch>(rawCount);
-
-        let filteredCount = 0;
-        let address = startAddress;
-        for (let i = 0; i < rawCount; i++) {
-          const patternIndex = C.getValue(address, 'i32');
-          address += SIZE_OF_INT;
-          const captureCount = C.getValue(address, 'i32');
-          address += SIZE_OF_INT;
-
-          const captures = new Array<QueryCapture>(captureCount);
-          address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
-
-          if (this.textPredicates[patternIndex].every((p) => p(captures))) {
-            result[filteredCount] = { patternIndex, captures };
-            const setProperties = this.setProperties[patternIndex];
-            result[filteredCount].setProperties = setProperties;
-            const assertedProperties = this.assertedProperties[patternIndex];
-            result[filteredCount].assertedProperties = assertedProperties;
-            const refutedProperties = this.refutedProperties[patternIndex];
-            result[filteredCount].refutedProperties = refutedProperties;
-            filteredCount++;
-          }
-        }
-        result.length = filteredCount;
-        return result;
-      },
     );
+
+    const rawCount = C.getValue(TRANSFER_BUFFER, 'i32');
+    const startAddress = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
+    const didExceedMatchLimit = C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32');
+    const result = new Array<QueryMatch>(rawCount);
+    this.exceededMatchLimit = Boolean(didExceedMatchLimit);
+
+    let filteredCount = 0;
+    let address = startAddress;
+    for (let i = 0; i < rawCount; i++) {
+      const patternIndex = C.getValue(address, 'i32');
+      address += SIZE_OF_INT;
+      const captureCount = C.getValue(address, 'i32');
+      address += SIZE_OF_INT;
+
+      const captures = new Array<QueryCapture>(captureCount);
+      address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
+
+      if (this.textPredicates[patternIndex].every((p) => p(captures))) {
+        result[filteredCount] = { patternIndex, captures };
+        const setProperties = this.setProperties[patternIndex];
+        result[filteredCount].setProperties = setProperties;
+        const assertedProperties = this.assertedProperties[patternIndex];
+        result[filteredCount].assertedProperties = assertedProperties;
+        const refutedProperties = this.refutedProperties[patternIndex];
+        result[filteredCount].refutedProperties = refutedProperties;
+        filteredCount++;
+      }
+    }
+    result.length = filteredCount;
+
+    C._free(startAddress);
+    C.currentQueryProgressCallback = null;
+    return result;
   }
 
   /**
@@ -826,77 +833,105 @@ export class Query {
     node: Node,
     options: QueryOptions = {}
   ): QueryCapture[] {
-    const {
-      startPosition,
-      endPosition,
+    const startPosition = options.startPosition ?? ZERO_POINT;
+    const endPosition = options.endPosition ?? ZERO_POINT;
+    const startIndex = options.startIndex ?? 0;
+    const endIndex = options.endIndex ?? 0;
+    const startContainingPosition = options.startContainingPosition ?? ZERO_POINT;
+    const endContainingPosition = options.endContainingPosition ?? ZERO_POINT;
+    const startContainingIndex = options.startContainingIndex ?? 0;
+    const endContainingIndex = options.endContainingIndex ?? 0;
+    const matchLimit = options.matchLimit ?? 0xFFFFFFFF;
+    const maxStartDepth = options.maxStartDepth ?? 0xFFFFFFFF;
+    const progressCallback = options.progressCallback;
+
+    if (typeof matchLimit !== 'number') {
+      throw new Error('Arguments must be numbers');
+    }
+    this.matchLimit = matchLimit;
+
+    if (endIndex !== 0 && startIndex > endIndex) {
+      throw new Error('`startIndex` cannot be greater than `endIndex`');
+    }
+
+    if (endPosition !== ZERO_POINT && (
+      startPosition.row > endPosition.row ||
+      (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
+    )) {
+      throw new Error('`startPosition` cannot be greater than `endPosition`');
+    }
+
+    if (endContainingIndex !== 0 && startContainingIndex > endContainingIndex) {
+      throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
+    }
+
+    if (endContainingPosition !== ZERO_POINT && (
+      startContainingPosition.row > endContainingPosition.row ||
+      (startContainingPosition.row === endContainingPosition.row &&
+        startContainingPosition.column > endContainingPosition.column)
+    )) {
+      throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
+    }
+
+    if (progressCallback) {
+      C.currentQueryProgressCallback = progressCallback;
+    }
+
+    marshalNode(node);
+
+    C._ts_query_captures_wasm(
+      this[0],
+      node.tree[0],
+      startPosition.row,
+      startPosition.column,
+      endPosition.row,
+      endPosition.column,
       startIndex,
       endIndex,
-      startContainingPosition,
-      endContainingPosition,
+      startContainingPosition.row,
+      startContainingPosition.column,
+      endContainingPosition.row,
+      endContainingPosition.column,
       startContainingIndex,
       endContainingIndex,
       matchLimit,
       maxStartDepth,
-      progressCallback,
-    } = prepareQuery(this, options);
-
-    const callback: ((state: QueryState) => unknown) | undefined = progressCallback;
-    return executeQuery(
-      callback ? state => callback(state) === true : undefined,
-      () => {
-        marshalNode(node);
-
-        C._ts_query_captures_wasm(
-          this[0],
-          node.tree[0],
-          startPosition.row,
-          startPosition.column,
-          endPosition.row,
-          endPosition.column,
-          startIndex,
-          endIndex,
-          startContainingPosition.row,
-          startContainingPosition.column,
-          endContainingPosition.row,
-          endContainingPosition.column,
-          startContainingIndex,
-          endContainingIndex,
-          matchLimit,
-          maxStartDepth,
-        );
-      },
-      exceededMatchLimit => {
-        this.matchLimit = matchLimit;
-        this.exceededMatchLimit = exceededMatchLimit;
-      },
-      (count, startAddress) => {
-        const result = new Array<QueryCapture>();
-
-        const captures = new Array<QueryCapture>();
-        let address = startAddress;
-        for (let i = 0; i < count; i++) {
-          const patternIndex = C.getValue(address, 'i32');
-          address += SIZE_OF_INT;
-          const captureCount = C.getValue(address, 'i32');
-          address += SIZE_OF_INT;
-          const captureIndex = C.getValue(address, 'i32');
-          address += SIZE_OF_INT;
-
-          captures.length = captureCount;
-          address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
-
-          if (this.textPredicates[patternIndex].every(p => p(captures))) {
-            const capture = captures[captureIndex];
-            capture.setProperties = this.setProperties[patternIndex];
-            capture.assertedProperties = this.assertedProperties[patternIndex];
-            capture.refutedProperties = this.refutedProperties[patternIndex];
-            result.push(capture);
-          }
-        }
-
-        return result;
-      },
     );
+
+    const count = C.getValue(TRANSFER_BUFFER, 'i32');
+    const startAddress = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
+    const didExceedMatchLimit = C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32');
+    const result = new Array<QueryCapture>();
+    this.exceededMatchLimit = Boolean(didExceedMatchLimit);
+
+    const captures = new Array<QueryCapture>();
+    let address = startAddress;
+    for (let i = 0; i < count; i++) {
+      const patternIndex = C.getValue(address, 'i32');
+      address += SIZE_OF_INT;
+      const captureCount = C.getValue(address, 'i32');
+      address += SIZE_OF_INT;
+      const captureIndex = C.getValue(address, 'i32');
+      address += SIZE_OF_INT;
+
+      captures.length = captureCount;
+      address = unmarshalCaptures(this, node.tree, address, patternIndex, captures);
+
+      if (this.textPredicates[patternIndex].every(p => p(captures))) {
+        const capture = captures[captureIndex];
+        const setProperties = this.setProperties[patternIndex];
+        capture.setProperties = setProperties;
+        const assertedProperties = this.assertedProperties[patternIndex];
+        capture.assertedProperties = assertedProperties;
+        const refutedProperties = this.refutedProperties[patternIndex];
+        capture.refutedProperties = refutedProperties;
+        result.push(capture);
+      }
+    }
+
+    C._free(startAddress);
+    C.currentQueryProgressCallback = null;
+    return result;
   }
 
   /** Get the predicates for a given pattern. */
@@ -942,26 +977,24 @@ export class Query {
     return this.exceededMatchLimit;
   }
 
-  /** Get the index where the given pattern starts in the query's source. */
+  /** Get the byte offset where the given pattern starts in the query's source. */
   startIndexForPattern(patternIndex: number): number {
     if (patternIndex >= this.predicates.length) {
       throw new Error(
         `Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`
       );
     }
-    const byteOffset = C._ts_query_start_byte_for_pattern(this[0], patternIndex);
-    return indexForByteOffset(this.source, byteOffset);
+    return C._ts_query_start_byte_for_pattern(this[0], patternIndex);
   }
 
-  /** Get the index where the given pattern ends in the query's source. */
+  /** Get the byte offset where the given pattern ends in the query's source. */
   endIndexForPattern(patternIndex: number): number {
     if (patternIndex >= this.predicates.length) {
       throw new Error(
         `Pattern index is ${patternIndex} but the pattern count is ${this.predicates.length}`
       );
     }
-    const byteOffset = C._ts_query_end_byte_for_pattern(this[0], patternIndex);
-    return indexForByteOffset(this.source, byteOffset);
+    return C._ts_query_end_byte_for_pattern(this[0], patternIndex);
   }
 
   /** Get the number of patterns in the query. */
@@ -985,104 +1018,12 @@ export class Query {
   }
 
   /**
-   * Check if the step at the given index in the query's source is 'definite'.
+   * Check if a given step in a query is 'definite'.
    *
    * A query step is 'definite' if its parent pattern will be guaranteed to
    * match successfully once it reaches the step.
    */
-  isPatternGuaranteedAtStep(index: number): boolean {
-    const byteOffset = C.lengthBytesUTF8(this.source.slice(0, index));
-    return C._ts_query_is_pattern_guaranteed_at_step(this[0], byteOffset) === 1;
-  }
-}
-
-function prepareQuery(query: Query, options: QueryOptions) {
-  const parameters = {
-    startPosition: options.startPosition ?? ZERO_POINT,
-    endPosition: options.endPosition ?? ZERO_POINT,
-    startIndex: options.startIndex ?? 0,
-    endIndex: options.endIndex ?? 0,
-    startContainingPosition: options.startContainingPosition ?? ZERO_POINT,
-    endContainingPosition: options.endContainingPosition ?? ZERO_POINT,
-    startContainingIndex: options.startContainingIndex ?? 0,
-    endContainingIndex: options.endContainingIndex ?? 0,
-    matchLimit: options.matchLimit ?? 0xFFFFFFFF,
-    maxStartDepth: options.maxStartDepth ?? 0xFFFFFFFF,
-    progressCallback: options.progressCallback,
-  };
-  const {
-    startPosition,
-    endPosition,
-    startIndex,
-    endIndex,
-    startContainingPosition,
-    endContainingPosition,
-    startContainingIndex,
-    endContainingIndex,
-    matchLimit,
-  } = parameters;
-  if (typeof matchLimit !== 'number') {
-    throw new Error('Arguments must be numbers');
-  }
-  query.matchLimit = matchLimit;
-
-  if (endIndex !== 0 && startIndex > endIndex) {
-    throw new Error('`startIndex` cannot be greater than `endIndex`');
-  }
-
-  if (endPosition !== ZERO_POINT && (
-    startPosition.row > endPosition.row ||
-    (startPosition.row === endPosition.row && startPosition.column > endPosition.column)
-  )) {
-    throw new Error('`startPosition` cannot be greater than `endPosition`');
-  }
-
-  if (endContainingIndex !== 0 && startContainingIndex > endContainingIndex) {
-    throw new Error('`startContainingIndex` cannot be greater than `endContainingIndex`');
-  }
-
-  if (endContainingPosition !== ZERO_POINT && (
-    startContainingPosition.row > endContainingPosition.row ||
-    (startContainingPosition.row === endContainingPosition.row &&
-      startContainingPosition.column > endContainingPosition.column)
-  )) {
-    throw new Error('`startContainingPosition` cannot be greater than `endContainingPosition`');
-  }
-  return parameters;
-}
-
-function executeQuery<T>(
-  progressCallback: NonNullable<typeof C.currentQueryProgressCallback> | undefined,
-  execute: () => void,
-  updateState: (exceededMatchLimit: boolean) => void,
-  readResult: (count: number, address: number) => T,
-): T {
-  const previousCallback = C.currentQueryProgressCallback;
-  let callbackFailure: { error: unknown } | undefined;
-  C.currentQueryProgressCallback = progressCallback ? state => {
-    try {
-      return progressCallback(state);
-    } catch (error) {
-      callbackFailure = { error };
-      return true;
-    }
-  } : null;
-  try {
-    execute();
-  } finally {
-    C.currentQueryProgressCallback = previousCallback;
-  }
-  const count = C.getValue(TRANSFER_BUFFER, 'i32');
-  const address = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-  const exceededMatchLimit = Boolean(C.getValue(TRANSFER_BUFFER + 2 * SIZE_OF_INT, 'i32'));
-  try {
-    updateState(exceededMatchLimit);
-    if (callbackFailure) {
-      throw callbackFailure.error;
-    }
-    return readResult(count, address);
-  } finally {
-    C._free(address);
-    updateState(exceededMatchLimit);
+  isPatternGuaranteedAtStep(byteIndex: number): boolean {
+    return C._ts_query_is_pattern_guaranteed_at_step(this[0], byteIndex) === 1;
   }
 }
