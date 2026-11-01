@@ -102,6 +102,8 @@ interface WasmModule {
   _ts_parser_new_wasm(): void;
   _ts_parser_enable_logger_wasm(_0: number, _1: number): void;
   _ts_parser_parse_wasm(_0: number, _1: number, _2: number, _3: number, _4: number): number;
+  _ts_parser_parse_limited_wasm(_0: number, _1: number, _2: number, _3: number, _4: number): number;
+  _ts_parser_abort_limited_wasm(): void;
   _ts_parser_included_ranges_wasm(_0: number): void;
   _ts_language_type_is_named_wasm(_0: number, _1: number): number;
   _ts_language_type_is_visible_wasm(_0: number, _1: number): number;

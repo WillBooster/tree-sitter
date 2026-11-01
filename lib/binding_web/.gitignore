@@ -4,6 +4,7 @@ web-tree-sitter*
 lib/*.c
 lib/*.h
 !lib/tree-sitter.c
+!lib/memory_limit.h
 !lib/web-tree-sitter.d.ts
 node_modules
 *.tgz

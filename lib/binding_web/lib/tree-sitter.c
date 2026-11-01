@@ -3,6 +3,7 @@
 
 #include <emscripten.h>
 #include <tree_sitter/api.h>
+#include "memory_limit.h"
 
 static const uint32_t INPUT_BUFFER_SIZE = 10 * 1024;
 
@@ -19,6 +20,7 @@ static const int SIZE_OF_RANGE = 2 + (2 * SIZE_OF_POINT);
 static const int SIZE_OF_CAPTURE = 1 + SIZE_OF_NODE;
 
 void *ts_init() {
+  ts_set_allocator(web_malloc, web_calloc, web_realloc, web_free);
   TRANSFER_BUFFER[0] = (const void *)TREE_SITTER_LANGUAGE_VERSION;
   TRANSFER_BUFFER[1] = (const void *)TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION;
   return (void*)TRANSFER_BUFFER;
@@ -144,6 +146,8 @@ extern bool tree_sitter_query_progress_callback(
   uint32_t current_offset
 );
 
+extern bool tree_sitter_set_memory_limit(uint32_t max_bytes);
+
 static const char *call_parse_callback(
   void *payload,
   uint32_t byte,
@@ -223,6 +227,54 @@ TSTree *ts_parser_parse_wasm(
   TSParseOptions options = {.payload = NULL, .progress_callback = progress_callback};
 
   return ts_parser_parse_with_options(self, old_tree, input, options);
+}
+
+TSTree *ts_parser_parse_limited_wasm(
+  TSParser *self,
+  char *input_buffer,
+  TSRange *ranges,
+  uint32_t range_count,
+  uint32_t max_memory_bytes
+) {
+  if (!tree_sitter_set_memory_limit(max_memory_bytes)) {
+    free(ranges);
+    return NULL;
+  }
+
+  WebParseBudget *budget = malloc(sizeof(WebParseBudget));
+  if (!budget) {
+    tree_sitter_set_memory_limit(0);
+    free(ranges);
+    return NULL;
+  }
+  budget->allocations = NULL;
+  if (setjmp(budget->jump)) {
+    web_budget_discard(budget);
+    tree_sitter_set_memory_limit(0);
+    free(ranges);
+    return NULL;
+  }
+
+  current_parse_budget = budget;
+  // An allocation failure can leave a stack half-updated, so the caller's parser is not used for a limited parse.
+  TSParser *limited_parser = ts_parser_new();
+  ts_parser_set_language(limited_parser, ts_parser_language(self));
+  ts_parser_set_logger(limited_parser, ts_parser_logger(self));
+  for (uint32_t i = 0; i < range_count; i++) unmarshal_range(&ranges[i]);
+  ts_parser_set_included_ranges(limited_parser, ranges, range_count);
+  TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
+  TSParseOptions options = {.payload = NULL, .progress_callback = progress_callback};
+  TSTree *tree = ts_parser_parse_with_options(limited_parser, NULL, input, options);
+  ts_parser_delete(limited_parser);
+  web_budget_finish(budget);
+  tree_sitter_set_memory_limit(0);
+  free(ranges);
+  return tree;
+}
+
+void ts_parser_abort_limited_wasm(void) {
+  if (current_parse_budget) web_budget_discard(current_parse_budget);
+  tree_sitter_set_memory_limit(0);
 }
 
 void ts_parser_included_ranges_wasm(TSParser *self) {

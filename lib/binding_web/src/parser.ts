@@ -46,6 +46,13 @@ export interface ParseOptions {
    */
   // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- A callback may record progress without returning a cancellation decision.
   progressCallback?: (state: ParseState) => boolean | void;
+
+  /**
+   * The maximum size of Wasm memory during this parse, in bytes. Reaching it
+   * cancels the parse. Memory is shared by all parsers and does not shrink, so
+   * a parse also returns `null` when memory already exceeds this limit.
+   */
+  maxMemoryBytes?: number;
 }
 
 /**
@@ -202,12 +209,15 @@ export class Parser {
    * @returns {Tree | null} A {@link Tree} if parsing succeeded, or `null` if:
    *  - The parser has not yet had a language assigned with {@link Parser#setLanguage}.
    *  - The progress callback returned true.
+   *  - The memory limit was reached.
    */
   parse(
     callback: string | ParseCallback,
     oldTree?: Tree | null,
     options?: ParseOptions,
   ): Tree | null {
+    const maxMemoryBytes = validateMemoryLimit(options?.maxMemoryBytes);
+
     if (typeof callback === 'string') {
       C.currentParseCallback = (index: number) => callback.slice(index);
     } else if (typeof callback === 'function') {
@@ -230,30 +240,11 @@ export class Parser {
       C._ts_parser_enable_logger_wasm(this[0], 0);
     }
 
-    let rangeCount = 0;
-    let rangeAddress = 0;
-    if (options?.includedRanges) {
-      rangeCount = options.includedRanges.length;
-      rangeAddress = C._calloc(rangeCount, SIZE_OF_RANGE);
-      let address = rangeAddress;
-      for (let i = 0; i < rangeCount; i++) {
-        marshalRange(address, options.includedRanges[i]);
-        address += SIZE_OF_RANGE;
-      }
-    }
-
-    const treeAddress = C._ts_parser_parse_wasm(
-      this[0],
-      this[1],
-      oldTree ? oldTree[0] : 0,
-      rangeAddress,
-      rangeCount
-    );
+    const [rangeAddress, rangeCount] = prepareRanges(options?.includedRanges);
+    const treeAddress = parseWasm(this[0], this[1], oldTree ? oldTree[0] : 0, rangeAddress, rangeCount, maxMemoryBytes);
 
     if (!treeAddress) {
-      C.currentParseCallback = null;
-      C.currentLogCallback = null;
-      C.currentProgressCallback = null;
+      clearCallbacks();
       return null;
     }
 
@@ -262,9 +253,7 @@ export class Parser {
     }
 
     const result = new Tree(INTERNAL, treeAddress, this.language, C.currentParseCallback);
-    C.currentParseCallback = null;
-    C.currentLogCallback = null;
-    C.currentProgressCallback = null;
+    clearCallbacks();
     return result;
   }
 
@@ -316,4 +305,51 @@ export class Parser {
   getLogger(): LogCallback | null {
     return this.logCallback;
   }
+}
+
+function validateMemoryLimit(maxMemoryBytes?: number): number | undefined {
+  if (maxMemoryBytes !== undefined &&
+    (!Number.isSafeInteger(maxMemoryBytes) || maxMemoryBytes <= 0 || maxMemoryBytes > 0x7fffffff)) {
+    throw new RangeError('maxMemoryBytes must be a positive integer no greater than 2147483647');
+  }
+  return maxMemoryBytes;
+}
+
+function prepareRanges(ranges?: Range[]): [number, number] {
+  if (!ranges?.length) return [0, 0];
+  const rangeAddress = C._calloc(ranges.length, SIZE_OF_RANGE);
+  let address = rangeAddress;
+  for (const range of ranges) {
+    marshalRange(address, range);
+    address += SIZE_OF_RANGE;
+  }
+  return [rangeAddress, ranges.length];
+}
+
+function parseWasm(
+  parserAddress: number,
+  inputBuffer: number,
+  oldTreeAddress: number,
+  rangeAddress: number,
+  rangeCount: number,
+  maxMemoryBytes?: number,
+): number {
+  try {
+    return maxMemoryBytes === undefined
+      ? C._ts_parser_parse_wasm(parserAddress, inputBuffer, oldTreeAddress, rangeAddress, rangeCount)
+      : C._ts_parser_parse_limited_wasm(parserAddress, inputBuffer, rangeAddress, rangeCount, maxMemoryBytes);
+  } catch (error) {
+    if (maxMemoryBytes !== undefined) {
+      C._ts_parser_abort_limited_wasm();
+      if (rangeAddress) C._free(rangeAddress);
+    }
+    clearCallbacks();
+    throw error;
+  }
+}
+
+function clearCallbacks(): void {
+  C.currentParseCallback = null;
+  C.currentLogCallback = null;
+  C.currentProgressCallback = null;
 }
