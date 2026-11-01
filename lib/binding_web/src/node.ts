@@ -284,7 +284,7 @@ export class Node {
         result[i] = unmarshalNode(this.tree, address)!;
         address += SIZE_OF_NODE;
       }
-      C._free(buffer);
+      C._ts_free_wasm(buffer);
     }
     return result;
   }
