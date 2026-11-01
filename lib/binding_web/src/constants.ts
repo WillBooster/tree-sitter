@@ -62,7 +62,7 @@ export type ParseCallback = (index: number, position: Point) => string | undefin
 /**
  * A callback that receives the parse state during parsing.
  */
-export type ProgressCallback = (progress: ParseState) => boolean;
+export type ProgressCallback = (progress: ParseState) => boolean | void;
 
 /**
  * A callback for logging messages.
