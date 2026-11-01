@@ -353,20 +353,9 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
          Object.assign(wasmImports, scannerAllocators); \
          updateGOT(scannerAllocators, true); {allocator_site}"
     );
-    let runtime = runtime.replacen(allocator_site, &scanner_allocator_setup, 1);
-    let symbol_binding = "entry.value = addFunction(value, value.sig);";
-    ensure!(
-        runtime.matches(symbol_binding).count() == 1,
-        "Expected exactly one dynamic symbol binding in {runtime_path}"
-    );
     fs::write(
         runtime_path,
-        runtime.replacen(
-            symbol_binding,
-            "try { entry.value = addFunction(value, value.sig); } catch (error) { \
-             throw new Error(`Failed to bind ${symName}`, {cause: error}); }",
-            1,
-        ),
+        runtime.replacen(allocator_site, &scanner_allocator_setup, 1),
     )?;
 
     if edit_tsd {
