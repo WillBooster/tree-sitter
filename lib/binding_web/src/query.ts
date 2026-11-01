@@ -77,7 +77,8 @@ export interface QueryOptions {
    * and check where the query is at in the document. The progress callback takes a single argument,
    * which is a {@link QueryState} representing the current state of the query.
    */
-  progressCallback?: (state: QueryState) => void;
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- A callback may record progress without returning a cancellation decision.
+  progressCallback?: (state: QueryState) => boolean | void;
 }
 
 /**

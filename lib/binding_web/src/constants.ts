@@ -62,7 +62,8 @@ export type ParseCallback = (index: number, position: Point) => string | undefin
 /**
  * A callback that receives the parse state during parsing.
  */
-export type ProgressCallback = (progress: ParseState) => boolean;
+// eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- A callback may record progress without returning a cancellation decision.
+export type ProgressCallback = (progress: ParseState) => boolean | void;
 
 /**
  * A callback for logging messages.

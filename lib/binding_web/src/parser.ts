@@ -44,7 +44,8 @@ export interface ParseOptions {
    * takes a single argument, which is a {@link ParseState} representing the current
    * state of the parser.
    */
-  progressCallback?: (state: ParseState) => void;
+  // eslint-disable-next-line @typescript-eslint/no-invalid-void-type -- A callback may record progress without returning a cancellation decision.
+  progressCallback?: (state: ParseState) => boolean | void;
 }
 
 /**
