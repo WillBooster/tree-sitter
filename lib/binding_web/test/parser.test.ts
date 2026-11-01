@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { createRequire } from 'node:module';
 import helper, { type LanguageName } from './helper';
 import type { ParseState, Tree } from '../src';
 import { Parser, Language } from '../src';
@@ -401,6 +402,18 @@ describe('Parser', () => {
       });
       expect(calls).toBeGreaterThan(0);
       expect(tree).not.toBeNull();
+    });
+
+    it('accepts ambiguous TypeScript input within the progress budget', async () => {
+      const resolve = createRequire(import.meta.url).resolve;
+      const typescript = await Language.load(resolve('@willbooster/tree-sitter-typescript/tree-sitter-typescript.wasm'));
+      parser.setLanguage(typescript);
+      let calls = 0;
+      const tree = parser.parse('f<'.repeat(5000), null, { progressCallback: () => ++calls > 3000 });
+      expect(tree).not.toBeNull();
+      expect(tree?.rootNode.hasError).toBe(true);
+      expect(calls).toBeLessThan(3000);
+      tree?.delete();
     });
 
     it('parses with a timeout', { timeout: 5000 }, () => {

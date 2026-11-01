@@ -21,3 +21,7 @@ export async function createDebugParser(): Promise<DebugParser> {
   await DebugParser.init();
   return new DebugParser();
 }
+
+export async function initializeWithMemory(memory: WebAssembly.Memory): Promise<void> {
+  await Parser.init({ wasmMemory: memory });
+}

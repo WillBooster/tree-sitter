@@ -527,6 +527,7 @@ static StackSliceArray stack__iter(
   ReductionCandidates candidates = array_new();
   ReductionSlots slots = array_new();
   bool include_subtrees = goal_subtree_count >= 0;
+  bool stop_after_error_path = progress && head->node->error_cost > 0;
   if (!progress || !self->pop_all_started) {
     array_clear(&self->slices);
     array_clear(&self->iterators);
@@ -662,6 +663,14 @@ static StackSliceArray stack__iter(
           next_iterator->is_pending = false;
         }
       }
+    }
+    if (stop_after_error_path && self->slices.size > 0) {
+      // Every path in this accepted error version is invalid; retaining all of them can use quadratic memory.
+      for (uint32_t i = 0; i < self->iterators.size; i++) {
+        ts_subtree_array_delete(self->subtree_pool, &array_get(&self->iterators, i)->subtrees);
+      }
+      array_clear(&self->iterators);
+      break;
     }
   }
 

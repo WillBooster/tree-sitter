@@ -11,6 +11,9 @@ export interface ParserInitOptions extends Partial<EmscriptenModule> {
    * allowed, such as in Cloudflare Workers, which provide an imported `.wasm` file as a `WebAssembly.Module`.
    */
   wasmModule?: WebAssembly.Module;
+
+  /** The memory imported by `web-tree-sitter.wasm`. */
+  wasmMemory?: WebAssembly.Memory;
 }
 
 /**
