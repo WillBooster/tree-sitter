@@ -26,6 +26,7 @@
       "rangeStrategy": "replace",
     },
     // 50.0.0: Wasmtime 50 requires Rust 1.97, up from 1.96 in 49, breaking wasm-feature builds on Rust 1.96 despite the library declaring Rust 1.93. The pinned development toolchain is newer. https://github.com/bytecodealliance/wasmtime/releases/tag/v50.0.0
+    // The repository already excluded 50.0.0 for this reason: https://github.com/WillBooster/tree-sitter/pull/328. Version 50.0.1 does not resolve the higher minimum: https://github.com/bytecodealliance/wasmtime/releases/tag/v50.0.0.
     {
       "matchPackageNames": ["wasmtime-c-api"],
       "allowedVersions": "!/^50\\.0\\.0$/",
