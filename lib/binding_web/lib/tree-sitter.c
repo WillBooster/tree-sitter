@@ -147,6 +147,7 @@ extern bool tree_sitter_query_progress_callback(
 );
 
 extern bool tree_sitter_set_memory_limit(uint32_t max_bytes);
+extern void tree_sitter_range_callback(uint32_t index, TSRange *range);
 
 static const char *call_parse_callback(
   void *payload,
@@ -232,26 +233,22 @@ TSTree *ts_parser_parse_wasm(
 TSTree *ts_parser_parse_limited_wasm(
   TSParser *self,
   char *input_buffer,
-  TSRange *ranges,
   uint32_t range_count,
   uint32_t max_memory_bytes
 ) {
   if (!tree_sitter_set_memory_limit(max_memory_bytes)) {
-    free(ranges);
     return NULL;
   }
 
   WebParseBudget *budget = malloc(sizeof(WebParseBudget));
   if (!budget) {
     tree_sitter_set_memory_limit(0);
-    free(ranges);
     return NULL;
   }
   budget->allocations = NULL;
   if (setjmp(budget->jump)) {
     web_budget_discard(budget);
     tree_sitter_set_memory_limit(0);
-    free(ranges);
     return NULL;
   }
 
@@ -260,15 +257,19 @@ TSTree *ts_parser_parse_limited_wasm(
   TSParser *limited_parser = ts_parser_new();
   ts_parser_set_language(limited_parser, ts_parser_language(self));
   ts_parser_set_logger(limited_parser, ts_parser_logger(self));
-  for (uint32_t i = 0; i < range_count; i++) unmarshal_range(&ranges[i]);
+  TSRange *ranges = range_count ? ts_calloc(range_count, sizeof(TSRange)) : NULL;
+  for (uint32_t i = 0; i < range_count; i++) {
+    tree_sitter_range_callback(i, &ranges[i]);
+    unmarshal_range(&ranges[i]);
+  }
   ts_parser_set_included_ranges(limited_parser, ranges, range_count);
+  ts_free(ranges);
   TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
   TSParseOptions options = {.payload = NULL, .progress_callback = progress_callback};
   TSTree *tree = ts_parser_parse_with_options(limited_parser, NULL, input, options);
   ts_parser_delete(limited_parser);
   web_budget_finish(budget);
   tree_sitter_set_memory_limit(0);
-  free(ranges);
   return tree;
 }
 

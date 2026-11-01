@@ -240,7 +240,10 @@ export class Parser {
       C._ts_parser_enable_logger_wasm(this[0], 0);
     }
 
-    const [rangeAddress, rangeCount] = prepareRanges(options?.includedRanges);
+    const [rangeAddress, rangeCount] = maxMemoryBytes === undefined
+      ? prepareRanges(options?.includedRanges)
+      : [0, options?.includedRanges?.length ?? 0];
+    C.currentIncludedRanges = maxMemoryBytes === undefined ? null : options?.includedRanges ?? null;
     const treeAddress = parseWasm(this[0], this[1], oldTree ? oldTree[0] : 0, rangeAddress, rangeCount, maxMemoryBytes);
 
     if (!treeAddress) {
@@ -337,7 +340,7 @@ function parseWasm(
   try {
     return maxMemoryBytes === undefined
       ? C._ts_parser_parse_wasm(parserAddress, inputBuffer, oldTreeAddress, rangeAddress, rangeCount)
-      : C._ts_parser_parse_limited_wasm(parserAddress, inputBuffer, rangeAddress, rangeCount, maxMemoryBytes);
+      : C._ts_parser_parse_limited_wasm(parserAddress, inputBuffer, rangeCount, maxMemoryBytes);
   } catch (error) {
     if (maxMemoryBytes !== undefined) {
       C._ts_parser_abort_limited_wasm();
@@ -352,4 +355,5 @@ function clearCallbacks(): void {
   C.currentParseCallback = null;
   C.currentLogCallback = null;
   C.currentProgressCallback = null;
+  C.currentIncludedRanges = null;
 }

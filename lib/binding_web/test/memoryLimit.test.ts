@@ -53,4 +53,20 @@ describe('Parse memory limit', () => {
     expect(tree?.rootNode.hasError).toBe(false);
     tree?.delete();
   });
+
+  it('applies the limit before copying included ranges into Wasm', () => {
+    const currentBytes = memory.buffer.byteLength;
+    const range = {
+      startPosition: { row: 0, column: 0 },
+      endPosition: { row: 0, column: 1 },
+      startIndex: 0,
+      endIndex: 1,
+    };
+    const includedRanges = new Array<typeof range>(2_000_000).fill(range);
+    expect(parser.parse('x', undefined, { includedRanges, maxMemoryBytes: currentBytes })).toBeNull();
+    expect(memory.buffer.byteLength).toBe(currentBytes);
+    const tree = parser.parse('const value = 1;');
+    expect(tree?.rootNode.hasError).toBe(false);
+    tree?.delete();
+  });
 });
