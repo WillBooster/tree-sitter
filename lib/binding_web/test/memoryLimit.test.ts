@@ -8,6 +8,7 @@ const load = (specifier: string) => new WebAssembly.Module(readFileSync(resolve(
 
 let memory: WebAssembly.Memory;
 let typescript: Language;
+let html: Language;
 let parser: Parser;
 
 beforeAll(async () => {
@@ -17,6 +18,7 @@ beforeAll(async () => {
     wasmMemory: memory,
   });
   typescript = Language.loadSync(load('@willbooster/tree-sitter-typescript/tree-sitter-typescript.wasm'));
+  html = Language.loadSync(load(new URL('../../../target/release/tree-sitter-html.wasm', import.meta.url).pathname));
 });
 
 beforeEach(() => {
@@ -86,6 +88,16 @@ describe('Parse memory limit', () => {
     expect(parser.parse('x', undefined, { includedRanges, maxMemoryBytes: currentBytes })).toBeNull();
     expect(memory.buffer.byteLength).toBe(currentBytes);
     const tree = parser.parse('const value = 1;');
+    expect(tree?.rootNode.hasError).toBe(false);
+    tree?.delete();
+  });
+
+  it('recovers when an allocating external scanner reaches the limit', () => {
+    parser.setLanguage(html);
+    const maxMemoryBytes = memory.buffer.byteLength + 2 * 2 ** 20;
+    expect(parser.parse('<div>'.repeat(60_000), undefined, { maxMemoryBytes })).toBeNull();
+    expect(memory.buffer.byteLength).toBeLessThanOrEqual(maxMemoryBytes);
+    const tree = parser.parse('<div>ok</div>');
     expect(tree?.rootNode.hasError).toBe(false);
     tree?.delete();
   });

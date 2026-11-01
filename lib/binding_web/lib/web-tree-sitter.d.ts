@@ -57,6 +57,9 @@ interface WasmModule {
   _realloc(_0: number, _1: number): number;
   _free(_0: number): void;
   _ts_free_wasm(_0: number): void;
+  _ts_scanner_malloc_wasm(_0: number): number;
+  _ts_scanner_calloc_wasm(_0: number, _1: number): number;
+  _ts_scanner_realloc_wasm(_0: number, _1: number): number;
   _memcmp(_0: number, _1: number, _2: number): number;
   _ts_language_symbol_count(_0: number): number;
   _ts_language_state_count(_0: number): number;

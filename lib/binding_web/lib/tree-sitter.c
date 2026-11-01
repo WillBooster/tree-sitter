@@ -18,9 +18,11 @@ static const int SIZE_OF_NODE = 5;
 static const int SIZE_OF_POINT = 2;
 static const int SIZE_OF_RANGE = 2 + (2 * SIZE_OF_POINT);
 static const int SIZE_OF_CAPTURE = 1 + SIZE_OF_NODE;
+extern void tree_sitter_install_scanner_allocators(void);
 
 void *ts_init() {
   ts_set_allocator(web_malloc, web_calloc, web_realloc, web_free);
+  tree_sitter_install_scanner_allocators();
   TRANSFER_BUFFER[0] = (const void *)TREE_SITTER_LANGUAGE_VERSION;
   TRANSFER_BUFFER[1] = (const void *)TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION;
   return (void*)TRANSFER_BUFFER;
@@ -154,6 +156,24 @@ void ts_free_wasm(void *pointer) {
   ts_free(pointer);
 }
 
+void *ts_scanner_malloc_wasm(size_t size) {
+  void *result = malloc(size);
+  if (!result && size && current_parse_budget) web_allocation_failed();
+  return result;
+}
+
+void *ts_scanner_calloc_wasm(size_t count, size_t size) {
+  void *result = calloc(count, size);
+  if (!result && count && size && current_parse_budget) web_allocation_failed();
+  return result;
+}
+
+void *ts_scanner_realloc_wasm(void *pointer, size_t size) {
+  void *result = realloc(pointer, size);
+  if (!result && size && current_parse_budget) web_allocation_failed();
+  return result;
+}
+
 static const char *call_parse_callback(
   void *payload,
   uint32_t byte,
@@ -253,6 +273,7 @@ TSTree *ts_parser_parse_limited_wasm(
   budget->allocations = NULL;
   budget->parser = NULL;
   if (setjmp(budget->jump)) {
+    current_parse_budget = NULL;
     if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
     web_budget_discard(budget);
     tree_sitter_set_memory_limit(0);
