@@ -392,6 +392,17 @@ describe('Parser', () => {
       );
     });
 
+    it('does not cancel when a JavaScript callback returns a truthy non-boolean', () => {
+      parser.setLanguage(JSON);
+      let calls = 0;
+      const tree = parser.parse('[' + '0,'.repeat(1000) + '0]', null, {
+        // @ts-expect-error JavaScript callbacks can return values outside the TypeScript contract.
+        progressCallback: () => ++calls,
+      });
+      expect(calls).toBeGreaterThan(0);
+      expect(tree).not.toBeNull();
+    });
+
     it('parses with a timeout', { timeout: 5000 }, () => {
       parser.setLanguage(JSON);
 

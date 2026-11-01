@@ -44,7 +44,7 @@ export interface ParseOptions {
    * takes a single argument, which is a {@link ParseState} representing the current
    * state of the parser.
    */
-  progressCallback?: (state: ParseState) => void;
+  progressCallback?: (state: ParseState) => boolean | void;
 }
 
 /**

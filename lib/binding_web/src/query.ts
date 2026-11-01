@@ -77,7 +77,7 @@ export interface QueryOptions {
    * and check where the query is at in the document. The progress callback takes a single argument,
    * which is a {@link QueryState} representing the current state of the query.
    */
-  progressCallback?: (state: QueryState) => void;
+  progressCallback?: (state: QueryState) => boolean | void;
 }
 
 /**
