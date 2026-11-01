@@ -315,19 +315,24 @@ macro_rules! watch_wasm {
             println!("Build succeeded");
         }
 
-        let watch_files = ["tree-sitter.c", "exports.txt", "imports.js", "prefix.js"]
-            .iter()
-            .map(PathBuf::from)
-            .collect::<HashSet<PathBuf>>();
+        let watch_files = [
+            "lib/tree-sitter.c",
+            "lib/exports.txt",
+            "lib/imports.js",
+            "lib/prefix.js",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect::<HashSet<PathBuf>>();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut debouncer = new_debouncer(Duration::from_secs(1), None, tx)?;
-        debouncer.watch("lib/binding_web/lib", RecursiveMode::NonRecursive)?;
+        debouncer.watch("lib/binding_web", RecursiveMode::NonRecursive)?;
 
         for result in rx {
             match result {
                 Ok(events) => {
                     for event in events {
-                        if matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
+                        if event.kind == EventKind::Access(AccessKind::Close(AccessMode::Write))
                             && event
                                 .paths
                                 .iter()
