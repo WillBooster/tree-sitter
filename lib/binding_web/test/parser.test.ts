@@ -411,7 +411,7 @@ describe('Parser', () => {
       let calls = 0;
       const tree = parser.parse('f<'.repeat(5000), null, { progressCallback: () => ++calls > 3000 });
       expect(tree).not.toBeNull();
-      expect(tree?.rootNode.hasError()).toBe(true);
+      expect(tree?.rootNode.hasError).toBe(true);
       expect(calls).toBeLessThan(3000);
       tree?.delete();
     });
