@@ -18,11 +18,9 @@ static const int SIZE_OF_NODE = 5;
 static const int SIZE_OF_POINT = 2;
 static const int SIZE_OF_RANGE = 2 + (2 * SIZE_OF_POINT);
 static const int SIZE_OF_CAPTURE = 1 + SIZE_OF_NODE;
-extern void tree_sitter_install_scanner_allocators(void);
 
 void *ts_init() {
   ts_set_allocator(web_malloc, web_calloc, web_realloc, web_free);
-  tree_sitter_install_scanner_allocators();
   TRANSFER_BUFFER[0] = (const void *)TREE_SITTER_LANGUAGE_VERSION;
   TRANSFER_BUFFER[1] = (const void *)TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION;
   return (void*)TRANSFER_BUFFER;

@@ -337,15 +337,25 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
          (run emsdk_env.bat on Windows) so emcc on PATH uses it, or build with --docker. \
          If the pinned SDK is already in use, update the loader pattern in crates/xtask/src/build_wasm.rs"
     );
+    let runtime = synchronous_instantiation.replacen(
+        &runtime,
+        1,
+        "${1}instance = await WebAssembly.instantiate(binary, info);",
+    );
+    let allocator_site = "mergeLibSymbols(wasmExports, \"main\");";
+    ensure!(
+        runtime.matches(allocator_site).count() == 1,
+        "Expected exactly one main-module symbol merge in {runtime_path}"
+    );
+    let scanner_allocator_setup = format!(
+        "const scannerAllocators = {{malloc: wasmExports.ts_scanner_malloc_wasm, \
+         calloc: wasmExports.ts_scanner_calloc_wasm, realloc: wasmExports.ts_scanner_realloc_wasm}}; \
+         Object.assign(wasmImports, scannerAllocators); \
+         updateGOT(scannerAllocators, true); {allocator_site}"
+    );
     fs::write(
         runtime_path,
-        synchronous_instantiation
-            .replacen(
-                &runtime,
-                1,
-                "${1}instance = await WebAssembly.instantiate(binary, info);",
-            )
-            .as_ref(),
+        runtime.replacen(allocator_site, &scanner_allocator_setup, 1),
     )?;
 
     if edit_tsd {
