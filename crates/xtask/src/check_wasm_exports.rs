@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::new_debouncer;
 
@@ -72,7 +72,7 @@ fn check_wasm_exports() -> Result<()> {
             "Name",
         ])
         .output()
-        .expect("Failed to run wasm-objdump");
+        .context("Failed to run wasm-objdump")?;
     bail_on_err(&wasm_objdump, "Failed to run wasm-objdump")?;
 
     wasm_exports.extend(
@@ -101,7 +101,7 @@ fn check_wasm_exports() -> Result<()> {
         .arg("libtree-sitter.so")
         .stdout(Stdio::piped())
         .output()
-        .expect("Failed to run nm");
+        .context("Failed to run nm")?;
     bail_on_err(&nm_child, "Failed to run nm")?;
     let export_reader = nm_child
         .stdout
