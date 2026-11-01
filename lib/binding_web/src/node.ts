@@ -460,7 +460,7 @@ export class Node {
     }
 
     // Free the intermediate buffers
-    C._free(descendantAddress);
+    C._ts_free_wasm(descendantAddress);
     C._free(symbolsAddress);
     return result;
   }
@@ -618,7 +618,7 @@ export class Node {
     marshalNode(this);
     const address = C._ts_node_to_string_wasm(this.tree[0]);
     const result = C.AsciiToString(address);
-    C._free(address);
+    C._ts_free_wasm(address);
     return result;
   }
 }

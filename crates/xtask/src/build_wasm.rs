@@ -275,6 +275,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "-s", "MODULARIZE=1",
         "-s", "INITIAL_MEMORY=33554432",
         "-s", "ALLOW_MEMORY_GROWTH=1",
+        "-s", "MEMORY_GROWTH_GEOMETRIC_STEP=0",
         "-s", "SUPPORT_BIG_ENDIAN=1",
         "-s", "WASM_BIGINT=1",
         "-s", "MAIN_MODULE=2",

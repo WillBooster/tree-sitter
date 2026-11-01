@@ -8,10 +8,12 @@
 #include <string.h>
 
 typedef union WebAllocation WebAllocation;
+typedef struct TSParser TSParser;
 
 typedef struct {
   jmp_buf jump;
   WebAllocation *allocations;
+  TSParser *parser;
 } WebParseBudget;
 
 union WebAllocation {

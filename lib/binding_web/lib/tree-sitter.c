@@ -148,6 +148,11 @@ extern bool tree_sitter_query_progress_callback(
 
 extern bool tree_sitter_set_memory_limit(uint32_t max_bytes);
 extern void tree_sitter_range_callback(uint32_t index, TSRange *range);
+extern void ts_parser_abandon_after_alloc_failure(TSParser *parser);
+
+void ts_free_wasm(void *pointer) {
+  ts_free(pointer);
+}
 
 static const char *call_parse_callback(
   void *payload,
@@ -246,7 +251,9 @@ TSTree *ts_parser_parse_limited_wasm(
     return NULL;
   }
   budget->allocations = NULL;
+  budget->parser = NULL;
   if (setjmp(budget->jump)) {
+    if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
     web_budget_discard(budget);
     tree_sitter_set_memory_limit(0);
     return NULL;
@@ -255,6 +262,7 @@ TSTree *ts_parser_parse_limited_wasm(
   current_parse_budget = budget;
   // An allocation failure can leave a stack half-updated, so the caller's parser is not used for a limited parse.
   TSParser *limited_parser = ts_parser_new();
+  budget->parser = limited_parser;
   ts_parser_set_language(limited_parser, ts_parser_language(self));
   ts_parser_set_logger(limited_parser, ts_parser_logger(self));
   TSRange *ranges = range_count ? ts_calloc(range_count, sizeof(TSRange)) : NULL;
@@ -267,14 +275,23 @@ TSTree *ts_parser_parse_limited_wasm(
   TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
   TSParseOptions options = {.payload = NULL, .progress_callback = progress_callback};
   TSTree *tree = ts_parser_parse_with_options(limited_parser, NULL, input, options);
+  uint32_t included_range_count;
+  const TSRange *included_ranges = ts_parser_included_ranges(limited_parser, &included_range_count);
+  ts_parser_set_included_ranges(self, included_ranges, included_range_count);
   ts_parser_delete(limited_parser);
+  budget->parser = NULL;
   web_budget_finish(budget);
   tree_sitter_set_memory_limit(0);
   return tree;
 }
 
 void ts_parser_abort_limited_wasm(void) {
-  if (current_parse_budget) web_budget_discard(current_parse_budget);
+  if (current_parse_budget) {
+    WebParseBudget *budget = current_parse_budget;
+    current_parse_budget = NULL;
+    if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
+    web_budget_discard(budget);
+  }
   tree_sitter_set_memory_limit(0);
 }
 

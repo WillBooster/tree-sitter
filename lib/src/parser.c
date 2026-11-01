@@ -2560,6 +2560,12 @@ void ts_parser_delete(TSParser *self) {
   ts_free(self);
 }
 
+void ts_parser_abandon_after_alloc_failure(TSParser *self) {
+  if (!self) return;
+  ts_parser__external_scanner_destroy(self);
+  ts_language_delete(self->language);
+}
+
 const TSLanguage *ts_parser_language(const TSParser *self) {
   return self->language;
 }

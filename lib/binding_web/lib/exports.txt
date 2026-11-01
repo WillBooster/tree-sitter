@@ -1,4 +1,5 @@
 "ts_init",
+"ts_free_wasm",
 "ts_language_field_count",
 "ts_language_field_name_for_id",
 "ts_language_type_is_named_wasm",
