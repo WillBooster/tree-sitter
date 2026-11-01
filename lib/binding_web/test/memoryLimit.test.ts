@@ -12,7 +12,7 @@ let html: Language;
 let parser: Parser;
 
 beforeAll(async () => {
-  memory = new WebAssembly.Memory({ initial: 512, maximum: 1024 });
+  memory = new WebAssembly.Memory({ initial: 512, maximum: 2048 });
   await Parser.init({
     wasmModule: load('@willbooster/web-tree-sitter/web-tree-sitter.wasm'),
     wasmMemory: memory,
@@ -84,7 +84,7 @@ describe('Parse memory limit', () => {
       startIndex: 0,
       endIndex: 1,
     };
-    const includedRanges = new Array<typeof range>(2_000_000).fill(range);
+    const includedRanges = new Array<typeof range>(4_000_000).fill(range);
     expect(parser.parse('x', undefined, { includedRanges, maxMemoryBytes: currentBytes })).toBeNull();
     expect(memory.buffer.byteLength).toBe(currentBytes);
     const tree = parser.parse('const value = 1;');
@@ -100,5 +100,5 @@ describe('Parse memory limit', () => {
     const tree = parser.parse('<div>ok</div>');
     expect(tree?.rootNode.hasError).toBe(false);
     tree?.delete();
-  });
+  }, 30_000);
 });

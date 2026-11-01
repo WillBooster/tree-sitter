@@ -210,7 +210,7 @@ export type MainModule = WasmModule & typeof RuntimeExports & {
   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
   currentQueryProgressCallback: ((state: {currentOffset: number}) => boolean | void) | null;
-  currentIncludedRanges: unknown[] | null;
+  treeSitterSetMemoryLimit(maxBytes: number): boolean;
 };
 
 export default function MainModuleFactory(options?: Partial<EmscriptenModule>): Promise<MainModule>;

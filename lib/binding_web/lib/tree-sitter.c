@@ -146,8 +146,6 @@ extern bool tree_sitter_query_progress_callback(
   uint32_t current_offset
 );
 
-extern bool tree_sitter_set_memory_limit(uint32_t max_bytes);
-extern void tree_sitter_range_callback(uint32_t index, TSRange *range);
 extern void ts_parser_abandon_after_alloc_failure(TSParser *parser);
 
 void ts_free_wasm(void *pointer) {
@@ -256,25 +254,17 @@ TSTree *ts_parser_parse_wasm(
 TSTree *ts_parser_parse_limited_wasm(
   TSParser *self,
   char *input_buffer,
-  uint32_t range_count,
-  uint32_t max_memory_bytes
+  TSRange *ranges,
+  uint32_t range_count
 ) {
-  if (!tree_sitter_set_memory_limit(max_memory_bytes)) {
-    return NULL;
-  }
-
   WebParseBudget *budget = malloc(sizeof(WebParseBudget));
-  if (!budget) {
-    tree_sitter_set_memory_limit(0);
-    return NULL;
-  }
+  if (!budget) return NULL;
   budget->allocations = NULL;
   budget->parser = NULL;
   if (setjmp(budget->jump)) {
     current_parse_budget = NULL;
     if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
     web_budget_discard(budget);
-    tree_sitter_set_memory_limit(0);
     return NULL;
   }
 
@@ -284,13 +274,10 @@ TSTree *ts_parser_parse_limited_wasm(
   budget->parser = limited_parser;
   ts_parser_set_language(limited_parser, ts_parser_language(self));
   ts_parser_set_logger(limited_parser, ts_parser_logger(self));
-  TSRange *ranges = range_count ? ts_calloc(range_count, sizeof(TSRange)) : NULL;
   for (uint32_t i = 0; i < range_count; i++) {
-    tree_sitter_range_callback(i, &ranges[i]);
     unmarshal_range(&ranges[i]);
   }
   ts_parser_set_included_ranges(limited_parser, ranges, range_count);
-  ts_free(ranges);
   TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
   TSParseOptions options = {.payload = NULL, .progress_callback = progress_callback};
   TSTree *tree = ts_parser_parse_with_options(limited_parser, NULL, input, options);
@@ -300,7 +287,6 @@ TSTree *ts_parser_parse_limited_wasm(
   ts_parser_delete(limited_parser);
   budget->parser = NULL;
   web_budget_finish(budget);
-  tree_sitter_set_memory_limit(0);
   return tree;
 }
 
@@ -311,7 +297,6 @@ void ts_parser_abort_limited_wasm(void) {
     if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
     web_budget_discard(budget);
   }
-  tree_sitter_set_memory_limit(0);
 }
 
 void ts_parser_included_ranges_wasm(TSParser *self) {
