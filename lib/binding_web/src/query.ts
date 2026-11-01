@@ -815,7 +815,7 @@ export class Query {
     }
     result.length = filteredCount;
 
-    C._free(startAddress);
+    C._ts_free_wasm(startAddress);
     C.currentQueryProgressCallback = null;
     return result;
   }
@@ -931,7 +931,7 @@ export class Query {
       }
     }
 
-    C._free(startAddress);
+    C._ts_free_wasm(startAddress);
     C.currentQueryProgressCallback = null;
     return result;
   }

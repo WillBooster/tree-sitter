@@ -128,7 +128,7 @@ export class Tree {
         result[i] = unmarshalRange(address);
         address += SIZE_OF_RANGE;
       }
-      C._free(buffer);
+      C._ts_free_wasm(buffer);
     }
     return result;
   }
@@ -146,7 +146,7 @@ export class Tree {
         result[i] = unmarshalRange(address);
         address += SIZE_OF_RANGE;
       }
-      C._free(buffer);
+      C._ts_free_wasm(buffer);
     }
     return result;
   }
