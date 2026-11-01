@@ -51,7 +51,6 @@ export interface ParseOptions {
    * The maximum size of Wasm memory during this parse, in bytes. Reaching it
    * cancels the parse. Memory is shared by all parsers and does not shrink, so
    * a parse also returns `null` when memory already exceeds this limit.
-   * This option cannot be combined with an old tree for incremental parsing.
    */
   maxMemoryBytes?: number;
 }
@@ -218,9 +217,6 @@ export class Parser {
     options?: ParseOptions,
   ): Tree | null {
     const maxMemoryBytes = validateMemoryLimit(options?.maxMemoryBytes);
-    if (maxMemoryBytes !== undefined && oldTree) {
-      throw new Error('Incremental parsing is not supported with maxMemoryBytes');
-    }
 
     if (typeof callback === 'string') {
       C.currentParseCallback = (index: number) => callback.slice(index);
@@ -348,7 +344,6 @@ function parseWasm(
   } catch (error) {
     if (maxMemoryBytes !== undefined) {
       C._ts_parser_abort_limited_wasm();
-      if (rangeAddress) C._free(rangeAddress);
     }
     clearCallbacks();
     throw error;

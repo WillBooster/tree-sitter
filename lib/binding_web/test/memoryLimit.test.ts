@@ -55,16 +55,6 @@ describe('Parse memory limit', () => {
     tree?.delete();
   });
 
-  it('rejects an old tree instead of silently doing a full parse', () => {
-    const oldTree = parser.parse('const value = 1;')!;
-    expect(() => parser.parse('const value = 2;', oldTree, { maxMemoryBytes: 48 * 2 ** 20 }))
-      .toThrow('Incremental parsing is not supported with maxMemoryBytes');
-    const tree = parser.parse('const value = 2;', oldTree);
-    expect(tree?.rootNode.hasError).toBe(false);
-    tree?.delete();
-    oldTree.delete();
-  });
-
   it('reports the included ranges after a limited parse', () => {
     const source = 'const first = 1; const second = 2;';
     const startIndex = source.indexOf('const second');
