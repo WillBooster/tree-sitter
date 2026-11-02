@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
+use rustc_hash::FxHashSet;
+
 use crate::{
-    grammars::{InputGrammar, ProductionStore},
+    grammars::{InputGrammar, Production, ProductionStep, ProductionStore},
     prepare_grammar::extract_tokens::ExtractedGrammarMeta,
     rules::{Alias, AliasMap, Symbol, SymbolType},
 };
@@ -119,11 +121,13 @@ pub(super) fn extract_default_aliases(
     // Wherever a symbol is aliased as its default alias, remove the usage of the alias,
     // because it will now be redundant.
     let mut alias_positions_to_clear = Vec::new();
+    let mut required_aliases = FxHashSet::default();
     for &(p_start, p_end) in &out.var_prods {
         alias_positions_to_clear.clear();
 
         let productions = &out.productions[p_start as usize..p_end as usize];
-        for (i, prod) in productions.iter().enumerate() {
+        collect_required_aliases(productions, &out.steps, &result, &mut required_aliases);
+        for prod in productions {
             for (j, step) in out.steps[prod.step_range()].iter().enumerate() {
                 let symbol = step.symbol();
                 let symbol_index = symbol.index as usize;
@@ -137,23 +141,11 @@ pub(super) fn extract_default_aliases(
                 };
 
                 // If this step is aliased as the symbol's default alias, then remove that alias.
-                if step.alias().is_some() && step.alias() == status.aliases.first().map(|t| t.0) {
-                    let mut other_productions_must_use_this_alias_at_this_index = false;
-                    for (other_i, other_prod) in productions.iter().enumerate() {
-                        let other_steps = &out.steps[other_prod.step_range()];
-                        if other_i != i
-                            && other_steps.len() > j
-                            && other_steps[j].alias() == step.alias()
-                            && result.get(&other_steps[j].symbol()) != step.alias().as_ref()
-                        {
-                            other_productions_must_use_this_alias_at_this_index = true;
-                            break;
-                        }
-                    }
-
-                    if !other_productions_must_use_this_alias_at_this_index {
-                        alias_positions_to_clear.push(prod.steps_start as usize + j);
-                    }
+                if let Some(alias) = step.alias()
+                    && Some(alias) == status.aliases.first().map(|t| t.0)
+                    && !required_aliases.contains(&(j, alias))
+                {
+                    alias_positions_to_clear.push(prod.steps_start as usize + j);
                 }
             }
         }
@@ -164,6 +156,26 @@ pub(super) fn extract_default_aliases(
     }
 
     result
+}
+
+/// Collects the step indices and aliases at which some production aliases a symbol that does not
+/// have that alias as its default, so every production must keep the alias there.
+fn collect_required_aliases(
+    productions: &[Production],
+    steps: &[ProductionStep],
+    default_aliases: &AliasMap,
+    required: &mut FxHashSet<(usize, Alias)>,
+) {
+    required.clear();
+    for prod in productions {
+        for (j, step) in steps[prod.step_range()].iter().enumerate() {
+            if let Some(alias) = step.alias()
+                && default_aliases.get(&step.symbol()) != Some(&alias)
+            {
+                required.insert((j, alias));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
