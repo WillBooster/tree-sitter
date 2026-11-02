@@ -236,8 +236,9 @@ const TSLanguage *ts_parser_language(const TSParser *self);
  * be used for parsing, or it was generated with an incompatible version of the
  * Tree-sitter CLI. Check whether the language can be used for parsing with
  * [`ts_language_is_parseable`]. Check the language's ABI version using
- * [`ts_language_abi_version`] and compare it to this library's
- * [`TREE_SITTER_LANGUAGE_VERSION`] constant.
+ * [`ts_language_abi_version`]; this library accepts versions from
+ * [`TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION`] to
+ * [`TREE_SITTER_LANGUAGE_VERSION`].
  */
 bool ts_parser_set_language(TSParser *self, const TSLanguage *language);
 

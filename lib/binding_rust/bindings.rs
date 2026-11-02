@@ -203,7 +203,7 @@ unsafe extern "C" {
     pub fn ts_parser_language(self_: *const TSParser) -> *const TSLanguage;
 }
 unsafe extern "C" {
-    #[doc = " Set the language that the parser should use for parsing.\n\n Returns a boolean indicating whether or not the language was successfully\n assigned. True means assignment succeeded. False means the language cannot\n be used for parsing, or it was generated with an incompatible version of the\n Tree-sitter CLI. Check whether the language can be used for parsing with\n [`ts_language_is_parseable`]. Check the language's ABI version using\n [`ts_language_abi_version`] and compare it to this library's\n [`TREE_SITTER_LANGUAGE_VERSION`] constant."]
+    #[doc = " Set the language that the parser should use for parsing.\n\n Returns a boolean indicating whether or not the language was successfully\n assigned. True means assignment succeeded. False means the language cannot\n be used for parsing, or it was generated with an incompatible version of the\n Tree-sitter CLI. Check whether the language can be used for parsing with\n [`ts_language_is_parseable`]. Check the language's ABI version using\n [`ts_language_abi_version`]; this library accepts versions from\n [`TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION`] to\n [`TREE_SITTER_LANGUAGE_VERSION`]."]
     pub fn ts_parser_set_language(self_: *mut TSParser, language: *const TSLanguage) -> bool;
 }
 unsafe extern "C" {
@@ -825,7 +825,7 @@ unsafe extern "C" {
     pub fn ts_language_symbol_type(self_: *const TSLanguage, symbol: TSSymbol) -> TSSymbolType;
 }
 unsafe extern "C" {
-    #[doc = " Get the ABI version number for this language. The library loads only\n languages whose number is [`TREE_SITTER_LANGUAGE_VERSION`].\n\n See also [`ts_parser_set_language`]."]
+    #[doc = " Get the ABI version number for this language. The library loads only\n languages whose number is from [`TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION`]\n to [`TREE_SITTER_LANGUAGE_VERSION`].\n\n See also [`ts_parser_set_language`]."]
     pub fn ts_language_abi_version(self_: *const TSLanguage) -> u32;
 }
 unsafe extern "C" {

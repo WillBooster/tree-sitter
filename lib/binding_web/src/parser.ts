@@ -175,8 +175,8 @@ export class Parser {
    * If the language was not successfully assigned, an error will be thrown.
    * This happens if the language was generated with an incompatible
    * version of the Tree-sitter CLI. Check the language's version using
-   * {@link Language#abiVersion} and compare it to this library's
-   * {@link LANGUAGE_VERSION} constant.
+   * {@link Language#abiVersion}; this library accepts versions from
+   * {@link MIN_COMPATIBLE_VERSION} to {@link LANGUAGE_VERSION}.
    */
   setLanguage(language: Language | null): this {
     let address: number;
