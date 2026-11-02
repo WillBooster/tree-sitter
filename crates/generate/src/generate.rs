@@ -61,7 +61,7 @@ struct GeneratedParser {
     node_types_json: String,
 }
 
-const LANGUAGE_VERSION: usize = 0x5742_000b;
+const LANGUAGE_VERSION: usize = 0x5742_000c;
 
 pub const ALLOC_HEADER: &str = include_str!("templates/alloc.h");
 pub const ARRAY_HEADER: &str = include_str!("templates/array.h");

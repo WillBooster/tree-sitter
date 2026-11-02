@@ -1563,7 +1563,7 @@ const TSLanguage *ts_wasm_store_load_language(
   if (!wasm_memory__read(&wasm_memory, language_address, &abi_version, sizeof(abi_version))) {
     goto invalid_language_memory;
   }
-  if (abi_version != TREE_SITTER_LANGUAGE_VERSION) {
+  if (!ts_language_abi_version_is_supported(abi_version)) {
     wasm_error->kind = TSWasmErrorKindInstantiate;
     format(
       &wasm_error->message,

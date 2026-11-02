@@ -178,7 +178,7 @@ describe('Language', () => {
       const abiVersion = vi.spyOn(C, '_ts_language_abi_version').mockReturnValue(16);
       const parser = new Parser();
       try {
-        const message = 'Incompatible language version 0x10. Expected 0x5742000b.';
+        const message = 'Incompatible language version 0x10. Expected 0x5742000c.';
         expect(() => parser.setLanguage(JavaScript)).toThrow(message);
       } finally {
         abiVersion.mockRestore();

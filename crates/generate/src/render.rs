@@ -29,10 +29,12 @@ const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 /// The largest count that fits in the 7 bits of a packed action list header.
 const MAX_ACTION_LIST_LENGTH: usize = 127;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
-/// Marks a goto map entry that refers to a descriptor of two 32-bit words: the offset of the state's set of
-/// nonterminals with gotos, and the map entry (offset and encoding flags) of the row of its gotos that differ
-/// from their nonterminal's default.
-const SMALL_STATE_DEFAULTS_FLAG: usize = 0x2000_0000;
+/// Marks a map entry that refers to a descriptor, which `add_descriptor` lays out.
+const SMALL_STATE_DESCRIPTOR_FLAG: usize = 0x2000_0000;
+/// Marks the diff entry of a descriptor that ends with a base row. Row entries never set it otherwise.
+const SMALL_STATE_BASE_FLAG: usize = SMALL_STATE_DESCRIPTOR_FLAG;
+/// The words of a descriptor with a base row.
+const BASED_DESCRIPTOR_WORDS: usize = 6;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const SMALL_STATE_SET_FLAG: usize = SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG;
@@ -126,6 +128,38 @@ type SmallStateGroups = Vec<((u32, SymbolType), Vec<Symbol>)>;
 /// Word indices of reduce records, keyed by symbol, child count, dynamic precedence, and production id.
 type ReduceRecords = IndexMap<(Symbol, u16, i32, u16), u32, FxBuildHasher>;
 
+/// Plain rows of one half of the sparse table that described rows can use as bases, with their entries as
+/// `row_entries` returns them.
+#[derive(Default)]
+struct RowBases {
+    rows: Vec<(usize, Vec<(usize, u32)>)>,
+    rows_by_entry: FxHashMap<(usize, u32), Vec<u32>>,
+    offsets: FxHashSet<usize>,
+}
+
+impl RowBases {
+    fn add(&mut self, offset: usize, entries: Vec<(usize, u32)>) {
+        if !self.offsets.insert(offset) {
+            return;
+        }
+        let id = self.rows.len() as u32;
+        for &entry in &entries {
+            self.rows_by_entry.entry(entry).or_default().push(id);
+        }
+        self.rows.push((offset, entries));
+    }
+}
+
+#[derive(Default)]
+struct SmallTables {
+    next_index: usize,
+    row_offsets: FxHashMap<(bool, Vec<u16>), usize>,
+    symbol_sets: FxHashMap<Vec<u16>, usize>,
+    descriptors: FxHashMap<Vec<u16>, usize>,
+    /// Terminal rows, then goto rows.
+    bases: [RowBases; 2],
+}
+
 struct SharedParseRows {
     offset: usize,
     rows: Vec<SmallParseRow>,
@@ -158,6 +192,7 @@ struct Generator {
     lexical_grammar: LexicalGrammar,
     default_aliases: AliasMap,
     symbol_order: FxHashMap<Symbol, usize>,
+    symbols_by_order: Vec<Symbol>,
     symbol_ids: FxHashMap<Symbol, String>,
     external_token_ids: Vec<String>,
     alias_ids: FxHashMap<Alias, String>,
@@ -574,6 +609,8 @@ impl Generator {
         }
     }
 
+    // code-gauge-allow functionCognitiveComplexity 25 -- derives every per-symbol table the renderer reads, in dependency order
+    // code-gauge-allow functionNcss 59 -- derives every per-symbol table the renderer reads, in dependency order
     fn init(&mut self) {
         let mut symbol_identifiers = FxHashSet::default();
         let mut symbol_identifier_suffixes = FxHashMap::default();
@@ -679,6 +716,7 @@ impl Generator {
         self.symbol_order.insert(Symbol::end(), 0);
         self.symbol_order
             .insert(Symbol::end_of_nonterminal_extra(), 0);
+        self.symbols_by_order = vec![Symbol::end()];
         for (i, symbol) in self
             .parse_table
             .symbols
@@ -687,6 +725,7 @@ impl Generator {
             .enumerate()
         {
             self.symbol_order.insert(*symbol, i + 1);
+            self.symbols_by_order.push(*symbol);
         }
         self.token_count = self.count_tokens();
         self.goto_defaults = self.compute_goto_defaults();
@@ -2512,70 +2551,40 @@ impl Generator {
                 .collect(),
         };
         self.add_small_parse_row(&defaults);
-        let mut next_index = defaults.values.len();
-        let mut indices = Vec::new();
-        let mut row_offsets = FxHashMap::default();
-        let mut symbol_sets = FxHashMap::default();
-        let mut goto_descriptors = FxHashMap::default();
+        let mut tables = SmallTables {
+            next_index: defaults.values.len(),
+            ..SmallTables::default()
+        };
         let has_samples = self
             .profile
             .as_ref()
             .is_some_and(|profile| profile.parse_states.iter().any(|&count| count > 0));
-        for state_id in self.large_state_count..self.parse_table.states.len() {
-            let minimize = has_samples
-                && self
-                    .profile
-                    .as_ref()
-                    .is_some_and(|profile| profile.parse_states[state_id] == 0);
+        let visits = self
+            .profile
+            .as_ref()
+            .filter(|_| has_samples)
+            .map(|profile| profile.parse_states.clone());
+        let uses_descriptors =
+            |state_id: usize| visits.as_ref().is_none_or(|visits| visits[state_id] == 0);
+        // Rows of states that training visited come first, so that described rows can use them as bases.
+        let mut state_ids =
+            (self.large_state_count..self.parse_table.states.len()).collect::<Vec<_>>();
+        state_ids.sort_by_key(|&state_id| uses_descriptors(state_id));
+        let mut indices = vec![0; 2 * state_ids.len()];
+        for state_id in state_ids {
+            // States that training visited keep complete rows, which take one lookup instead of up to four.
+            let described = uses_descriptors(state_id);
+            let minimize = has_samples && described;
             let (terminal_groups, goto_groups) = self.small_state_groups(
                 state_id,
                 parse_table_entries,
                 next_parse_action_list_index,
             );
-            // States that training visited keep complete goto rows, which take one lookup instead of three.
-            let uses_goto_defaults = !has_samples || minimize;
-            let goto_symbols = self.goto_symbols(state_id);
-            let mut goto_groups = goto_groups
-                .into_iter()
-                .filter_map(|((value, kind), mut symbols)| {
-                    symbols.retain(|&symbol| {
-                        !uses_goto_defaults || !self.is_goto_default(symbol, value)
-                    });
-                    (!symbols.is_empty()).then_some(((value, kind), symbols))
-                })
-                .collect::<Vec<_>>();
-            goto_groups
-                .sort_unstable_by_key(|((value, _), symbols)| (symbols.len(), *value, symbols[0]));
-            let mut offsets = [0; 2];
-            for (is_goto, groups) in [(false, terminal_groups), (true, goto_groups)] {
-                let key = (is_goto, self.encode_small_parse_row(&groups, 0, is_goto));
-                offsets[usize::from(is_goto)] = if let Some(&offset) = row_offsets.get(&key) {
-                    offset
-                } else {
-                    let offset = self.add_small_parse_rows(
-                        &groups,
-                        minimize,
-                        is_goto,
-                        &mut symbol_sets,
-                        &mut next_index,
-                    )?;
-                    row_offsets.insert(key, offset);
-                    offset
-                };
-            }
-            indices.push(offsets[0]);
-            if !uses_goto_defaults {
-                indices.push(offsets[1]);
-                continue;
-            }
-            let descriptor = self.add_goto_descriptor(
-                &goto_symbols,
-                offsets[1],
-                &mut symbol_sets,
-                &mut goto_descriptors,
-                &mut next_index,
-            )?;
-            indices.push(descriptor | SMALL_STATE_DEFAULTS_FLAG);
+            let index = 2 * (state_id - self.large_state_count);
+            indices[index] =
+                self.add_small_terminal_row(&terminal_groups, minimize, described, &mut tables)?;
+            indices[index + 1] =
+                self.add_small_goto_row(&goto_groups, minimize, described, &mut tables)?;
         }
         dedent!(self);
         add_line!(self, "}};\n");
@@ -2597,26 +2606,252 @@ impl Generator {
         Ok(())
     }
 
-    /// Adds a descriptor of the set of `goto_symbols` and the goto row at `goto_row`, and returns its offset.
-    fn add_goto_descriptor(
+    /// Adds a state's terminal row, as a described row when that takes fewer words, and returns its map entry.
+    fn add_small_terminal_row(
         &mut self,
-        goto_symbols: &[Symbol],
-        goto_row: usize,
-        symbol_sets: &mut FxHashMap<Vec<u16>, usize>,
-        descriptors: &mut FxHashMap<Vec<u16>, usize>,
-        next_index: &mut usize,
+        groups: &SmallStateGroups,
+        minimize: bool,
+        described: bool,
+        tables: &mut SmallTables,
     ) -> RenderResult<usize> {
-        let set = if goto_symbols.is_empty() {
-            vec![0, 0]
+        let key = (false, self.encode_small_parse_row(groups, 0, false));
+        if let Some(&offset) = tables.row_offsets.get(&key) {
+            return Ok(offset);
+        }
+        let entries = self.row_entries(groups);
+        if described {
+            let plain_words = self
+                .small_state_encoding(
+                    groups.iter().map(|(_, symbols)| symbols.len()),
+                    minimize,
+                    false,
+                )
+                .1;
+            let base_value = |_: usize| 0;
+            let delta = self.best_delta(&tables.bases[0], &entries, &entries, false, base_value);
+            if let Some((base, diff)) = delta {
+                let set = self.order_set(entries.iter().map(|&(order, _)| order));
+                let set_words = if tables.symbol_sets.contains_key(&set) {
+                    0
+                } else {
+                    set.len()
+                };
+                let diff_words = self.delta_words(&diff, false);
+                if diff_words + BASED_DESCRIPTOR_WORDS + set_words < plain_words {
+                    let base = tables.bases[0].rows[base].0;
+                    return self.add_described_row(set, &diff, base, false, tables);
+                }
+            }
+        }
+        let offset = self.add_plain_row(groups, minimize, false, tables)?;
+        tables.bases[0].add(offset, entries);
+        Ok(offset)
+    }
+
+    /// Adds a state's goto row and returns its map entry. A described goto row's diff is relative to its base
+    /// or, without a base, to the nonterminals' default gotos.
+    fn add_small_goto_row(
+        &mut self,
+        groups: &SmallStateGroups,
+        minimize: bool,
+        described: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        let entries = self.row_entries(groups);
+        if !described {
+            let offset = self.add_plain_row(groups, minimize, true, tables)?;
+            tables.bases[1].add(offset, entries);
+            return Ok(offset);
+        }
+        let default_value = |order: usize| self.goto_defaults[order - self.token_count];
+        let exceptions = entries
+            .iter()
+            .copied()
+            .filter(|&(order, value)| default_value(order) != value)
+            .collect::<Vec<_>>();
+        let set = self.order_set(entries.iter().map(|&(order, _)| order));
+        let groups = self.entry_groups(&exceptions, SymbolType::NonTerminal);
+        if !tables
+            .row_offsets
+            .contains_key(&(true, self.encode_small_parse_row(&groups, 0, true)))
+        {
+            let delta = self
+                .best_delta(&tables.bases[1], &entries, &exceptions, true, default_value)
+                .filter(|(_, diff)| {
+                    self.delta_words(diff, true) < self.delta_words(&exceptions, true)
+                });
+            if let Some((base, diff)) = delta {
+                let base = tables.bases[1].rows[base].0;
+                return self.add_described_row(set, &diff, base, true, tables);
+            }
+        }
+        let offset = self.add_plain_row(&groups, minimize, true, tables)?;
+        tables.bases[1].add(offset, exceptions);
+        self.add_descriptor(set, offset, None, tables)
+    }
+
+    /// Adds a row of `groups` unless an identical one exists, and returns its map entry.
+    fn add_plain_row(
+        &mut self,
+        groups: &SmallStateGroups,
+        minimize: bool,
+        is_goto: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        let key = (is_goto, self.encode_small_parse_row(groups, 0, is_goto));
+        if let Some(&offset) = tables.row_offsets.get(&key) {
+            return Ok(offset);
+        }
+        let offset = self.add_small_parse_rows(
+            groups,
+            minimize,
+            is_goto,
+            &mut tables.symbol_sets,
+            &mut tables.next_index,
+        )?;
+        tables.row_offsets.insert(key, offset);
+        Ok(offset)
+    }
+
+    fn add_described_row(
+        &mut self,
+        set: Vec<u16>,
+        diff: &[(usize, u32)],
+        base: usize,
+        is_goto: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        let kind = if is_goto {
+            SymbolType::NonTerminal
         } else {
-            self.symbol_set(goto_symbols)
+            SymbolType::Terminal
         };
-        let set_offset = self.add_shared_values(set, symbol_sets, next_index)?;
-        let descriptor = [set_offset, goto_row]
+        let groups = self.entry_groups(diff, kind);
+        let diff = self.add_plain_row(&groups, true, is_goto, tables)?;
+        self.add_descriptor(set, diff, Some(base), tables)
+    }
+
+    /// Adds a descriptor of a row: the offset of the set of symbols that have entries, the map entry of the
+    /// row of entries that differ from the base (with `SMALL_STATE_BASE_FLAG` when there is a base), and the
+    /// map entry of the base row, if any. Returns its map entry.
+    fn add_descriptor(
+        &mut self,
+        set: Vec<u16>,
+        diff: usize,
+        base: Option<usize>,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        let set_offset =
+            self.add_shared_values(set, &mut tables.symbol_sets, &mut tables.next_index)?;
+        let diff = if base.is_some() {
+            diff | SMALL_STATE_BASE_FLAG
+        } else {
+            diff
+        };
+        let descriptor = [set_offset, diff]
             .into_iter()
+            .chain(base)
             .flat_map(|offset| [(offset & 0xffff) as u16, (offset >> 16) as u16])
             .collect();
-        self.add_shared_values(descriptor, descriptors, next_index)
+        let offset =
+            self.add_shared_values(descriptor, &mut tables.descriptors, &mut tables.next_index)?;
+        Ok(offset | SMALL_STATE_DESCRIPTOR_FLAG)
+    }
+
+    /// Finds the base row whose entries differ from `entries` in the fewest words, and returns it with those
+    /// differing entries. `base_value` gives the value of a symbol that the base row lacks; `probes` select the
+    /// candidates, which share the most of these entries.
+    fn best_delta(
+        &self,
+        bases: &RowBases,
+        entries: &[(usize, u32)],
+        probes: &[(usize, u32)],
+        is_goto: bool,
+        base_value: impl Fn(usize) -> u32,
+    ) -> Option<(usize, Vec<(usize, u32)>)> {
+        let mut scores = FxHashMap::<u32, u32>::default();
+        for entry in probes {
+            for &base in bases
+                .rows_by_entry
+                .get(entry)
+                .into_iter()
+                .flatten()
+                .rev()
+                .take(64)
+            {
+                *scores.entry(base).or_default() += 1;
+            }
+        }
+        let mut candidates = scores.into_iter().collect::<Vec<_>>();
+        candidates.sort_unstable_by_key(|&(base, score)| (cmp::Reverse(score), base));
+        candidates
+            .into_iter()
+            .take(8)
+            .map(|(base, _)| {
+                let row = &bases.rows[base as usize].1;
+                let diff = entries
+                    .iter()
+                    .copied()
+                    .filter(|&(order, value)| {
+                        row.binary_search_by_key(&order, |&(order, _)| order)
+                            .map_or_else(|_| base_value(order), |i| row[i].1)
+                            != value
+                    })
+                    .collect::<Vec<_>>();
+                (base as usize, diff)
+            })
+            .min_by_key(|(base, diff)| (self.delta_words(diff, is_goto), *base))
+    }
+
+    fn delta_words(&self, entries: &[(usize, u32)], is_goto: bool) -> usize {
+        let mut counts = FxHashMap::<u32, usize>::default();
+        for &(_, value) in entries {
+            *counts.entry(value).or_default() += 1;
+        }
+        self.small_state_encoding(counts.into_values(), true, is_goto)
+            .1
+    }
+
+    /// The entries of a row as symbol orders and values, sorted by symbol order.
+    fn row_entries(&self, groups: &SmallStateGroups) -> Vec<(usize, u32)> {
+        let mut entries = groups
+            .iter()
+            .flat_map(|((value, _), symbols)| {
+                symbols
+                    .iter()
+                    .map(|symbol| (self.symbol_order[symbol], *value))
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable();
+        entries
+    }
+
+    /// Groups entries as `small_state_groups` does.
+    fn entry_groups(&self, entries: &[(usize, u32)], kind: SymbolType) -> SmallStateGroups {
+        let mut groups = FxHashMap::<u32, Vec<Symbol>>::default();
+        for &(order, value) in entries {
+            groups
+                .entry(value)
+                .or_default()
+                .push(self.symbols_by_order[order]);
+        }
+        let mut groups = groups
+            .into_iter()
+            .map(|(value, symbols)| ((value, kind), symbols))
+            .collect::<Vec<_>>();
+        groups.sort_unstable_by_key(|((value, _), symbols)| (symbols.len(), *value, symbols[0]));
+        groups
+    }
+
+    fn order_set(&self, orders: impl Iterator<Item = usize>) -> Vec<u16> {
+        let symbols = orders
+            .map(|order| self.symbols_by_order[order])
+            .collect::<Vec<_>>();
+        if symbols.is_empty() {
+            vec![0, 0]
+        } else {
+            self.symbol_set(&symbols)
+        }
     }
 
     /// Adds `values` as a row unless an identical row was added to `rows` before, and returns its offset.
@@ -2635,7 +2870,7 @@ impl Generator {
         };
         self.add_small_parse_row(&row);
         *next_index += row.values.len();
-        if *next_index >= SMALL_STATE_DEFAULTS_FLAG {
+        if *next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
             return Err(RenderError::SparseTable(*next_index));
         }
         rows.insert(row.values, row.index);
@@ -2678,7 +2913,7 @@ impl Generator {
             *next_index += row.values.len();
             offset
         };
-        if *next_index >= SMALL_STATE_DEFAULTS_FLAG {
+        if *next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
             return Err(RenderError::SparseTable(*next_index));
         }
         Ok(offset)
@@ -2736,17 +2971,6 @@ impl Generator {
         groups
             .into_iter()
             .partition(|((_, kind), _)| *kind == SymbolType::Terminal)
-    }
-
-    /// The nonterminals that have gotos in a state, in symbol order.
-    fn goto_symbols(&self, state_id: usize) -> Vec<Symbol> {
-        let mut symbols = self.parse_table.states[state_id]
-            .nonterminal_entries
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        symbols.sort_unstable_by_key(|symbol| self.symbol_order[symbol]);
-        symbols
     }
 
     /// The symbols of a small state's terminal or goto row: the first symbol and the count.
@@ -2838,7 +3062,7 @@ impl Generator {
         if words >= unshared_words {
             return Ok(None);
         }
-        if *next_table_index + words >= SMALL_STATE_DEFAULTS_FLAG {
+        if *next_table_index + words >= SMALL_STATE_DESCRIPTOR_FLAG {
             return Err(RenderError::SparseTable(*next_table_index + words));
         }
         let mut rows = Vec::new();
