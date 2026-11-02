@@ -42,7 +42,7 @@ pub use wasm_language::*;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm_allocator;
 
-/// The only ABI version that the current version of the library supports.
+/// The latest ABI version that the current version of the library supports.
 ///
 /// The CLI of this fork assigns it to each generated language. Its upper 16
 /// bits (`0x5742`, "WB") tag the fork and its lower 16 bits count the fork's

@@ -75,7 +75,7 @@ export interface ParseState {
 export let TRANSFER_BUFFER: number;
 
 /**
- * The only ABI version that the current version of the library supports. The
+ * The latest ABI version that the current version of the library supports. The
  * CLI of this fork assigns it to each generated language. Its upper 16 bits
  * (`0x5742`, "WB") tag the fork and its lower 16 bits count the fork's ABI
  * revisions, so that it never equals an ABI version of upstream Tree-sitter:
