@@ -42,7 +42,7 @@ pub use wasm_language::*;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod wasm_allocator;
 
-/// The only ABI version that the current version of the library supports.
+/// The latest ABI version that the current version of the library supports.
 ///
 /// The CLI of this fork assigns it to each generated language. Its upper 16
 /// bits (`0x5742`, "WB") tag the fork and its lower 16 bits count the fork's
@@ -53,7 +53,8 @@ mod wasm_allocator;
 pub const LANGUAGE_VERSION: usize = ffi::TREE_SITTER_LANGUAGE_VERSION as usize;
 
 /// The earliest ABI version that is supported by the current version of the
-/// library, which is [`LANGUAGE_VERSION`].
+/// library. Its parse tables are a subset of those of [`LANGUAGE_VERSION`], so
+/// the library loads both.
 #[doc(alias = "TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION")]
 pub const MIN_COMPATIBLE_LANGUAGE_VERSION: usize =
     ffi::TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION as usize;
@@ -535,8 +536,9 @@ impl Language {
 
     /// Get the ABI version number of this [`Language`].
     ///
-    /// The library loads only languages whose number is [`LANGUAGE_VERSION`],
-    /// which the CLI of this fork assigns. Any other number comes from a parser
+    /// The library loads only languages whose number is from
+    /// [`MIN_COMPATIBLE_LANGUAGE_VERSION`] to [`LANGUAGE_VERSION`], which the CLI
+    /// of this fork assigns. Any other number comes from a parser
     /// that another CLI generated.
     #[doc(alias = "ts_language_abi_version")]
     #[must_use]
@@ -784,7 +786,7 @@ impl Parser {
     #[doc(alias = "ts_parser_set_language")]
     pub fn set_language(&mut self, language: &Language) -> Result<(), LanguageError> {
         let version = language.abi_version();
-        if version == LANGUAGE_VERSION {
+        if (MIN_COMPATIBLE_LANGUAGE_VERSION..=LANGUAGE_VERSION).contains(&version) {
             if !language.is_parseable() {
                 return Err(LanguageError::NotParseable);
             }

@@ -75,7 +75,7 @@ export interface ParseState {
 export let TRANSFER_BUFFER: number;
 
 /**
- * The only ABI version that the current version of the library supports. The
+ * The latest ABI version that the current version of the library supports. The
  * CLI of this fork assigns it to each generated language. Its upper 16 bits
  * (`0x5742`, "WB") tag the fork and its lower 16 bits count the fork's ABI
  * revisions, so that it never equals an ABI version of upstream Tree-sitter:
@@ -91,7 +91,7 @@ export let LANGUAGE_VERSION: number;
  */
 export function assertSupportedLanguage(language: Language): void {
   const version = C._ts_language_abi_version(language[0]);
-  if (version !== LANGUAGE_VERSION) {
+  if (version < MIN_COMPATIBLE_VERSION || version > LANGUAGE_VERSION) {
     throw new Error(
       `Incompatible language version 0x${(version >>> 0).toString(16)}. ` +
       `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
@@ -101,7 +101,8 @@ export function assertSupportedLanguage(language: Language): void {
 
 /**
  * The earliest ABI version that is supported by the current version of the
- * library, which is {@link LANGUAGE_VERSION}.
+ * library. Its parse tables are a subset of those of {@link LANGUAGE_VERSION},
+ * so the library loads both.
  */
 export let MIN_COMPATIBLE_VERSION: number;
 
@@ -174,8 +175,8 @@ export class Parser {
    * If the language was not successfully assigned, an error will be thrown.
    * This happens if the language was generated with an incompatible
    * version of the Tree-sitter CLI. Check the language's version using
-   * {@link Language#abiVersion} and compare it to this library's
-   * {@link LANGUAGE_VERSION} constant.
+   * {@link Language#abiVersion}; this library accepts versions from
+   * {@link MIN_COMPATIBLE_VERSION} to {@link LANGUAGE_VERSION}.
    */
   setLanguage(language: Language | null): this {
     let address: number;
