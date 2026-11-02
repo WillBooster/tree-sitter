@@ -13,6 +13,8 @@ if (!fs.existsSync(dslOutput) || !fs.readFileSync(dslSource).equals(fs.readFileS
 
 const inputFiles = [
   '../lib/tree-sitter.c',
+  '../lib/memory_limit.h',
+  '../../../crates/xtask/src/build_wasm.rs',
   '../src/constants.ts',
   '../src/index.ts',
   '../src/language.ts',
