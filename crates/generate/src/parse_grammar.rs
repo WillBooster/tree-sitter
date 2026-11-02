@@ -147,7 +147,6 @@ impl InputGrammar {
     /// A variable is "used" if it is the start rule, the word token, named in
     /// `extras`/`externals`, or transitively reachable via rule references from
     /// any of the above.
-    // code-gauge-allow functionNcss 37 -- cleans every grammar field that can name a dropped rule in one place
     fn normalize(mut self) -> Self {
         // Compute the used set via forward DFS from the implicit roots
         // (start rule, word_token, refs in extras and externals).
@@ -200,7 +199,6 @@ impl InputGrammar {
             self.conflict_names.retain(|c| !c.contains(&name));
             self.supertype_names.retain(|&s| s != name);
             self.inline_names.retain(|&s| s != name);
-            self.mergeable_external_names.retain(|&s| s != name);
             let pool = &self.pool;
             self.extra_roots
                 .retain(|&r| !pool.rule_is_referenced(r, name, true));
