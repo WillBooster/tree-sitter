@@ -164,7 +164,8 @@ export interface Grammar<
    * states that differ only in which of these tokens they accept may be
    * merged, so the scanner may see one of them as valid in a state that does
    * not accept it. That leaves the trees of valid input unchanged only if
-   * every listed token meets both conditions.
+   * every listed token meets both conditions; trees of invalid input may
+   * change, because error recovery sees the merged states.
    *
    * @param $ grammar rules
    * @param previous array of mergeable externals from the base grammar
