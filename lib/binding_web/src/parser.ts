@@ -91,7 +91,7 @@ export let LANGUAGE_VERSION: number;
  */
 export function assertSupportedLanguage(language: Language): void {
   const version = C._ts_language_abi_version(language[0]);
-  if (version !== LANGUAGE_VERSION) {
+  if (version < MIN_COMPATIBLE_VERSION || version > LANGUAGE_VERSION) {
     throw new Error(
       `Incompatible language version 0x${(version >>> 0).toString(16)}. ` +
       `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
@@ -101,7 +101,8 @@ export function assertSupportedLanguage(language: Language): void {
 
 /**
  * The earliest ABI version that is supported by the current version of the
- * library, which is {@link LANGUAGE_VERSION}.
+ * library. Its parse tables are a subset of those of {@link LANGUAGE_VERSION},
+ * so the library loads both.
  */
 export let MIN_COMPATIBLE_VERSION: number;
 

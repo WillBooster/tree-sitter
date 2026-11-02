@@ -31,7 +31,10 @@ const MAX_ACTION_LIST_LENGTH: usize = 127;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 /// Marks a map entry that refers to a descriptor, which `add_descriptor` lays out.
 const SMALL_STATE_DESCRIPTOR_FLAG: usize = 0x2000_0000;
-const DESCRIPTOR_WORDS: usize = 6;
+/// Marks a descriptor map entry whose descriptor ends with a base row.
+const SMALL_STATE_BASE_FLAG: usize = 0x1000_0000;
+/// The words of a descriptor with a base row.
+const BASED_DESCRIPTOR_WORDS: usize = 6;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const SMALL_STATE_SET_FLAG: usize = SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG;
@@ -2548,9 +2551,8 @@ impl Generator {
                 .collect(),
         };
         self.add_small_parse_row(&defaults);
-        // Offset 0 marks a descriptor without a base, so no row may start there.
         let mut tables = SmallTables {
-            next_index: defaults.values.len().max(1),
+            next_index: defaults.values.len(),
             ..SmallTables::default()
         };
         let has_samples = self
@@ -2635,7 +2637,7 @@ impl Generator {
                     set.len()
                 };
                 let diff_words = self.delta_words(&diff, false);
-                if diff_words + DESCRIPTOR_WORDS + set_words < plain_words {
+                if diff_words + BASED_DESCRIPTOR_WORDS + set_words < plain_words {
                     let base = tables.bases[0].rows[base].0;
                     return self.add_described_row(set, &diff, base, false, tables);
                 }
@@ -2685,7 +2687,7 @@ impl Generator {
         }
         let offset = self.add_plain_row(&groups, minimize, true, tables)?;
         tables.bases[1].add(offset, exceptions);
-        self.add_descriptor(set, offset, 0, tables)
+        self.add_descriptor(set, offset, None, tables)
     }
 
     /// Adds a row of `groups` unless an identical one exists, and returns its map entry.
@@ -2726,27 +2728,34 @@ impl Generator {
         };
         let groups = self.entry_groups(diff, kind);
         let diff = self.add_plain_row(&groups, true, is_goto, tables)?;
-        self.add_descriptor(set, diff, base, tables)
+        self.add_descriptor(set, diff, Some(base), tables)
     }
 
-    /// Adds a descriptor of a row: the offset of the set of symbols that have entries, then the map entries of
-    /// the row of entries that differ from the base, and of the base row (0 for none). Returns its map entry.
+    /// Adds a descriptor of a row: the offset of the set of symbols that have entries, the map entry of the
+    /// row of entries that differ from the base, and, when there is a base, the map entry of the base row.
+    /// Returns its map entry.
     fn add_descriptor(
         &mut self,
         set: Vec<u16>,
         diff: usize,
-        base: usize,
+        base: Option<usize>,
         tables: &mut SmallTables,
     ) -> RenderResult<usize> {
         let set_offset =
             self.add_shared_values(set, &mut tables.symbol_sets, &mut tables.next_index)?;
-        let descriptor = [set_offset, diff, base]
+        let descriptor = [set_offset, diff]
             .into_iter()
+            .chain(base)
             .flat_map(|offset| [(offset & 0xffff) as u16, (offset >> 16) as u16])
             .collect();
         let offset =
             self.add_shared_values(descriptor, &mut tables.descriptors, &mut tables.next_index)?;
-        Ok(offset | SMALL_STATE_DESCRIPTOR_FLAG)
+        let flags = if base.is_some() {
+            SMALL_STATE_DESCRIPTOR_FLAG | SMALL_STATE_BASE_FLAG
+        } else {
+            SMALL_STATE_DESCRIPTOR_FLAG
+        };
+        Ok(offset | flags)
     }
 
     /// Finds the base row whose entries differ from `entries` in the fewest words, and returns it with those
@@ -2861,7 +2870,7 @@ impl Generator {
         };
         self.add_small_parse_row(&row);
         *next_index += row.values.len();
-        if *next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
+        if *next_index >= SMALL_STATE_BASE_FLAG {
             return Err(RenderError::SparseTable(*next_index));
         }
         rows.insert(row.values, row.index);
@@ -2904,7 +2913,7 @@ impl Generator {
             *next_index += row.values.len();
             offset
         };
-        if *next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
+        if *next_index >= SMALL_STATE_BASE_FLAG {
             return Err(RenderError::SparseTable(*next_index));
         }
         Ok(offset)
@@ -3053,7 +3062,7 @@ impl Generator {
         if words >= unshared_words {
             return Ok(None);
         }
-        if *next_table_index + words >= SMALL_STATE_DESCRIPTOR_FLAG {
+        if *next_table_index + words >= SMALL_STATE_BASE_FLAG {
             return Err(RenderError::SparseTable(*next_table_index + words));
         }
         let mut rows = Vec::new();

@@ -31,9 +31,10 @@ extern "C" {
 
 /**
  * The earliest ABI version that is supported by the current version of the
- * library, which is [`TREE_SITTER_LANGUAGE_VERSION`].
+ * library. Its parse tables are a subset of those of
+ * [`TREE_SITTER_LANGUAGE_VERSION`], so the library loads both.
  */
-#define TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION TREE_SITTER_LANGUAGE_VERSION
+#define TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION 0x5742000b
 
 /*******************/
 /* Section - Types */
@@ -1313,7 +1314,8 @@ TSSymbolType ts_language_symbol_type(const TSLanguage *self, TSSymbol symbol);
 
 /**
  * Get the ABI version number for this language. The library loads only
- * languages whose number is [`TREE_SITTER_LANGUAGE_VERSION`].
+ * languages whose number is from [`TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION`]
+ * to [`TREE_SITTER_LANGUAGE_VERSION`].
  *
  * See also [`ts_parser_set_language`].
  */
