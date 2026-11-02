@@ -25,3 +25,7 @@ export async function createDebugParser(): Promise<DebugParser> {
 export async function initializeWithMemory(memory: WebAssembly.Memory): Promise<void> {
   await Parser.init({ wasmMemory: memory });
 }
+
+export function parseWithMemoryLimit(parser: Parser, source: string, maxMemoryBytes: number): Tree | null {
+  return parser.parse(source, undefined, { maxMemoryBytes });
+}

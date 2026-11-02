@@ -56,6 +56,10 @@ interface WasmModule {
   _calloc(_0: number, _1: number): number;
   _realloc(_0: number, _1: number): number;
   _free(_0: number): void;
+  _ts_free_wasm(_0: number): void;
+  _ts_scanner_malloc_wasm(_0: number): number;
+  _ts_scanner_calloc_wasm(_0: number, _1: number): number;
+  _ts_scanner_realloc_wasm(_0: number, _1: number): number;
   _memcmp(_0: number, _1: number, _2: number): number;
   _ts_language_symbol_count(_0: number): number;
   _ts_language_state_count(_0: number): number;
@@ -102,6 +106,8 @@ interface WasmModule {
   _ts_parser_new_wasm(): void;
   _ts_parser_enable_logger_wasm(_0: number, _1: number): void;
   _ts_parser_parse_wasm(_0: number, _1: number, _2: number, _3: number, _4: number): number;
+  _ts_parser_parse_limited_wasm(_0: number, _1: number, _2: number, _3: number): number;
+  _ts_parser_abort_limited_wasm(): void;
   _ts_parser_included_ranges_wasm(_0: number): void;
   _ts_language_type_is_named_wasm(_0: number, _1: number): number;
   _ts_language_type_is_visible_wasm(_0: number, _1: number): number;
@@ -204,6 +210,7 @@ export type MainModule = WasmModule & typeof RuntimeExports & {
   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
   currentQueryProgressCallback: ((state: {currentOffset: number}) => boolean | void) | null;
+  treeSitterSetMemoryLimit(maxBytes: number): boolean;
 };
 
 export default function MainModuleFactory(options?: Partial<EmscriptenModule>): Promise<MainModule>;
