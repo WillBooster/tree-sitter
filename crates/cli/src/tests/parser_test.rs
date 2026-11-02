@@ -1238,6 +1238,87 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
 }
 
 #[test]
+fn test_mergeable_externals_merge_states_without_changing_trees() {
+    // No other token starts with `?`, so declaring `optional_marker` mergeable lets the states
+    // of `expression` in both statements merge.
+    let scanner = r#"
+#include "tree_sitter/parser.h"
+
+void *tree_sitter_NAME_external_scanner_create(void) { return NULL; }
+void tree_sitter_NAME_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_NAME_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_NAME_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+
+bool tree_sitter_NAME_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+  if (!valid_symbols[0]) return false;
+  while (lexer->lookahead == ' ') lexer->advance(lexer, true);
+  if (lexer->lookahead != '?') return false;
+  lexer->advance(lexer, false);
+  lexer->result_symbol = 0;
+  return true;
+}
+"#;
+    let grammar = |name: &str, mergeable: &[&str]| {
+        serde_json::json!({
+            "name": name,
+            "externals": [{"type": "SYMBOL", "name": "optional_marker"}],
+            "mergeable_externals": mergeable,
+            "extras": [{"type": "PATTERN", "value": " "}],
+            "rules": {
+                "program": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                    {"type": "SYMBOL", "name": "plain_statement"},
+                    {"type": "SYMBOL", "name": "optional_statement"},
+                ]}},
+                "plain_statement": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "let"},
+                    {"type": "SYMBOL", "name": "expression"},
+                    {"type": "STRING", "value": ";"},
+                ]},
+                "optional_statement": {"type": "SEQ", "members": [
+                    {"type": "STRING", "value": "var"},
+                    {"type": "SYMBOL", "name": "expression"},
+                    {"type": "CHOICE", "members": [{"type": "SYMBOL", "name": "optional_marker"}, {"type": "BLANK"}]},
+                    {"type": "STRING", "value": ";"},
+                ]},
+                "expression": {"type": "SEQ", "members": [
+                    {"type": "SYMBOL", "name": "identifier"},
+                    {"type": "REPEAT", "content": {"type": "SEQ", "members": [
+                        {"type": "STRING", "value": "+"},
+                        {"type": "SYMBOL", "name": "identifier"},
+                    ]}},
+                ]},
+                "identifier": {"type": "PATTERN", "value": "[a-z]+"},
+            },
+        })
+        .to_string()
+    };
+    let source = "let a + b; var c + d ?; var e; let f + g + h;";
+    let parse = |name: &str, mergeable: &[&str]| {
+        let (name, code) = generate_parser(&grammar(name, mergeable)).unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(
+            fixture.path().join("scanner.c"),
+            scanner.replace("NAME", &name),
+        )
+        .unwrap();
+        let language = get_test_language(&name, &code, Some(fixture.path()));
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        (language.parse_state_count(), tree.root_node().to_sexp())
+    };
+
+    let (separate_states, separate_tree) = parse("unmergeable_externals", &[]);
+    let (merged_states, merged_tree) = parse("mergeable_externals", &["optional_marker"]);
+    assert!(
+        merged_states < separate_states,
+        "{merged_states} >= {separate_states}"
+    );
+    assert_eq!(merged_tree, separate_tree);
+    assert!(!merged_tree.contains("ERROR"), "{merged_tree}");
+}
+
+#[test]
 fn test_recovery_accepts_keywords_as_command_names() {
     let path = fixtures_dir().join("test_grammars/keyword_reuse");
     let grammar = load_grammar_file(&path.join("grammar.js"), None).unwrap();

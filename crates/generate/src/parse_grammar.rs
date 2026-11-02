@@ -110,6 +110,8 @@ pub struct GrammarJSON {
     #[serde(default)]
     supertypes: Vec<String>,
     #[serde(default)]
+    mergeable_externals: Vec<String>,
+    #[serde(default)]
     word: Option<String>,
     #[serde(default)]
     reserved: Map<String, Value>,
@@ -219,6 +221,7 @@ impl InputGrammar {
     }
 }
 
+// code-gauge-allow functionNcss 41 -- converts each grammar.json field in turn
 pub(crate) fn parse_grammar(
     input: &str,
     diagnostics: &mut Vec<Diagnostic>,
@@ -300,6 +303,11 @@ pub(crate) fn parse_grammar(
         .map(|c| c.iter().map(|n| pool.intern(n)).collect())
         .collect();
     let inline_names = grammar_json.inline.iter().map(|n| pool.intern(n)).collect();
+    let mergeable_external_names = grammar_json
+        .mergeable_externals
+        .iter()
+        .map(|n| pool.intern(n))
+        .collect();
     let word_name = grammar_json.word.as_deref().map(|w| pool.intern(w));
     let name = pool.intern(&grammar_json.name);
 
@@ -313,6 +321,7 @@ pub(crate) fn parse_grammar(
         supertype_names,
         conflict_names,
         inline_names,
+        mergeable_external_names,
         word_name,
         precedence_orderings,
     }

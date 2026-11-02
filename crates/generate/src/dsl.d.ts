@@ -158,6 +158,24 @@ export interface Grammar<
   inline?: ($: GrammarSymbols<RuleName | BaseGrammarRuleName>, previous: SymbolRule<string>[]) => SymbolRule<string>[];
 
   /**
+   * External tokens that the scanner returns only where no other token of the
+   * grammar can start, such as reserved words that the scanner reads, and
+   * whose validity the scanner ignores when scanning other tokens. Parse
+   * states that differ only in which of these tokens they accept may be
+   * merged, so the scanner may see one of them as valid in a state that does
+   * not accept it. That leaves the trees of valid input unchanged only if
+   * every listed token meets both conditions; trees of invalid input may
+   * change, because error recovery sees the merged states.
+   *
+   * @param $ grammar rules
+   * @param previous array of mergeable externals from the base grammar
+   */
+  mergeableExternals?: (
+    $: GrammarSymbols<RuleName | BaseGrammarRuleName>,
+    previous: SymbolRule<string>[],
+  ) => SymbolRule<string>[];
+
+  /**
    * A list of hidden rule names that should be considered supertypes in the
    * generated node types file.
    *
@@ -210,6 +228,7 @@ export type GrammarSchema<RuleName extends string> = {
     extras: Rule[];
     inline: string[];
     supertypes: string[];
+    mergeable_externals?: string[];
     word: string | undefined;
     reserved: Record<string, Rule[]>;
   };
