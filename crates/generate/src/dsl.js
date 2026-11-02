@@ -457,29 +457,14 @@ function grammar(baseGrammar, options) {
     }).map(symbol => symbol.name);
   }
 
-  let supertypes = baseGrammar.supertypes;
-  if (options.supertypes) {
-    if (typeof options.supertypes !== "function") {
-      throw new Error("Grammar's 'supertypes' property must be a function.");
-    }
-
-    const baseSupertypeRules = baseGrammar.supertypes.map(sym);
-    const supertypeRules = options.supertypes.call(ruleBuilder, ruleBuilder, baseSupertypeRules);
-
-    if (!Array.isArray(supertypeRules)) {
-      throw new Error("Grammar's supertypes must be an array of rules.");
-    }
-
-    supertypes = supertypeRules.map(symbol => {
-      if (symbol?.name === 'ReferenceError') {
-        throw new Error(`Supertype rule \`${symbol.symbol.name}\` is not defined.`);
-      }
-      if (symbol?.type !== 'SYMBOL' || typeof symbol.name !== 'string') {
-        throw new Error("Grammar's supertypes property must contain only named rules.");
-      }
-      return symbol.name;
-    });
-  }
+  const supertypes = namedRules(options, 'supertypes', ruleBuilder, baseGrammar.supertypes, 'Supertype rule');
+  const mergeableExternals = namedRules(
+    options,
+    'mergeableExternals',
+    ruleBuilder,
+    baseGrammar.mergeable_externals ?? [],
+    'Mergeable external',
+  );
 
   let precedences = baseGrammar.precedences;
   if (options.precedences) {
@@ -522,9 +507,35 @@ function grammar(baseGrammar, options) {
       externals,
       inline,
       supertypes,
+      mergeable_externals: mergeableExternals.length ? mergeableExternals : undefined,
       reserved,
     },
   };
+}
+
+function namedRules(options, property, ruleBuilder, previous, description) {
+  if (!options[property]) {
+    return previous;
+  }
+  if (typeof options[property] !== "function") {
+    throw new Error(`Grammar's '${property}' property must be a function.`);
+  }
+
+  const rules = options[property].call(ruleBuilder, ruleBuilder, previous.map(sym));
+
+  if (!Array.isArray(rules)) {
+    throw new Error(`Grammar's ${property} must be an array of rules.`);
+  }
+
+  return rules.map(symbol => {
+    if (symbol?.name === 'ReferenceError') {
+      throw new Error(`${description} \`${symbol.symbol.name}\` is not defined.`);
+    }
+    if (symbol?.type !== 'SYMBOL' || typeof symbol.name !== 'string') {
+      throw new Error(`Grammar's ${property} property must contain only named rules.`);
+    }
+    return symbol.name;
+  });
 }
 
 class RustRegex {

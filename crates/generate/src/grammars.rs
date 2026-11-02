@@ -43,6 +43,7 @@ pub struct InputGrammar {
     pub supertype_names: Vec<StrId>,
     pub conflict_names: Vec<Vec<StrId>>,
     pub inline_names: Vec<StrId>,
+    pub mergeable_external_names: Vec<StrId>,
     pub word_name: Option<StrId>,
     pub precedence_orderings: Vec<Vec<PrecedenceEntry>>,
 }
@@ -298,6 +299,9 @@ pub struct ExternalToken {
     pub name: StrId,
     pub kind: VariableType,
     pub corresponding_internal_token: Option<Symbol>,
+    /// Listed in the grammar's `mergeable_externals`: parse states may be merged even if
+    /// only one of them accepts this token.
+    pub is_mergeable: bool,
 }
 
 #[derive(Debug, Default)]

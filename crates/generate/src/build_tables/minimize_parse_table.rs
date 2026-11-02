@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 578 -- the minimizer's passes share private helpers and state
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
@@ -122,7 +123,7 @@ struct ConflictBits {
     conflict_rows: Vec<u64>,
     /// The keyword set.
     keywords: Vec<u64>,
-    /// Tokens that are also external tokens.
+    /// Tokens that are also external tokens that aren't mergeable.
     internal_external: Vec<u64>,
     /// The grammar's word token, as a key and as its bit in a row, if it's a terminal. An
     /// external word token has no keywords (see `identify_keywords`).
@@ -130,6 +131,7 @@ struct ConflictBits {
 }
 
 impl ConflictBits {
+    // code-gauge-allow functionCognitiveComplexity 18 -- builds each precomputed bitset in one pass over its source
     fn new(minimizer: &Minimizer) -> Self {
         // Precompute word-aligned bitsets so `token_conflicts` can test a candidate
         // token against a whole state's terminals.
@@ -171,9 +173,10 @@ impl ConflictBits {
 
         let mut internal_external = vec![0u64; row_words];
         for external in &minimizer.syntax_grammar.external_tokens {
-            if let Some(index) = external
-                .corresponding_internal_token
-                .and_then(Symbol::terminal_index)
+            if !external.is_mergeable
+                && let Some(index) = external
+                    .corresponding_internal_token
+                    .and_then(Symbol::terminal_index)
             {
                 set(&mut internal_external, index);
             }
@@ -1090,6 +1093,8 @@ impl Minimizer<'_> {
         None
     }
 
+    // code-gauge-allow functionCognitiveComplexity 16 -- applies every rule that keeps a token out of a state in one place
+    // code-gauge-allow functionNcss 37 -- applies every rule that keeps a token out of a state in one place
     #[inline]
     fn token_conflicts(
         &self,
@@ -1101,8 +1106,12 @@ impl Minimizer<'_> {
         let (new_token_index, new_token_is_terminal) = match symbol.kind {
             SymbolType::EndOfNonTerminalExtra => return Some(Conflict::EndOfNonTerminalExtra),
             // Do not add external tokens, as they could conflict lexically with
-            // any of the state's existing lookahead tokens.
-            SymbolType::External => return Some(Conflict::ExternalToken),
+            // any of the state's existing lookahead tokens, unless the grammar declares
+            // that the scanner never confuses them with other tokens.
+            SymbolType::External => {
+                return (!self.syntax_grammar.external_tokens[symbol.index as usize].is_mergeable)
+                    .then_some(Conflict::ExternalToken);
+            }
             SymbolType::End => (0, false),
             SymbolType::Terminal => (symbol.index as usize, true),
             SymbolType::NonTerminal => unreachable!(),

@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 418 -- token extraction and its tests share one module
 use rustc_hash::FxHashMap;
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,8 @@ unless they are used only as the grammar's start rule.
     WordToken(NonTerminalWordTokenError),
     #[error("Reserved word '{0}' must be a token")]
     NonTokenReservedWord(String),
+    #[error("Mergeable external '{0}' must be an external token")]
+    NonExternalMergeableExternal(String),
 }
 
 #[derive(Debug, Error, Serialize, Deserialize, PartialEq, Eq)]
@@ -365,8 +368,14 @@ pub(super) fn extract_tokens(
         }
     }
 
+    let mergeable = mergeable_externals(g, interned)?;
     let mut external_tokens = Vec::with_capacity(g.external_roots.len());
-    for (&root, &(name, kind)) in g.external_roots.iter().zip(&interned.external_tokens) {
+    for ((&root, &(name, kind)), is_mergeable) in g
+        .external_roots
+        .iter()
+        .zip(&interned.external_tokens)
+        .zip(mergeable)
+    {
         let Some(s) = g.pool.node(root).symbol() else {
             Err(ExtractTokensError::NonSymbolExternalToken)?
         };
@@ -385,12 +394,14 @@ pub(super) fn extract_tokens(
                 name,
                 kind,
                 corresponding_internal_token: None,
+                is_mergeable,
             }
         } else {
             ExternalToken {
                 name: extractor.lexical[s.index as usize].name,
                 kind,
                 corresponding_internal_token: Some(s),
+                is_mergeable,
             }
         });
     }
@@ -458,6 +469,33 @@ pub(super) fn extract_tokens(
         inline,
         word,
     })
+}
+
+/// Whether each external token is listed in the grammar's mergeable externals.
+fn mergeable_externals(
+    g: &InputGrammar,
+    interned: &InternedGrammarMeta,
+) -> ExtractTokensResult<Vec<bool>> {
+    let is_external = |name: StrId| {
+        interned
+            .external_tokens
+            .iter()
+            .any(|&(external, _)| external == Some(name))
+    };
+    if let Some(&name) = g
+        .mergeable_external_names
+        .iter()
+        .find(|&&name| !is_external(name))
+    {
+        Err(ExtractTokensError::NonExternalMergeableExternal(
+            g.pool.resolve(name).to_string(),
+        ))?;
+    }
+    Ok(interned
+        .external_tokens
+        .iter()
+        .map(|&(name, _)| name.is_some_and(|name| g.mergeable_external_names.contains(&name)))
+        .collect())
 }
 
 fn resolve_reserved_terminal(grammar: &InputGrammar, mut symbol: Symbol) -> Option<Symbol> {
@@ -747,18 +785,21 @@ mod test {
                     name: external_0,
                     kind: VariableType::Named,
                     corresponding_internal_token: None,
+                    is_mergeable: false,
                 },
                 // "a" is also extracted internally (terminal 0), so it links to it
                 ExternalToken {
                     name: a,
                     kind: VariableType::Anonymous,
                     corresponding_internal_token: Some(Symbol::terminal(0)),
+                    is_mergeable: false,
                 },
                 // rule_2 shadowed a variable that got absorbed to terminal 2
                 ExternalToken {
                     name: rule_2,
                     kind: VariableType::Named,
                     corresponding_internal_token: Some(Symbol::terminal(2)),
+                    is_mergeable: false,
                 },
             ]
         );
