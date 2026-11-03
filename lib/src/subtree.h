@@ -27,12 +27,11 @@ extern "C" {
 // restored using its `deserialize` function.
 //
 // Small byte arrays are stored inline, and long ones are allocated
-// separately on the heap.
+// separately on the heap, with the pointer to them copied into `data`.
+// No member is a pointer, so that the struct needs only 4-byte alignment
+// and `SubtreeHeapData` packs into 72 bytes.
 typedef struct {
-  union {
-    char *long_data;
-    char short_data[24];
-  };
+  char data[20];
   uint32_t length;
 } ExternalScannerState;
 
@@ -144,10 +143,6 @@ typedef struct {
       uint32_t stack_link_count;
       uint16_t repeat_depth;
       uint16_t production_id;
-      struct {
-        TSSymbol symbol;
-        TSStateId parse_state;
-      } first_leaf;
     };
 
     // External terminal subtrees (`child_count == 0 && has_external_tokens`)
@@ -281,16 +276,17 @@ static inline void ts_subtree_set_extra(MutableSubtree *self, bool is_extra) {
   }
 }
 
+static inline Subtree ts_subtree_first_leaf(Subtree self) {
+  while (!self.data.is_inline && self.ptr->child_count > 0) self = ts_subtree_children(self)[0];
+  return self;
+}
+
 static inline TSSymbol ts_subtree_leaf_symbol(Subtree self) {
-  if (self.data.is_inline) return self.data.symbol;
-  if (self.ptr->child_count == 0) return self.ptr->symbol;
-  return self.ptr->first_leaf.symbol;
+  return ts_subtree_symbol(ts_subtree_first_leaf(self));
 }
 
 static inline TSStateId ts_subtree_leaf_parse_state(Subtree self) {
-  if (self.data.is_inline) return self.data.parse_state;
-  if (self.ptr->child_count == 0) return self.ptr->parse_state;
-  return self.ptr->first_leaf.parse_state;
+  return ts_subtree_parse_state(ts_subtree_first_leaf(self));
 }
 
 static inline bool ts_subtree_leaf_is_keyword(Subtree self) {
