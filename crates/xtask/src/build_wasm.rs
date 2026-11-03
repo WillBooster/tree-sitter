@@ -127,7 +127,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
     let mut emscripten_flags = if args.debug {
         vec!["-O0", "--minify", "0"]
     } else {
-        vec!["-O3", "--minify", "0"]
+        vec!["-O2", "--minify", "0"]
     };
 
     if args.debug {
