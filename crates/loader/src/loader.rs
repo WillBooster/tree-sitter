@@ -1914,13 +1914,6 @@ impl Loader {
                             configuration,
                         )
                     });
-
-                    if set_current_path_config
-                        && self.language_configuration_in_current_path.is_none()
-                    {
-                        self.language_configuration_in_current_path =
-                            Some(self.language_configurations.len() - 1);
-                    }
                 }
             }
             Err(LoaderError::Serialization(e)) => {
@@ -1970,6 +1963,14 @@ impl Loader {
             });
             self.languages_by_id
                 .push((parser_path.to_owned(), OnceCell::new(), None));
+        }
+
+        if set_current_path_config
+            && self.language_configuration_in_current_path.is_none()
+            && self.language_configurations.len() > initial_language_configuration_count
+        {
+            self.language_configuration_in_current_path =
+                Some(initial_language_configuration_count);
         }
 
         Ok(&self.language_configurations[initial_language_configuration_count..])
