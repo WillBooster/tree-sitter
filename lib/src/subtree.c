@@ -22,39 +22,51 @@ typedef struct {
 #define TS_MAX_INLINE_TREE_LENGTH UINT8_MAX
 #define TS_MAX_TREE_POOL_SIZE 32
 
+_Static_assert(sizeof(SubtreeHeapData) == 72, "a heap subtree must fit in 72 bytes");
+
 // ExternalScannerState
+
+static inline bool ts_external_scanner_state_is_long(const ExternalScannerState *self) {
+  return self->length > sizeof(self->data);
+}
+
+static inline char *ts_external_scanner_state_long_data(const ExternalScannerState *self) {
+  char *result;
+  memcpy(&result, self->data, sizeof(result));
+  return result;
+}
+
+static inline void ts_external_scanner_state_set_long_data(ExternalScannerState *self, const char *data) {
+  char *copy = ts_malloc(self->length);
+  memcpy(copy, data, self->length);
+  memcpy(self->data, &copy, sizeof(copy));
+}
 
 void ts_external_scanner_state_init(ExternalScannerState *self, const char *data, unsigned length) {
   self->length = length;
-  if (length > sizeof(self->short_data)) {
-    self->long_data = ts_malloc(length);
-    memcpy(self->long_data, data, length);
+  if (ts_external_scanner_state_is_long(self)) {
+    ts_external_scanner_state_set_long_data(self, data);
   } else {
-    memcpy(self->short_data, data, length);
+    memcpy(self->data, data, length);
   }
 }
 
 ExternalScannerState ts_external_scanner_state_copy(const ExternalScannerState *self) {
   ExternalScannerState result = *self;
-  if (self->length > sizeof(self->short_data)) {
-    result.long_data = ts_malloc(self->length);
-    memcpy(result.long_data, self->long_data, self->length);
+  if (ts_external_scanner_state_is_long(self)) {
+    ts_external_scanner_state_set_long_data(&result, ts_external_scanner_state_long_data(self));
   }
   return result;
 }
 
 void ts_external_scanner_state_delete(ExternalScannerState *self) {
-  if (self->length > sizeof(self->short_data)) {
-    ts_free(self->long_data);
+  if (ts_external_scanner_state_is_long(self)) {
+    ts_free(ts_external_scanner_state_long_data(self));
   }
 }
 
 const char *ts_external_scanner_state_data(const ExternalScannerState *self) {
-  if (self->length > sizeof(self->short_data)) {
-    return self->long_data;
-  } else {
-    return self->short_data;
-  }
+  return ts_external_scanner_state_is_long(self) ? ts_external_scanner_state_long_data(self) : self->data;
 }
 
 bool ts_external_scanner_state_eq(const ExternalScannerState *self, const char *buffer, unsigned length) {
@@ -225,7 +237,6 @@ Subtree ts_subtree_new_leaf(
       .trailing_extra = false,
       .has_ambiguous_extra = false,
       .first_child_has_completed_prefix = false,
-      {{.first_leaf = {.symbol = 0, .parse_state = 0}}}
     };
     return (Subtree) {.ptr = data};
   }
@@ -504,8 +515,6 @@ void ts_subtree_summarize_children(
     Subtree first_child = children[0];
     Subtree last_child = children[self.ptr->child_count - 1];
 
-    self.ptr->first_leaf.symbol = ts_subtree_leaf_symbol(first_child);
-    self.ptr->first_leaf.parse_state = ts_subtree_leaf_parse_state(first_child);
     self.ptr->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
     self.ptr->first_child_has_completed_prefix = ts_subtree_has_completed_prefix(first_child);
 
@@ -580,7 +589,6 @@ MutableSubtree ts_subtree_new_node(
     {{
       .visible_descendant_count = 0,
       .production_id = production_id,
-      .first_leaf = {.symbol = 0, .parse_state = 0},
     }}
   };
   MutableSubtree result = {.ptr = data};
@@ -1175,7 +1183,7 @@ void ts_subtree_print_dot_graph(Subtree self, const TSLanguage *language, FILE *
 }
 
 const ExternalScannerState *ts_subtree_external_scanner_state(Subtree self) {
-  static const ExternalScannerState empty_state = {{.short_data = {0}}, .length = 0};
+  static const ExternalScannerState empty_state = {.data = {0}, .length = 0};
   if (
     self.ptr &&
     !self.data.is_inline &&
