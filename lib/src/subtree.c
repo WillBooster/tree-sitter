@@ -22,6 +22,8 @@ typedef struct {
 #define TS_MAX_INLINE_TREE_LENGTH UINT8_MAX
 #define TS_MAX_TREE_POOL_SIZE 32
 
+_Static_assert(sizeof(SubtreeHeapData) == 72, "a heap subtree must fit in 72 bytes");
+
 // ExternalScannerState
 
 static inline bool ts_external_scanner_state_is_long(const ExternalScannerState *self) {

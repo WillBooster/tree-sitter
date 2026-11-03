@@ -27,9 +27,8 @@ extern "C" {
 // restored using its `deserialize` function.
 //
 // Small byte arrays are stored inline, and long ones are allocated
-// separately on the heap, with the pointer to them copied into `data`.
-// No member is a pointer, so that the struct needs only 4-byte alignment
-// and `SubtreeHeapData` packs into 72 bytes.
+// separately on the heap, with the pointer to them copied into `data`
+// through `memcpy` so that the struct has no pointer member.
 typedef struct {
   char data[20];
   uint32_t length;
