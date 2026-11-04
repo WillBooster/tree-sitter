@@ -90,6 +90,12 @@ static const unsigned MAX_SUMMARY_DEPTH = 16;
 // four reductions per level of nested Kotlin if-expressions), so the bound must stay far above realistic nesting.
 static const unsigned MAX_CHAINED_REDUCTION_COUNT = 4096;
 static const unsigned MAX_COST_DIFFERENCE = 18 * ERROR_COST_PER_SKIPPED_TREE;
+// A recovery stays provisional, which protects it and its competitors from pruning, until an error-containing reduction
+// reaches the root. Inside a construct spanning the rest of the file (a C++ namespace, a C include guard), that happens
+// only at EOF, so every competing recovery path stays alive and the parse takes about twice as long. A recovery whose
+// version has pushed this many more nodes counts as confirmed; on the C and C++ example corpora, smaller bounds leave
+// more C files with additional ERROR nodes.
+static const unsigned MAX_PROVISIONAL_RECOVERY_NODE_COUNT = 300;
 static const unsigned OP_COUNT_PER_PARSER_CALLBACK_CHECK = 100;
 
 typedef struct {
@@ -324,8 +330,9 @@ static ErrorComparison ts_parser__compare_versions(
   return ErrorComparisonNone;
 }
 
-// A recovery can resume inside a construct the input never closes. Until it reaches the
-// root state, its lower error cost must not discard another resumed parse.
+// A recovery can resume inside a construct the input never closes. Until it reaches the root
+// state or outlives MAX_PROVISIONAL_RECOVERY_NODE_COUNT, its lower error cost must not discard
+// another resumed parse.
 // Paused heads have not tried recovery for their lookahead yet; an active head
 // alone is not evidence that their continuation cannot finish the construct.
 static ErrorComparison ts_parser__compare_ranked_versions(
@@ -2320,6 +2327,11 @@ static unsigned ts_parser__condense_stack(TSParser *self) {
       ts_stack_remove_version(self->stack, i);
       i--;
       continue;
+    }
+
+    if (ts_stack_unconfirmed_recovery(self->stack, i) &&
+        ts_stack_node_count_since_recovery(self->stack, i) > MAX_PROVISIONAL_RECOVERY_NODE_COUNT) {
+      ts_stack_set_unconfirmed_recovery(self->stack, i, false);
     }
 
     // Keep track of the minimum error cost of any stack version so
