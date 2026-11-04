@@ -77,6 +77,7 @@ typedef struct {
   StackStatus status;
   bool has_unconfirmed_missing_token;
   uint64_t unconfirmed_recovery;
+  unsigned node_count_at_recovery;
 } StackHead;
 
 typedef struct {
@@ -393,6 +394,7 @@ static StackVersion ts_stack__add_version(
     .lookahead_when_paused = NULL_SUBTREE,
     .has_unconfirmed_missing_token = array_get(&self->heads, original_version)->has_unconfirmed_missing_token,
     .unconfirmed_recovery = array_get(&self->heads, original_version)->unconfirmed_recovery,
+    .node_count_at_recovery = array_get(&self->heads, original_version)->node_count_at_recovery,
   };
   array_push(&self->heads, head);
   stack_node_retain(node);
@@ -877,7 +879,16 @@ uint64_t ts_stack_unconfirmed_recovery(const Stack *self, StackVersion version) 
 }
 
 void ts_stack_set_unconfirmed_recovery(Stack *self, StackVersion version, bool value) {
-  array_get(&self->heads, version)->unconfirmed_recovery = value ? ++self->recovery_generation : 0;
+  StackHead *head = array_get(&self->heads, version);
+  head->unconfirmed_recovery = value ? ++self->recovery_generation : 0;
+  head->node_count_at_recovery = head->node->node_count;
+}
+
+unsigned ts_stack_node_count_since_recovery(const Stack *self, StackVersion version) {
+  const StackHead *head = array_get(&self->heads, version);
+  return head->node->node_count > head->node_count_at_recovery
+    ? head->node->node_count - head->node_count_at_recovery
+    : 0;
 }
 
 bool ts_stack_has_unconfirmed_missing_token(const Stack *self, StackVersion version) {
