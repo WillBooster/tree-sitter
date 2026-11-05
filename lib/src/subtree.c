@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 687 -- subtree construction, summaries, editing, and printing share private helpers here
 #include <ctype.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -167,7 +168,7 @@ static void ts_subtree_pool_free(SubtreePool *self, SubtreeHeapData *tree) {
 static inline bool ts_subtree_can_inline(Length padding, Length size, uint32_t lookahead_bytes) {
   return
     padding.bytes < TS_MAX_INLINE_TREE_LENGTH &&
-    padding.extent.row < 16 &&
+    padding.extent.row < 8 && // `padding_rows` has 3 bits
     padding.extent.column < TS_MAX_INLINE_TREE_LENGTH &&
     size.bytes < TS_MAX_INLINE_TREE_LENGTH &&
     size.extent.row == 0 &&
@@ -175,6 +176,7 @@ static inline bool ts_subtree_can_inline(Length padding, Length size, uint32_t l
     lookahead_bytes < 16;
 }
 
+// code-gauge-allow functionParameterCount 12 -- the lexer passes every property of the token it produced
 Subtree ts_subtree_new_leaf(
   SubtreePool *pool, TSSymbol symbol, Length padding, Length size,
   uint32_t lookahead_bytes, TSStateId parse_state,
@@ -188,7 +190,6 @@ Subtree ts_subtree_new_leaf(
     symbol <= UINT8_MAX &&
     !has_external_tokens &&
     !depends_on_column &&
-    !depends_on_position &&
     ts_subtree_can_inline(padding, size, lookahead_bytes)
   );
 
@@ -198,6 +199,7 @@ Subtree ts_subtree_new_leaf(
       .symbol = symbol,
       .padding_bytes = padding.bytes,
       .padding_rows = padding.extent.row,
+      .depends_on_position = depends_on_position,
       .padding_columns = padding.extent.column,
       .size_bytes = size.bytes,
       .lookahead_bytes = lookahead_bytes,
@@ -326,6 +328,7 @@ MutableSubtree ts_subtree_make_heap_mut(SubtreePool *pool, Subtree self) {
       .is_missing = result.data.is_missing,
       .is_keyword = result.data.is_keyword,
       .first_leaf_is_keyword = result.data.first_leaf_is_keyword,
+      .depends_on_position = result.data.depends_on_position,
     };
     result.ptr = data;
   }
@@ -378,6 +381,185 @@ void ts_subtree_compress(
   }
 }
 
+// What `ts_subtree_summarize_children` accumulates while it visits a node's children in order.
+typedef struct {
+  const TSLanguage *language;
+  const TSSymbol *alias_sequence;
+  uint32_t structural_index;
+  uint32_t lookahead_end_byte;
+  bool charges_error_extent;
+} ChildSummary;
+
+static inline void ts_subtree__summarize_leaf_state(
+  SubtreeHeapData *node,
+  const TSLanguage *language,
+  TSStateId state,
+  TSSymbol symbol
+) {
+  if (state >= language->state_count || symbol >= language->token_count) return;
+  TableEntry entry;
+  ts_language_table_entry(language, state, symbol, &entry);
+  node->has_ambiguous_extra |= entry.action_count > 1 &&
+    (entry.actions[0] & TS_PARSE_ACTION_TYPE_MASK) == TSParseActionTypeShift;
+}
+
+static inline void ts_subtree__summarize_extent(
+  SubtreeHeapData *node,
+  ChildSummary *summary,
+  bool is_first,
+  Length padding,
+  Length size,
+  uint32_t lookahead_bytes
+) {
+  if (is_first) {
+    node->padding = padding;
+    node->size = size;
+  } else {
+    node->size = length_add(node->size, length_add(padding, size));
+  }
+  uint32_t lookahead_end_byte = node->padding.bytes + node->size.bytes + lookahead_bytes;
+  if (lookahead_end_byte > summary->lookahead_end_byte) {
+    summary->lookahead_end_byte = lookahead_end_byte;
+  }
+}
+
+// Count the child when an alias or its own symbol makes it visible, and report whether it did.
+static inline bool ts_subtree__summarize_visibility(
+  SubtreeHeapData *node,
+  const ChildSummary *summary,
+  TSSymbol symbol,
+  bool extra,
+  bool visible,
+  bool named
+) {
+  TSSymbol alias = !extra && symbol != 0 && summary->alias_sequence
+    ? summary->alias_sequence[summary->structural_index]
+    : 0;
+  if (alias) {
+    named = ts_language_symbol_metadata(summary->language, alias).named;
+  } else if (!visible) {
+    return false;
+  }
+  node->visible_descendant_count++;
+  node->visible_child_count++;
+  if (named) node->named_child_count++;
+  return true;
+}
+
+static inline void ts_subtree__summarize_inline_child(
+  SubtreeHeapData *node,
+  ChildSummary *summary,
+  SubtreeInlineData child,
+  bool is_first
+) {
+  ts_subtree__summarize_leaf_state(node, summary->language, child.parse_state, child.symbol);
+  Length padding = {child.padding_bytes, {child.padding_rows, child.padding_columns}};
+  Length size = {child.size_bytes, {0, child.size_bytes}};
+  ts_subtree__summarize_extent(node, summary, is_first, padding, size, child.lookahead_bytes);
+  if (child.depends_on_position) node->depends_on_position = true;
+  if (child.is_missing) node->error_cost += ERROR_COST_PER_MISSING_TREE + ERROR_COST_PER_RECOVERY;
+  if (summary->charges_error_extent && !child.extra && child.visible) {
+    node->error_cost += ERROR_COST_PER_SKIPPED_TREE;
+  }
+  ts_subtree__summarize_visibility(node, summary, child.symbol, child.extra, child.visible, child.named);
+  if (padding.bytes || size.bytes || child.extra) node->trailing_extra = child.extra;
+}
+
+static inline void ts_subtree__summarize_error_cost(
+  SubtreeHeapData *node,
+  const ChildSummary *summary,
+  Subtree child
+) {
+  const SubtreeHeapData *data = child.ptr;
+  uint32_t grandchild_count = data->child_count;
+  if (data->symbol == ts_builtin_sym_error_repeat && !data->extra) {
+    // Refund an `_ERROR` child's extent penalty, which this node re-charges
+    // as part of its own extent below, so that the grouping is cost-neutral.
+    uint32_t extent_cost = ts_subtree__error_extent_cost(data->size);
+    ts_assert(ts_subtree_error_cost(child) >= extent_cost);
+    node->error_cost += ts_subtree_error_cost(child) - extent_cost;
+  } else {
+    node->error_cost += ts_subtree_error_cost(child);
+    if (
+      summary->charges_error_extent && !data->extra &&
+      !(data->symbol == ts_builtin_sym_error && grandchild_count == 0)
+    ) {
+      if (data->visible) {
+        node->error_cost += ERROR_COST_PER_SKIPPED_TREE;
+      } else if (grandchild_count > 0) {
+        node->error_cost += ERROR_COST_PER_SKIPPED_TREE * data->visible_child_count;
+      }
+    }
+  }
+}
+
+static void ts_subtree__summarize_heap_child(
+  SubtreeHeapData *node,
+  ChildSummary *summary,
+  Subtree child,
+  bool is_first
+) {
+  const SubtreeHeapData *data = child.ptr;
+  node->has_ambiguous_extra |= data->has_ambiguous_extra;
+  if (data->child_count == 0) {
+    ts_subtree__summarize_leaf_state(node, summary->language, data->parse_state, data->symbol);
+  }
+  if (data->depends_on_column) node->depends_on_column = true;
+  if (data->depends_on_position) node->depends_on_position = true;
+  if (data->has_external_scanner_state_change) node->has_external_scanner_state_change = true;
+  ts_subtree__summarize_extent(node, summary, is_first, data->padding, data->size, data->lookahead_bytes);
+
+  ts_subtree__summarize_error_cost(node, summary, child);
+
+  uint32_t grandchild_count = data->child_count;
+  node->dynamic_precedence += ts_subtree_dynamic_precedence(child);
+  node->visible_descendant_count += ts_subtree_visible_descendant_count(child);
+  if (
+    !ts_subtree__summarize_visibility(node, summary, data->symbol, data->extra, data->visible, data->named) &&
+    grandchild_count > 0
+  ) {
+    node->visible_child_count += data->visible_child_count;
+    node->named_child_count += data->named_child_count;
+  }
+
+  if (data->has_external_tokens) node->has_external_tokens = true;
+  if (ts_subtree_total_bytes(child) || data->has_external_tokens || data->extra) {
+    node->trailing_extra = ts_subtree_trailing_extra(child);
+  }
+
+  if (data->symbol == ts_builtin_sym_error) {
+    node->fragile_left = node->fragile_right = true;
+    node->parse_state = TS_TREE_STATE_NONE;
+  }
+}
+
+static inline void ts_subtree__summarize_ends(
+  SubtreeHeapData *node,
+  Subtree first_child,
+  Subtree last_child
+) {
+  node->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
+  node->first_child_has_completed_prefix = ts_subtree_has_completed_prefix(first_child);
+
+  if (ts_subtree_fragile_left(first_child) || ts_subtree_missing(first_child)) {
+    node->fragile_left = true;
+  }
+  if (ts_subtree_fragile_right(last_child)) node->fragile_right = true;
+
+  if (
+    node->child_count >= 2 &&
+    !node->visible &&
+    !node->named &&
+    ts_subtree_symbol(first_child) == node->symbol
+  ) {
+    if (ts_subtree_repeat_depth(first_child) > ts_subtree_repeat_depth(last_child)) {
+      node->repeat_depth = ts_subtree_repeat_depth(first_child) + 1;
+    } else {
+      node->repeat_depth = ts_subtree_repeat_depth(last_child) + 1;
+    }
+  }
+}
+
 // Assign all of the node's properties that depend on its children.
 void ts_subtree_summarize_children(
   MutableSubtree self,
@@ -400,141 +582,33 @@ void ts_subtree_summarize_children(
 
   bool charges_error_extent = self.ptr->symbol == ts_builtin_sym_error ||
     (self.ptr->symbol == ts_builtin_sym_error_repeat && !self.ptr->extra);
-  uint32_t structural_index = 0;
-  const TSSymbol *alias_sequence = ts_language_alias_sequence(language, self.ptr->production_id);
-  uint32_t lookahead_end_byte = 0;
+  ChildSummary summary = {
+    .language = language,
+    .alias_sequence = ts_language_alias_sequence(language, self.ptr->production_id),
+    .structural_index = 0,
+    .lookahead_end_byte = 0,
+    .charges_error_extent = charges_error_extent,
+  };
 
   const Subtree *children = ts_subtree_children(self);
   for (uint32_t i = 0; i < self.ptr->child_count; i++) {
     Subtree child = children[i];
-
-    if (!child.data.is_inline) {
-      self.ptr->has_ambiguous_extra |= child.ptr->has_ambiguous_extra;
-    }
-
-    if (ts_subtree_child_count(child) == 0) {
-      TSStateId state = ts_subtree_parse_state(child);
-      TSSymbol symbol = ts_subtree_symbol(child);
-      if (state < language->state_count && symbol < language->token_count) {
-        TableEntry entry;
-        ts_language_table_entry(language, state, symbol, &entry);
-        self.ptr->has_ambiguous_extra |= entry.action_count > 1 &&
-          (entry.actions[0] & TS_PARSE_ACTION_TYPE_MASK) == TSParseActionTypeShift;
-      }
-    }
-
-    if (ts_subtree_depends_on_column(child)) {
-      self.ptr->depends_on_column = true;
-    }
-    if (ts_subtree_depends_on_position(child)) {
-      self.ptr->depends_on_position = true;
-    }
-
-    if (ts_subtree_has_external_scanner_state_change(child)) {
-      self.ptr->has_external_scanner_state_change = true;
-    }
-
-    if (i == 0) {
-      self.ptr->padding = ts_subtree_padding(child);
-      self.ptr->size = ts_subtree_size(child);
+    if (child.data.is_inline) {
+      ts_subtree__summarize_inline_child(self.ptr, &summary, child.data, i == 0);
     } else {
-      self.ptr->size = length_add(self.ptr->size, ts_subtree_total_size(child));
+      ts_subtree__summarize_heap_child(self.ptr, &summary, child, i == 0);
     }
-
-    uint32_t child_lookahead_end_byte =
-      self.ptr->padding.bytes +
-      self.ptr->size.bytes +
-      ts_subtree_lookahead_bytes(child);
-    if (child_lookahead_end_byte > lookahead_end_byte) {
-      lookahead_end_byte = child_lookahead_end_byte;
-    }
-
-    uint32_t grandchild_count = ts_subtree_child_count(child);
-    if (ts_subtree_symbol(child) == ts_builtin_sym_error_repeat && !ts_subtree_extra(child)) {
-      // Refund an `_ERROR` child's extent penalty, which this node re-charges
-      // as part of its own extent below, so that the grouping is cost-neutral.
-      uint32_t extent_cost = ts_subtree__error_extent_cost(ts_subtree_size(child));
-      ts_assert(ts_subtree_error_cost(child) >= extent_cost);
-      self.ptr->error_cost += ts_subtree_error_cost(child) - extent_cost;
-    } else {
-      self.ptr->error_cost += ts_subtree_error_cost(child);
-      if (charges_error_extent) {
-        if (!ts_subtree_extra(child) && !(ts_subtree_is_error(child) && grandchild_count == 0)) {
-          if (ts_subtree_visible(child)) {
-            self.ptr->error_cost += ERROR_COST_PER_SKIPPED_TREE;
-          } else if (grandchild_count > 0) {
-            self.ptr->error_cost += ERROR_COST_PER_SKIPPED_TREE * child.ptr->visible_child_count;
-          }
-        }
-      }
-    }
-
-    self.ptr->dynamic_precedence += ts_subtree_dynamic_precedence(child);
-    self.ptr->visible_descendant_count += ts_subtree_visible_descendant_count(child);
-
-    if (
-      !ts_subtree_extra(child) &&
-      ts_subtree_symbol(child) != 0 &&
-      alias_sequence &&
-      alias_sequence[structural_index] != 0
-    ) {
-      self.ptr->visible_descendant_count++;
-      self.ptr->visible_child_count++;
-      if (ts_language_symbol_metadata(language, alias_sequence[structural_index]).named) {
-        self.ptr->named_child_count++;
-      }
-    } else if (ts_subtree_visible(child)) {
-      self.ptr->visible_descendant_count++;
-      self.ptr->visible_child_count++;
-      if (ts_subtree_named(child)) self.ptr->named_child_count++;
-    } else if (grandchild_count > 0) {
-      self.ptr->visible_child_count += child.ptr->visible_child_count;
-      self.ptr->named_child_count += child.ptr->named_child_count;
-    }
-
-    if (ts_subtree_has_external_tokens(child)) self.ptr->has_external_tokens = true;
-    if (ts_subtree_total_bytes(child) || ts_subtree_has_external_tokens(child) || ts_subtree_extra(child)) {
-      self.ptr->trailing_extra = ts_subtree_trailing_extra(child);
-    }
-
-    if (ts_subtree_is_error(child)) {
-      self.ptr->fragile_left = self.ptr->fragile_right = true;
-      self.ptr->parse_state = TS_TREE_STATE_NONE;
-    }
-
-    if (!ts_subtree_extra(child)) structural_index++;
+    if (!ts_subtree_extra(child)) summary.structural_index++;
   }
 
-  self.ptr->lookahead_bytes = lookahead_end_byte - self.ptr->size.bytes - self.ptr->padding.bytes;
+  self.ptr->lookahead_bytes = summary.lookahead_end_byte - self.ptr->size.bytes - self.ptr->padding.bytes;
 
   if (charges_error_extent) {
     self.ptr->error_cost += ts_subtree__error_extent_cost(self.ptr->size);
   }
 
   if (self.ptr->child_count > 0) {
-    Subtree first_child = children[0];
-    Subtree last_child = children[self.ptr->child_count - 1];
-
-    self.ptr->first_leaf_is_keyword = ts_subtree_leaf_is_keyword(first_child);
-    self.ptr->first_child_has_completed_prefix = ts_subtree_has_completed_prefix(first_child);
-
-    if (ts_subtree_fragile_left(first_child) || ts_subtree_missing(first_child)) {
-      self.ptr->fragile_left = true;
-    }
-    if (ts_subtree_fragile_right(last_child)) self.ptr->fragile_right = true;
-
-    if (
-      self.ptr->child_count >= 2 &&
-      !self.ptr->visible &&
-      !self.ptr->named &&
-      ts_subtree_symbol(first_child) == self.ptr->symbol
-    ) {
-      if (ts_subtree_repeat_depth(first_child) > ts_subtree_repeat_depth(last_child)) {
-        self.ptr->repeat_depth = ts_subtree_repeat_depth(first_child) + 1;
-      } else {
-        self.ptr->repeat_depth = ts_subtree_repeat_depth(last_child) + 1;
-      }
-    }
+    ts_subtree__summarize_ends(self.ptr, children[0], children[self.ptr->child_count - 1]);
   }
 }
 
