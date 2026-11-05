@@ -58,7 +58,8 @@ typedef struct SubtreeInlineData SubtreeInlineData;
 
 #define SUBTREE_SIZE           \
   uint8_t padding_columns;     \
-  uint8_t padding_rows : 4;    \
+  uint8_t padding_rows : 3;    \
+  uint8_t depends_on_position : 1; \
   uint8_t lookahead_bytes : 4; \
   uint8_t padding_bytes;       \
   uint8_t size_bytes;
@@ -408,7 +409,7 @@ static inline bool ts_subtree_depends_on_column(Subtree self) {
 }
 
 static inline bool ts_subtree_depends_on_position(Subtree self) {
-  return self.data.is_inline ? false : self.ptr->depends_on_position;
+  return self.data.is_inline ? self.data.depends_on_position : self.ptr->depends_on_position;
 }
 
 static inline bool ts_subtree_is_fragile(Subtree self) {
