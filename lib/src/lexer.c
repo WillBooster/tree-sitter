@@ -438,7 +438,7 @@ static inline int32_t ts_lexer__next_ascii_character(const Lexer *self) {
   if (chunk_end < limit) limit = chunk_end;
   if (position > UINT32_MAX - 2 * size || position + 2 * size - 1 >= limit) return -1;
 
-  const uint8_t *next = (const uint8_t *)self->chunk + position + size - self->chunk_start;
+  const uint8_t *next = (const uint8_t *)self->chunk + (position + size - self->chunk_start);
   uint32_t character = encoding == TSInputEncodingUTF8 ? next[0]
     : encoding == TSInputEncodingUTF16LE ? (uint32_t)next[0] | (uint32_t)next[1] << 8
     : (uint32_t)next[0] << 8 | (uint32_t)next[1];
