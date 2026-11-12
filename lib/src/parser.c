@@ -595,6 +595,7 @@ static bool ts_parser__can_reuse_first_leaf(
 }
 
 static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
+static bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
 
 static Subtree ts_parser__lex(
   TSParser *self,
@@ -787,68 +788,8 @@ static Subtree ts_parser__lex(
       symbol = self->language->external_scanner.symbol_map[symbol];
     } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
       uint32_t end_byte = self->lexer.token_end_position.bytes;
-      uint32_t start_byte = self->lexer.token_start_position.bytes;
-      bool bulk_keyword = false;
       TSSymbol candidate = 0;
-      if (self->language->keyword_lookup_fn
-          && (self->lexer.input.encoding == TSInputEncodingUTF8
-#ifdef __EMSCRIPTEN__
-              || self->lexer.input.encoding == TSInputEncodingUTF16LE
-              || self->lexer.input.encoding == TSInputEncodingUTF16BE
-#endif
-          )
-          && start_byte >= self->lexer.chunk_start
-          && end_byte >= start_byte && end_byte - self->lexer.chunk_start <= self->lexer.chunk_size) {
-        uint32_t low = 0, high = self->lexer.included_range_count;
-        while (low < high) {
-          uint32_t mid = low + (high - low) / 2;
-          if (self->lexer.included_ranges[mid].end_byte < end_byte) low = mid + 1;
-          else high = mid;
-        }
-        if (low < self->lexer.included_range_count) {
-          TSRange range = self->lexer.included_ranges[low];
-          if (start_byte >= range.start_byte) {
-            const char *text = self->lexer.chunk + start_byte - self->lexer.chunk_start;
-            uint32_t length = end_byte - start_byte;
-#ifdef __EMSCRIPTEN__
-            char ascii[128];
-            if (self->lexer.input.encoding != TSInputEncodingUTF8) {
-              if ((length & 1) || length / 2 > sizeof(ascii) || self->lexer.logger.log) {
-                text = NULL;
-              } else {
-                const uint8_t *bytes = (const uint8_t *)text;
-                unsigned low_byte = self->lexer.input.encoding == TSInputEncodingUTF16LE ? 0 : 1;
-                length /= 2;
-                for (uint32_t i = 0; i < length; i++) {
-                  if (bytes[2 * i + low_byte] >= 128 || bytes[2 * i + (1 - low_byte)] != 0) {
-                    text = NULL;
-                    break;
-                  }
-                  ascii[i] = bytes[2 * i + low_byte];
-                }
-                if (text) text = ascii;
-              }
-            }
-            if (text) {
-#endif
-              uint32_t keyword;
-              if (ts_language_is_wasm(self->language)) {
-                bulk_keyword = ts_wasm_store_call_keyword_lookup(self->wasm_store, text, length, &keyword);
-              } else {
-                keyword = self->language->keyword_lookup_fn(text, length);
-                bulk_keyword = true;
-              }
-              if (bulk_keyword) {
-                is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
-                candidate = (TSSymbol)keyword;
-              }
-#ifdef __EMSCRIPTEN__
-            }
-#endif
-          }
-        }
-      }
-      if (!bulk_keyword) {
+      if (!ts_parser__lookup_keyword(self, &is_keyword, &candidate)) {
         ColumnCheckpoint end_column_checkpoint = self->lexer.end_column_checkpoint;
         ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
         ts_lexer_start(&self->lexer);
@@ -925,6 +866,105 @@ static Subtree ts_parser__lex(
   return result;
 }
 
+static bool ts_parser__token_in_single_included_range(const Lexer *, uint32_t, uint32_t);
+static bool ts_parser__extract_utf16_ascii(const uint8_t *, uint32_t *, TSInputEncoding, char (*)[128]);
+
+static bool ts_parser__lookup_keyword(
+  TSParser *self,
+  bool *is_keyword,
+  TSSymbol *candidate
+) {
+  uint32_t start_byte = self->lexer.token_start_position.bytes;
+  uint32_t end_byte = self->lexer.token_end_position.bytes;
+  TSInputEncoding encoding = self->lexer.input.encoding;
+  if (
+    !self->language->keyword_lookup_fn ||
+    (encoding != TSInputEncodingUTF8 &&
+     encoding != TSInputEncodingUTF16LE &&
+     encoding != TSInputEncodingUTF16BE) ||
+    start_byte < self->lexer.chunk_start ||
+    end_byte < start_byte ||
+    end_byte - self->lexer.chunk_start > self->lexer.chunk_size ||
+    !ts_parser__token_in_single_included_range(&self->lexer, start_byte, end_byte)
+  ) return false;
+
+  const char *text = self->lexer.chunk + (start_byte - self->lexer.chunk_start);
+  uint32_t length = end_byte - start_byte;
+  char ascii[128];
+  if (encoding != TSInputEncodingUTF8) {
+    if (
+      self->lexer.logger.log ||
+      !ts_parser__extract_utf16_ascii((const uint8_t *)text, &length, encoding, &ascii)
+    ) return false;
+    text = ascii;
+  }
+
+  uint32_t keyword;
+  if (ts_language_is_wasm(self->language)) {
+    if (!ts_wasm_store_call_keyword_lookup(self->wasm_store, text, length, &keyword)) {
+      return false;
+    }
+  } else {
+    keyword = self->language->keyword_lookup_fn(text, length);
+  }
+  *is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
+  *candidate = (TSSymbol)keyword;
+  return true;
+}
+
+static bool ts_parser__token_in_single_included_range(
+  const Lexer *lexer,
+  uint32_t start_byte,
+  uint32_t end_byte
+) {
+  if (lexer->included_range_count == 1) {
+    TSRange range = lexer->included_ranges[0];
+    return start_byte >= range.start_byte && end_byte <= range.end_byte;
+  }
+  uint32_t low = 0, high = lexer->included_range_count;
+  while (low < high) {
+    uint32_t mid = low + (high - low) / 2;
+    if (lexer->included_ranges[mid].end_byte < end_byte) low = mid + 1;
+    else high = mid;
+  }
+  return low < lexer->included_range_count && start_byte >= lexer->included_ranges[low].start_byte;
+}
+
+static bool ts_parser__extract_utf16_ascii(
+  const uint8_t *bytes,
+  uint32_t *byte_length,
+  TSInputEncoding encoding,
+  char (*ascii)[128]
+) {
+  uint32_t raw_length = *byte_length;
+  if ((raw_length & 1) || raw_length / 2 > sizeof(*ascii)) return false;
+  uint32_t length = raw_length / 2;
+  unsigned low_byte = encoding == TSInputEncodingUTF16LE ? 0 : 1;
+  static const uint8_t LE_MASK[8] = {0x80, 0xff, 0x80, 0xff, 0x80, 0xff, 0x80, 0xff};
+  static const uint8_t BE_MASK[8] = {0xff, 0x80, 0xff, 0x80, 0xff, 0x80, 0xff, 0x80};
+  uint64_t mask;
+  memcpy(&mask, low_byte == 0 ? LE_MASK : BE_MASK, sizeof(mask));
+
+  uint32_t i = 0;
+  for (; i + 4 <= length; i += 4) {
+    uint64_t word;
+    memcpy(&word, bytes + 2 * i, sizeof(word));
+    if (word & mask) return false;
+    (*ascii)[i] = (char)bytes[2 * i + low_byte];
+    (*ascii)[i + 1] = (char)bytes[2 * i + 2 + low_byte];
+    (*ascii)[i + 2] = (char)bytes[2 * i + 4 + low_byte];
+    (*ascii)[i + 3] = (char)bytes[2 * i + 6 + low_byte];
+  }
+  for (; i < length; i++) {
+    if (bytes[2 * i + low_byte] >= 0x80 || bytes[2 * i + (1 - low_byte)] != 0) {
+      return false;
+    }
+    (*ascii)[i] = (char)bytes[2 * i + low_byte];
+  }
+  *byte_length = length;
+  return true;
+}
+
 static TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra) {
   if (after_extra) {
     mode.lex_state = mode.lex_state_after_extra;
@@ -993,13 +1033,21 @@ static void ts_parser__set_cached_token(
   bool after_extra
 ) {
   TokenCache *cache = &self->token_cache;
-  if (token.ptr) ts_subtree_retain(token);
-  if (last_external_token.ptr) ts_subtree_retain(last_external_token);
-  if (cache->token.ptr) ts_subtree_release(&self->tree_pool, cache->token);
-  if (cache->last_external_token.ptr) ts_subtree_release(&self->tree_pool, cache->last_external_token);
-  cache->token = token;
+  if (token.data.is_inline || cache->token.data.is_inline || token.ptr != cache->token.ptr) {
+    if (token.ptr) ts_subtree_retain(token);
+    if (cache->token.ptr) ts_subtree_release(&self->tree_pool, cache->token);
+    cache->token = token;
+  }
+  if (
+    last_external_token.data.is_inline ||
+    cache->last_external_token.data.is_inline ||
+    last_external_token.ptr != cache->last_external_token.ptr
+  ) {
+    if (last_external_token.ptr) ts_subtree_retain(last_external_token);
+    if (cache->last_external_token.ptr) ts_subtree_release(&self->tree_pool, cache->last_external_token);
+    cache->last_external_token = last_external_token;
+  }
   cache->byte_index = byte_index;
-  cache->last_external_token = last_external_token;
   cache->after_extra = after_extra;
 }
 
@@ -2065,6 +2113,7 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
 }
 
 static bool ts_parser__check_progress(TSParser *self, Subtree *lookahead, const uint32_t *position, unsigned operations) {
+  if (!self->parse_options.progress_callback) return true;
   self->operation_count += operations;
   if (self->operation_count >= OP_COUNT_PER_PARSER_CALLBACK_CHECK) {
     self->operation_count = 0;
@@ -2319,6 +2368,16 @@ static bool ts_parser__advance(
 }
 
 static unsigned ts_parser__condense_stack(TSParser *self) {
+  if (
+    ts_stack_version_count(self->stack) == 1 &&
+    ts_stack_is_active(self->stack, 0) &&
+    !ts_stack_unconfirmed_recovery(self->stack, 0)
+  ) {
+    return ts_stack_state(self->stack, 0) == ERROR_STATE
+      ? UINT_MAX
+      : ts_stack_error_cost(self->stack, 0);
+  }
+
   bool made_changes = false;
   unsigned min_error_cost = UINT_MAX;
   for (StackVersion i = 0; i < ts_stack_version_count(self->stack); i++) {
@@ -2609,7 +2668,7 @@ TSLogger ts_parser_logger(const TSParser *self) {
 }
 
 void ts_parser_set_logger(TSParser *self, TSLogger logger) {
-  self->lexer.logger = logger;
+  ts_lexer_set_logger(&self->lexer, logger);
 }
 
 void ts_parser_print_dot_graphs(TSParser *self, int fd) {
@@ -2739,7 +2798,7 @@ TSTree *ts_parser_parse(
       version < version_count;
       version++
     ) {
-      bool allow_node_reuse = version_count == 1;
+      bool allow_node_reuse = self->old_tree.ptr != NULL && version_count == 1;
       while (ts_stack_is_active(self->stack, version)) {
         LOG(
           "process version:%u, version_count:%u, state:%d, row:%u, col:%u",

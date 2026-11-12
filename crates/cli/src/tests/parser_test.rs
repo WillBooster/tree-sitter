@@ -1776,7 +1776,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
                     {"type": "STRING", "value": keyword},
                     {"type": "SYMBOL", "name": "identifier"}
                 ]}},
-                "identifier": {"type": "PATTERN", "value": "[a-z_é]+"}
+                "identifier": {"type": "PATTERN", "value": "[a-z_éū]+"}
             }
         });
         let (name, code) = generate_parser(&grammar.to_string()).unwrap();
@@ -1800,8 +1800,11 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
                     .unwrap();
             }
             parser.set_language(&language).unwrap();
-            let source =
-                format!("{separator}{keyword}{separator}{keyword}_suffix{separator}{keyword}é");
+            let long_ident = format!("{keyword}_{}", "z".repeat(48));
+            let high_byte_collision = format!("ū{}", &keyword[1..]);
+            let source = format!(
+                "{separator}{keyword}{separator}{keyword}_suffix{separator}{keyword}é{separator}{high_byte_collision}{separator}{long_ident}"
+            );
             let expected = parser.parse(&source, None).unwrap();
             assert!(!expected.root_node().has_error());
             let streamed = parser
@@ -1817,8 +1820,10 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             );
             assert_eq!(streamed.root_node().child(0).unwrap().kind(), keyword);
             assert_eq!(streamed.root_node().child(1).unwrap().kind(), "identifier");
-            assert_eq!(streamed.root_node().child_count(), 3);
+            assert_eq!(streamed.root_node().child_count(), 5);
             assert_eq!(streamed.root_node().child(2).unwrap().kind(), "identifier");
+            assert_eq!(streamed.root_node().child(3).unwrap().kind(), "identifier");
+            assert_eq!(streamed.root_node().child(4).unwrap().kind(), "identifier");
             let utf16 = parser
                 .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
                 .unwrap();
@@ -1833,6 +1838,26 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             assert_eq!(
                 utf16_be.root_node().to_sexp(),
                 expected.root_node().to_sexp()
+            );
+            assert_eq!(
+                parser.parse(b"", None).unwrap().root_node().child_count(),
+                0
+            );
+            assert_eq!(
+                parser
+                    .parse_utf16_le([] as [u16; 0], None)
+                    .unwrap()
+                    .root_node()
+                    .child_count(),
+                0
+            );
+            assert_eq!(
+                parser
+                    .parse_utf16_be([] as [u16; 0], None)
+                    .unwrap()
+                    .root_node()
+                    .child_count(),
+                0
             );
             let mut malformed = vec![0xff];
             malformed.extend_from_slice(keyword.as_bytes());
@@ -1863,6 +1888,37 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             let node = tree.root_node().child(0).unwrap();
             assert_eq!(node.kind(), keyword);
             assert_eq!(node.byte_range(), 0..excluded.len());
+
+            parser
+                .set_included_ranges(&[
+                    Range {
+                        start_byte: 0,
+                        end_byte: split * 2,
+                        start_point: Point::new(0, 0),
+                        end_point: Point::new(0, split * 2),
+                    },
+                    Range {
+                        start_byte: (split + 5) * 2,
+                        end_byte: excluded.len() * 2,
+                        start_point: Point::new(0, (split + 5) * 2),
+                        end_point: Point::new(0, excluded.len() * 2),
+                    },
+                ])
+                .unwrap();
+            let excluded_le = parser
+                .parse_utf16_le(
+                    excluded.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(excluded_le.root_node().child(0).unwrap().kind(), keyword);
+            let excluded_be = parser
+                .parse_utf16_be(
+                    excluded.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(excluded_be.root_node().child(0).unwrap().kind(), keyword);
 
             let mut embedded = String::new();
             let mut ranges = Vec::new();
