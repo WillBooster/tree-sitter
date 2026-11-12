@@ -27,8 +27,8 @@ afterEach(() => {
   parser.delete();
 });
 
-describe('Fixed WebAssembly.Memory fallback', () => {
-  it('falls back to chunked parsing when the contiguous string buffer cannot be allocated', () => {
+describe('Fixed WebAssembly.Memory ceiling', () => {
+  it('parses large string inputs and preserves AST headroom without allocating a second full-string copy', () => {
     const rangedTree = parser.parse('const skipped = 0; const kept = 1;', undefined, {
       includedRanges: [{
         startPosition: { row: 0, column: 19 },
@@ -40,11 +40,18 @@ describe('Fixed WebAssembly.Memory fallback', () => {
     expect(rangedTree?.rootNode.text).toBe('const kept = 1;');
     rangedTree?.delete();
 
-    const source = `const data = "${'a'.repeat(16 * 1024 * 1024 - 32)}";`;
-    const tree = parser.parse(source);
-    expect(tree?.rootNode.hasError).toBe(false);
-    expect(tree?.rootNode.toString()).toContain('variable_declarator');
-    expect(tree?.rootNode.endIndex).toBe(source.length);
-    tree?.delete();
+    const denseSource = 'const value = 1;\n'.repeat(26_200);
+    const denseTree = parser.parse(denseSource);
+    expect(denseTree?.rootNode.hasError).toBe(false);
+    expect(denseTree?.rootNode.endIndex).toBe(denseSource.length);
+    expect(denseTree?.rootNode.namedChildCount).toBe(26_200);
+    denseTree?.delete();
+
+    const largeLiteralSource = `const data = "${'a'.repeat(16 * 1024 * 1024 - 32)}";`;
+    const literalTree = parser.parse(largeLiteralSource);
+    expect(literalTree?.rootNode.hasError).toBe(false);
+    expect(literalTree?.rootNode.toString()).toContain('variable_declarator');
+    expect(literalTree?.rootNode.endIndex).toBe(largeLiteralSource.length);
+    literalTree?.delete();
   });
 });

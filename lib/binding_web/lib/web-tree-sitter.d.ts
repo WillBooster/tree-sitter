@@ -17,7 +17,6 @@ declare namespace RuntimeExports {
      */
     function UTF8ToString(ptr: number, maxBytesToRead?: number | undefined, ignoreNul?: boolean | undefined): string;
     function lengthBytesUTF8(str: string): number;
-    function stringToUTF16(str: string, outPtr: number, maxBytesToWrite: number): number;
     type WasmExports = Record<string, () => number>;
     type LoadWebAssemblyModuleFlags = { loadAsync: boolean } & Record<string, boolean>;
     type LoadWebAssemblyModuleResult<F extends LoadWebAssemblyModuleFlags> = F extends { loadAsync: true } ? Promise<WasmExports> : F extends { loadAsync: false } ? WasmExports : Promise<WasmExports> | WasmExports;
@@ -69,7 +68,6 @@ interface WasmModule {
   _ts_parser_new_wasm(): void;
   _ts_parser_enable_logger_wasm(_0: number, _1: number): void;
   _ts_parser_parse_wasm(_0: number, _1: number, _2: number, _3: number, _4: number, _5: number): number;
-  _ts_parser_parse_string_wasm(_0: number, _1: number, _2: number, _3: number): number;
   _ts_parser_parse_limited_wasm(_0: number, _1: number, _2: number, _3: number, _4: number): number;
   _ts_parser_abort_limited_wasm(): void;
   _ts_parser_included_ranges_wasm(_0: number): void;
@@ -167,7 +165,7 @@ interface WasmModule {
 }
 
 export type MainModule = WasmModule & typeof RuntimeExports & {
-  currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
+  currentParseCallback: string | ((index: number, position: {row: number, column: number}) => string | undefined) | null;
   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
   treeSitterSetMemoryLimit(maxBytes: number): boolean;

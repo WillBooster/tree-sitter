@@ -31,12 +31,11 @@ enum EmccSource {
     Podman,
 }
 
-const EXPORTED_RUNTIME_METHODS: [&str; 9] = [
+const EXPORTED_RUNTIME_METHODS: [&str; 8] = [
     "AsciiToString",
     "stringToUTF8",
     "UTF8ToString",
     "lengthBytesUTF8",
-    "stringToUTF16",
     "loadWebAssemblyModule",
     "HEAPU16",
     "HEAP32",
@@ -358,10 +357,6 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                 "lengthBytesUTF8(str: string): number",
             )
             .replace(
-                "stringToUTF16(str: any, outPtr: any, maxBytesToWrite: any): number",
-                "stringToUTF16(str: string, outPtr: number, maxBytesToWrite: number): number",
-            )
-            .replace(
                 concat!(
                     "loadWebAssemblyModule(binary: any, flags: any, libName?: string | ",
                     "undefined, localScope?: any | undefined, handle?: number | undefined): any"
@@ -391,7 +386,7 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                 "WasmModule & typeof RuntimeExports;",
                 indoc! {"
                 WasmModule & typeof RuntimeExports & {
-                  currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
+                  currentParseCallback: string | ((index: number, position: {row: number, column: number}) => string | undefined) | null;
                   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
                   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
                   treeSitterSetMemoryLimit(maxBytes: number): boolean;

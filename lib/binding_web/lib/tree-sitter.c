@@ -111,6 +111,7 @@ static void marshal_language_metadata(const TSLanguageMetadata *metadata) {
 
 extern void tree_sitter_parse_callback(
   char *input_buffer,
+  uint32_t max_code_units,
   uint32_t index,
   uint32_t row,
   uint32_t column,
@@ -160,14 +161,15 @@ static const char *call_parse_callback(
   char *buffer = (char *)payload;
   tree_sitter_parse_callback(
     buffer,
+    byte_to_code_unit(INPUT_BUFFER_SIZE),
     byte_to_code_unit(byte),
     position.row,
     byte_to_code_unit(position.column),
     bytes_read
   );
   *bytes_read = code_unit_to_byte(*bytes_read);
-  if (*bytes_read >= INPUT_BUFFER_SIZE) {
-    *bytes_read = INPUT_BUFFER_SIZE - 2;
+  if (*bytes_read > INPUT_BUFFER_SIZE) {
+    *bytes_read = INPUT_BUFFER_SIZE;
   }
   return buffer;
 }
@@ -245,22 +247,6 @@ TSTree *ts_parser_parse_wasm(
     .progress_callback = has_progress_callback ? progress_callback : NULL,
   };
   return ts_parser_parse_with_options(self, old_tree, input, options);
-}
-
-TSTree *ts_parser_parse_string_wasm(
-  TSParser *self,
-  const TSTree *old_tree,
-  const char *string,
-  uint32_t byte_length
-) {
-  apply_included_ranges(self, NULL, 0);
-  return ts_parser_parse_string_encoding(
-    self,
-    old_tree,
-    string,
-    byte_length,
-    TSInputEncodingUTF16LE
-  );
 }
 
 TSTree *ts_parser_parse_limited_wasm(

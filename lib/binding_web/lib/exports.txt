@@ -59,7 +59,6 @@
 "ts_parser_enable_logger_wasm",
 "ts_parser_new_wasm",
 "ts_parser_parse_wasm",
-"ts_parser_parse_string_wasm",
 "ts_parser_parse_limited_wasm",
 "ts_parser_abort_limited_wasm",
 "ts_parser_reset",

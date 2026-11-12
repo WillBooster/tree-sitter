@@ -229,11 +229,12 @@ export class Parser {
     }
 
     const progressCallback = options?.progressCallback ?? null;
+    C.currentParseCallback = callback;
     C.currentProgressCallback = progressCallback;
     this.syncLogger();
 
     try {
-      const treeAddress = this.runParse(callback, oldTree, options?.includedRanges, maxMemoryBytes, Boolean(progressCallback));
+      const treeAddress = this.runParse(oldTree, options?.includedRanges, maxMemoryBytes, Boolean(progressCallback));
       if (!treeAddress) return null;
       if (!this.language) throw new Error('Parser must have a language to parse');
       return new Tree(INTERNAL, treeAddress, this.language, callback);
@@ -261,36 +262,22 @@ export class Parser {
 
   /** @internal */
   private runParse(
-    callback: string | ParseCallback,
     oldTree: Tree | null | undefined,
     includedRanges: Range[] | undefined,
     maxMemoryBytes: number | undefined,
     hasProgressCallback: boolean,
   ): number {
     if (maxMemoryBytes !== undefined) {
-      C.currentParseCallback = toParseCallback(callback);
       return parseLimitedWasm(this[0], this[1], includedRanges, maxMemoryBytes, hasProgressCallback);
-    }
-
-    const oldTreeAddress = oldTree ? oldTree[0] : 0;
-    if (
-      !includedRanges?.length &&
-      typeof callback === 'string' &&
-      !hasProgressCallback &&
-      callback.length <= MAX_DIRECT_STRING_CODE_UNITS
-    ) {
-      const directResult = parseStringWasm(this[0], this[1], oldTreeAddress, callback);
-      if (directResult !== undefined) return directResult;
     }
 
     const [rangeAddress, rangeCount] = prepareRanges(includedRanges);
     if (rangeCount && !rangeAddress) return 0;
     try {
-      C.currentParseCallback = toParseCallback(callback);
       return C._ts_parser_parse_wasm(
         this[0],
         this[1],
-        oldTreeAddress,
+        oldTree ? oldTree[0] : 0,
         rangeAddress,
         rangeCount,
         hasProgressCallback ? 1 : 0,
@@ -337,22 +324,12 @@ export class Parser {
   }
 }
 
-const INPUT_BUFFER_CODE_UNITS = (10 * 1024) >> 1;
-const CHUNK_CODE_UNITS = INPUT_BUFFER_CODE_UNITS - 1;
-const MAX_DIRECT_STRING_CODE_UNITS = 16 * 1024 * 1024;
-
 function validateMemoryLimit(maxMemoryBytes?: number): number | undefined {
   if (maxMemoryBytes !== undefined &&
     (!Number.isSafeInteger(maxMemoryBytes) || maxMemoryBytes <= 0 || maxMemoryBytes > 0x7fffffff)) {
     throw new RangeError('maxMemoryBytes must be a positive integer no greater than 2147483647');
   }
   return maxMemoryBytes;
-}
-
-function toParseCallback(callback: string | ParseCallback): ParseCallback {
-  return typeof callback === 'string'
-    ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
-    : callback;
 }
 
 function prepareRanges(ranges?: Range[]): [number, number] {
@@ -365,34 +342,6 @@ function prepareRanges(ranges?: Range[]): [number, number] {
     address += SIZE_OF_RANGE;
   }
   return [rangeAddress, ranges.length];
-}
-
-function parseStringWasm(
-  parserAddress: number,
-  inputBuffer: number,
-  oldTreeAddress: number,
-  source: string,
-): number | undefined {
-  const length = source.length;
-  const byteLength = length * 2;
-  const allocatedBuffer = length > INPUT_BUFFER_CODE_UNITS ? C._malloc(byteLength) : 0;
-  if (length > INPUT_BUFFER_CODE_UNITS && !allocatedBuffer) return undefined;
-  try {
-    const bufferAddress = allocatedBuffer || inputBuffer;
-    const heapU16 = C.HEAPU16;
-    const base = bufferAddress >>> 1;
-    for (let i = 0; i < length; i++) {
-      heapU16[base + i] = source.charCodeAt(i);
-    }
-    return C._ts_parser_parse_string_wasm(
-      parserAddress,
-      oldTreeAddress,
-      bufferAddress,
-      byteLength,
-    );
-  } finally {
-    if (allocatedBuffer) C._free(allocatedBuffer);
-  }
 }
 
 function parseLimitedWasm(
