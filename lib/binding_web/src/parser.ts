@@ -279,7 +279,8 @@ export class Parser {
       !hasProgressCallback &&
       callback.length <= MAX_DIRECT_STRING_CODE_UNITS
     ) {
-      return parseStringWasm(this[0], this[1], oldTreeAddress, callback);
+      const directResult = parseStringWasm(this[0], this[1], oldTreeAddress, callback);
+      if (directResult !== undefined) return directResult;
     }
 
     const [rangeAddress, rangeCount] = prepareRanges(includedRanges);
@@ -371,11 +372,11 @@ function parseStringWasm(
   inputBuffer: number,
   oldTreeAddress: number,
   source: string,
-): number {
+): number | undefined {
   const length = source.length;
   const byteLength = length * 2;
   const allocatedBuffer = length > INPUT_BUFFER_CODE_UNITS ? C._malloc(byteLength) : 0;
-  if (length > INPUT_BUFFER_CODE_UNITS && !allocatedBuffer) return 0;
+  if (length > INPUT_BUFFER_CODE_UNITS && !allocatedBuffer) return undefined;
   try {
     const bufferAddress = allocatedBuffer || inputBuffer;
     const heapU16 = C.HEAPU16;
