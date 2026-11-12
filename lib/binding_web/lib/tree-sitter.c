@@ -225,6 +225,21 @@ static void apply_included_ranges(
   } else if (!has_default_included_range(self)) {
     ts_parser_set_included_ranges(self, NULL, 0);
   }
+  free(ranges);
+}
+
+static TSTree *parse_with_callback(
+  TSParser *self,
+  char *input_buffer,
+  const TSTree *old_tree,
+  bool has_progress_callback
+) {
+  TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
+  TSParseOptions options = {
+    .payload = NULL,
+    .progress_callback = has_progress_callback ? progress_callback : NULL,
+  };
+  return ts_parser_parse_with_options(self, old_tree, input, options);
 }
 
 TSTree *ts_parser_parse_wasm(
@@ -236,17 +251,7 @@ TSTree *ts_parser_parse_wasm(
   bool has_progress_callback
 ) {
   apply_included_ranges(self, ranges, range_count);
-  TSInput input = {
-    input_buffer,
-    call_parse_callback,
-    TSInputEncodingUTF16LE,
-    NULL,
-  };
-  TSParseOptions options = {
-    .payload = NULL,
-    .progress_callback = has_progress_callback ? progress_callback : NULL,
-  };
-  return ts_parser_parse_with_options(self, old_tree, input, options);
+  return parse_with_callback(self, input_buffer, old_tree, has_progress_callback);
 }
 
 TSTree *ts_parser_parse_limited_wasm(
@@ -256,10 +261,8 @@ TSTree *ts_parser_parse_limited_wasm(
   uint32_t range_count,
   bool has_progress_callback
 ) {
-  WebParseBudget *budget = malloc(sizeof(WebParseBudget));
+  WebParseBudget *budget = web_budget_new(ranges);
   if (!budget) return NULL;
-  budget->allocations = NULL;
-  budget->parser = NULL;
   if (setjmp(budget->jump)) {
     current_parse_budget = NULL;
     if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
@@ -274,12 +277,8 @@ TSTree *ts_parser_parse_limited_wasm(
   ts_parser_set_language(limited_parser, ts_parser_language(self));
   ts_parser_set_logger(limited_parser, ts_parser_logger(self));
   apply_included_ranges(limited_parser, ranges, range_count);
-  TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
-  TSParseOptions options = {
-    .payload = NULL,
-    .progress_callback = has_progress_callback ? progress_callback : NULL,
-  };
-  TSTree *tree = ts_parser_parse_with_options(limited_parser, NULL, input, options);
+  budget->ranges = NULL;
+  TSTree *tree = parse_with_callback(limited_parser, input_buffer, NULL, has_progress_callback);
   uint32_t included_range_count;
   const TSRange *included_ranges = ts_parser_included_ranges(limited_parser, &included_range_count);
   ts_parser_set_included_ranges(self, included_ranges, included_range_count);

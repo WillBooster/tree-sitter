@@ -14,6 +14,7 @@ typedef struct {
   jmp_buf jump;
   WebAllocation *allocations;
   TSParser *parser;
+  void *ranges;
 } WebParseBudget;
 
 union WebAllocation {
@@ -85,9 +86,20 @@ static void *web_realloc(void *pointer, size_t size) {
   return allocation + 1;
 }
 
+static WebParseBudget *web_budget_new(void *ranges) {
+  WebParseBudget *budget = calloc(1, sizeof(WebParseBudget));
+  if (!budget) {
+    free(ranges);
+    return NULL;
+  }
+  budget->ranges = ranges;
+  return budget;
+}
+
 static void web_budget_discard(WebParseBudget *budget) {
   // A failed allocation can unwind from a half-updated parse; discard its allocations without walking that stack.
   current_parse_budget = NULL;
+  free(budget->ranges);
   for (WebAllocation *allocation = budget->allocations; allocation;) {
     WebAllocation *next = allocation->data.next;
     free(allocation);

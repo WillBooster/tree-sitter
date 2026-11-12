@@ -96,6 +96,12 @@ describe('Parse memory limit', () => {
 
   it('cleans up when a callback throws during a limited parse', () => {
     expect(() => parser.parse('f<'.repeat(1000), undefined, {
+      includedRanges: [{
+        startPosition: { row: 0, column: 0 },
+        endPosition: { row: 0, column: 2000 },
+        startIndex: 0,
+        endIndex: 2000,
+      }],
       maxMemoryBytes: 48 * 2 ** 20,
       progressCallback: () => { throw new Error('callback failed'); },
     })).toThrow('callback failed');

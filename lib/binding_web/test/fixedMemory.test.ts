@@ -53,5 +53,31 @@ describe('Fixed WebAssembly.Memory ceiling', () => {
     expect(literalTree?.rootNode.toString()).toContain('variable_declarator');
     expect(literalTree?.rootNode.endIndex).toBe(largeLiteralSource.length);
     literalTree?.delete();
+
+    const line = 'const value = 1;\n';
+    const rangeCount = 25_600;
+    const manyRangesSource = line.repeat(rangeCount);
+    const includedRanges = Array.from({ length: rangeCount }, (_, i) => ({
+      startIndex: i * line.length,
+      endIndex: (i + 1) * line.length - 1,
+      startPosition: { row: i, column: 0 },
+      endPosition: { row: i, column: line.length - 1 },
+    }));
+    const manyRangesTree = parser.parse(manyRangesSource, undefined, { includedRanges });
+    expect(manyRangesTree?.rootNode.hasError).toBe(false);
+    expect(manyRangesTree?.rootNode.namedChildCount).toBe(rangeCount);
+    expect(manyRangesTree?.rootNode.endIndex).toBe(manyRangesSource.length - 1);
+    manyRangesTree?.delete();
+
+    const limitedRangeCount = 24_800;
+    const limitedRangesSource = line.repeat(limitedRangeCount);
+    const limitedRanges = includedRanges.slice(0, limitedRangeCount);
+    const limitedRangesTree = parser.parse(limitedRangesSource, undefined, {
+      includedRanges: limitedRanges,
+      maxMemoryBytes: 32 * 2 ** 20,
+    });
+    expect(limitedRangesTree?.rootNode.hasError).toBe(false);
+    expect(limitedRangesTree?.rootNode.namedChildCount).toBe(limitedRangeCount);
+    limitedRangesTree?.delete();
   });
 });

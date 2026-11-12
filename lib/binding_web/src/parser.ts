@@ -273,18 +273,14 @@ export class Parser {
 
     const [rangeAddress, rangeCount] = prepareRanges(includedRanges);
     if (rangeCount && !rangeAddress) return 0;
-    try {
-      return C._ts_parser_parse_wasm(
-        this[0],
-        this[1],
-        oldTree ? oldTree[0] : 0,
-        rangeAddress,
-        rangeCount,
-        hasProgressCallback ? 1 : 0,
-      );
-    } finally {
-      if (rangeAddress) C._free(rangeAddress);
-    }
+    return C._ts_parser_parse_wasm(
+      this[0],
+      this[1],
+      oldTree ? oldTree[0] : 0,
+      rangeAddress,
+      rangeCount,
+      hasProgressCallback ? 1 : 0,
+    );
   }
 
   /**
@@ -336,12 +332,17 @@ function prepareRanges(ranges?: Range[]): [number, number] {
   if (!ranges?.length) return [0, 0];
   const rangeAddress = C._calloc(ranges.length, SIZE_OF_RANGE);
   if (!rangeAddress) return [0, ranges.length];
-  let address = rangeAddress;
-  for (const range of ranges) {
-    marshalRange(address, range);
-    address += SIZE_OF_RANGE;
+  try {
+    let address = rangeAddress;
+    for (const range of ranges) {
+      marshalRange(address, range);
+      address += SIZE_OF_RANGE;
+    }
+    return [rangeAddress, ranges.length];
+  } catch (error) {
+    C._free(rangeAddress);
+    throw error;
   }
-  return [rangeAddress, ranges.length];
 }
 
 function parseLimitedWasm(
@@ -352,10 +353,8 @@ function parseLimitedWasm(
   hasProgressCallback: boolean,
 ): number {
   if (!C.treeSitterSetMemoryLimit(maxMemoryBytes)) return 0;
-  let rangeAddress = 0;
   try {
     const [address, rangeCount] = prepareRanges(ranges);
-    rangeAddress = address;
     if (rangeCount && !address) return 0;
     try {
       return C._ts_parser_parse_limited_wasm(
@@ -370,7 +369,6 @@ function parseLimitedWasm(
       throw error;
     }
   } finally {
-    if (rangeAddress) C._free(rangeAddress);
     C.treeSitterSetMemoryLimit(0);
   }
 }
