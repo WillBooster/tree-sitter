@@ -7,13 +7,14 @@ import { Parser, Language } from '../src';
 let JavaScript: Language;
 let HTML: Language;
 let JSON: Language;
+let Python: Language;
 let languageURL: (name: LanguageName) => string;
 
 describe('Parser', () => {
   let parser: Parser;
 
   beforeAll(async () => {
-    ({ JavaScript, HTML, JSON, languageURL } = await helper);
+    ({ JavaScript, HTML, JSON, Python, languageURL } = await helper);
   });
 
   beforeEach(() => {
@@ -391,6 +392,28 @@ describe('Parser', () => {
         '(expression_statement (call_expression function: (identifier) arguments: (arguments))) ' +
         '(expression_statement (identifier)))'
       );
+    });
+
+    it('preserves supplementary-plane identifiers across buffer and callback chunk boundaries', () => {
+      parser.setLanguage(Python);
+      for (const identifier of ['𐐀', '𝒜']) {
+        for (const padLength of [5116, 5117, 5118]) {
+          const source = `#${' '.repeat(padLength)}\n${identifier} = 1\n`;
+          for (const input of [
+            source,
+            (index: number) => source.slice(index, index + 6000),
+            (index: number) => source.slice(index, index + 1),
+          ]) {
+            const tree = parser.parse(input)!;
+            expect(tree.rootNode.hasError).toBe(false);
+            expect(tree.rootNode.toString()).toBe(
+              '(module (comment) (expression_statement (assignment left: (identifier) right: (integer))))',
+            );
+            expect(tree.rootNode.namedChild(1)?.namedChild(0)?.namedChild(0)?.text).toBe(identifier);
+            tree.delete();
+          }
+        }
+      }
     });
 
     it('does not cancel when a JavaScript callback returns a truthy non-boolean', () => {

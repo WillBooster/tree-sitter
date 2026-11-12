@@ -3280,6 +3280,77 @@ fn test_parsing_utf8_with_short_input_chunks() {
 }
 
 #[test]
+fn test_parsing_utf16_with_short_input_chunks() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+
+    let mut lone_surrogates = "\"x".encode_utf16().collect::<Vec<_>>();
+    lone_surrogates.extend([0xD83D, ';' as u16, '\n' as u16, 0xD83E]);
+
+    for units in [
+        "π;\n変;𐐀;𝒜;\n\"€😀\";".encode_utf16().collect::<Vec<_>>(),
+        lone_surrogates,
+    ] {
+        let le_units = units.iter().copied().map(u16::to_le).collect::<Vec<_>>();
+        let be_units = units.iter().copied().map(u16::to_be).collect::<Vec<_>>();
+        let expected_le = parser.parse_utf16_le(&le_units, None).unwrap();
+        let expected_be = parser.parse_utf16_be(&be_units, None).unwrap();
+        assert_eq!(
+            expected_le.root_node().to_sexp(),
+            expected_be.root_node().to_sexp()
+        );
+
+        for size in 1..=3 {
+            let actual_le = parser
+                .parse_utf16_le_with_options(
+                    &mut |offset, point| {
+                        let prefix = &units[..offset];
+                        let mut lines = prefix.rsplit(|&unit| unit == '\n' as u16);
+                        let column = lines.next().unwrap().len();
+                        let row = lines.count();
+                        assert_eq!(point, Point::new(row, column));
+                        le_units[offset..le_units.len().min(offset + size)].to_vec()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                actual_le.root_node().to_sexp(),
+                expected_le.root_node().to_sexp()
+            );
+            assert_eq!(
+                actual_le.root_node().range(),
+                expected_le.root_node().range()
+            );
+
+            let actual_be = parser
+                .parse_utf16_be_with_options(
+                    &mut |offset, point| {
+                        let prefix = &units[..offset];
+                        let mut lines = prefix.rsplit(|&unit| unit == '\n' as u16);
+                        let column = lines.next().unwrap().len();
+                        let row = lines.count();
+                        assert_eq!(point, Point::new(row, column));
+                        be_units[offset..be_units.len().min(offset + size)].to_vec()
+                    },
+                    None,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                actual_be.root_node().to_sexp(),
+                expected_be.root_node().to_sexp()
+            );
+            assert_eq!(
+                actual_be.root_node().range(),
+                expected_be.root_node().range()
+            );
+        }
+    }
+}
+
+#[test]
 fn test_parsing_with_custom_utf16le_input() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
