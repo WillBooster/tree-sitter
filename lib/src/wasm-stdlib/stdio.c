@@ -1,9 +1,6 @@
 // Scanner-oriented stdio compatibility functions. Formatting writes to memory,
 // while stream operations intentionally perform no I/O.
 
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -84,11 +81,10 @@ static int int_to_str(
 
   if (is_signed && value < 0 && base == 10) {
     is_negative = true;
+    value = -value;
   }
 
-  unsigned long long uval = is_negative
-    ? 0ULL - (unsigned long long)value
-    : (unsigned long long)value;
+  unsigned long long uval = (unsigned long long)value;
   while (uval > 0) {
     temp[i++] = digits[uval % base];
     uval /= base;
@@ -113,158 +109,154 @@ static int ptr_to_str(void *ptr, char *buffer) {
   return 2 + len;
 }
 
-typedef struct {
-  char *data;
-  size_t size;
-  size_t pos;
-} output_buffer_t;
-
-static void append_char(output_buffer_t *out, char ch) {
-  if (out->size > 1 && out->pos < out->size - 1) {
-    out->data[out->pos++] = ch;
-  }
-}
-
-static void append_repeated(output_buffer_t *out, char ch, int count) {
-  for (int i = 0; i < count; i++) {
-    append_char(out, ch);
-  }
-}
-
-static void write_formatted_to_buffer(
-  output_buffer_t *out,
+static int write_formatted_to_buffer(
+  char *buffer,
+  size_t buffer_size,
+  size_t *pos,
   const char *str,
-  int len,
   int width,
   const format_flags_t *flags
 ) {
+  int len = strlen(str);
+  int written = 0;
   int pad_len = (width > len) ? (width - len) : 0;
-  if (!flags->left_justify) {
-    append_repeated(out, flags->zero_pad ? '0' : ' ', pad_len);
-  }
-  for (int i = 0; i < len; i++) {
-    append_char(out, str[i]);
-  }
-  if (flags->left_justify) {
-    append_repeated(out, ' ', pad_len);
-  }
-}
+  int zero_pad = flags->zero_pad && !flags->left_justify;
 
-static long long read_signed_arg(va_list *args, int length_mod) {
-  if (length_mod >= 2) return va_arg(*args, long long);
-  if (length_mod == 1) return va_arg(*args, long);
-  return va_arg(*args, int);
-}
-
-static unsigned long long read_unsigned_arg(va_list *args, int length_mod) {
-  if (length_mod >= 2) return va_arg(*args, unsigned long long);
-  if (length_mod == 1) return va_arg(*args, unsigned long);
-  return va_arg(*args, unsigned int);
-}
-
-static int format_string_arg(const char *str, int precision, const char **output_str) {
-  if (!str) str = "(null)";
-  *output_str = str;
-  int str_len = (int)strlen(str);
-  return (precision >= 0 && str_len > precision) ? precision : str_len;
-}
-
-static int format_char_or_unknown(char spec, va_list *args, char *temp_buf) {
-  if (spec == 'c') {
-    temp_buf[0] = (char)va_arg(*args, int);
-    temp_buf[1] = '\0';
-    return 1;
-  }
-  temp_buf[0] = '%';
-  temp_buf[1] = spec;
-  temp_buf[2] = '\0';
-  return spec ? 2 : 1;
-}
-
-static int format_specifier(
-  const char **fmt_ptr,
-  va_list *args,
-  int precision,
-  char *temp_buf,
-  const char **output_str
-) {
-  const char *p = *fmt_ptr;
-  int length_mod = 0;
-  for (; *p == 'l'; p++) length_mod++;
-  if (*p == 'z' && *(p + 1) == 'u') {
-    *fmt_ptr = p + 1;
-    *output_str = temp_buf;
-    return int_to_str((long long)va_arg(*args, size_t), temp_buf, 10, false, false);
-  }
-  *fmt_ptr = p;
-  *output_str = temp_buf;
-  switch (*p) {
-    case 's': return format_string_arg(va_arg(*args, const char *), precision, output_str);
-    case 'd':
-    case 'i': return int_to_str(read_signed_arg(args, length_mod), temp_buf, 10, true, false);
-    case 'u':
-    case 'x':
-    case 'X':
-      return int_to_str(
-        (long long)read_unsigned_arg(args, length_mod), temp_buf, *p == 'u' ? 10 : 16, false, *p == 'X'
-      );
-    case 'p': return ptr_to_str(va_arg(*args, void *), temp_buf);
-    default: return format_char_or_unknown(*p, args, temp_buf);
-  }
-}
-
-static bool format_percent(const char **fmt_ptr, va_list *args, output_buffer_t *out, int *total_chars) {
-  const char *p = *fmt_ptr;
-  if (*p == '%') {
-    append_char(out, '%');
-    (*total_chars)++;
-    return true;
+  if (!flags->left_justify && pad_len > 0) {
+    char pad_char = zero_pad ? '0' : ' ';
+    for (int i = 0; i < pad_len && *pos < buffer_size - 1; i++) {
+      buffer[(*pos)++] = pad_char;
+      written++;
+    }
   }
 
-  int width, precision;
-  format_flags_t flags;
-  p = parse_format_spec(p, &width, &precision, &flags);
-  if (!*p) return false;
+  for (int i = 0; i < len && *pos < buffer_size - 1; i++) {
+    buffer[(*pos)++] = str[i];
+    written++;
+  }
 
-  char temp_buf[64];
-  const char *output_str = temp_buf;
-  int str_len = format_specifier(&p, args, precision, temp_buf, &output_str);
-  if (!*p) return false;
+  if (flags->left_justify && pad_len > 0) {
+    for (int i = 0; i < pad_len && *pos < buffer_size - 1; i++) {
+      buffer[(*pos)++] = ' ';
+      written++;
+    }
+  }
 
-  *fmt_ptr = p;
-  *total_chars += (width > str_len) ? width : str_len;
-  write_formatted_to_buffer(out, output_str, str_len, width, &flags);
-  return true;
+  return written;
 }
 
 static int vsnprintf_impl(char *buffer, size_t buffsz, const char *format, va_list args) {
-  if (!format || (buffsz > 0 && !buffer)) return -1;
+  if (!buffer || buffsz == 0 || !format) return -1;
 
-  va_list args_copy;
-  va_copy(args_copy, args);
-
-  output_buffer_t out = {buffer, buffsz, 0};
+  size_t pos = 0;
   int total_chars = 0;
-  for (const char *p = format; *p; p++) {
-    if (*p != '%') {
-      append_char(&out, *p);
+  const char *p = format;
+
+  while (*p) {
+    if (*p == '%') {
+      p++;
+      if (*p == '%') {
+        if (pos < buffsz - 1) buffer[pos++] = '%';
+        total_chars++;
+        p++;
+        continue;
+      }
+
+      int width, precision;
+      format_flags_t flags;
+      p = parse_format_spec(p, &width, &precision, &flags);
+
+      char temp_buf[64];
+      const char *output_str = temp_buf;
+
+      switch (*p) {
+        case 's': {
+          const char *str = va_arg(args, const char*);
+          if (!str) str = "(null)";
+
+          int str_len = strlen(str);
+          if (precision >= 0 && str_len > precision) {
+            strncpy(temp_buf, str, precision);
+            temp_buf[precision] = '\0';
+            output_str = temp_buf;
+          } else {
+            output_str = str;
+          }
+          break;
+        }
+        case 'd':
+        case 'i': {
+          int value = va_arg(args, int);
+          int_to_str(value, temp_buf, 10, true, false);
+          break;
+        }
+        case 'u': {
+          unsigned int value = va_arg(args, unsigned int);
+          int_to_str(value, temp_buf, 10, false, false);
+          break;
+        }
+        case 'x': {
+          unsigned int value = va_arg(args, unsigned int);
+          int_to_str(value, temp_buf, 16, false, false);
+          break;
+        }
+        case 'X': {
+          unsigned int value = va_arg(args, unsigned int);
+          int_to_str(value, temp_buf, 16, false, true);
+          break;
+        }
+        case 'p': {
+          void *ptr = va_arg(args, void*);
+          ptr_to_str(ptr, temp_buf);
+          break;
+        }
+        case 'c': {
+          int c = va_arg(args, int);
+          temp_buf[0] = (char)c;
+          temp_buf[1] = '\0';
+          break;
+        }
+        case 'z': {
+          if (*(p + 1) == 'u') {
+            size_t value = va_arg(args, size_t);
+            int_to_str(value, temp_buf, 10, false, false);
+            p++;
+          } else {
+            temp_buf[0] = 'z';
+            temp_buf[1] = '\0';
+          }
+          break;
+        }
+        default:
+          temp_buf[0] = '%';
+          temp_buf[1] = *p;
+          temp_buf[2] = '\0';
+          break;
+      }
+
+      int str_len = strlen(output_str);
+      int formatted_len = (width > str_len) ? width : str_len;
+      total_chars += formatted_len;
+
+      if (pos < buffsz - 1) {
+        write_formatted_to_buffer(buffer, buffsz, &pos, output_str, width, &flags);
+      }
+
+    } else {
+      if (pos < buffsz - 1) buffer[pos++] = *p;
       total_chars++;
-      continue;
     }
     p++;
-    if (!format_percent(&p, &args_copy, &out, &total_chars)) break;
   }
 
-  va_end(args_copy);
-  if (buffsz > 0) {
-    size_t nul_pos = out.pos < buffsz ? out.pos : buffsz - 1;
-    buffer[nul_pos] = '\0';
-  }
+  if (buffsz > 0) buffer[pos < buffsz ? pos : buffsz - 1] = '\0';
 
   return total_chars;
 }
 
 int snprintf(char *restrict buffer, size_t buffsz, const char *restrict format, ...) {
+  if (!buffer || buffsz == 0 || !format) return -1;
+
   va_list args;
   va_start(args, format);
   int result = vsnprintf_impl(buffer, buffsz, format, args);
@@ -277,7 +269,6 @@ int vsnprintf(char *restrict buffer, size_t buffsz, const char *restrict format,
   return vsnprintf_impl(buffer, buffsz, format, vlist);
 }
 
-#ifndef __EMSCRIPTEN__
 int fclose(FILE *stream) {
   return 0;
 }
@@ -299,8 +290,5 @@ size_t fwrite(const void *restrict buffer, size_t size, size_t nmemb, FILE *rest
 }
 
 int fprintf(FILE *restrict stream, const char *restrict format, ...) {
-  (void)stream;
-  (void)format;
   return 0;
 }
-#endif

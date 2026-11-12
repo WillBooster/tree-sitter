@@ -182,7 +182,6 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "--pre-js",     "lib/binding_web/lib/prefix.js",
         "-o",           runtime_path,
         "lib/src/lib.c",
-        "lib/src/wasm-stdlib/stdio.c",
         "lib/binding_web/lib/tree-sitter.c",
     ]);
     if args.emit_tsd {
