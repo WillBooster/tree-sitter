@@ -710,6 +710,15 @@ impl Parser {
     #[doc(alias = "ts_parser_parse")]
     pub fn parse(&mut self, text: impl AsRef<[u8]>, old_tree: Option<&Tree>) -> Option<Tree> {
         let bytes = text.as_ref();
+        if let Ok(len) = u32::try_from(bytes.len()) {
+            return unsafe {
+                self.parse_raw_bytes(
+                    (bytes.as_ptr().cast::<c_char>(), len),
+                    old_tree,
+                    ffi::TSInputEncodingUTF8,
+                )
+            };
+        }
         let len = bytes.len();
         self.parse_with_options(
             &mut |i, _| {
@@ -741,84 +750,11 @@ impl Parser {
         old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        type Payload<'a, F, T> = (&'a mut F, Option<T>);
-
-        // This C function is passed to Tree-sitter as the progress callback.
-        unsafe extern "C" fn progress(state: *mut ffi::TSParseState) -> bool {
-            unsafe {
-                let callback = (*state)
-                    .payload
-                    .cast::<ParseProgressCallback>()
-                    .as_mut()
-                    .unwrap();
-                match callback(&ParseState::from_raw(state)) {
-                    ControlFlow::Continue(()) => false,
-                    ControlFlow::Break(()) => true,
-                }
-            }
-        }
-
-        // This C function is passed to Tree-sitter as the input callback.
-        unsafe extern "C" fn read<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
-            payload: *mut c_void,
-            byte_offset: u32,
-            position: ffi::TSPoint,
-            bytes_read: *mut u32,
-        ) -> *const c_char {
-            unsafe {
-                let (callback, text) = payload.cast::<Payload<F, T>>().as_mut().unwrap();
-                *text = Some(callback(byte_offset as usize, position.into()));
-                let slice = text.as_ref().unwrap().as_ref();
-                *bytes_read = slice.len() as u32;
-                slice.as_ptr().cast::<c_char>()
-            }
-        }
-
-        let empty_options = ffi::TSParseOptions {
-            payload: ptr::null_mut(),
-            progress_callback: None,
-        };
-
-        let mut callback_ptr;
-        let parse_options = if let Some(options) = options {
-            if let Some(cb) = options.progress_callback {
-                callback_ptr = cb;
-                ffi::TSParseOptions {
-                    payload: core::ptr::addr_of_mut!(callback_ptr).cast::<c_void>(),
-                    progress_callback: Some(progress),
-                }
-            } else {
-                empty_options
-            }
-        } else {
-            empty_options
-        };
-
-        // A pointer to this payload is passed on every call to the `read` C function.
-        // The payload contains two things:
-        // 1. A reference to the rust `callback`.
-        // 2. The text that was returned from the previous call to `callback`. This allows the
-        //    callback to return owned values like vectors.
-        let mut payload: Payload<F, T> = (callback, None);
-
-        let c_input = ffi::TSInput {
-            payload: ptr::addr_of_mut!(payload).cast::<c_void>(),
-            read: Some(read::<T, F>),
-            encoding: ffi::TSInputEncodingUTF8,
-            decode: None,
-        };
-
-        let c_old_tree = old_tree.map_or(ptr::null_mut(), |t| t.0.as_ptr());
-        unsafe {
-            let c_new_tree = ffi::ts_parser_parse_with_options(
-                self.0.as_ptr(),
-                c_old_tree,
-                c_input,
-                parse_options,
-            );
-
-            NonNull::new(c_new_tree).map(Tree)
-        }
+        self.parse_chunks::<0, u8, T, F>(
+            callback,
+            old_tree,
+            (options, ffi::TSInputEncodingUTF8, None),
+        )
     }
 
     /// Parse a slice of UTF16 little-endian text.
@@ -833,19 +769,7 @@ impl Parser {
         input: impl AsRef<[u16]>,
         old_tree: Option<&Tree>,
     ) -> Option<Tree> {
-        let code_points = input.as_ref();
-        let len = code_points.len();
-        self.parse_utf16_le_with_options(
-            &mut |i, _| {
-                if i < len {
-                    &code_points[i..]
-                } else {
-                    Default::default()
-                }
-            },
-            old_tree,
-            None,
-        )
+        self.parse_utf16_slice::<true>(input.as_ref(), old_tree)
     }
 
     /// Parse UTF16 little-endian text provided in chunks by a callback.
@@ -865,89 +789,7 @@ impl Parser {
         old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        type Payload<'a, F, T> = (&'a mut F, Option<T>);
-
-        unsafe extern "C" fn progress(state: *mut ffi::TSParseState) -> bool {
-            unsafe {
-                let callback = (*state)
-                    .payload
-                    .cast::<ParseProgressCallback>()
-                    .as_mut()
-                    .unwrap();
-                match callback(&ParseState::from_raw(state)) {
-                    ControlFlow::Continue(()) => false,
-                    ControlFlow::Break(()) => true,
-                }
-            }
-        }
-
-        // This C function is passed to Tree-sitter as the input callback.
-        unsafe extern "C" fn read<T: AsRef<[u16]>, F: FnMut(usize, Point) -> T>(
-            payload: *mut c_void,
-            byte_offset: u32,
-            position: ffi::TSPoint,
-            bytes_read: *mut u32,
-        ) -> *const c_char {
-            unsafe {
-                let (callback, text) = payload.cast::<Payload<F, T>>().as_mut().unwrap();
-                *text = Some(callback(
-                    (byte_offset / 2) as usize,
-                    Point {
-                        row: position.row as usize,
-                        column: position.column as usize / 2,
-                    },
-                ));
-                let slice = text.as_ref().unwrap().as_ref();
-                *bytes_read = slice.len() as u32 * 2;
-                slice.as_ptr().cast::<c_char>()
-            }
-        }
-
-        let empty_options = ffi::TSParseOptions {
-            payload: ptr::null_mut(),
-            progress_callback: None,
-        };
-
-        let mut callback_ptr;
-        let parse_options = if let Some(options) = options {
-            if let Some(cb) = options.progress_callback {
-                callback_ptr = cb;
-                ffi::TSParseOptions {
-                    payload: core::ptr::addr_of_mut!(callback_ptr).cast::<c_void>(),
-                    progress_callback: Some(progress),
-                }
-            } else {
-                empty_options
-            }
-        } else {
-            empty_options
-        };
-
-        // A pointer to this payload is passed on every call to the `read` C function.
-        // The payload contains two things:
-        // 1. A reference to the rust `callback`.
-        // 2. The text that was returned from the previous call to `callback`. This allows the
-        //    callback to return owned values like vectors.
-        let mut payload: Payload<F, T> = (callback, None);
-
-        let c_input = ffi::TSInput {
-            payload: core::ptr::addr_of_mut!(payload).cast::<c_void>(),
-            read: Some(read::<T, F>),
-            encoding: ffi::TSInputEncodingUTF16LE,
-            decode: None,
-        };
-
-        let c_old_tree = old_tree.map_or(ptr::null_mut(), |t| t.0.as_ptr());
-        unsafe {
-            let c_new_tree = ffi::ts_parser_parse_with_options(
-                self.0.as_ptr(),
-                c_old_tree,
-                c_input,
-                parse_options,
-            );
-
-            NonNull::new(c_new_tree).map(Tree)
-        }
+        self.parse_utf16_with_options::<true, T, F>(callback, old_tree, options)
     }
 
     /// Parse a slice of UTF16 big-endian text.
@@ -962,13 +804,7 @@ impl Parser {
         input: impl AsRef<[u16]>,
         old_tree: Option<&Tree>,
     ) -> Option<Tree> {
-        let code_points = input.as_ref();
-        let len = code_points.len();
-        self.parse_utf16_be_with_options(
-            &mut |i, _| if i < len { &code_points[i..] } else { &[] },
-            old_tree,
-            None,
-        )
+        self.parse_utf16_slice::<false>(input.as_ref(), old_tree)
     }
 
     /// Parse UTF16 big-endian text provided in chunks by a callback.
@@ -988,90 +824,7 @@ impl Parser {
         old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        type Payload<'a, F, T> = (&'a mut F, Option<T>);
-
-        // This C function is passed to Tree-sitter as the progress callback.
-        unsafe extern "C" fn progress(state: *mut ffi::TSParseState) -> bool {
-            unsafe {
-                let callback = (*state)
-                    .payload
-                    .cast::<ParseProgressCallback>()
-                    .as_mut()
-                    .unwrap();
-                match callback(&ParseState::from_raw(state)) {
-                    ControlFlow::Continue(()) => false,
-                    ControlFlow::Break(()) => true,
-                }
-            }
-        }
-
-        // This C function is passed to Tree-sitter as the input callback.
-        unsafe extern "C" fn read<T: AsRef<[u16]>, F: FnMut(usize, Point) -> T>(
-            payload: *mut c_void,
-            byte_offset: u32,
-            position: ffi::TSPoint,
-            bytes_read: *mut u32,
-        ) -> *const c_char {
-            unsafe {
-                let (callback, text) = payload.cast::<Payload<F, T>>().as_mut().unwrap();
-                *text = Some(callback(
-                    (byte_offset / 2) as usize,
-                    Point {
-                        row: position.row as usize,
-                        column: position.column as usize / 2,
-                    },
-                ));
-                let slice = text.as_ref().unwrap().as_ref();
-                *bytes_read = slice.len() as u32 * 2;
-                slice.as_ptr().cast::<c_char>()
-            }
-        }
-
-        let empty_options = ffi::TSParseOptions {
-            payload: ptr::null_mut(),
-            progress_callback: None,
-        };
-
-        let mut callback_ptr;
-        let parse_options = if let Some(options) = options {
-            if let Some(cb) = options.progress_callback {
-                callback_ptr = cb;
-                ffi::TSParseOptions {
-                    payload: core::ptr::addr_of_mut!(callback_ptr).cast::<c_void>(),
-                    progress_callback: Some(progress),
-                }
-            } else {
-                empty_options
-            }
-        } else {
-            empty_options
-        };
-
-        // A pointer to this payload is passed on every call to the `read` C function.
-        // The payload contains two things:
-        // 1. A reference to the rust `callback`.
-        // 2. The text that was returned from the previous call to `callback`. This allows the
-        //    callback to return owned values like vectors.
-        let mut payload: Payload<F, T> = (callback, None);
-
-        let c_input = ffi::TSInput {
-            payload: core::ptr::addr_of_mut!(payload).cast::<c_void>(),
-            read: Some(read::<T, F>),
-            encoding: ffi::TSInputEncodingUTF16BE,
-            decode: None,
-        };
-
-        let c_old_tree = old_tree.map_or(ptr::null_mut(), |t| t.0.as_ptr());
-        unsafe {
-            let c_new_tree = ffi::ts_parser_parse_with_options(
-                self.0.as_ptr(),
-                c_old_tree,
-                c_input,
-                parse_options,
-            );
-
-            NonNull::new(c_new_tree).map(Tree)
-        }
+        self.parse_utf16_with_options::<false, T, F>(callback, old_tree, options)
     }
 
     /// Parse text provided in chunks by a callback using a custom encoding.
@@ -1096,23 +849,6 @@ impl Parser {
         old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        type Payload<'a, F, T> = (&'a mut F, Option<T>);
-
-        unsafe extern "C" fn progress(state: *mut ffi::TSParseState) -> bool {
-            unsafe {
-                let callback = (*state)
-                    .payload
-                    .cast::<ParseProgressCallback>()
-                    .as_mut()
-                    .unwrap();
-                match callback(&ParseState::from_raw(state)) {
-                    ControlFlow::Continue(()) => false,
-                    ControlFlow::Break(()) => true,
-                }
-            }
-        }
-
-        // At compile time, create a C-compatible callback that calls the custom `decode` method.
         unsafe extern "C" fn decode_fn<D: Decode>(
             data: *const u8,
             len: u32,
@@ -1127,8 +863,76 @@ impl Parser {
             }
         }
 
-        // This C function is passed to Tree-sitter as the input callback.
-        unsafe extern "C" fn read<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
+        self.parse_chunks::<0, u8, T, F>(
+            callback,
+            old_tree,
+            (options, ffi::TSInputEncodingCustom, Some(decode_fn::<D>)),
+        )
+    }
+
+    fn parse_utf16_slice<const LE: bool>(
+        &mut self,
+        code_points: &[u16],
+        old_tree: Option<&Tree>,
+    ) -> Option<Tree> {
+        let encoding = if LE {
+            ffi::TSInputEncodingUTF16LE
+        } else {
+            ffi::TSInputEncodingUTF16BE
+        };
+        if let Some(byte_len) = code_points
+            .len()
+            .checked_mul(2)
+            .and_then(|n| u32::try_from(n).ok())
+        {
+            return unsafe {
+                self.parse_raw_bytes(
+                    (code_points.as_ptr().cast::<c_char>(), byte_len),
+                    old_tree,
+                    encoding,
+                )
+            };
+        }
+        let len = code_points.len();
+        self.parse_utf16_with_options::<LE, _, _>(
+            &mut |i, _| if i < len { &code_points[i..] } else { &[] },
+            old_tree,
+            None,
+        )
+    }
+
+    fn parse_utf16_with_options<const LE: bool, T: AsRef<[u16]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        old_tree: Option<&Tree>,
+        options: Option<ParseOptions>,
+    ) -> Option<Tree> {
+        let encoding = if LE {
+            ffi::TSInputEncodingUTF16LE
+        } else {
+            ffi::TSInputEncodingUTF16BE
+        };
+        self.parse_chunks::<1, u16, T, F>(callback, old_tree, (options, encoding, None))
+    }
+
+    fn parse_chunks<const UNIT_SHIFT: u32, U, T: AsRef<[U]>, F: FnMut(usize, Point) -> T>(
+        &mut self,
+        callback: &mut F,
+        old_tree: Option<&Tree>,
+        (options, encoding, decode): (
+            Option<ParseOptions>,
+            ffi::TSInputEncoding,
+            ffi::TSDecodeFunction,
+        ),
+    ) -> Option<Tree> {
+        type Payload<'a, F, T> = (&'a mut F, Option<T>);
+
+        unsafe extern "C" fn read<
+            const UNIT_SHIFT: u32,
+            U,
+            T: AsRef<[U]>,
+            F: FnMut(usize, Point) -> T,
+        >(
             payload: *mut c_void,
             byte_offset: u32,
             position: ffi::TSPoint,
@@ -1136,59 +940,89 @@ impl Parser {
         ) -> *const c_char {
             unsafe {
                 let (callback, text) = payload.cast::<Payload<F, T>>().as_mut().unwrap();
-                *text = Some(callback(byte_offset as usize, position.into()));
+                *text = Some(callback(
+                    (byte_offset as usize) >> UNIT_SHIFT,
+                    Point {
+                        row: position.row as usize,
+                        column: (position.column as usize) >> UNIT_SHIFT,
+                    },
+                ));
                 let slice = text.as_ref().unwrap().as_ref();
-                *bytes_read = slice.len() as u32;
+                *bytes_read =
+                    (slice.len().min((u32::MAX as usize) >> UNIT_SHIFT) << UNIT_SHIFT) as u32;
                 slice.as_ptr().cast::<c_char>()
             }
         }
 
-        let empty_options = ffi::TSParseOptions {
-            payload: ptr::null_mut(),
-            progress_callback: None,
+        // Hold the returned chunk in `payload` across the next C read so callbacks may return owned buffers.
+        let mut payload: Payload<F, T> = (callback, None);
+        let c_input = ffi::TSInput {
+            payload: ptr::addr_of_mut!(payload).cast::<c_void>(),
+            read: Some(read::<UNIT_SHIFT, U, T, F>),
+            encoding,
+            decode,
         };
+        unsafe { self.parse_c_input(c_input, old_tree, options) }
+    }
+
+    unsafe fn parse_raw_bytes(
+        &mut self,
+        (bytes, byte_len): (*const c_char, u32),
+        old_tree: Option<&Tree>,
+        encoding: ffi::TSInputEncoding,
+    ) -> Option<Tree> {
+        let c_old_tree = old_tree.map_or(ptr::null(), |t| t.0.as_ptr().cast_const());
+        let c_new_tree = unsafe {
+            ffi::ts_parser_parse_string_encoding(
+                self.0.as_ptr(),
+                c_old_tree,
+                bytes,
+                byte_len,
+                encoding,
+            )
+        };
+        NonNull::new(c_new_tree).map(Tree)
+    }
+
+    unsafe fn parse_c_input(
+        &mut self,
+        c_input: ffi::TSInput,
+        old_tree: Option<&Tree>,
+        options: Option<ParseOptions>,
+    ) -> Option<Tree> {
+        unsafe extern "C" fn progress(state: *mut ffi::TSParseState) -> bool {
+            unsafe {
+                let callback = (*state)
+                    .payload
+                    .cast::<ParseProgressCallback>()
+                    .as_mut()
+                    .unwrap();
+                match callback(&ParseState::from_raw(state)) {
+                    ControlFlow::Continue(()) => false,
+                    ControlFlow::Break(()) => true,
+                }
+            }
+        }
 
         let mut callback_ptr;
-        let parse_options = if let Some(options) = options {
-            if let Some(cb) = options.progress_callback {
-                callback_ptr = cb;
-                ffi::TSParseOptions {
-                    payload: core::ptr::addr_of_mut!(callback_ptr).cast::<c_void>(),
-                    progress_callback: Some(progress),
-                }
-            } else {
-                empty_options
+        let parse_options = if let Some(cb) = options.and_then(|o| o.progress_callback) {
+            callback_ptr = cb;
+            ffi::TSParseOptions {
+                payload: core::ptr::addr_of_mut!(callback_ptr).cast::<c_void>(),
+                progress_callback: Some(progress),
             }
         } else {
-            empty_options
-        };
-
-        // A pointer to this payload is passed on every call to the `read` C function.
-        // The payload contains two things:
-        // 1. A reference to the rust `callback`.
-        // 2. The text that was returned from the previous call to `callback`. This allows the
-        //    callback to return owned values like vectors.
-        let mut payload: Payload<F, T> = (callback, None);
-
-        let c_input = ffi::TSInput {
-            payload: core::ptr::addr_of_mut!(payload).cast::<c_void>(),
-            read: Some(read::<T, F>),
-            encoding: ffi::TSInputEncodingCustom,
-            // Use this custom decode callback
-            decode: Some(decode_fn::<D>),
+            ffi::TSParseOptions {
+                payload: ptr::null_mut(),
+                progress_callback: None,
+            }
         };
 
         let c_old_tree = old_tree.map_or(ptr::null_mut(), |t| t.0.as_ptr());
-        unsafe {
-            let c_new_tree = ffi::ts_parser_parse_with_options(
-                self.0.as_ptr(),
-                c_old_tree,
-                c_input,
-                parse_options,
-            );
-
-            NonNull::new(c_new_tree).map(Tree)
-        }
+        let c_new_tree = unsafe {
+            ffi::ts_parser_parse_with_options(self.0.as_ptr(), c_old_tree, c_input, parse_options)
+        };
+        NonNull::new(c_new_tree).map(Tree)
     }
 
     /// Instruct the parser to start the next parse from the beginning.
