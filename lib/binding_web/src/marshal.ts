@@ -1,43 +1,23 @@
-import { INTERNAL, Point, Range, SIZE_OF_NODE, SIZE_OF_RANGE, C } from "./constants";
-import { Node } from "./node";
-import { Tree } from "./tree";
-import { TRANSFER_BUFFER } from "./parser";
-import { LanguageMetadata } from "./language";
-import { Edit } from "./edit";
+import { INTERNAL, Point, Range, SIZE_OF_NODE, SIZE_OF_RANGE, C } from './constants';
+import { Node } from './node';
+import { Tree } from './tree';
+import { TRANSFER_BUFFER } from './parser';
+import { LanguageMetadata } from './language';
+import { Edit } from './edit';
 
 /**
  * @internal
  *
  * Marshals a {@link Node} to the transfer buffer.
  */
-export function marshalNode(node: Node, index = 0) {
+export function marshalNode(node: Node, index = 0): void {
+  const base = (TRANSFER_BUFFER + index * SIZE_OF_NODE) >>> 2;
   const heap = C.HEAP32;
-  const idx = (TRANSFER_BUFFER + index * SIZE_OF_NODE) >> 2;
-  heap[idx] = node.id;
-  heap[idx + 1] = node.startIndex;
-  heap[idx + 2] = node.startPosition.row;
-  heap[idx + 3] = node.startPosition.column;
-  heap[idx + 4] = node[0];
-}
-
-/**
- * @internal
- *
- * Unmarshals a heap-allocated array of {@link Node}s whose count and pointer sit in the transfer buffer.
- */
-export function unmarshalNodes(tree: Tree, useTsFree = true): Node[] {
-  const idx = TRANSFER_BUFFER >> 2;
-  const count = C.HEAP32[idx];
-  const buffer = C.HEAP32[idx + 1];
-  const result = new Array<Node>(count);
-  for (let i = 0, address = buffer; i < count; i++, address += SIZE_OF_NODE) {
-    result[i] = unmarshalNode(tree, address)!;
-  }
-  if (buffer) {
-    if (useTsFree) C._ts_free_wasm(buffer);
-    else C._free(buffer);
-  }
-  return result;
+  heap[base] = node.id;
+  heap[base + 1] = node.startIndex;
+  heap[base + 2] = node.startPosition.row;
+  heap[base + 3] = node.startPosition.column;
+  heap[base + 4] = node[0];
 }
 
 /**
@@ -46,17 +26,18 @@ export function unmarshalNodes(tree: Tree, useTsFree = true): Node[] {
  * Unmarshals a {@link Node} from the transfer buffer.
  */
 export function unmarshalNode(tree: Tree, address = TRANSFER_BUFFER): Node | null {
+  const base = address >>> 2;
   const heap = C.HEAP32;
-  const idx = address >> 2;
-  const id = heap[idx];
+  const id = heap[base];
   if (id === 0) return null;
 
+  const heapU32 = C.HEAPU32;
   return new Node(INTERNAL, {
     id,
     tree,
-    startIndex: heap[idx + 1],
-    startPosition: { row: heap[idx + 2], column: heap[idx + 3] },
-    other: heap[idx + 4],
+    startIndex: heapU32[base + 1],
+    startPosition: { row: heapU32[base + 2], column: heapU32[base + 3] },
+    other: heap[base + 4],
   });
 }
 
@@ -66,10 +47,10 @@ export function unmarshalNode(tree: Tree, address = TRANSFER_BUFFER): Node | nul
  * Marshals a {@link Point} to the transfer buffer.
  */
 export function marshalPoint(address: number, point: Point): void {
+  const base = address >>> 2;
   const heap = C.HEAP32;
-  const idx = address >> 2;
-  heap[idx] = point.row;
-  heap[idx + 1] = point.column;
+  heap[base] = point.row;
+  heap[base + 1] = point.column;
 }
 
 /**
@@ -78,11 +59,11 @@ export function marshalPoint(address: number, point: Point): void {
  * Unmarshals a {@link Point} from the transfer buffer.
  */
 export function unmarshalPoint(address: number): Point {
+  const base = address >>> 2;
   const heap = C.HEAPU32;
-  const idx = address >> 2;
   return {
-    row: heap[idx],
-    column: heap[idx + 1],
+    row: heap[base],
+    column: heap[base + 1],
   };
 }
 
@@ -92,34 +73,14 @@ export function unmarshalPoint(address: number): Point {
  * Marshals a {@link Range} to the transfer buffer.
  */
 export function marshalRange(address: number, range: Range): void {
+  const base = address >>> 2;
   const heap = C.HEAP32;
-  const idx = address >> 2;
-  heap[idx] = range.startPosition.row;
-  heap[idx + 1] = range.startPosition.column;
-  heap[idx + 2] = range.endPosition.row;
-  heap[idx + 3] = range.endPosition.column;
-  heap[idx + 4] = range.startIndex;
-  heap[idx + 5] = range.endIndex;
-}
-
-/**
- * @internal
- *
- * Unmarshals a heap-allocated array of {@link Range}s whose count and pointer sit in the transfer buffer.
- */
-export function unmarshalRanges(useTsFree = true): Range[] {
-  const idx = TRANSFER_BUFFER >> 2;
-  const count = C.HEAP32[idx];
-  const buffer = C.HEAP32[idx + 1];
-  const result = new Array<Range>(count);
-  for (let i = 0, address = buffer; i < count; i++, address += SIZE_OF_RANGE) {
-    result[i] = unmarshalRange(address);
-  }
-  if (buffer) {
-    if (useTsFree) C._ts_free_wasm(buffer);
-    else C._free(buffer);
-  }
-  return result;
+  heap[base] = range.startPosition.row;
+  heap[base + 1] = range.startPosition.column;
+  heap[base + 2] = range.endPosition.row;
+  heap[base + 3] = range.endPosition.column;
+  heap[base + 4] = range.startIndex;
+  heap[base + 5] = range.endIndex;
 }
 
 /**
@@ -128,31 +89,14 @@ export function unmarshalRanges(useTsFree = true): Range[] {
  * Unmarshals a {@link Range} from the transfer buffer.
  */
 export function unmarshalRange(address: number): Range {
+  const base = address >>> 2;
   const heap = C.HEAPU32;
-  const idx = address >> 2;
   return {
-    startPosition: { row: heap[idx], column: heap[idx + 1] },
-    endPosition: { row: heap[idx + 2], column: heap[idx + 3] },
-    startIndex: heap[idx + 4],
-    endIndex: heap[idx + 5],
+    startPosition: { row: heap[base], column: heap[base + 1] },
+    endPosition: { row: heap[base + 2], column: heap[base + 3] },
+    startIndex: heap[base + 4],
+    endIndex: heap[base + 5],
   };
-}
-
-/**
- * @internal
- *
- * Unmarshals a static `uint16_t` array whose count and pointer sit in the transfer buffer.
- */
-export function unmarshalU16Array(): number[] {
-  const idx = TRANSFER_BUFFER >> 2;
-  const count = C.HEAP32[idx];
-  const buffer = C.HEAP32[idx + 1];
-  const result = new Array<number>(count);
-  const heapU16 = C.HEAPU16;
-  for (let i = 0, base = buffer >>> 1; i < count; i++) {
-    result[i] = heapU16[base + i];
-  }
-  return result;
 }
 
 /**
@@ -160,18 +104,18 @@ export function unmarshalU16Array(): number[] {
  *
  * Marshals an {@link Edit} to the transfer buffer.
  */
-export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER) {
+export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER): void {
+  const base = address >>> 2;
   const heap = C.HEAP32;
-  const idx = address >> 2;
-  heap[idx] = edit.startPosition.row;
-  heap[idx + 1] = edit.startPosition.column;
-  heap[idx + 2] = edit.oldEndPosition.row;
-  heap[idx + 3] = edit.oldEndPosition.column;
-  heap[idx + 4] = edit.newEndPosition.row;
-  heap[idx + 5] = edit.newEndPosition.column;
-  heap[idx + 6] = edit.startIndex;
-  heap[idx + 7] = edit.oldEndIndex;
-  heap[idx + 8] = edit.newEndIndex;
+  heap[base] = edit.startPosition.row;
+  heap[base + 1] = edit.startPosition.column;
+  heap[base + 2] = edit.oldEndPosition.row;
+  heap[base + 3] = edit.oldEndPosition.column;
+  heap[base + 4] = edit.newEndPosition.row;
+  heap[base + 5] = edit.newEndPosition.column;
+  heap[base + 6] = edit.startIndex;
+  heap[base + 7] = edit.oldEndIndex;
+  heap[base + 8] = edit.newEndIndex;
 }
 
 /**
@@ -180,11 +124,56 @@ export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER) {
  * Unmarshals a {@link LanguageMetadata} from the transfer buffer.
  */
 export function unmarshalLanguageMetadata(address: number): LanguageMetadata {
+  const base = address >>> 2;
   const heap = C.HEAP32;
-  const idx = address >> 2;
   return {
-    major_version: heap[idx],
-    minor_version: heap[idx + 1],
-    patch_version: heap[idx + 2],
+    major_version: heap[base],
+    minor_version: heap[base + 1],
+    patch_version: heap[base + 2],
   };
+}
+
+/** @internal */
+export function unmarshalSymbols(): number[] {
+  const base = TRANSFER_BUFFER >>> 2;
+  const count = C.HEAPU32[base];
+  const buffer = C.HEAPU32[base + 1];
+  const result = new Array<number>(count);
+  if (count > 0) {
+    const symbolBase = buffer >>> 1;
+    const heapU16 = C.HEAPU16;
+    for (let i = 0; i < count; i++) {
+      result[i] = heapU16[symbolBase + i];
+    }
+  }
+  return result;
+}
+
+/** @internal */
+export function unmarshalRanges(useTsFree = true): Range[] {
+  return unmarshalArray(SIZE_OF_RANGE, unmarshalRange, useTsFree);
+}
+
+/** @internal */
+export function unmarshalNodeArray(tree: Tree, useTsFree = false): Node[] {
+  return unmarshalArray(SIZE_OF_NODE, (address) => unmarshalNode(tree, address)!, useTsFree);
+}
+
+function unmarshalArray<T>(
+  stride: number,
+  readItem: (address: number) => T,
+  useTsFree: boolean,
+): T[] {
+  const base = TRANSFER_BUFFER >>> 2;
+  const count = C.HEAPU32[base];
+  const buffer = C.HEAP32[base + 1];
+  const result = new Array<T>(count);
+  for (let i = 0, address = buffer; i < count; i++, address += stride) {
+    result[i] = readItem(address);
+  }
+  if (buffer) {
+    if (useTsFree) C._ts_free_wasm(buffer);
+    else C._free(buffer);
+  }
+  return result;
 }

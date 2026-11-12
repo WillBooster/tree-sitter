@@ -1,6 +1,6 @@
 import { C, INTERNAL, Internal, assertInternal, SIZE_OF_INT } from './constants';
 import { LookaheadIterator } from './lookahead_iterator';
-import { unmarshalLanguageMetadata, unmarshalU16Array } from './marshal';
+import { unmarshalLanguageMetadata, unmarshalSymbols } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 
 const LANGUAGE_FUNCTION_REGEX = /^tree_sitter_\w+$/;
@@ -78,7 +78,7 @@ export class Language {
   */
   get metadata(): LanguageMetadata | null {
     C._ts_language_metadata_wasm(this[0]);
-    const length = C.HEAP32[TRANSFER_BUFFER >> 2];
+    const length = C.HEAP32[TRANSFER_BUFFER >>> 2];
     if (length === 0) return null;
     return unmarshalLanguageMetadata(TRANSFER_BUFFER + SIZE_OF_INT);
   }
@@ -162,7 +162,7 @@ export class Language {
    */
   get supertypes(): number[] {
     C._ts_language_supertypes_wasm(this[0]);
-    return unmarshalU16Array();
+    return unmarshalSymbols();
   }
 
   /**
@@ -170,7 +170,7 @@ export class Language {
    */
   subtypes(supertype: number): number[] {
     C._ts_language_subtypes_wasm(this[0], supertype);
-    return unmarshalU16Array();
+    return unmarshalSymbols();
   }
 
   /**

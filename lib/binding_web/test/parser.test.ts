@@ -489,5 +489,94 @@ describe('Parser', () => {
       expect(offset).toBe((1000 + erroneousCode.length) * 2);
       expect(tree).toBeNull();
     });
+
+    it('tracks operation count and cancels cleanly when maxOperations is exceeded', () => {
+      parser.setLanguage(JavaScript);
+      tree = parser.parse('const first = 1; const second = 2;')!;
+      const smallParseOperations = parser.lastParseOperations;
+      expect(smallParseOperations).toBeGreaterThan(0);
+      tree.delete();
+      tree = null;
+
+      expect(parser.parse('const x = ' + '[1,'.repeat(2000) + '];', null, { maxOperations: 20 })).toBeNull();
+      expect(parser.lastParseOperations).toBeGreaterThan(20);
+
+      tree = parser.parse('const recovered = "🚀";')!;
+      expect(tree.rootNode.hasError).toBe(false);
+      expect(tree.rootNode.descendantsOfType('string')[0]?.text).toBe('"🚀"');
+      expect(parser.lastParseOperations).toBeGreaterThan(0);
+    });
+
+    it('bounds lexical scanning of single huge tokens and error runs under maxOperations', () => {
+      parser.setLanguage(JavaScript);
+      const shortTree = parser.parse('a'.repeat(100))!;
+      const shortOps = parser.lastParseOperations;
+      shortTree.delete();
+
+      const longTree = parser.parse('a'.repeat(64_000))!;
+      expect(parser.lastParseOperations).toBeGreaterThan(shortOps + 900);
+      longTree.delete();
+
+      for (const source of [
+        'a'.repeat(500_000),
+        `"${'x'.repeat(500_000)}"`,
+        `\`${'t'.repeat(500_000)}\``,
+        '§'.repeat(100_000),
+      ]) {
+        expect(parser.parse(source, null, { maxOperations: 5 })).toBeNull();
+        expect(parser.lastParseOperations).toBe(6);
+      }
+
+      tree = parser.parse('const afterLexCancel = 42;')!;
+      expect(tree.rootNode.hasError).toBe(false);
+    });
+
+    it('reports consistent operation counts across options and retains counts when callbacks throw', () => {
+      parser.setLanguage(JavaScript);
+      tree = parser.parse('let x = 1;')!;
+      const measured = parser.lastParseOperations;
+      tree.delete();
+
+      tree = parser.parse('let x = 1;', null, { maxOperations: measured })!;
+      expect(tree).not.toBeNull();
+      expect(parser.lastParseOperations).toBe(measured);
+      tree.delete();
+      tree = null;
+
+      expect(parser.parse('let x = 1;', null, { maxOperations: measured - 1 })).toBeNull();
+      expect(parser.lastParseOperations).toBe(measured);
+
+      const source = 'let a = 1;'.repeat(500);
+      expect(() =>
+        parser.parse(source, null, {
+          progressCallback() {
+            throw new Error('stop-ordinary');
+          },
+        }),
+      ).toThrow('stop-ordinary');
+      expect(parser.lastParseOperations).toBeGreaterThan(0);
+      parser.reset();
+
+      expect(() =>
+        parser.parse(source, null, {
+          maxMemoryBytes: 64 * 1024 * 1024,
+          progressCallback() {
+            throw new Error('stop-limited');
+          },
+        }),
+      ).toThrow('stop-limited');
+      expect(parser.lastParseOperations).toBeGreaterThan(0);
+
+      let chunkCalls = 0;
+      expect(() =>
+        parser.parse((index) => {
+          chunkCalls++;
+          if (chunkCalls > 3) throw new Error('stop-input');
+          return index < 300 ? 'let a = 1;'.repeat(10) : '';
+        }),
+      ).toThrow('stop-input');
+      expect(parser.lastParseOperations).toBeGreaterThan(0);
+      parser.reset();
+    });
   });
 });

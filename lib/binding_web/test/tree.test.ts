@@ -481,6 +481,49 @@ describe('Tree', () => {
       expect(cursor.gotoFirstChildForPosition({ row: 1, column: 0 })).toBe(false);
       expect(cursor.nodeText).toBe('a * b + c / d');
     });
+
+    it('preserves UTF-16 code unit slices, field names, and missing flags on cursor steps', () => {
+      const source = 'const α = "🚀"; function f() { return 1;';
+      tree = parser.parse(source)!;
+      cursor = tree.walk();
+      expect(cursor.gotoFirstChild()).toBe(true);
+      expect(cursor.gotoFirstChild()).toBe(true);
+      expect(cursor.gotoNextSibling()).toBe(true);
+      expect(cursor.nodeType).toBe('variable_declarator');
+      expect(cursor.gotoFirstChild()).toBe(true);
+      expect(cursor.currentFieldName).toBe('name');
+      expect(cursor.nodeText).toBe('α');
+      expect(cursor.gotoNextSibling()).toBe(true);
+      expect(cursor.gotoNextSibling()).toBe(true);
+      expect(cursor.currentFieldName).toBe('value');
+      expect(cursor.nodeText).toBe('"🚀"');
+      expect(cursor.endIndex - cursor.startIndex).toBe('"🚀"'.length);
+
+      let sawMissing = false;
+      cursor.reset(tree.rootNode);
+      for (;;) {
+        if (cursor.nodeIsMissing) sawMissing = true;
+        if (cursor.gotoFirstChild()) continue;
+        while (!cursor.gotoNextSibling()) {
+          if (!cursor.gotoParent()) {
+            expect(sawMissing).toBe(true);
+            return;
+          }
+        }
+      }
+    });
+
+    it('preserves cursor position and parent stack when resetTo receives itself', () => {
+      tree = parser.parse('const value = 1;')!;
+      cursor = tree.walk();
+      expect(cursor.gotoFirstChild()).toBe(true);
+      expect(cursor.nodeType).toBe('lexical_declaration');
+      expect(cursor.gotoFirstChild()).toBe(true);
+      cursor.resetTo(cursor);
+      expect(cursor.nodeText).toBe('const');
+      expect(cursor.gotoParent()).toBe(true);
+      expect(cursor.nodeType).toBe('lexical_declaration');
+    });
   });
 
   describe('.copy', () => {

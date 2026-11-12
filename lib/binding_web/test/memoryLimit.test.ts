@@ -176,8 +176,11 @@ describe('Parse memory limit', () => {
     callbackTree?.delete();
   });
 
-  it('applies the limit before copying included ranges into Wasm', () => {
+  it('applies the limit when memory already exceeds it or before copying included ranges into Wasm', () => {
     const currentBytes = memory.buffer.byteLength;
+    expect(parser.parse('const value = 1;', undefined, { maxMemoryBytes: currentBytes - 1 })).toBeNull();
+    expect(memory.buffer.byteLength).toBe(currentBytes);
+
     const range = {
       startPosition: { row: 0, column: 0 },
       endPosition: { row: 0, column: 1 },
@@ -189,6 +192,17 @@ describe('Parse memory limit', () => {
     expect(memory.buffer.byteLength).toBe(currentBytes);
     const tree = parser.parse('const value = 1;');
     expect(tree?.rootNode.hasError).toBe(false);
+    tree?.delete();
+  });
+
+  it('enforces maxOperations alongside maxMemoryBytes and reports lastParseOperations', () => {
+    const maxMemoryBytes = 48 * 2 ** 20;
+    expect(parser.parse('f<'.repeat(10_000), undefined, { maxMemoryBytes, maxOperations: 500 })).toBeNull();
+    expect(parser.lastParseOperations).toBeGreaterThan(500);
+    const tree = parser.parse('const value = 1;', undefined, { maxMemoryBytes, maxOperations: 10_000 });
+    expect(tree?.rootNode.hasError).toBe(false);
+    expect(parser.lastParseOperations).toBeGreaterThan(0);
+    expect(parser.lastParseOperations).toBeLessThanOrEqual(10_000);
     tree?.delete();
   });
 

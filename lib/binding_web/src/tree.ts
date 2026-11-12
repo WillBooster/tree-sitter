@@ -46,6 +46,9 @@ export class Tree {
   /** @internal */
   textSource: string | ParseCallback;
 
+  /** @internal */
+  editVersion = 0;
+
   /** The language that was used to parse the syntax tree. */
   language: Language;
 
@@ -83,7 +86,7 @@ export class Tree {
    */
   rootNodeWithOffset(offsetBytes: number, offsetExtent: Point): Node {
     const address = TRANSFER_BUFFER + SIZE_OF_NODE;
-    C.HEAP32[address >> 2] = offsetBytes;
+    C.HEAP32[address >>> 2] = offsetBytes;
     marshalPoint(address + SIZE_OF_INT, offsetExtent);
     C._ts_tree_root_node_with_offset_wasm(this[0]);
     return unmarshalNode(this)!;
@@ -99,11 +102,14 @@ export class Tree {
   edit(edit: Edit): void {
     marshalEdit(edit);
     C._ts_tree_edit_wasm(this[0]);
+    this.editVersion++;
   }
 
   /** Create a new {@link TreeCursor} starting from the root of the tree. */
   walk(): TreeCursor {
-    return this.rootNode.walk();
+    C._ts_tree_root_node_wasm(this[0]);
+    const address = C._ts_tree_cursor_new_wasm(this[0]);
+    return new TreeCursor(INTERNAL, this, address);
   }
 
   /**

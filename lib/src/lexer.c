@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 477 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
+// code-gauge-allow-file fileNcss 502 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
 #include "./length.h"
 #include "./lexer.h"
 #include "./unicode.h"
@@ -27,6 +27,7 @@
   }
 
 static const int32_t BYTE_ORDER_MARK = 0xFEFF;
+static const uint32_t LEXER_ADVANCES_PER_OPERATION = 64;
 
 static const TSRange DEFAULT_RANGE = {
   .start_point = {
@@ -138,6 +139,16 @@ static inline void ts_lexer__update_ascii_limit(Lexer *self) {
     ? self->chunk_start + self->chunk_size
     : UINT32_MAX;
   if (chunk_end < limit) limit = chunk_end;
+
+  uint32_t remaining_advances = self->advance_count < LEXER_ADVANCES_PER_OPERATION
+    ? LEXER_ADVANCES_PER_OPERATION - self->advance_count
+    : 1;
+  uint32_t budget_bytes = remaining_advances * stride;
+  uint32_t budget_end = budget_bytes <= UINT32_MAX - self->current_position.bytes
+    ? self->current_position.bytes + budget_bytes
+    : UINT32_MAX;
+  if (budget_end < limit) limit = budget_end;
+
   self->ascii_limit = limit < 2 * stride ? 0 : limit - 2 * stride + 1;
 }
 
@@ -423,8 +434,24 @@ static void ts_lexer__advance_position(Lexer *self) {
   self->current_position.bytes += self->lookahead_size;
 }
 
+static bool ts_lexer__charge_advance(Lexer *self) {
+  self->advance_count++;
+  if (self->advance_count < LEXER_ADVANCES_PER_OPERATION) return true;
+  unsigned operations = self->advance_count / LEXER_ADVANCES_PER_OPERATION;
+  self->advance_count %= LEXER_ADVANCES_PER_OPERATION;
+  if (!self->check_progress || self->check_progress(self->progress_payload, operations)) {
+    return true;
+  }
+  self->current_included_range_index = self->included_range_count;
+  ts_lexer__clear_chunk(self);
+  self->data.lookahead = '\0';
+  self->lookahead_size = 1;
+  return false;
+}
+
 static void ts_lexer__do_advance(Lexer *self, bool skip) {
   ts_lexer__advance_position(self);
+  if (!ts_lexer__charge_advance(self)) return;
 
   const TSRange *current_range = &self->included_ranges[self->current_included_range_index];
   while (
@@ -506,6 +533,7 @@ static inline void ts_lexer__advance_fast(
   self->current_position.extent.column += stride;
   if (skip) self->token_start_position = self->current_position;
   self->data.lookahead = (int32_t)character;
+  self->advance_count++;
 }
 
 static void ts_lexer__advance_utf8(TSLexer *self, bool skip) {
@@ -753,6 +781,15 @@ void ts_lexer_set_input(Lexer *self, TSInput input) {
 void ts_lexer_set_logger(Lexer *self, TSLogger logger) {
   self->logger = logger;
   ts_lexer__select_advance(self);
+}
+
+void ts_lexer_set_progress_callback(
+  Lexer *self,
+  bool (*check_progress)(void *payload, unsigned operations),
+  void *payload
+) {
+  self->check_progress = check_progress;
+  self->progress_payload = payload;
 }
 
 void ts_lexer_reset(Lexer *self, Length position) {

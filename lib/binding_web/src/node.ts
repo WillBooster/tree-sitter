@@ -3,7 +3,7 @@ import { getCallbackText, Tree } from './tree';
 import { TreeCursor } from './tree_cursor';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Language } from './language';
-import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodes, unmarshalPoint } from './marshal';
+import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodeArray, unmarshalPoint } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 import { Edit } from './edit';
 
@@ -277,13 +277,14 @@ export class Node {
   childrenForFieldId(fieldId: number): Node[] {
     marshalNode(this);
     C._ts_node_children_by_field_id_wasm(this.tree[0], fieldId);
-    return unmarshalNodes(this.tree);
+    return unmarshalNodeArray(this.tree, true);
   }
 
   /** Get the node's first child that contains or starts after the given byte offset. */
   firstChildForIndex(index: number): Node | null {
     marshalNode(this);
-    C.HEAP32[(TRANSFER_BUFFER + SIZE_OF_NODE) >> 2] = index;
+    const address = TRANSFER_BUFFER + SIZE_OF_NODE;
+    C.HEAP32[address >>> 2] = index;
     C._ts_node_first_child_for_byte_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -291,7 +292,8 @@ export class Node {
   /** Get the node's first named child that contains or starts after the given byte offset. */
   firstNamedChildForIndex(index: number): Node | null {
     marshalNode(this);
-    C.HEAP32[(TRANSFER_BUFFER + SIZE_OF_NODE) >> 2] = index;
+    const address = TRANSFER_BUFFER + SIZE_OF_NODE;
+    C.HEAP32[address >>> 2] = index;
     C._ts_node_first_named_child_for_byte_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -351,7 +353,7 @@ export class Node {
     if (!this._children) {
       marshalNode(this);
       C._ts_node_children_wasm(this.tree[0]);
-      this._children = unmarshalNodes(this.tree, false);
+      this._children = unmarshalNodeArray(this.tree);
     }
     return this._children;
   }
@@ -365,7 +367,7 @@ export class Node {
     if (!this._namedChildren) {
       marshalNode(this);
       C._ts_node_named_children_wasm(this.tree[0]);
-      this._namedChildren = unmarshalNodes(this.tree, false);
+      this._namedChildren = unmarshalNodeArray(this.tree);
     }
     return this._namedChildren;
   }
@@ -400,25 +402,24 @@ export class Node {
 
     // Copy the array of symbols to the Wasm heap
     const symbolsAddress = C._malloc(SIZE_OF_INT * symbols.length);
-    const symbolsHeap = C.HEAP32;
-    const symbolsBase = symbolsAddress >> 2;
+    const symbolsHeap = C.HEAPU32;
+    const symbolsBase = symbolsAddress >>> 2;
     for (let i = 0, n = symbols.length; i < n; i++) {
       symbolsHeap[symbolsBase + i] = symbols[i];
     }
 
     // Call the C API to compute the descendants
     marshalNode(this);
+    const pointAddress = TRANSFER_BUFFER + SIZE_OF_NODE;
+    marshalPoint(pointAddress, startPosition);
+    marshalPoint(pointAddress + SIZE_OF_POINT, endPosition);
     C._ts_node_descendants_of_type_wasm(
       this.tree[0],
       symbolsAddress,
       symbols.length,
-      startPosition.row,
-      startPosition.column,
-      endPosition.row,
-      endPosition.column
     );
 
-    const result = unmarshalNodes(this.tree);
+    const result = unmarshalNodeArray(this.tree, true);
     C._free(symbolsAddress);
     return result;
   }
@@ -495,10 +496,10 @@ export class Node {
     }
 
     marshalNode(this);
-    const idx = (TRANSFER_BUFFER + SIZE_OF_NODE) >> 2;
+    const base = (TRANSFER_BUFFER + SIZE_OF_NODE) >>> 2;
     const heap = C.HEAP32;
-    heap[idx] = start;
-    heap[idx + 1] = end;
+    heap[base] = start;
+    heap[base + 1] = end;
     C._ts_node_descendant_for_index_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -510,10 +511,10 @@ export class Node {
     }
 
     marshalNode(this);
-    const idx = (TRANSFER_BUFFER + SIZE_OF_NODE) >> 2;
+    const base = (TRANSFER_BUFFER + SIZE_OF_NODE) >>> 2;
     const heap = C.HEAP32;
-    heap[idx] = start;
-    heap[idx + 1] = end;
+    heap[base] = start;
+    heap[base + 1] = end;
     C._ts_node_named_descendant_for_index_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
