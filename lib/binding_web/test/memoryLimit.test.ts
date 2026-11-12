@@ -76,6 +76,53 @@ describe('Parse memory limit', () => {
     tree?.delete();
   });
 
+  it('resets included ranges on subsequent parses after cancelled limited parses', () => {
+    const prefix = 'const first = 1; ';
+    const source = prefix + 'const second = 2;\n'.repeat(500);
+    const startIndex = prefix.length;
+    const range = {
+      startPosition: { row: 0, column: startIndex },
+      endPosition: { row: 500, column: 0 },
+      startIndex,
+      endIndex: source.length,
+    };
+    const maxMemoryBytes = 48 * 2 ** 20;
+
+    expect(parser.parse(source, undefined, {
+      includedRanges: [range],
+      maxMemoryBytes,
+      progressCallback: () => true,
+    })).toBeNull();
+    expect(parser.getIncludedRanges()).toEqual([range]);
+
+    const fullTree = parser.parse('const value = 1;');
+    expect(fullTree?.rootNode.toString()).toContain('variable_declarator');
+    expect(fullTree?.rootNode.text).toBe('const value = 1;');
+    fullTree?.delete();
+
+    const rangedTree = parser.parse('const first = 1; const second = 2;', undefined, {
+      includedRanges: [{
+        startPosition: { row: 0, column: startIndex },
+        endPosition: { row: 0, column: 34 },
+        startIndex,
+        endIndex: 34,
+      }],
+    });
+    expect(rangedTree?.rootNode.text).toBe('const second = 2;');
+    rangedTree?.delete();
+
+    expect(parser.parse(source, undefined, {
+      maxMemoryBytes,
+      progressCallback: () => true,
+    })).toBeNull();
+    expect(parser.getIncludedRanges()).toHaveLength(1);
+    expect(parser.getIncludedRanges()[0].startIndex).toBe(0);
+
+    const callbackTree = parser.parse((index) => index === 0 ? 'const after = 3;' : '');
+    expect(callbackTree?.rootNode.text).toBe('const after = 3;');
+    callbackTree?.delete();
+  });
+
   it('applies the limit before copying included ranges into Wasm', () => {
     const currentBytes = memory.buffer.byteLength;
     const range = {

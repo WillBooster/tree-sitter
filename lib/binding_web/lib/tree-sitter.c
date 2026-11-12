@@ -198,7 +198,19 @@ void ts_parser_enable_logger_wasm(TSParser *self, bool should_log) {
   ts_parser_set_logger(self, logger);
 }
 
-void ts_parser_set_included_ranges_wasm(
+static bool has_default_included_range(const TSParser *self) {
+  uint32_t count = 0;
+  const TSRange *ranges = ts_parser_included_ranges(self, &count);
+  return count == 1 &&
+    ranges[0].start_byte == 0 &&
+    ranges[0].end_byte == UINT32_MAX &&
+    ranges[0].start_point.row == 0 &&
+    ranges[0].start_point.column == 0 &&
+    ranges[0].end_point.row == UINT32_MAX &&
+    ranges[0].end_point.column == UINT32_MAX;
+}
+
+static void apply_included_ranges(
   TSParser *self,
   TSRange *ranges,
   uint32_t range_count
@@ -208,8 +220,7 @@ void ts_parser_set_included_ranges_wasm(
       unmarshal_range(&ranges[i]);
     }
     ts_parser_set_included_ranges(self, ranges, range_count);
-    free(ranges);
-  } else {
+  } else if (!has_default_included_range(self)) {
     ts_parser_set_included_ranges(self, NULL, 0);
   }
 }
@@ -218,8 +229,11 @@ TSTree *ts_parser_parse_wasm(
   TSParser *self,
   char *input_buffer,
   const TSTree *old_tree,
+  TSRange *ranges,
+  uint32_t range_count,
   bool has_progress_callback
 ) {
+  apply_included_ranges(self, ranges, range_count);
   TSInput input = {
     input_buffer,
     call_parse_callback,
@@ -237,8 +251,11 @@ TSTree *ts_parser_parse_string_wasm(
   TSParser *self,
   const TSTree *old_tree,
   const char *string,
-  uint32_t byte_length
+  uint32_t byte_length,
+  TSRange *ranges,
+  uint32_t range_count
 ) {
+  apply_included_ranges(self, ranges, range_count);
   return ts_parser_parse_string_encoding(
     self,
     old_tree,
@@ -272,10 +289,7 @@ TSTree *ts_parser_parse_limited_wasm(
   budget->parser = limited_parser;
   ts_parser_set_language(limited_parser, ts_parser_language(self));
   ts_parser_set_logger(limited_parser, ts_parser_logger(self));
-  for (uint32_t i = 0; i < range_count; i++) {
-    unmarshal_range(&ranges[i]);
-  }
-  ts_parser_set_included_ranges(limited_parser, ranges, range_count);
+  apply_included_ranges(limited_parser, ranges, range_count);
   TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
   TSParseOptions options = {
     .payload = NULL,

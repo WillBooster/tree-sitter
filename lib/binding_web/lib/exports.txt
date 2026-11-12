@@ -64,7 +64,6 @@
 "ts_parser_abort_limited_wasm",
 "ts_parser_reset",
 "ts_parser_set_language",
-"ts_parser_set_included_ranges_wasm",
 "ts_parser_included_ranges_wasm",
 "ts_tree_copy",
 "ts_tree_cursor_current_field_id",

@@ -128,9 +128,6 @@ export class Parser {
   /** @internal */
   private loggerEnabled = false;
 
-  /** @internal */
-  private hasIncludedRanges = false;
-
   /** The parser's current language. */
   language: Language | null = null;
 
@@ -166,6 +163,7 @@ export class Parser {
     const idx = TRANSFER_BUFFER >> 2;
     this[0] = C.HEAP32[idx];
     this[1] = C.HEAP32[idx + 1];
+    this.loggerEnabled = false;
   }
 
   /** Delete the parser, freeing its resources. */
@@ -273,37 +271,31 @@ export class Parser {
       C.currentParseCallback = typeof callback === 'string'
         ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
         : callback;
-      const treeAddress = parseLimitedWasm(this[0], this[1], includedRanges, maxMemoryBytes, hasProgressCallback);
-      if (treeAddress) this.hasIncludedRanges = Boolean(includedRanges?.length);
-      return treeAddress;
+      return parseLimitedWasm(this[0], this[1], includedRanges, maxMemoryBytes, hasProgressCallback);
     }
 
-    if (!this.syncIncludedRanges(includedRanges)) return 0;
-    if (!this.language) return 0;
-    const oldTreeAddress = oldTree ? oldTree[0] : 0;
+    const [rangeAddress, rangeCount] = prepareRanges(includedRanges);
+    if (rangeCount && !rangeAddress) return 0;
+    try {
+      const oldTreeAddress = oldTree ? oldTree[0] : 0;
+      if (typeof callback === 'string' && !hasProgressCallback && callback.length <= MAX_DIRECT_STRING_CODE_UNITS) {
+        return parseStringWasm(this[0], this[1], oldTreeAddress, callback, rangeAddress, rangeCount);
+      }
 
-    if (typeof callback === 'string' && !hasProgressCallback && !this.hasIncludedRanges && callback.length <= MAX_DIRECT_STRING_CODE_UNITS) {
-      return parseStringWasm(this[0], this[1], oldTreeAddress, callback);
+      C.currentParseCallback = typeof callback === 'string'
+        ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
+        : callback;
+      return C._ts_parser_parse_wasm(
+        this[0],
+        this[1],
+        oldTreeAddress,
+        rangeAddress,
+        rangeCount,
+        hasProgressCallback ? 1 : 0,
+      );
+    } finally {
+      if (rangeAddress) C._free(rangeAddress);
     }
-
-    C.currentParseCallback = typeof callback === 'string'
-      ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
-      : callback;
-    return C._ts_parser_parse_wasm(this[0], this[1], oldTreeAddress, hasProgressCallback ? 1 : 0);
-  }
-
-  /** @internal */
-  private syncIncludedRanges(ranges?: Range[]): boolean {
-    if (ranges?.length) {
-      const [rangeAddress, rangeCount] = prepareRanges(ranges);
-      if (!rangeAddress) return false;
-      C._ts_parser_set_included_ranges_wasm(this[0], rangeAddress, rangeCount);
-      this.hasIncludedRanges = true;
-    } else if (this.hasIncludedRanges) {
-      C._ts_parser_set_included_ranges_wasm(this[0], 0, 0);
-      this.hasIncludedRanges = false;
-    }
-    return true;
   }
 
   /**
@@ -372,6 +364,8 @@ function parseStringWasm(
   inputBuffer: number,
   oldTreeAddress: number,
   source: string,
+  rangeAddress: number,
+  rangeCount: number,
 ): number {
   const length = source.length;
   const byteLength = length * 2;
@@ -384,7 +378,14 @@ function parseStringWasm(
     for (let i = 0; i < length; i++) {
       heapU16[base + i] = source.charCodeAt(i);
     }
-    return C._ts_parser_parse_string_wasm(parserAddress, oldTreeAddress, bufferAddress, byteLength);
+    return C._ts_parser_parse_string_wasm(
+      parserAddress,
+      oldTreeAddress,
+      bufferAddress,
+      byteLength,
+      rangeAddress,
+      rangeCount,
+    );
   } finally {
     if (allocatedBuffer) C._free(allocatedBuffer);
   }
