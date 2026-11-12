@@ -8,11 +8,12 @@ import { Edit } from './edit';
 import { newFinalizer } from './finalization_registry';
 
 /** @internal */
-export function getText(tree: Tree, startIndex: number, endIndex: number, startPosition: Point): string {
-  const { textSource } = tree;
-  if (typeof textSource === 'string') {
-    return textSource.slice(startIndex, endIndex);
-  }
+export function getCallbackText(
+  textSource: ParseCallback,
+  startIndex: number,
+  endIndex: number,
+  startPosition: Point,
+): string {
   const length = endIndex - startIndex;
   let result = textSource(startIndex, startPosition);
   if (result) {

@@ -1,5 +1,5 @@
 import { INTERNAL, Internal, assertInternal, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT, ZERO_POINT, isPoint, C, Point } from './constants';
-import { getText, Tree } from './tree';
+import { getCallbackText, Tree } from './tree';
 import { TreeCursor } from './tree_cursor';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Language } from './language';
@@ -172,7 +172,7 @@ export class Node {
     const { textSource } = this.tree;
     return typeof textSource === 'string'
       ? textSource.slice(this.startIndex, this.endIndex)
-      : getText(this.tree, this.startIndex, this.endIndex, this.startPosition);
+      : getCallbackText(textSource, this.startIndex, this.endIndex, this.startPosition);
   }
 
   /** Get this node's parse state. */

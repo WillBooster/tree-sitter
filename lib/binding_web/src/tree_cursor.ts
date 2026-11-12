@@ -2,7 +2,7 @@ import { INTERNAL, Internal, assertInternal, Point, C } from './constants';
 import { marshalNode, unmarshalNode, unmarshalPoint } from './marshal';
 import { Node } from './node';
 import { TRANSFER_BUFFER } from './parser';
-import { getText, Tree } from './tree';
+import { getCallbackText, Tree } from './tree';
 import { newFinalizer } from './finalization_registry';
 
 const finalizer = newFinalizer((address: number) => {
@@ -126,7 +126,7 @@ export class TreeCursor {
     C._ts_tree_cursor_text_range_wasm(this[0], 1);
     const idx = TRANSFER_BUFFER >> 2;
     const heap = C.HEAPU32;
-    return getText(this.tree, heap[idx], heap[idx + 1], { row: heap[idx + 2], column: heap[idx + 3] });
+    return getCallbackText(textSource, heap[idx], heap[idx + 1], { row: heap[idx + 2], column: heap[idx + 3] });
   }
 
   /** Get the start position of the cursor's current node. */
@@ -271,6 +271,7 @@ export class TreeCursor {
    * information and allows reusing already created cursors.
    */
   resetTo(cursor: TreeCursor): void {
+    if (this[0] === cursor[0]) return;
     C._ts_tree_cursor_reset_to(this[0], cursor[0]);
     this.tree = cursor.tree;
   }
