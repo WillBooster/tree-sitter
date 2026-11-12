@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 679 -- TSNode accessors and child iterators share private inline helpers in one translation unit
 #include <stdbool.h>
 #include "./point.h"
 #include "./subtree.h"
@@ -70,7 +71,7 @@ static inline NodeChildIterator ts_node_iterate_children(const TSNode *node) {
   }
   const TSSymbol *alias_sequence = ts_language_alias_sequence(
     node->tree->language,
-    subtree.ptr->production_id
+    ts_subtree_production_id(subtree)
   );
   return (NodeChildIterator) {
     .tree = node->tree,
@@ -754,7 +755,7 @@ descend:
 
   ts_language_field_map(
     self.tree->language,
-    ts_node__subtree(self).ptr->production_id,
+    ts_subtree_production_id(ts_node__subtree(self)),
     &field_map,
     &field_map_end
   );
@@ -852,12 +853,13 @@ not_found:
   return ts_node__null();
 }
 
+// code-gauge-allow functionCognitiveComplexity 17 -- walks down single-child fieldless wrappers in one loop
 static TSNode ts_node__first_child_without_fields(TSNode self) {
   for (;;) {
     const TSFieldMapEntry *field_map, *field_map_end;
     ts_language_field_map(
       self.tree->language,
-      ts_node__subtree(self).ptr->production_id,
+      ts_subtree_production_id(ts_node__subtree(self)),
       &field_map,
       &field_map_end
     );
@@ -883,7 +885,7 @@ static inline const char *ts_node__field_name_from_language(TSNode self, uint32_
     const TSFieldMapEntry *field_map, *field_map_end;
     ts_language_field_map(
       self.tree->language,
-      ts_node__subtree(self).ptr->production_id,
+      ts_subtree_production_id(ts_node__subtree(self)),
       &field_map,
       &field_map_end
     );

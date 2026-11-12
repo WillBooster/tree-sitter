@@ -466,5 +466,22 @@ describe('Parser', () => {
       expect(offset).toBe((1000 + erroneousCode.length) * 2);
       expect(tree).toBeNull();
     });
+
+    it('tracks operation count and cancels cleanly when maxOperations is exceeded', () => {
+      parser.setLanguage(JavaScript);
+      tree = parser.parse('const first = 1; const second = 2;')!;
+      const smallParseOperations = parser.lastParseOperations;
+      expect(smallParseOperations).toBeGreaterThan(0);
+      tree.delete();
+      tree = null;
+
+      expect(parser.parse('const x = ' + '[1,'.repeat(2000) + '];', null, { maxOperations: 20 })).toBeNull();
+      expect(parser.lastParseOperations).toBeGreaterThan(20);
+
+      tree = parser.parse('const recovered = "🚀";')!;
+      expect(tree.rootNode.hasError).toBe(false);
+      expect(tree.rootNode.descendantsOfType('string')[0]?.text).toBe('"🚀"');
+      expect(parser.lastParseOperations).toBeGreaterThan(0);
+    });
   });
 });

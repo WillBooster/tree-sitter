@@ -679,36 +679,37 @@ static void *copy_string(
   return result;
 }
 
+static void free_copied_language_tables(const TSLanguage *language) {
+  ts_free((void *)language->alias_sequences);
+  ts_free((void *)language->alias_sequence_offsets);
+  ts_free((void *)language->lex_mode_ids);
+  ts_free((void *)language->reserved_word_slices);
+  ts_free((void *)language->external_scanner.symbol_map);
+  ts_free((void *)language->field_map_entries);
+  ts_free((void *)language->field_map_slices);
+  ts_free((void *)language->field_names);
+  ts_free((void *)language->lex_modes);
+  ts_free((void *)language->name);
+  ts_free((void *)language->parse_actions);
+  ts_free((void *)language->parse_table);
+  ts_free((void *)language->public_symbol_map);
+  ts_free((void *)language->reserved_words);
+  ts_free((void *)language->small_parse_table);
+  ts_free((void *)language->small_parse_table_map);
+  ts_free((void *)language->supertype_map_entries);
+  ts_free((void *)language->supertype_map_slices);
+  ts_free((void *)language->supertype_symbols);
+  ts_free((void *)language->symbol_metadata);
+  ts_free((void *)language->symbol_names);
+}
+
 static void delete_partially_loaded_language(
   TSWasmLanguage *result,
   StringData *symbol_name_buffer,
   StringData *field_name_buffer
 ) {
   if (result) {
-    TSLanguage *language = &result->language;
-    ts_free((void *)language->alias_map);
-    ts_free((void *)language->alias_sequences);
-    ts_free((void *)language->alias_sequence_offsets);
-    ts_free((void *)language->lex_mode_ids);
-    ts_free((void *)language->reserved_word_slices);
-    ts_free((void *)language->external_scanner.symbol_map);
-    ts_free((void *)language->field_map_entries);
-    ts_free((void *)language->field_map_slices);
-    ts_free((void *)language->field_names);
-    ts_free((void *)language->lex_modes);
-    ts_free((void *)language->name);
-    ts_free((void *)language->parse_actions);
-    ts_free((void *)language->parse_table);
-    ts_free((void *)language->primary_state_bitmap);
-    ts_free((void *)language->public_symbol_map);
-    ts_free((void *)language->reserved_words);
-    ts_free((void *)language->small_parse_table);
-    ts_free((void *)language->small_parse_table_map);
-    ts_free((void *)language->supertype_map_entries);
-    ts_free((void *)language->supertype_map_slices);
-    ts_free((void *)language->supertype_symbols);
-    ts_free((void *)language->symbol_metadata);
-    ts_free((void *)language->symbol_names);
+    free_copied_language_tables(&result->language);
     ts_free(result);
   }
   array_delete(symbol_name_buffer);
@@ -1771,28 +1772,6 @@ const TSLanguage *ts_wasm_store_load_language(
   }
 
   if (language->max_alias_sequence_length > 0 && language->production_id_count > 0) {
-    // The alias map contains symbols, alias counts, and aliases, terminated by a null symbol.
-    int32_t alias_map_size = 0;
-    for (;;) {
-      TSSymbol symbol;
-      if (!wasm_memory__read(&wasm_memory, wasm_language.alias_map + alias_map_size, &symbol, sizeof(symbol))) {
-        goto invalid_language_memory;
-      }
-      alias_map_size += sizeof(TSSymbol);
-      if (symbol == 0) break;
-      uint16_t value_count;
-      if (!wasm_memory__read(&wasm_memory, wasm_language.alias_map + alias_map_size, &value_count, sizeof(value_count))) {
-        goto invalid_language_memory;
-      }
-      alias_map_size += sizeof(uint16_t);
-      alias_map_size += value_count * sizeof(TSSymbol);
-    }
-    language->alias_map = copy(
-      &wasm_memory,
-      wasm_language.alias_map,
-      alias_map_size,
-      &valid_wasm_memory
-    );
     language->alias_sequences = copy(
       &wasm_memory,
       wasm_language.alias_sequences,
@@ -1833,14 +1812,6 @@ const TSLanguage *ts_wasm_store_load_language(
     );
     if (!valid_wasm_memory) goto invalid_language_memory;
   }
-
-  language->primary_state_bitmap = copy(
-    &wasm_memory,
-    wasm_language.primary_state_bitmap,
-    wasm_language.state_count / 8u + (wasm_language.state_count % 8u != 0),
-    &valid_wasm_memory
-  );
-  if (!valid_wasm_memory) goto invalid_language_memory;
 
   language->name = copy_string(&wasm_memory, wasm_language.name, &valid_wasm_memory);
   if (!valid_wasm_memory) goto invalid_language_memory;
@@ -2277,29 +2248,7 @@ void ts_wasm_language_release(const TSLanguage *self) {
     ts_free((void *)language->name);
     wasmtime_module_delete(language->module);
 
-    ts_free((void *)self->alias_map);
-    ts_free((void *)self->alias_sequences);
-    ts_free((void *)self->alias_sequence_offsets);
-    ts_free((void *)self->lex_mode_ids);
-    ts_free((void *)self->reserved_word_slices);
-    ts_free((void *)self->external_scanner.symbol_map);
-    ts_free((void *)self->field_map_entries);
-    ts_free((void *)self->field_map_slices);
-    ts_free((void *)self->supertype_symbols);
-    ts_free((void *)self->supertype_map_entries);
-    ts_free((void *)self->supertype_map_slices);
-    ts_free((void *)self->field_names);
-    ts_free((void *)self->lex_modes);
-    ts_free((void *)self->name);
-    ts_free((void *)self->reserved_words);
-    ts_free((void *)self->parse_actions);
-    ts_free((void *)self->parse_table);
-    ts_free((void *)self->primary_state_bitmap);
-    ts_free((void *)self->public_symbol_map);
-    ts_free((void *)self->small_parse_table);
-    ts_free((void *)self->small_parse_table_map);
-    ts_free((void *)self->symbol_metadata);
-    ts_free((void *)self->symbol_names);
+    free_copied_language_tables(self);
     ts_free((void *)self);
   }
 }

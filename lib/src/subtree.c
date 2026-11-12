@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 687 -- subtree construction, summaries, editing, and printing share private helpers here
+// code-gauge-allow-file fileNcss 690 -- subtree construction, summaries, editing, and printing share private helpers here
 #include <ctype.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -23,7 +23,7 @@ typedef struct {
 #define TS_MAX_INLINE_TREE_LENGTH UINT8_MAX
 #define TS_MAX_TREE_POOL_SIZE 128
 
-_Static_assert(sizeof(SubtreeHeapData) == 72, "a heap subtree must fit in 72 bytes");
+_Static_assert(sizeof(SubtreeHeapData) == 68, "a heap subtree must fit in 68 bytes");
 
 // ExternalScannerState
 
@@ -548,16 +548,30 @@ static inline void ts_subtree__summarize_ends(
 
   if (
     node->child_count >= 2 &&
+    !node->is_extra_group &&
     !node->visible &&
     !node->named &&
     ts_subtree_symbol(first_child) == node->symbol
   ) {
-    if (ts_subtree_repeat_depth(first_child) > ts_subtree_repeat_depth(last_child)) {
-      node->repeat_depth = ts_subtree_repeat_depth(first_child) + 1;
-    } else {
-      node->repeat_depth = ts_subtree_repeat_depth(last_child) + 1;
-    }
+    uint16_t first_depth = ts_subtree_repeat_depth(first_child);
+    uint16_t last_depth = ts_subtree_repeat_depth(last_child);
+    node->repeat_depth = (first_depth > last_depth ? first_depth : last_depth) + 1;
   }
+}
+
+static void ts_subtree__reset_child_summary_fields(SubtreeHeapData *node) {
+  node->named_child_count = 0;
+  node->visible_child_count = 0;
+  node->error_cost = 0;
+  if (!node->is_extra_group) node->repeat_depth = 0;
+  node->visible_descendant_count = 0;
+  node->has_external_tokens = false;
+  node->trailing_extra = false;
+  node->depends_on_column = false;
+  node->depends_on_position = false;
+  node->has_external_scanner_state_change = false;
+  node->dynamic_precedence = 0;
+  node->has_ambiguous_extra = false;
 }
 
 // Assign all of the node's properties that depend on its children.
@@ -566,25 +580,13 @@ void ts_subtree_summarize_children(
   const TSLanguage *language
 ) {
   ts_assert(!self.data.is_inline);
-
-  self.ptr->named_child_count = 0;
-  self.ptr->visible_child_count = 0;
-  self.ptr->error_cost = 0;
-  self.ptr->repeat_depth = 0;
-  self.ptr->visible_descendant_count = 0;
-  self.ptr->has_external_tokens = false;
-  self.ptr->trailing_extra = false;
-  self.ptr->depends_on_column = false;
-  self.ptr->depends_on_position = false;
-  self.ptr->has_external_scanner_state_change = false;
-  self.ptr->dynamic_precedence = 0;
-  self.ptr->has_ambiguous_extra = false;
+  ts_subtree__reset_child_summary_fields(self.ptr);
 
   bool charges_error_extent = self.ptr->symbol == ts_builtin_sym_error ||
     (self.ptr->symbol == ts_builtin_sym_error_repeat && !self.ptr->extra);
   ChildSummary summary = {
     .language = language,
-    .alias_sequence = ts_language_alias_sequence(language, self.ptr->production_id),
+    .alias_sequence = ts_language_alias_sequence(language, ts_subtree_production_id(ts_subtree_from_mut(self))),
     .structural_index = 0,
     .lookahead_end_byte = 0,
     .charges_error_extent = charges_error_extent,
@@ -620,6 +622,7 @@ Subtree ts_subtree_new_extra_group(Subtree left, Subtree right, const TSLanguage
   array_push(&children, right);
   MutableSubtree result = ts_subtree_new_node(ts_builtin_sym_error_repeat, &children, 0, language);
   result.ptr->extra = true;
+  result.ptr->is_extra_group = true;
   result.ptr->stack_link_count = ts_subtree_stack_link_count(left) + ts_subtree_stack_link_count(right);
   ts_subtree_summarize_children(result, language);
   return ts_subtree_from_mut(result);
@@ -660,10 +663,9 @@ MutableSubtree ts_subtree_new_node(
     .trailing_extra = false,
     .has_ambiguous_extra = false,
     .first_child_has_completed_prefix = false,
-    {{
-      .visible_descendant_count = 0,
-      .production_id = production_id,
-    }}
+    .is_extra_group = false,
+    .visible_descendant_count = 0,
+    .production_id = production_id,
   };
   MutableSubtree result = {.ptr = data};
   ts_subtree_summarize_children(result, language);
@@ -1056,10 +1058,11 @@ static size_t ts_subtree__write_to_string(
       }
 
       if (ts_subtree_child_count(node)) {
-        frame->alias_sequence = ts_language_alias_sequence(language, node.ptr->production_id);
+        uint16_t production_id = ts_subtree_production_id(node);
+        frame->alias_sequence = ts_language_alias_sequence(language, production_id);
         ts_language_field_map(
           language,
-          node.ptr->production_id,
+          production_id,
           &frame->field_map,
           &frame->field_map_end
         );

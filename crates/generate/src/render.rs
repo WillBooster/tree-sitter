@@ -250,51 +250,11 @@ impl Generator {
             self.add_alias_sequences();
         }
 
-        self.add_non_terminal_alias_map();
-        self.add_primary_state_bitmap();
-
         if !self.supertype_map.is_empty() {
             self.add_supertype_map();
         }
 
-        let buffer_offset_before_lex_functions = self.buffer.len();
-
-        let mut main_lex_table = LexTable::default();
-        swap(&mut main_lex_table, &mut self.main_lex_table);
-        self.add_lex_function("ts_lex", &main_lex_table);
-        drop(main_lex_table);
-
-        if self.syntax_grammar.word_token.is_some() {
-            let mut keyword_lex_table = LexTable::default();
-            swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            if !self.keyword_separators_overlap_word(&keyword_lex_table)
-                && keyword_lex_table.states.len() >= 64
-                && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
-                && keyword_lex_table.states.iter().all(|state| {
-                    state.eof_action.is_none()
-                        && state.advance_actions.iter().all(|(set, action)| {
-                            set.ranges().all(|range| {
-                                *range.start() > '\0'
-                                    && (!action.in_main_token || range.end().is_ascii())
-                            })
-                        })
-                })
-            {
-                self.uses_keyword_table = true;
-                self.add_keyword_table(&keyword_lex_table);
-            } else {
-                self.add_lex_function("ts_lex_keywords", &keyword_lex_table);
-            }
-        }
-
-        let lex_functions = self.buffer[buffer_offset_before_lex_functions..].to_string();
-        self.buffer.truncate(buffer_offset_before_lex_functions);
-        self.add_lexer_helpers();
-        for ix in 0..self.large_character_sets.len() {
-            self.add_character_set(ix);
-        }
-        self.buffer.push_str(&lex_functions);
-
+        self.add_lex_section();
         self.add_lex_modes();
 
         if self.reserved_word_sets.len() > 1 {
@@ -312,6 +272,49 @@ impl Generator {
         self.add_parser_export();
 
         Ok(self.buffer)
+    }
+
+    fn add_lex_section(&mut self) {
+        let buffer_offset_before_lex_functions = self.buffer.len();
+
+        let mut main_lex_table = LexTable::default();
+        swap(&mut main_lex_table, &mut self.main_lex_table);
+        self.add_lex_function("ts_lex", &main_lex_table);
+        drop(main_lex_table);
+
+        if self.syntax_grammar.word_token.is_some() {
+            let mut keyword_lex_table = LexTable::default();
+            swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
+            if self.can_use_keyword_table(&keyword_lex_table) {
+                self.uses_keyword_table = true;
+                self.add_keyword_table(&keyword_lex_table);
+            } else {
+                self.add_lex_function("ts_lex_keywords", &keyword_lex_table);
+            }
+        }
+
+        let lex_functions = self.buffer[buffer_offset_before_lex_functions..].to_string();
+        self.buffer.truncate(buffer_offset_before_lex_functions);
+        self.add_lexer_helpers();
+        for ix in 0..self.large_character_sets.len() {
+            self.add_character_set(ix);
+        }
+        self.buffer.push_str(&lex_functions);
+    }
+
+    fn can_use_keyword_table(&self, keyword_lex_table: &LexTable) -> bool {
+        !self.keyword_separators_overlap_word(keyword_lex_table)
+            && keyword_lex_table.states.len() >= 64
+            && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
+            && keyword_lex_table.states.iter().all(|state| {
+                state.eof_action.is_none()
+                    && state.advance_actions.iter().all(|(set, action)| {
+                        set.ranges().all(|range| {
+                            *range.start() > '\0'
+                                && (!action.in_main_token || range.end().is_ascii())
+                        })
+                    })
+            })
     }
 
     fn apply_profile(&mut self) -> RenderResult<()> {
@@ -1186,77 +1189,6 @@ impl Generator {
         }
         dedent!(self);
         add_line!(self, "}};\n");
-    }
-
-    fn add_non_terminal_alias_map(&mut self) {
-        let mut alias_ids_by_symbol = FxHashMap::default();
-        for symbol in &self.syntax_grammar.supertype_symbols {
-            if self
-                .syntax_grammar
-                .supertype_alias(*symbol, &self.default_aliases)
-                .is_some()
-                && let Some(id) = self.symbol_ids.get(symbol)
-            {
-                alias_ids_by_symbol.insert(*symbol, vec![id]);
-            }
-        }
-        for i in 0..self.syntax_grammar.variables.len() {
-            for prod_id in self.syntax_grammar.variable_prod_ids(i) {
-                for step in self.syntax_grammar.production(prod_id).steps {
-                    if let Some(alias) = step.alias()
-                        && step.symbol().is_non_terminal()
-                        && Some(alias) != self.default_aliases.get(&step.symbol()).copied()
-                        && self.symbol_ids.contains_key(&step.symbol())
-                        && let Some(alias_id) = self.alias_ids.get(&alias)
-                    {
-                        let alias_ids = alias_ids_by_symbol
-                            .entry(step.symbol())
-                            .or_insert(Vec::new());
-                        if let Err(i) = alias_ids.binary_search(&alias_id) {
-                            alias_ids.insert(i, alias_id);
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut alias_ids_by_symbol = alias_ids_by_symbol.iter().collect::<Vec<_>>();
-        alias_ids_by_symbol.sort_unstable_by_key(|e| e.0);
-
-        add_line!(
-            self,
-            "static const uint16_t ts_non_terminal_alias_map[] = {{"
-        );
-        indent!(self);
-        for (symbol, alias_ids) in alias_ids_by_symbol {
-            let symbol_id = &self.symbol_ids[symbol];
-            let public_symbol_id = &self.symbol_ids[&self.symbol_map[symbol]];
-            add_line!(self, "{symbol_id}, {},", 1 + alias_ids.len());
-            indent!(self);
-            add_line!(self, "{public_symbol_id},");
-            for alias_id in alias_ids {
-                add_line!(self, "{alias_id},");
-            }
-            dedent!(self);
-        }
-        add_line!(self, "0,");
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
-    }
-
-    fn add_primary_state_bitmap(&mut self) {
-        let mut primary_states = vec![0u8; self.parse_table.states.len().div_ceil(8)];
-        let mut seen_cores = FxHashSet::default();
-        for (idx, state) in self.parse_table.states.iter().enumerate() {
-            if seen_cores.insert(state.core_id) {
-                primary_states[idx / 8] |= 1 << (idx % 8);
-            }
-        }
-        self.add_integer_array(
-            "static const uint8_t ts_primary_state_bitmap[]",
-            &primary_states,
-        );
     }
 
     fn add_field_sequences(&mut self) {
@@ -3366,7 +3298,6 @@ impl Generator {
         }
         add_line!(self, ".symbol_metadata = ts_symbol_metadata,");
         add_line!(self, ".public_symbol_map = ts_symbol_map,");
-        add_line!(self, ".alias_map = ts_non_terminal_alias_map,");
         if !self.parse_table.production_infos.is_empty() {
             add_line!(self, ".alias_sequences = ts_alias_sequences,");
             add_line!(self, ".alias_sequence_offsets = ts_alias_sequence_offsets,");
@@ -3421,7 +3352,6 @@ impl Generator {
                 self.external_state_stride
             );
         }
-        add_line!(self, ".primary_state_bitmap = ts_primary_state_bitmap,");
 
         add_line!(self, ".name = \"{}\",", self.language_name);
 

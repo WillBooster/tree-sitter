@@ -40,9 +40,6 @@ export const SIZE_OF_SHORT = 2;
 export const SIZE_OF_INT = 4;
 
 /** @internal */
-export const SIZE_OF_CURSOR = 4 * SIZE_OF_INT;
-
-/** @internal */
 export const SIZE_OF_NODE = 5 * SIZE_OF_INT;
 
 /** @internal */

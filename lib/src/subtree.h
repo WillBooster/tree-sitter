@@ -30,7 +30,7 @@ extern "C" {
 // separately on the heap, with the pointer to them copied into `data`
 // through `memcpy` so that the struct has no pointer member.
 typedef struct {
-  char data[20];
+  char data[16];
   uint32_t length;
 } ExternalScannerState;
 
@@ -132,6 +132,7 @@ typedef struct {
   bool trailing_extra : 1;
   bool has_ambiguous_extra : 1;
   bool first_child_has_completed_prefix : 1;
+  bool is_extra_group : 1;
 
   union {
     // Non-terminal subtrees (`child_count > 0`)
@@ -140,9 +141,13 @@ typedef struct {
       uint32_t named_child_count;
       uint32_t visible_descendant_count;
       int32_t dynamic_precedence;
-      uint32_t stack_link_count;
-      uint16_t repeat_depth;
-      uint16_t production_id;
+      union {
+        struct {
+          uint16_t repeat_depth;
+          uint16_t production_id;
+        };
+        uint32_t stack_link_count;
+      };
     };
 
     // External terminal subtrees (`child_count == 0 && has_external_tokens`)
@@ -325,11 +330,11 @@ static inline uint32_t ts_subtree_child_count(Subtree self) {
 }
 
 static inline uint32_t ts_subtree_stack_link_count(Subtree self) {
-  return self.ptr && ts_subtree_child_count(self) && self.ptr->stack_link_count ? self.ptr->stack_link_count : 1;
+  return self.ptr && !self.data.is_inline && self.ptr->is_extra_group ? self.ptr->stack_link_count : 1;
 }
 
 static inline uint32_t ts_subtree_repeat_depth(Subtree self) {
-  return self.data.is_inline ? 0 : self.ptr->repeat_depth;
+  return self.data.is_inline || self.ptr->is_extra_group ? 0 : self.ptr->repeat_depth;
 }
 
 static inline uint32_t ts_subtree_is_repetition(Subtree self) {
@@ -381,7 +386,7 @@ static inline int32_t ts_subtree_dynamic_precedence(Subtree self) {
 }
 
 static inline uint16_t ts_subtree_production_id(Subtree self) {
-  if (ts_subtree_child_count(self) > 0) {
+  if (ts_subtree_child_count(self) > 0 && !self.ptr->is_extra_group) {
     return self.ptr->production_id;
   } else {
     return 0;
