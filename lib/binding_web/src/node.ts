@@ -3,7 +3,7 @@ import { getText, Tree } from './tree';
 import { TreeCursor } from './tree_cursor';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Language } from './language';
-import { marshalNode, marshalPoint, unmarshalNode, unmarshalPoint } from './marshal';
+import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodeArray, unmarshalPoint } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 import { Edit } from './edit';
 
@@ -169,7 +169,7 @@ export class Node {
 
   /** Get the string content of this node. */
   get text(): string {
-    return getText(this.tree, this.startIndex, this.endIndex, this.startPosition);
+    return getText(this.tree, this.startIndex, this.endIndex, () => this.startPosition);
   }
 
   /** Get this node's parse state. */
@@ -274,26 +274,14 @@ export class Node {
   childrenForFieldId(fieldId: number): Node[] {
     marshalNode(this);
     C._ts_node_children_by_field_id_wasm(this.tree[0], fieldId);
-    const count = C.getValue(TRANSFER_BUFFER, 'i32');
-    const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const result = new Array<Node>(count);
-
-    if (count > 0) {
-      let address = buffer;
-      for (let i = 0; i < count; i++) {
-        result[i] = unmarshalNode(this.tree, address)!;
-        address += SIZE_OF_NODE;
-      }
-      C._ts_free_wasm(buffer);
-    }
-    return result;
+    return unmarshalNodeArray(this.tree, true);
   }
 
   /** Get the node's first child that contains or starts after the given byte offset. */
   firstChildForIndex(index: number): Node | null {
     marshalNode(this);
     const address = TRANSFER_BUFFER + SIZE_OF_NODE;
-    C.setValue(address, index, 'i32');
+    C.HEAP32[address >>> 2] = index;
     C._ts_node_first_child_for_byte_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -302,7 +290,7 @@ export class Node {
   firstNamedChildForIndex(index: number): Node | null {
     marshalNode(this);
     const address = TRANSFER_BUFFER + SIZE_OF_NODE;
-    C.setValue(address, index, 'i32');
+    C.HEAP32[address >>> 2] = index;
     C._ts_node_first_named_child_for_byte_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -362,17 +350,7 @@ export class Node {
     if (!this._children) {
       marshalNode(this);
       C._ts_node_children_wasm(this.tree[0]);
-      const count = C.getValue(TRANSFER_BUFFER, 'i32');
-      const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-      this._children = new Array<Node>(count);
-      if (count > 0) {
-        let address = buffer;
-        for (let i = 0; i < count; i++) {
-          this._children[i] = unmarshalNode(this.tree, address)!;
-          address += SIZE_OF_NODE;
-        }
-        C._free(buffer);
-      }
+      this._children = unmarshalNodeArray(this.tree);
     }
     return this._children;
   }
@@ -386,17 +364,7 @@ export class Node {
     if (!this._namedChildren) {
       marshalNode(this);
       C._ts_node_named_children_wasm(this.tree[0]);
-      const count = C.getValue(TRANSFER_BUFFER, 'i32');
-      const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-      this._namedChildren = new Array<Node>(count);
-      if (count > 0) {
-        let address = buffer;
-        for (let i = 0; i < count; i++) {
-          this._namedChildren[i] = unmarshalNode(this.tree, address)!;
-          address += SIZE_OF_NODE;
-        }
-        C._free(buffer);
-      }
+      this._namedChildren = unmarshalNodeArray(this.tree);
     }
     return this._namedChildren;
   }
@@ -431,8 +399,9 @@ export class Node {
 
     // Copy the array of symbols to the Wasm heap
     const symbolsAddress = C._malloc(SIZE_OF_INT * symbols.length);
+    const symbolsBase = symbolsAddress >>> 2;
     for (let i = 0, n = symbols.length; i < n; i++) {
-      C.setValue(symbolsAddress + i * SIZE_OF_INT, symbols[i], 'i32');
+      C.HEAPU32[symbolsBase + i] = symbols[i];
     }
 
     // Call the C API to compute the descendants
@@ -447,20 +416,7 @@ export class Node {
       endPosition.column
     );
 
-    // Instantiate the nodes based on the data returned
-    const descendantCount = C.getValue(TRANSFER_BUFFER, 'i32');
-    const descendantAddress = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const result = new Array<Node>(descendantCount);
-    if (descendantCount > 0) {
-      let address = descendantAddress;
-      for (let i = 0; i < descendantCount; i++) {
-        result[i] = unmarshalNode(this.tree, address)!;
-        address += SIZE_OF_NODE;
-      }
-    }
-
-    // Free the intermediate buffers
-    C._ts_free_wasm(descendantAddress);
+    const result = unmarshalNodeArray(this.tree, true, true);
     C._free(symbolsAddress);
     return result;
   }
@@ -537,9 +493,9 @@ export class Node {
     }
 
     marshalNode(this);
-    const address = TRANSFER_BUFFER + SIZE_OF_NODE;
-    C.setValue(address, start, 'i32');
-    C.setValue(address + SIZE_OF_INT, end, 'i32');
+    const base = (TRANSFER_BUFFER + SIZE_OF_NODE) >>> 2;
+    C.HEAP32[base] = start;
+    C.HEAP32[base + 1] = end;
     C._ts_node_descendant_for_index_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -551,9 +507,9 @@ export class Node {
     }
 
     marshalNode(this);
-    const address = TRANSFER_BUFFER + SIZE_OF_NODE;
-    C.setValue(address, start, 'i32');
-    C.setValue(address + SIZE_OF_INT, end, 'i32');
+    const base = (TRANSFER_BUFFER + SIZE_OF_NODE) >>> 2;
+    C.HEAP32[base] = start;
+    C.HEAP32[base + 1] = end;
     C._ts_node_named_descendant_for_index_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -594,8 +550,8 @@ export class Node {
    */
   walk(): TreeCursor {
     marshalNode(this);
-    C._ts_tree_cursor_new_wasm(this.tree[0]);
-    return new TreeCursor(INTERNAL, this.tree);
+    const address = C._ts_tree_cursor_new_wasm(this.tree[0]);
+    return new TreeCursor(INTERNAL, this.tree, address);
   }
 
   /**
