@@ -502,6 +502,18 @@ describe('Tree', () => {
         }
       }
     });
+
+    it('preserves cursor position and parent stack when resetTo receives itself', () => {
+      tree = parser.parse('const value = 1;')!;
+      cursor = tree.walk();
+      expect(cursor.gotoFirstChild()).toBe(true);
+      expect(cursor.nodeType).toBe('lexical_declaration');
+      expect(cursor.gotoFirstChild()).toBe(true);
+      cursor.resetTo(cursor);
+      expect(cursor.nodeText).toBe('const');
+      expect(cursor.gotoParent()).toBe(true);
+      expect(cursor.nodeType).toBe('lexical_declaration');
+    });
   });
 
   describe('.copy', () => {

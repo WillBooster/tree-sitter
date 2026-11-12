@@ -34,9 +34,6 @@ export interface Range {
 }
 
 /** @internal */
-export const SIZE_OF_SHORT = 2;
-
-/** @internal */
 export const SIZE_OF_INT = 4;
 
 /** @internal */

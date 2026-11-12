@@ -57,8 +57,8 @@ export interface ParseOptions {
   maxMemoryBytes?: number;
 
   /**
-   * The maximum number of parse operations during this parse. Reaching it
-   * cancels the parse and resets the parser.
+   * The maximum number of parse operations allowed during this parse. Exceeding
+   * it cancels the parse and resets the parser.
    */
   maxOperations?: number;
 }
@@ -127,6 +127,7 @@ interface WasmParseRequest {
   ranges: Range[] | undefined;
   maxOperations: number | undefined;
   hasProgressCallback: number;
+  onOperations: (operations: number) => void;
 }
 
 /**
@@ -233,7 +234,7 @@ export class Parser {
    * @returns {Tree | null} A {@link Tree} if parsing succeeded, or `null` if:
    *  - The parser has not yet had a language assigned with {@link Parser#setLanguage}.
    *  - The progress callback returned true.
-   *  - The memory or operation limit was reached.
+   *  - The memory limit was reached or the operation limit was exceeded.
    */
   parse(
     callback: string | ParseCallback,
@@ -254,6 +255,7 @@ export class Parser {
       C._ts_parser_enable_logger_wasm(this[0], 0);
     }
 
+    this.lastParseOperations = 0;
     const request: WasmParseRequest = {
       parserAddress: this[0],
       callbackBuffer: this[1],
@@ -262,14 +264,15 @@ export class Parser {
       ranges: options?.includedRanges,
       maxOperations,
       hasProgressCallback: options?.progressCallback ? 1 : 0,
+      onOperations: (operations) => {
+        this.lastParseOperations = operations;
+      },
     };
 
     try {
-      this.lastParseOperations = 0;
-      const [treeAddress, operations] = maxMemoryBytes === undefined
+      const treeAddress = maxMemoryBytes === undefined
         ? parseOrdinaryWasm(request)
         : parseLimitedWasm(request, maxMemoryBytes);
-      this.lastParseOperations = operations;
       if (!treeAddress) return null;
       if (!this.language) throw new Error('Parser must have a language to parse');
       return new Tree(INTERNAL, treeAddress, this.language, textCallback, sourceText);
@@ -343,14 +346,19 @@ function resolveInput(callback: string | ParseCallback): {
   throw new Error('Argument must be a string or a function');
 }
 
-function parseOrdinaryWasm(request: WasmParseRequest): [number, number] {
-  return withPreparedParse(request, (inputBuffer) =>
-    C._ts_parser_parse_wasm(request.parserAddress, inputBuffer, request.oldTreeAddress),
-  );
+function parseOrdinaryWasm(request: WasmParseRequest): number {
+  return withPreparedParse(request, (inputBuffer) => {
+    try {
+      return C._ts_parser_parse_wasm(request.parserAddress, inputBuffer, request.oldTreeAddress);
+    } catch (error) {
+      C._ts_parser_last_parse_operations_wasm(request.parserAddress);
+      throw error;
+    }
+  });
 }
 
-function parseLimitedWasm(request: WasmParseRequest, maxMemoryBytes: number): [number, number] {
-  if (!C.treeSitterSetMemoryLimit(maxMemoryBytes)) return [0, 0];
+function parseLimitedWasm(request: WasmParseRequest, maxMemoryBytes: number): number {
+  if (!C.treeSitterSetMemoryLimit(maxMemoryBytes)) return 0;
   try {
     return withPreparedParse(request, (inputBuffer) => {
       try {
@@ -365,21 +373,23 @@ function parseLimitedWasm(request: WasmParseRequest, maxMemoryBytes: number): [n
   }
 }
 
-function withPreparedParse(request: WasmParseRequest, execute: (inputBuffer: number) => number): [number, number] {
+function withPreparedParse(request: WasmParseRequest, execute: (inputBuffer: number) => number): number {
   let sourceAddress = 0;
   let rangeAddress = 0;
+  let executed = false;
   try {
     const [allocatedSource, byteLength, ok] = prepareSourceBuffer(request.sourceText);
     sourceAddress = allocatedSource;
-    if (!ok) return [0, 0];
+    if (!ok) return 0;
     const [allocatedRanges, rangeCount] = prepareRanges(request.ranges);
     rangeAddress = allocatedRanges;
-    if (rangeCount && !allocatedRanges) return [0, 0];
+    if (rangeCount && !allocatedRanges) return 0;
     const isStringInput = request.sourceText !== undefined;
     marshalParseInputs(request.maxOperations, byteLength, allocatedRanges, rangeCount, isStringInput, request.hasProgressCallback);
-    const treeAddress = execute(isStringInput ? allocatedSource : request.callbackBuffer);
-    return [treeAddress, unmarshalOperationCount()];
+    executed = true;
+    return execute(isStringInput ? allocatedSource : request.callbackBuffer);
   } finally {
+    if (executed) request.onOperations(unmarshalOperationCount());
     if (rangeAddress) C._free(rangeAddress);
     if (sourceAddress) C._free(sourceAddress);
   }

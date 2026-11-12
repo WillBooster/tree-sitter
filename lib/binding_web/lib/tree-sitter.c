@@ -326,13 +326,22 @@ TSTree *ts_parser_parse_limited_wasm(
   return tree;
 }
 
+void ts_parser_last_parse_operations_wasm(const TSParser *self) {
+  marshal_u64(ts_parser_last_parse_operations(self));
+}
+
 void ts_parser_abort_limited_wasm(void) {
+  uint64_t operations = 0;
   if (current_parse_budget) {
     WebParseBudget *budget = current_parse_budget;
     current_parse_budget = NULL;
-    if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
+    if (budget->parser) {
+      operations = ts_parser_last_parse_operations(budget->parser);
+      ts_parser_abandon_after_alloc_failure(budget->parser);
+    }
     web_budget_discard(budget);
   }
+  marshal_u64(operations);
 }
 
 void ts_parser_included_ranges_wasm(TSParser *self) {
@@ -493,24 +502,9 @@ bool ts_tree_cursor_goto_parent_wasm(TSTreeCursor *cursor) {
   return result;
 }
 
-uint16_t ts_tree_cursor_current_node_type_id_wasm(const TSTreeCursor *cursor) {
-  TSNode node = ts_tree_cursor_current_node(cursor);
-  return ts_node_symbol(node);
-}
-
 uint16_t ts_tree_cursor_current_node_state_id_wasm(const TSTreeCursor *cursor) {
   TSNode node = ts_tree_cursor_current_node(cursor);
   return ts_node_parse_state(node);
-}
-
-bool ts_tree_cursor_current_node_is_named_wasm(const TSTreeCursor *cursor) {
-  TSNode node = ts_tree_cursor_current_node(cursor);
-  return ts_node_is_named(node);
-}
-
-bool ts_tree_cursor_current_node_is_missing_wasm(const TSTreeCursor *cursor) {
-  TSNode node = ts_tree_cursor_current_node(cursor);
-  return ts_node_is_missing(node);
 }
 
 uint32_t ts_tree_cursor_current_node_id_wasm(const TSTreeCursor *cursor) {
@@ -536,10 +530,6 @@ uint32_t ts_tree_cursor_start_index_wasm(const TSTreeCursor *cursor) {
 uint32_t ts_tree_cursor_end_index_wasm(const TSTreeCursor *cursor) {
   TSNode node = ts_tree_cursor_current_node(cursor);
   return byte_to_code_unit(ts_node_end_byte(node));
-}
-
-uint32_t ts_tree_cursor_current_field_id_wasm(const TSTreeCursor *cursor) {
-  return ts_tree_cursor_current_field_id(cursor);
 }
 
 uint32_t ts_tree_cursor_current_depth_wasm(const TSTreeCursor *cursor) {

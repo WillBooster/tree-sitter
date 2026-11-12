@@ -221,10 +221,7 @@ fn emcc_command(args: &BuildWasm) -> Result<Command> {
         .args([OsStr::new("--volume"), &volume_mount(&cwd, "/src:Z")])
         .args([
             OsStr::new("--volume"),
-            &volume_mount(
-                &cache_dir,
-                ":/emsdk/upstream/emscripten/cache:Z".trim_start_matches(':'),
-            ),
+            &volume_mount(&cache_dir, "/emsdk/upstream/emscripten/cache:Z"),
         ])
         .env("PODMAN_USERNS", "keep-id");
 
@@ -244,7 +241,7 @@ fn emcc_command(args: &BuildWasm) -> Result<Command> {
 fn volume_mount(host: &Path, container_suffix: &str) -> OsString {
     let mut mount = host.as_os_str().to_os_string();
     mount.push(":");
-    mount.push(container_suffix.trim_start_matches(':'));
+    mount.push(container_suffix);
     mount
 }
 

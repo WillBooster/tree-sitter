@@ -8,10 +8,16 @@ import { Edit } from './edit';
 import { newFinalizer } from './finalization_registry';
 
 /** @internal */
-export function getText(tree: Tree, startIndex: number, endIndex: number, startPosition: Point): string {
+export function getText(
+  tree: Tree,
+  startIndex: number,
+  endIndex: number,
+  getStartPosition: () => Point,
+): string {
   if (tree.sourceText !== undefined) {
     return tree.sourceText.slice(startIndex, endIndex);
   }
+  const startPosition = getStartPosition();
   const length = endIndex - startIndex;
   let result = tree.textCallback(startIndex, startPosition);
   if (result) {

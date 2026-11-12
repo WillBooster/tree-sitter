@@ -72,6 +72,7 @@ interface WasmModule {
   _ts_parser_enable_logger_wasm(_0: number, _1: number): void;
   _ts_parser_parse_wasm(_0: number, _1: number, _2: number): number;
   _ts_parser_parse_limited_wasm(_0: number, _1: number): number;
+  _ts_parser_last_parse_operations_wasm(_0: number): void;
   _ts_parser_abort_limited_wasm(): void;
   _ts_parser_included_ranges_wasm(_0: number): void;
   _ts_language_type_is_named_wasm(_0: number, _1: number): number;
@@ -97,16 +98,12 @@ interface WasmModule {
   _ts_tree_cursor_goto_previous_sibling_wasm(_0: number): number;
   _ts_tree_cursor_goto_descendant_wasm(_0: number, _1: number): void;
   _ts_tree_cursor_goto_parent_wasm(_0: number): number;
-  _ts_tree_cursor_current_node_type_id_wasm(_0: number): number;
   _ts_tree_cursor_current_node_state_id_wasm(_0: number): number;
-  _ts_tree_cursor_current_node_is_named_wasm(_0: number): number;
-  _ts_tree_cursor_current_node_is_missing_wasm(_0: number): number;
   _ts_tree_cursor_current_node_id_wasm(_0: number): number;
   _ts_tree_cursor_start_position_wasm(_0: number): void;
   _ts_tree_cursor_end_position_wasm(_0: number): void;
   _ts_tree_cursor_start_index_wasm(_0: number): number;
   _ts_tree_cursor_end_index_wasm(_0: number): number;
-  _ts_tree_cursor_current_field_id_wasm(_0: number): number;
   _ts_tree_cursor_current_depth_wasm(_0: number): number;
   _ts_tree_cursor_current_descendant_index_wasm(_0: number): number;
   _ts_tree_cursor_current_node_wasm(_0: number): void;

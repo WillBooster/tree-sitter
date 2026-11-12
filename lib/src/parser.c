@@ -1513,7 +1513,7 @@ static Subtree ts_parser__root_from_stack(TSParser *, SubtreeArray *);
 static bool ts_parser__finish_accept(TSParser *self) {
   if (!self->accept_collected && !ts_stack_pop_all(
     self->stack, self->accept_version, &self->accept_slices,
-    (self->parse_options.progress_callback || self->max_operations) ? ts_parser__check_accept_progress : NULL, self
+    ts_parser__check_accept_progress, self
   )) return false;
   self->accept_collected = true;
   while (self->accept_index < self->accept_slices.size) {

@@ -607,6 +607,7 @@ TSTreeCursor ts_tree_cursor_copy(const TSTreeCursor *_cursor) {
 void ts_tree_cursor_reset_to(TSTreeCursor *_dst, const TSTreeCursor *_src) {
   const TreeCursor *cursor = (const TreeCursor *)_src;
   TreeCursor *copy = (TreeCursor *)_dst;
+  if (copy == cursor) return;
   copy->tree = cursor->tree;
   copy->root_alias_symbol = cursor->root_alias_symbol;
   array_clear(&copy->stack);

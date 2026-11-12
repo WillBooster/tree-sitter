@@ -169,10 +169,7 @@ export class Node {
 
   /** Get the string content of this node. */
   get text(): string {
-    if (this.tree.sourceText !== undefined) {
-      return this.tree.sourceText.slice(this.startIndex, this.endIndex);
-    }
-    return getText(this.tree, this.startIndex, this.endIndex, this.startPosition);
+    return getText(this.tree, this.startIndex, this.endIndex, () => this.startPosition);
   }
 
   /** Get this node's parse state. */

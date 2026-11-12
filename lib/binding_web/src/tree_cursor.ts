@@ -136,12 +136,7 @@ export class TreeCursor {
   /** Get the string content of the cursor's current node. */
   get nodeText(): string {
     this.syncIndices();
-    if (this.tree.sourceText !== undefined) {
-      return this.tree.sourceText.slice(this._startIndex, this._endIndex);
-    }
-    C._ts_tree_cursor_start_position_wasm(this[0]);
-    const startPosition = unmarshalPoint(TRANSFER_BUFFER);
-    return getText(this.tree, this._startIndex, this._endIndex, startPosition);
+    return getText(this.tree, this._startIndex, this._endIndex, () => this.startPosition);
   }
 
   /** Get the start position of the cursor's current node. */
@@ -301,6 +296,7 @@ export class TreeCursor {
    * information and allows reusing already created cursors.
    */
   resetTo(cursor: TreeCursor): void {
+    if (cursor === this) return;
     this.tree = cursor.tree;
     C._ts_tree_cursor_reset_to_wasm(this[0], cursor[0]);
     this.readNodeCache();
