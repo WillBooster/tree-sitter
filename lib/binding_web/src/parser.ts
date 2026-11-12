@@ -268,23 +268,24 @@ export class Parser {
     hasProgressCallback: boolean,
   ): number {
     if (maxMemoryBytes !== undefined) {
-      C.currentParseCallback = typeof callback === 'string'
-        ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
-        : callback;
+      C.currentParseCallback = toParseCallback(callback);
       return parseLimitedWasm(this[0], this[1], includedRanges, maxMemoryBytes, hasProgressCallback);
+    }
+
+    const oldTreeAddress = oldTree ? oldTree[0] : 0;
+    if (
+      !includedRanges?.length &&
+      typeof callback === 'string' &&
+      !hasProgressCallback &&
+      callback.length <= MAX_DIRECT_STRING_CODE_UNITS
+    ) {
+      return parseStringWasm(this[0], this[1], oldTreeAddress, callback);
     }
 
     const [rangeAddress, rangeCount] = prepareRanges(includedRanges);
     if (rangeCount && !rangeAddress) return 0;
     try {
-      const oldTreeAddress = oldTree ? oldTree[0] : 0;
-      if (typeof callback === 'string' && !hasProgressCallback && callback.length <= MAX_DIRECT_STRING_CODE_UNITS) {
-        return parseStringWasm(this[0], this[1], oldTreeAddress, callback, rangeAddress, rangeCount);
-      }
-
-      C.currentParseCallback = typeof callback === 'string'
-        ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
-        : callback;
+      C.currentParseCallback = toParseCallback(callback);
       return C._ts_parser_parse_wasm(
         this[0],
         this[1],
@@ -347,6 +348,12 @@ function validateMemoryLimit(maxMemoryBytes?: number): number | undefined {
   return maxMemoryBytes;
 }
 
+function toParseCallback(callback: string | ParseCallback): ParseCallback {
+  return typeof callback === 'string'
+    ? (index: number) => callback.slice(index, index + CHUNK_CODE_UNITS)
+    : callback;
+}
+
 function prepareRanges(ranges?: Range[]): [number, number] {
   if (!ranges?.length) return [0, 0];
   const rangeAddress = C._calloc(ranges.length, SIZE_OF_RANGE);
@@ -364,8 +371,6 @@ function parseStringWasm(
   inputBuffer: number,
   oldTreeAddress: number,
   source: string,
-  rangeAddress: number,
-  rangeCount: number,
 ): number {
   const length = source.length;
   const byteLength = length * 2;
@@ -383,8 +388,6 @@ function parseStringWasm(
       oldTreeAddress,
       bufferAddress,
       byteLength,
-      rangeAddress,
-      rangeCount,
     );
   } finally {
     if (allocatedBuffer) C._free(allocatedBuffer);

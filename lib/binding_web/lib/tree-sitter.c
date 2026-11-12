@@ -251,11 +251,9 @@ TSTree *ts_parser_parse_string_wasm(
   TSParser *self,
   const TSTree *old_tree,
   const char *string,
-  uint32_t byte_length,
-  TSRange *ranges,
-  uint32_t range_count
+  uint32_t byte_length
 ) {
-  apply_included_ranges(self, ranges, range_count);
+  apply_included_ranges(self, NULL, 0);
   return ts_parser_parse_string_encoding(
     self,
     old_tree,

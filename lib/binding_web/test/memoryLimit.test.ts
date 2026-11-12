@@ -31,6 +31,53 @@ afterEach(() => {
 });
 
 describe('Parse memory limit', () => {
+  it('does not allocate for excluded text when parsing sparse included ranges', () => {
+    const firstFragment = 'const first = 1; ';
+    const secondFragment = 'const second = 2;';
+    const filler = ' '.repeat(16 * 1024 * 1024 - firstFragment.length - secondFragment.length);
+    const source = firstFragment + filler + secondFragment;
+    const secondStart = firstFragment.length + filler.length;
+    const beforeBytes = memory.buffer.byteLength;
+
+    const singleRangeTree = parser.parse(source, undefined, {
+      includedRanges: [{
+        startPosition: { row: 0, column: secondStart },
+        endPosition: { row: 0, column: source.length },
+        startIndex: secondStart,
+        endIndex: source.length,
+      }],
+    });
+    expect(singleRangeTree?.rootNode.hasError).toBe(false);
+    expect(singleRangeTree?.rootNode.text).toBe(secondFragment);
+    expect(memory.buffer.byteLength).toBe(beforeBytes);
+    singleRangeTree?.delete();
+
+    const multiRangeTree = parser.parse(source, undefined, {
+      includedRanges: [
+        {
+          startPosition: { row: 0, column: 0 },
+          endPosition: { row: 0, column: firstFragment.length },
+          startIndex: 0,
+          endIndex: firstFragment.length,
+        },
+        {
+          startPosition: { row: 0, column: secondStart },
+          endPosition: { row: 0, column: source.length },
+          startIndex: secondStart,
+          endIndex: source.length,
+        },
+      ],
+    });
+    expect(multiRangeTree?.rootNode.hasError).toBe(false);
+    expect(multiRangeTree?.rootNode.childCount).toBe(2);
+    expect(memory.buffer.byteLength).toBe(beforeBytes);
+    multiRangeTree?.delete();
+
+    const emptyRangeListTree = parser.parse('const third = 3;', undefined, { includedRanges: [] });
+    expect(emptyRangeListTree?.rootNode.text).toBe('const third = 3;');
+    emptyRangeListTree?.delete();
+  });
+
   it('stays within the limit and leaves the parser usable after repeated cancellations', () => {
     const maxMemoryBytes = 48 * 2 ** 20;
     const source = 'f<'.repeat(50_000);
