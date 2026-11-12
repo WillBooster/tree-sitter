@@ -537,3 +537,31 @@ fn test_lookahead_iterator_outlives_wasm_language() {
         assert!(lookahead.iter_names().count() > 0);
     });
 }
+
+#[test]
+fn test_playground_export_writes_local_assets() {
+    let grammar_dir = tempfile::tempdir_in(scratch_dir()).unwrap();
+    let export_dir = tempfile::tempdir_in(scratch_dir()).unwrap();
+    fs::create_dir_all(grammar_dir.path().join("src")).unwrap();
+    fs::write(
+        grammar_dir.path().join("src/grammar.json"),
+        r#"{"name":"javascript","rules":{"source_file":{"type":"BLANK"}}}"#,
+    )
+    .unwrap();
+    fs::copy(
+        WASM_DIR.join("tree-sitter-javascript.wasm"),
+        grammar_dir.path().join("tree-sitter-javascript.wasm"),
+    )
+    .unwrap();
+
+    crate::playground::export(grammar_dir.path(), export_dir.path()).unwrap();
+
+    let html = fs::read_to_string(export_dir.path().join("index.html")).unwrap();
+    let script = fs::read_to_string(export_dir.path().join("playground.js")).unwrap();
+    assert!(html.contains("Language: javascript"));
+    assert!(html.contains(r#"<script type="module" src="playground.js"></script>"#));
+    assert!(!html.contains("tree-sitter.github.io/tree-sitter/assets/js/playground.js"));
+    assert!(script.contains("window.initializePlayground"));
+    assert!(!script.contains("query-input"));
+    assert!(export_dir.path().join("tree-sitter-parser.wasm").exists());
+}

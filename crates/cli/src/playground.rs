@@ -12,6 +12,9 @@ use tiny_http::{Header, Response, Server};
 
 use super::wasm;
 
+const UPSTREAM_WEB_JS_URL: &str = "https://tree-sitter.github.io/web-tree-sitter.js";
+const UPSTREAM_WEB_WASM_URL: &str = "https://tree-sitter.github.io/web-tree-sitter.wasm";
+
 macro_rules! optional_resource {
     ($name:tt, $path:tt) => {
         #[cfg(TREE_SITTER_EMBED_WASM_BINDING)]
@@ -37,23 +40,11 @@ macro_rules! optional_resource {
 optional_resource!(get_lib_js, "lib/binding_web/web-tree-sitter.js");
 optional_resource!(get_lib_wasm, "lib/binding_web/web-tree-sitter.wasm");
 
-// This repository has no docs/ to embed the playground's script from, so it comes from upstream's site
-// unless TREE_SITTER_BASE_DIR points to a checkout that has it.
-fn get_playground_js(tree_sitter_dir: Option<&Path>) -> Cow<'static, [u8]> {
-    tree_sitter_dir
-        .and_then(|tree_sitter_dir| {
-            fs::read(tree_sitter_dir.join("docs/src/assets/js/playground.js")).ok()
-        })
-        .map_or(Cow::Borrowed(&[]), Cow::Owned)
-}
-
-fn get_main_html(tree_sitter_dir: Option<&Path>) -> Cow<'static, [u8]> {
-    tree_sitter_dir.map_or(
-        Cow::Borrowed(include_bytes!("playground.html")),
-        |tree_sitter_dir| {
-            Cow::Owned(fs::read(tree_sitter_dir.join("crates/cli/src/playground.html")).unwrap())
-        },
-    )
+struct PlaygroundAssets {
+    main_html: String,
+    playground_js: Cow<'static, [u8]>,
+    lib_js: Cow<'static, [u8]>,
+    lib_wasm: Cow<'static, [u8]>,
 }
 
 pub fn export(grammar_path: &Path, export_path: &Path) -> Result<()> {
@@ -66,51 +57,33 @@ pub fn export(grammar_path: &Path, export_path: &Path) -> Result<()> {
         )
     })?;
 
-    let tree_sitter_dir = env::var("TREE_SITTER_BASE_DIR").map(PathBuf::from).ok();
+    let mut assets = load_playground_assets(&grammar_name);
+    let has_local_lib_js = !assets.lib_js.is_empty();
+    let has_local_lib_wasm = !assets.lib_wasm.is_empty();
 
-    let playground_js = get_playground_js(tree_sitter_dir.as_deref());
-    let lib_js = get_lib_js(tree_sitter_dir.as_deref());
-    let lib_wasm = get_lib_wasm(tree_sitter_dir.as_deref());
-
-    let has_local_playground_js = !playground_js.is_empty();
-    let has_local_lib_js = !lib_js.is_empty();
-    let has_local_lib_wasm = !lib_wasm.is_empty();
-
-    let mut main_html = str::from_utf8(&get_main_html(tree_sitter_dir.as_deref()))
-        .unwrap()
-        .replace("THE_LANGUAGE_NAME", &grammar_name);
-
-    if !has_local_playground_js {
-        main_html = main_html.replace(
-            r#"<script type="module" src="playground.js"></script>"#,
-            r#"<script type="module" src="https://tree-sitter.github.io/tree-sitter/assets/js/playground.js"></script>"#
-        );
-    }
     if !has_local_lib_js {
-        main_html = main_html.replace(
+        assets.main_html = assets.main_html.replace(
             "import * as TreeSitter from './web-tree-sitter.js';",
             "import * as TreeSitter from 'https://tree-sitter.github.io/web-tree-sitter.js';",
         );
     }
 
-    fs::write(export_path.join("index.html"), main_html.as_bytes())
+    fs::write(export_path.join("index.html"), assets.main_html.as_bytes())
         .with_context(|| "Failed to write index.html")?;
 
     fs::write(export_path.join("tree-sitter-parser.wasm"), language_wasm)
         .with_context(|| "Failed to write parser wasm file")?;
 
-    if has_local_playground_js {
-        fs::write(export_path.join("playground.js"), playground_js)
-            .with_context(|| "Failed to write playground.js")?;
-    }
+    fs::write(export_path.join("playground.js"), assets.playground_js)
+        .with_context(|| "Failed to write playground.js")?;
 
     if has_local_lib_js {
-        fs::write(export_path.join("web-tree-sitter.js"), lib_js)
+        fs::write(export_path.join("web-tree-sitter.js"), assets.lib_js)
             .with_context(|| "Failed to write web-tree-sitter.js")?;
     }
 
     if has_local_lib_wasm {
-        fs::write(export_path.join("web-tree-sitter.wasm"), lib_wasm)
+        fs::write(export_path.join("web-tree-sitter.wasm"), assets.lib_wasm)
             .with_context(|| "Failed to write web-tree-sitter.wasm")?;
     }
 
@@ -131,15 +104,8 @@ pub fn serve(grammar_path: &Path, open_in_browser: bool) -> Result<()> {
         error!("Failed to open '{url}' in a web browser");
     }
 
-    let tree_sitter_dir = env::var("TREE_SITTER_BASE_DIR").map(PathBuf::from).ok();
-    let main_html = str::from_utf8(&get_main_html(tree_sitter_dir.as_deref()))
-        .unwrap()
-        .replace("THE_LANGUAGE_NAME", &grammar_name)
-        .into_bytes();
-    let playground_js = get_playground_js(tree_sitter_dir.as_deref());
-    let lib_js = get_lib_js(tree_sitter_dir.as_deref());
-    let lib_wasm = get_lib_wasm(tree_sitter_dir.as_deref());
-
+    let assets = load_playground_assets(&grammar_name);
+    let main_html = assets.main_html.into_bytes();
     let html_header = Header::from_str("Content-Type: text/html").unwrap();
     let js_header = Header::from_str("Content-Type: application/javascript").unwrap();
     let wasm_header = Header::from_str("Content-Type: application/wasm").unwrap();
@@ -148,26 +114,12 @@ pub fn serve(grammar_path: &Path, open_in_browser: bool) -> Result<()> {
         let res = match request.url() {
             "/" => response(&main_html, &html_header),
             "/tree-sitter-parser.wasm" => response(&language_wasm, &wasm_header),
-            "/playground.js" => {
-                if playground_js.is_empty() {
-                    redirect("https://tree-sitter.github.io/tree-sitter/assets/js/playground.js")
-                } else {
-                    response(&playground_js, &js_header)
-                }
-            }
+            "/playground.js" => response(&assets.playground_js, &js_header),
             "/web-tree-sitter.js" => {
-                if lib_js.is_empty() {
-                    redirect("https://tree-sitter.github.io/web-tree-sitter.js")
-                } else {
-                    response(&lib_js, &js_header)
-                }
+                asset_or_redirect(&assets.lib_js, &js_header, UPSTREAM_WEB_JS_URL)
             }
             "/web-tree-sitter.wasm" => {
-                if lib_wasm.is_empty() {
-                    redirect("https://tree-sitter.github.io/web-tree-sitter.wasm")
-                } else {
-                    response(&lib_wasm, &wasm_header)
-                }
+                asset_or_redirect(&assets.lib_wasm, &wasm_header, UPSTREAM_WEB_WASM_URL)
             }
             _ => response(b"Not found", &html_header).with_status_code(404),
         };
@@ -179,9 +131,38 @@ pub fn serve(grammar_path: &Path, open_in_browser: bool) -> Result<()> {
     Ok(())
 }
 
-fn redirect(url: &str) -> Response<&[u8]> {
+fn load_playground_assets(grammar_name: &str) -> PlaygroundAssets {
+    let tree_sitter_dir = env::var("TREE_SITTER_BASE_DIR").map(PathBuf::from).ok();
+    let dir = tree_sitter_dir.as_deref();
+    let raw_html: Cow<'_, str> = dir
+        .map_or(Cow::Borrowed(include_str!("playground.html")), |dir| {
+            Cow::Owned(fs::read_to_string(dir.join("crates/cli/src/playground.html")).unwrap())
+        });
+    PlaygroundAssets {
+        main_html: raw_html.replace("THE_LANGUAGE_NAME", grammar_name),
+        playground_js: dir.map_or(Cow::Borrowed(include_bytes!("playground.js")), |dir| {
+            Cow::Owned(fs::read(dir.join("crates/cli/src/playground.js")).unwrap())
+        }),
+        lib_js: get_lib_js(dir),
+        lib_wasm: get_lib_wasm(dir),
+    }
+}
+
+fn asset_or_redirect<'a>(
+    asset: &'a [u8],
+    header: &Header,
+    fallback_url: &str,
+) -> Response<&'a [u8]> {
+    if asset.is_empty() {
+        redirect(fallback_url)
+    } else {
+        response(asset, header)
+    }
+}
+
+fn redirect(url: &str) -> Response<&'static [u8]> {
     Response::empty(302)
-        .with_data("".as_bytes(), Some(0))
+        .with_data(b"".as_slice(), Some(0))
         .with_header(Header::from_bytes("Location", url.as_bytes()).unwrap())
 }
 

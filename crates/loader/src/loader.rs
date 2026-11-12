@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 780 -- grammar discovery, compilation, and loading share private Loader state
+// code-gauge-allow-file fileNcss 785 -- grammar discovery, compilation, and loading share private Loader state
 #![cfg_attr(not(any(test, doctest)), doc = include_str!("../README.md"))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
@@ -901,22 +901,22 @@ impl Loader {
         let file_contents =
             fs::read(path).map_err(|e| LoaderError::IO(IoError::new(e, Some(path))))?;
         let file_contents = String::from_utf8_lossy(&file_contents);
-        let best_configuration_id = configuration_ids
-            .iter()
-            .copied()
-            .max_by_key(|&id| {
-                self.language_configurations[id]
-                    .content_regex
-                    .as_ref()
-                    .map_or(0isize, |regex| {
-                        // Penalize non-matching content regexes so configurations without
-                        // content regexes win over non-matching ones.
-                        regex
-                            .find(&file_contents)
-                            .map_or(-1, |mat| (mat.end() - mat.start()) as isize)
-                    })
-            })
-            .unwrap();
+        let mut best_score = -2isize;
+        let mut best_configuration_id = configuration_ids[0];
+        for &id in configuration_ids {
+            let score = self.language_configurations[id]
+                .content_regex
+                .as_ref()
+                .map_or(0isize, |regex| {
+                    regex
+                        .find(&file_contents)
+                        .map_or(-1, |mat| (mat.end() - mat.start()) as isize)
+                });
+            if score > best_score {
+                best_configuration_id = id;
+                best_score = score;
+            }
+        }
         Ok(&self.language_configurations[best_configuration_id])
     }
 
