@@ -1053,7 +1053,6 @@ bool ts_stack_pop_count_in_place(
     child_count += !before_children;
     count -= !is_extra;
   }
-  if (trailing_count >= MAX_NODE_POOL_SIZE) return false;
 
   array_clear(trailing_extras);
   if (trailing_count > 0) {
