@@ -90,11 +90,6 @@ fn generate_bindings(out_dir: &std::path::Path) {
         "TSLookaheadIterator",
         "TSParser",
         "TSTree",
-        "TSQuery",
-        "TSQueryCursor",
-        "TSQueryCapture",
-        "TSQueryMatch",
-        "TSQueryPredicateStep",
     ];
 
     let rust_version = env!("CARGO_PKG_RUST_VERSION");

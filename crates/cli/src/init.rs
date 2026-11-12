@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 652 -- CLI grammar scaffolding templates and config writers stay in one module
 mod zig;
 
 use std::{
@@ -17,11 +18,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tree_sitter_generate::write_file;
-use tree_sitter_loader::{
-    Author, Bindings, DEFAULT_HIGHLIGHTS_QUERY_FILE_NAME, DEFAULT_INJECTIONS_QUERY_FILE_NAME,
-    DEFAULT_LOCALS_QUERY_FILE_NAME, DEFAULT_TAGS_QUERY_FILE_NAME, Grammar, Links, Metadata,
-    PathsJSON, TreeSitterJSON,
-};
+use tree_sitter_loader::{Author, Bindings, Grammar, Links, Metadata, PathsJSON, TreeSitterJSON};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CLI_VERSION_PLACEHOLDER: &str = "CLI_VERSION";
@@ -70,11 +67,6 @@ const AUTHOR_NAME_PLACEHOLDER_GRAMMAR: &str = "PARSER_AUTHOR_NAME";
 const AUTHOR_EMAIL_PLACEHOLDER_GRAMMAR: &str = " PARSER_AUTHOR_EMAIL";
 
 const FUNDING_URL_PLACEHOLDER: &str = "FUNDING_URL";
-
-const HIGHLIGHTS_QUERY_PATH_PLACEHOLDER: &str = "HIGHLIGHTS_QUERY_PATH";
-const INJECTIONS_QUERY_PATH_PLACEHOLDER: &str = "INJECTIONS_QUERY_PATH";
-const LOCALS_QUERY_PATH_PLACEHOLDER: &str = "LOCALS_QUERY_PATH";
-const TAGS_QUERY_PATH_PLACEHOLDER: &str = "TAGS_QUERY_PATH";
 
 const GRAMMAR_JS_TEMPLATE: &str = include_str!("./templates/grammar.js");
 const PACKAGE_JSON_TEMPLATE: &str = include_str!("./templates/package.json");
@@ -160,7 +152,6 @@ pub struct JsonConfigOpts {
 impl JsonConfigOpts {
     #[must_use]
     pub fn to_tree_sitter_json(self) -> TreeSitterJSON {
-        let injection_regex = format!("^{}$", self.name);
         let class_name = format!("TreeSitter{}", self.name.to_upper_camel_case());
         let repository = self
             .repository
@@ -175,11 +166,6 @@ impl JsonConfigOpts {
                 path: None,
                 external_files: PathsJSON::Empty,
                 file_types: Some(self.file_types),
-                highlights: PathsJSON::Empty,
-                injections: PathsJSON::Empty,
-                locals: PathsJSON::Empty,
-                tags: PathsJSON::Empty,
-                injection_regex: Some(injection_regex),
                 first_line_regex: None,
                 content_regex: None,
                 class_name: Some(class_name),
@@ -238,10 +224,6 @@ struct GenerateOpts<'a> {
     camel_parser_name: &'a str,
     title_parser_name: &'a str,
     class_name: &'a str,
-    highlights_query_path: &'a str,
-    injections_query_path: &'a str,
-    locals_query_path: &'a str,
-    tags_query_path: &'a str,
     namespace: Option<&'a str>,
 }
 
@@ -260,26 +242,7 @@ pub fn generate_grammar_files(
     opts: Option<&JsonConfigOpts>,
 ) -> Result<()> {
     let dashed_language_name = language_name.to_kebab_case();
-
-    let tree_sitter_config = missing_path_else(
-        repo_path.join("tree-sitter.json"),
-        true,
-        |path| {
-            // invariant: opts is always Some when `tree-sitter.json` doesn't exist
-            let Some(opts) = opts else { unreachable!() };
-
-            let tree_sitter_json = opts.clone().to_tree_sitter_json();
-            write_file(path, serde_json::to_string_pretty(&tree_sitter_json)?)?;
-            Ok(())
-        },
-        |path| {
-            if let Some(opts) = opts {
-                let tree_sitter_json = opts.clone().to_tree_sitter_json();
-                write_file(path, serde_json::to_string_pretty(&tree_sitter_json)?)?;
-            }
-            Ok(())
-        },
-    )?;
+    let tree_sitter_config = ensure_tree_sitter_json(repo_path, opts)?;
 
     let mut tree_sitter_config = serde_json::from_str::<TreeSitterJSON>(
         &fs::read_to_string(tree_sitter_config.as_path())
@@ -299,51 +262,25 @@ pub fn generate_grammar_files(
         .take()
         .unwrap_or_else(|| format!("TreeSitter{}", language_name.to_upper_camel_case()));
 
-    let authors = tree_sitter_config.metadata.authors.as_ref();
-
-    let default_highlights_path = Path::new("queries").join(DEFAULT_HIGHLIGHTS_QUERY_FILE_NAME);
-    let default_injections_path = Path::new("queries").join(DEFAULT_INJECTIONS_QUERY_FILE_NAME);
-    let default_locals_path = Path::new("queries").join(DEFAULT_LOCALS_QUERY_FILE_NAME);
-    let default_tags_path = Path::new("queries").join(DEFAULT_TAGS_QUERY_FILE_NAME);
+    let first_author = tree_sitter_config
+        .metadata
+        .authors
+        .as_deref()
+        .and_then(|a| a.first());
+    let links = tree_sitter_config.metadata.links.as_ref();
 
     let generate_opts = GenerateOpts {
-        author_name: authors
-            .map(|a| a.first().map(|a| a.name.as_str()))
-            .unwrap_or_default(),
-        author_email: authors
-            .map(|a| a.first().and_then(|a| a.email.as_deref()))
-            .unwrap_or_default(),
-        author_url: authors
-            .map(|a| a.first().and_then(|a| a.url.as_deref()))
-            .unwrap_or_default(),
+        author_name: first_author.map(|a| a.name.as_str()),
+        author_email: first_author.and_then(|a| a.email.as_deref()),
+        author_url: first_author.and_then(|a| a.url.as_deref()),
         license: tree_sitter_config.metadata.license.as_deref(),
         description: tree_sitter_config.metadata.description.as_deref(),
-        repository: tree_sitter_config
-            .metadata
-            .links
-            .as_ref()
-            .map(|l| l.repository.as_str()),
-        funding: tree_sitter_config
-            .metadata
-            .links
-            .as_ref()
-            .and_then(|l| l.funding.as_deref()),
+        repository: links.map(|l| l.repository.as_str()),
+        funding: links.and_then(|l| l.funding.as_deref()),
         version: &tree_sitter_config.metadata.version,
         camel_parser_name: &camel_name,
         title_parser_name: &title_name,
         class_name: &class_name,
-        highlights_query_path: tree_sitter_config.grammars[0]
-            .highlights
-            .to_variable_value(&default_highlights_path),
-        injections_query_path: tree_sitter_config.grammars[0]
-            .injections
-            .to_variable_value(&default_injections_path),
-        locals_query_path: tree_sitter_config.grammars[0]
-            .locals
-            .to_variable_value(&default_locals_path),
-        tags_query_path: tree_sitter_config.grammars[0]
-            .tags
-            .to_variable_value(&default_tags_path),
         namespace: tree_sitter_config.metadata.namespace.as_deref(),
     };
 
@@ -355,35 +292,62 @@ pub fn generate_grammar_files(
         has_multiple_language_configs: tree_sitter_config.has_multiple_language_configs(),
     };
 
-    let bindings_dir = repo_path.join("bindings");
-
     generate_common_files(&ctx, &generate_opts, tree_sitter_config.bindings.node)?;
+    generate_enabled_bindings(
+        &ctx,
+        &generate_opts,
+        &tree_sitter_config.bindings,
+        &repo_path.join("bindings"),
+    )
+}
 
-    if tree_sitter_config.bindings.rust {
-        generate_rust_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.node {
-        generate_node_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.c {
-        generate_c_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.go {
-        generate_go_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.python {
-        generate_python_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.swift {
-        generate_swift_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.zig {
-        generate_zig_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
-    if tree_sitter_config.bindings.java {
-        generate_java_bindings(&ctx, &generate_opts, &bindings_dir)?;
-    }
+fn ensure_tree_sitter_json(
+    repo_path: &Path,
+    opts: Option<&JsonConfigOpts>,
+) -> Result<PathState<PathBuf>> {
+    let write_opts = |path: &Path, opts: &JsonConfigOpts| -> Result<()> {
+        let tree_sitter_json = opts.clone().to_tree_sitter_json();
+        write_file(path, serde_json::to_string_pretty(&tree_sitter_json)?)?;
+        Ok(())
+    };
+    missing_path_else(
+        repo_path.join("tree-sitter.json"),
+        true,
+        |path| write_opts(path, opts.expect("opts required for new tree-sitter.json")),
+        |path| opts.map_or(Ok(()), |opts| write_opts(path, opts)),
+    )
+}
 
+fn generate_enabled_bindings(
+    ctx: &InitContext,
+    generate_opts: &GenerateOpts,
+    bindings: &Bindings,
+    bindings_dir: &Path,
+) -> Result<()> {
+    if bindings.rust {
+        generate_rust_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.node {
+        generate_node_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.c {
+        generate_c_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.go {
+        generate_go_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.python {
+        generate_python_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.swift {
+        generate_swift_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.zig {
+        generate_zig_bindings(ctx, generate_opts, bindings_dir)?;
+    }
+    if bindings.java {
+        generate_java_bindings(ctx, generate_opts, bindings_dir)?;
+    }
     Ok(())
 }
 
@@ -476,18 +440,15 @@ fn generate_rust_bindings(
     bindings_dir: &Path,
 ) -> Result<()> {
     missing_path(bindings_dir.join("rust"), create_dir)?.apply(|path| {
-        missing_path_else(
-            path.join("lib.rs"),
-            ctx.allow_update,
-            |path| generate_file(path, LIB_RS_TEMPLATE, ctx.language_name, opts),
-            |path| update_rust_lib_rs(path, opts),
-        )?;
+        missing_path(path.join("lib.rs"), |path| {
+            generate_file(path, LIB_RS_TEMPLATE, ctx.language_name, opts)
+        })?;
 
         missing_path_else(
             path.join("build.rs"),
             ctx.allow_update,
             |path| generate_file(path, BUILD_RS_TEMPLATE, ctx.language_name, opts),
-            |path| update_rust_build_rs(path, ctx.language_name, opts),
+            update_rust_build_rs,
         )?;
 
         missing_path_else(
@@ -1002,60 +963,7 @@ fn update_gitattributes(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn update_rust_lib_rs(path: &Path, opts: &GenerateOpts) -> Result<()> {
-    let mut contents = fs::read_to_string(path)?;
-    if !contents.contains("#[cfg(with_highlights_query)]") {
-        info!("Updating query constants in bindings/rust/lib.rs");
-        let replacement = indoc! {r#"
-            #[cfg(with_highlights_query)]
-            /// The syntax highlighting query for this grammar.
-            pub const HIGHLIGHTS_QUERY: &str = include_str!("../../HIGHLIGHTS_QUERY_PATH");
-
-            #[cfg(with_injections_query)]
-            /// The language injection query for this grammar.
-            pub const INJECTIONS_QUERY: &str = include_str!("../../INJECTIONS_QUERY_PATH");
-
-            #[cfg(with_locals_query)]
-            /// The local variable query for this grammar.
-            pub const LOCALS_QUERY: &str = include_str!("../../LOCALS_QUERY_PATH");
-
-            #[cfg(with_tags_query)]
-            /// The symbol tagging query for this grammar.
-            pub const TAGS_QUERY: &str = include_str!("../../TAGS_QUERY_PATH");
-            "#}
-        .replace(
-            HIGHLIGHTS_QUERY_PATH_PLACEHOLDER,
-            &opts.highlights_query_path.replace('\\', "/"),
-        )
-        .replace(
-            INJECTIONS_QUERY_PATH_PLACEHOLDER,
-            &opts.injections_query_path.replace('\\', "/"),
-        )
-        .replace(
-            LOCALS_QUERY_PATH_PLACEHOLDER,
-            &opts.locals_query_path.replace('\\', "/"),
-        )
-        .replace(
-            TAGS_QUERY_PATH_PLACEHOLDER,
-            &opts.tags_query_path.replace('\\', "/"),
-        );
-        contents = contents.replace(
-            indoc! {r#"
-                // NOTE: uncomment these to include any queries that this grammar contains:
-
-                // pub const HIGHLIGHTS_QUERY: &str = include_str!("../../queries/highlights.scm");
-                // pub const INJECTIONS_QUERY: &str = include_str!("../../queries/injections.scm");
-                // pub const LOCALS_QUERY: &str = include_str!("../../queries/locals.scm");
-                // pub const TAGS_QUERY: &str = include_str!("../../queries/tags.scm");
-                "#},
-            &replacement,
-        );
-    }
-    write_file(path, contents)?;
-    Ok(())
-}
-
-fn update_rust_build_rs(path: &Path, language_name: &str, opts: &GenerateOpts) -> Result<()> {
+fn update_rust_build_rs(path: &Path) -> Result<()> {
     let mut contents = fs::read_to_string(path)?;
     if !contents.contains("wasm32-unknown-unknown") {
         info!("Adding wasm32-unknown-unknown target to bindings/rust/build.rs");
@@ -1076,42 +984,6 @@ fn update_rust_build_rs(path: &Path, language_name: &str, opts: &GenerateOpts) -
             .join("\n");
 
         contents = contents.replace(r#"    c_config.flag("-utf-8");"#, &replacement);
-    }
-
-    if !contents.contains("with_highlights_query") {
-        info!("Adding support for dynamic query inclusion to bindings/rust/build.rs");
-        let replaced = indoc! {r#"
-                c_config.compile("tree-sitter-KEBAB_PARSER_NAME");
-            }"#}
-        .replace("KEBAB_PARSER_NAME", &language_name.to_kebab_case());
-
-        let replacement = indoc! {r#"
-                c_config.compile("tree-sitter-KEBAB_PARSER_NAME");
-
-                println!("cargo:rustc-check-cfg=cfg(with_highlights_query)");
-                if !"HIGHLIGHTS_QUERY_PATH".is_empty() && std::path::Path::new("HIGHLIGHTS_QUERY_PATH").exists() {
-                    println!("cargo:rustc-cfg=with_highlights_query");
-                }
-                println!("cargo:rustc-check-cfg=cfg(with_injections_query)");
-                if !"INJECTIONS_QUERY_PATH".is_empty() && std::path::Path::new("INJECTIONS_QUERY_PATH").exists() {
-                    println!("cargo:rustc-cfg=with_injections_query");
-                }
-                println!("cargo:rustc-check-cfg=cfg(with_locals_query)");
-                if !"LOCALS_QUERY_PATH".is_empty() && std::path::Path::new("LOCALS_QUERY_PATH").exists() {
-                    println!("cargo:rustc-cfg=with_locals_query");
-                }
-                println!("cargo:rustc-check-cfg=cfg(with_tags_query)");
-                if !"TAGS_QUERY_PATH".is_empty() && std::path::Path::new("TAGS_QUERY_PATH").exists() {
-                    println!("cargo:rustc-cfg=with_tags_query");
-                }
-            }"#}
-            .replace("KEBAB_PARSER_NAME", &language_name.to_kebab_case())
-            .replace(HIGHLIGHTS_QUERY_PATH_PLACEHOLDER, &opts.highlights_query_path.replace('\\', "/"))
-            .replace(INJECTIONS_QUERY_PATH_PLACEHOLDER, &opts.injections_query_path.replace('\\', "/"))
-            .replace(LOCALS_QUERY_PATH_PLACEHOLDER, &opts.locals_query_path.replace('\\', "/"))
-            .replace(TAGS_QUERY_PATH_PLACEHOLDER, &opts.tags_query_path.replace('\\', "/"));
-
-        contents = contents.replace(&replaced, &replacement);
     }
 
     write_file(path, contents)?;
@@ -1500,214 +1372,10 @@ fn render_file(
             PARSER_VERSION_PLACEHOLDER,
             &generate_opts.version.to_string(),
         )
-        .replace(PARSER_CLASS_NAME_PLACEHOLDER, generate_opts.class_name)
-        .replace(
-            HIGHLIGHTS_QUERY_PATH_PLACEHOLDER,
-            &generate_opts.highlights_query_path.replace('\\', "/"),
-        )
-        .replace(
-            INJECTIONS_QUERY_PATH_PLACEHOLDER,
-            &generate_opts.injections_query_path.replace('\\', "/"),
-        )
-        .replace(
-            LOCALS_QUERY_PATH_PLACEHOLDER,
-            &generate_opts.locals_query_path.replace('\\', "/"),
-        )
-        .replace(
-            TAGS_QUERY_PATH_PLACEHOLDER,
-            &generate_opts.tags_query_path.replace('\\', "/"),
-        );
+        .replace(PARSER_CLASS_NAME_PLACEHOLDER, generate_opts.class_name);
 
-    if let Some(name) = generate_opts.author_name {
-        replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER, name);
-    } else {
-        match filename {
-            "package.json" => {
-                replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER_JS, "");
-            }
-            "pyproject.toml" => {
-                replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER_PY, "");
-            }
-            "grammar.js" => {
-                replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER_GRAMMAR, "");
-            }
-            "Cargo.toml" => {
-                replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER_RS, "");
-            }
-            "pom.xml" => {
-                replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER_JAVA, "");
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(email) = generate_opts.author_email {
-        replacement = match filename {
-            "Cargo.toml" | "grammar.js" => {
-                replacement.replace(AUTHOR_EMAIL_PLACEHOLDER, &format!("<{email}>"))
-            }
-            _ => replacement.replace(AUTHOR_EMAIL_PLACEHOLDER, email),
-        }
-    } else {
-        match filename {
-            "package.json" => {
-                replacement = replacement.replace(AUTHOR_EMAIL_PLACEHOLDER_JS, "");
-            }
-            "pyproject.toml" => {
-                replacement = replacement.replace(AUTHOR_EMAIL_PLACEHOLDER_PY, "");
-            }
-            "grammar.js" => {
-                replacement = replacement.replace(AUTHOR_EMAIL_PLACEHOLDER_GRAMMAR, "");
-            }
-            "Cargo.toml" => {
-                replacement = replacement.replace(AUTHOR_EMAIL_PLACEHOLDER_RS, "");
-            }
-            "pom.xml" => {
-                replacement = replacement.replace(AUTHOR_EMAIL_PLACEHOLDER_JAVA, "");
-            }
-            _ => {}
-        }
-    }
-
-    match (generate_opts.author_url, filename) {
-        (Some(url), "package.json" | "pom.xml") => {
-            replacement = replacement.replace(AUTHOR_URL_PLACEHOLDER, url);
-        }
-        (None, "package.json") => {
-            replacement = replacement.replace(AUTHOR_URL_PLACEHOLDER_JS, "");
-        }
-        (None, "pom.xml") => {
-            replacement = replacement.replace(AUTHOR_URL_PLACEHOLDER_JAVA, "");
-        }
-        _ => {}
-    }
-
-    if generate_opts.author_name.is_none()
-        && generate_opts.author_email.is_none()
-        && generate_opts.author_url.is_none()
-    {
-        match filename {
-            "package.json" => {
-                if let Some(start_idx) = replacement.find(AUTHOR_BLOCK_JS)
-                    && let Some(end_idx) = replacement[start_idx..]
-                        .find("},")
-                        .map(|i| i + start_idx + 2)
-                {
-                    replacement.replace_range(start_idx..end_idx, "");
-                }
-            }
-            "pom.xml" => {
-                if let Some(start_idx) = replacement.find(AUTHOR_BLOCK_JAVA)
-                    && let Some(end_idx) = replacement[start_idx..]
-                        .find("</developer>")
-                        .map(|i| i + start_idx + 12)
-                {
-                    replacement.replace_range(start_idx..end_idx, "");
-                }
-            }
-            _ => {}
-        }
-    } else if generate_opts.author_name.is_none() && generate_opts.author_email.is_none() {
-        match filename {
-            "pyproject.toml" => {
-                if let Some(start_idx) = replacement.find(AUTHOR_BLOCK_PY)
-                    && let Some(end_idx) = replacement[start_idx..]
-                        .find("}]")
-                        .map(|i| i + start_idx + 2)
-                {
-                    replacement.replace_range(start_idx..end_idx, "");
-                }
-            }
-            "grammar.js" => {
-                if let Some(start_idx) = replacement.find(AUTHOR_BLOCK_GRAMMAR)
-                    && let Some(end_idx) = replacement[start_idx..]
-                        .find(" \n")
-                        .map(|i| i + start_idx + 1)
-                {
-                    replacement.replace_range(start_idx..end_idx, "");
-                }
-            }
-            "Cargo.toml" => {
-                if let Some(start_idx) = replacement.find(AUTHOR_BLOCK_RS)
-                    && let Some(end_idx) = replacement[start_idx..]
-                        .find("\"]")
-                        .map(|i| i + start_idx + 2)
-                {
-                    replacement.replace_range(start_idx..end_idx, "");
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if let Some(license) = generate_opts.license {
-        replacement = replacement.replace(PARSER_LICENSE_PLACEHOLDER, license);
-    } else {
-        replacement = replacement.replace(PARSER_LICENSE_PLACEHOLDER, "MIT");
-    }
-
-    if let Some(description) = generate_opts.description {
-        replacement = replacement.replace(PARSER_DESCRIPTION_PLACEHOLDER, description);
-    } else {
-        replacement = replacement.replace(
-            PARSER_DESCRIPTION_PLACEHOLDER,
-            &format!(
-                "{} grammar for tree-sitter",
-                generate_opts.camel_parser_name,
-            ),
-        );
-    }
-
-    if let Some(repository) = generate_opts.repository {
-        replacement = replacement
-            .replace(
-                PARSER_URL_STRIPPED_PLACEHOLDER,
-                &repository.replace("https://", ""),
-            )
-            .replace(PARSER_URL_PLACEHOLDER, repository);
-    } else {
-        replacement = replacement
-            .replace(
-                PARSER_URL_STRIPPED_PLACEHOLDER,
-                &format!("github.com/tree-sitter/tree-sitter-{language_name}"),
-            )
-            .replace(
-                PARSER_URL_PLACEHOLDER,
-                &format!("https://github.com/tree-sitter/tree-sitter-{language_name}"),
-            );
-    }
-
-    if let Some(namespace) = generate_opts.namespace {
-        replacement = replacement
-            .replace(
-                PARSER_NS_CLEANED_PLACEHOLDER,
-                &namespace.replace(['-', '_'], ""),
-            )
-            .replace(PARSER_NS_PLACEHOLDER, namespace);
-    } else {
-        replacement = replacement
-            .replace(PARSER_NS_CLEANED_PLACEHOLDER, "io.github.treesitter")
-            .replace(PARSER_NS_PLACEHOLDER, "io.github.tree-sitter");
-    }
-
-    if let Some(funding_url) = generate_opts.funding {
-        match filename {
-            "pyproject.toml" | "package.json" => {
-                replacement = replacement.replace(FUNDING_URL_PLACEHOLDER, funding_url);
-            }
-            _ => {}
-        }
-    } else {
-        match filename {
-            "package.json" => {
-                replacement = replacement.replace("  \"funding\": \"FUNDING_URL\",\n", "");
-            }
-            "pyproject.toml" => {
-                replacement = replacement.replace("Funding = \"FUNDING_URL\"\n", "");
-            }
-            _ => {}
-        }
-    }
+    apply_author_placeholders(&mut replacement, filename, generate_opts);
+    apply_package_metadata_placeholders(&mut replacement, filename, language_name, generate_opts);
 
     if filename == "build.zig.zon" {
         let id = rand::rng().random_range(1u32..0xFFFF_FFFFu32);
@@ -1719,6 +1387,135 @@ fn render_file(
     }
 
     replacement
+}
+
+fn apply_author_placeholders(
+    replacement: &mut String,
+    filename: &str,
+    generate_opts: &GenerateOpts,
+) {
+    if let Some(name) = generate_opts.author_name {
+        *replacement = replacement.replace(AUTHOR_NAME_PLACEHOLDER, name);
+    } else if let Some(placeholder) = missing_author_name_placeholder(filename) {
+        *replacement = replacement.replace(placeholder, "");
+    }
+
+    if let Some(email) = generate_opts.author_email {
+        let formatted = match filename {
+            "Cargo.toml" | "grammar.js" => format!("<{email}>"),
+            _ => email.to_string(),
+        };
+        *replacement = replacement.replace(AUTHOR_EMAIL_PLACEHOLDER, &formatted);
+    } else if let Some(placeholder) = missing_author_email_placeholder(filename) {
+        *replacement = replacement.replace(placeholder, "");
+    }
+
+    match (generate_opts.author_url, filename) {
+        (Some(url), "package.json" | "pom.xml") => {
+            *replacement = replacement.replace(AUTHOR_URL_PLACEHOLDER, url);
+        }
+        (None, "package.json") => {
+            *replacement = replacement.replace(AUTHOR_URL_PLACEHOLDER_JS, "");
+        }
+        (None, "pom.xml") => {
+            *replacement = replacement.replace(AUTHOR_URL_PLACEHOLDER_JAVA, "");
+        }
+        _ => {}
+    }
+
+    strip_empty_author_block(replacement, filename, generate_opts);
+}
+
+fn missing_author_name_placeholder(filename: &str) -> Option<&'static str> {
+    match filename {
+        "package.json" => Some(AUTHOR_NAME_PLACEHOLDER_JS),
+        "pyproject.toml" => Some(AUTHOR_NAME_PLACEHOLDER_PY),
+        "grammar.js" => Some(AUTHOR_NAME_PLACEHOLDER_GRAMMAR),
+        "Cargo.toml" => Some(AUTHOR_NAME_PLACEHOLDER_RS),
+        "pom.xml" => Some(AUTHOR_NAME_PLACEHOLDER_JAVA),
+        _ => None,
+    }
+}
+
+fn missing_author_email_placeholder(filename: &str) -> Option<&'static str> {
+    match filename {
+        "package.json" => Some(AUTHOR_EMAIL_PLACEHOLDER_JS),
+        "pyproject.toml" => Some(AUTHOR_EMAIL_PLACEHOLDER_PY),
+        "grammar.js" => Some(AUTHOR_EMAIL_PLACEHOLDER_GRAMMAR),
+        "Cargo.toml" => Some(AUTHOR_EMAIL_PLACEHOLDER_RS),
+        "pom.xml" => Some(AUTHOR_EMAIL_PLACEHOLDER_JAVA),
+        _ => None,
+    }
+}
+
+fn strip_empty_author_block(
+    replacement: &mut String,
+    filename: &str,
+    generate_opts: &GenerateOpts,
+) {
+    if generate_opts.author_name.is_some() || generate_opts.author_email.is_some() {
+        return;
+    }
+
+    let markers = match (generate_opts.author_url.is_none(), filename) {
+        (true, "package.json") => Some((AUTHOR_BLOCK_JS, "},", 2)),
+        (true, "pom.xml") => Some((AUTHOR_BLOCK_JAVA, "</developer>", 12)),
+        (false, "pyproject.toml") => Some((AUTHOR_BLOCK_PY, "}]", 2)),
+        (false, "grammar.js") => Some((AUTHOR_BLOCK_GRAMMAR, " \n", 1)),
+        (false, "Cargo.toml") => Some((AUTHOR_BLOCK_RS, "\"]", 2)),
+        _ => None,
+    };
+
+    if let Some((start_marker, end_marker, end_len)) = markers
+        && let Some(start_idx) = replacement.find(start_marker)
+        && let Some(end_idx) = replacement[start_idx..]
+            .find(end_marker)
+            .map(|i| i + start_idx + end_len)
+    {
+        replacement.replace_range(start_idx..end_idx, "");
+    }
+}
+
+fn apply_package_metadata_placeholders(
+    replacement: &mut String,
+    filename: &str,
+    language_name: &str,
+    generate_opts: &GenerateOpts,
+) {
+    let license = generate_opts.license.unwrap_or("MIT");
+    let default_description = format!(
+        "{} grammar for tree-sitter",
+        generate_opts.camel_parser_name
+    );
+    let description = generate_opts.description.unwrap_or(&default_description);
+
+    let default_repo = format!("https://github.com/tree-sitter/tree-sitter-{language_name}");
+    let repository = generate_opts.repository.unwrap_or(&default_repo);
+    let stripped_repo = repository.replace("https://", "");
+
+    let namespace = generate_opts.namespace.unwrap_or("io.github.tree-sitter");
+    let cleaned_ns = namespace.replace(['-', '_'], "");
+
+    *replacement = replacement
+        .replace(PARSER_LICENSE_PLACEHOLDER, license)
+        .replace(PARSER_DESCRIPTION_PLACEHOLDER, description)
+        .replace(PARSER_URL_STRIPPED_PLACEHOLDER, &stripped_repo)
+        .replace(PARSER_URL_PLACEHOLDER, repository)
+        .replace(PARSER_NS_CLEANED_PLACEHOLDER, &cleaned_ns)
+        .replace(PARSER_NS_PLACEHOLDER, namespace);
+
+    match (generate_opts.funding, filename) {
+        (Some(funding_url), "pyproject.toml" | "package.json") => {
+            *replacement = replacement.replace(FUNDING_URL_PLACEHOLDER, funding_url);
+        }
+        (None, "package.json") => {
+            *replacement = replacement.replace("  \"funding\": \"FUNDING_URL\",\n", "");
+        }
+        (None, "pyproject.toml") => {
+            *replacement = replacement.replace("Funding = \"FUNDING_URL\"\n", "");
+        }
+        _ => {}
+    }
 }
 
 fn create_dir(path: &Path) -> Result<()> {

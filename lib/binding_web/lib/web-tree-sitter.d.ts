@@ -82,24 +82,8 @@ interface WasmModule {
   _ts_parser_reset(_0: number): void;
   _ts_parser_set_language(_0: number, _1: number): number;
   _ts_parser_set_included_ranges(_0: number, _1: number, _2: number): number;
-  _ts_query_new(_0: number, _1: number, _2: number, _3: number, _4: number): number;
-  _ts_query_delete(_0: number): void;
   _iswspace(_0: number): number;
   _iswalnum(_0: number): number;
-  _ts_query_pattern_count(_0: number): number;
-  _ts_query_capture_count(_0: number): number;
-  _ts_query_string_count(_0: number): number;
-  _ts_query_capture_name_for_id(_0: number, _1: number, _2: number): number;
-  _ts_query_capture_quantifier_for_id(_0: number, _1: number, _2: number): number;
-  _ts_query_string_value_for_id(_0: number, _1: number, _2: number): number;
-  _ts_query_predicates_for_pattern(_0: number, _1: number, _2: number): number;
-  _ts_query_start_byte_for_pattern(_0: number, _1: number): number;
-  _ts_query_end_byte_for_pattern(_0: number, _1: number): number;
-  _ts_query_is_pattern_rooted(_0: number, _1: number): number;
-  _ts_query_is_pattern_non_local(_0: number, _1: number): number;
-  _ts_query_is_pattern_guaranteed_at_step(_0: number, _1: number): number;
-  _ts_query_disable_capture(_0: number, _1: number, _2: number): void;
-  _ts_query_disable_pattern(_0: number, _1: number): void;
   _ts_tree_copy(_0: number): number;
   _ts_tree_delete(_0: number): void;
   _ts_init(): number;
@@ -184,8 +168,6 @@ interface WasmModule {
   _ts_node_is_extra_wasm(_0: number): number;
   _ts_node_parse_state_wasm(_0: number): number;
   _ts_node_next_parse_state_wasm(_0: number): number;
-  _ts_query_matches_wasm(_0: number, _1: number, _2: number, _3: number, _4: number, _5: number, _6: number, _7: number, _8: number, _9: number, _10: number, _11: number, _12: number, _13: number, _14: number, _15: number): void;
-  _ts_query_captures_wasm(_0: number, _1: number, _2: number, _3: number, _4: number, _5: number, _6: number, _7: number, _8: number, _9: number, _10: number, _11: number, _12: number, _13: number, _14: number, _15: number): void;
   _memset(_0: number, _1: number, _2: number): number;
   _memcpy(_0: number, _1: number, _2: number): number;
   _memmove(_0: number, _1: number, _2: number): number;
@@ -209,7 +191,6 @@ export type MainModule = WasmModule & typeof RuntimeExports & {
   currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
-  currentQueryProgressCallback: ((state: {currentOffset: number}) => boolean | void) | null;
   treeSitterSetMemoryLimit(maxBytes: number): boolean;
 };
 

@@ -26,8 +26,8 @@ so the newest release lacks them for a while.
 
 This fork maintains only full parsing: valid input yields a correct tree, and invalid input yields `ERROR` or `MISSING`
 nodes without crashing, hanging, or taking more than linear time. Incremental parsing works as in upstream tree-sitter
-but is not tested here, and no queries (highlights, locals, injections, tags) are shipped. Node types, field names, and
-the trees that error recovery produces may change; such changes are released as new major versions.
+but is not tested here; tree queries, syntax highlighting, and symbol tagging are not supported. Node types, field
+names, and the trees that error recovery produces may change; such changes are released as new major versions.
 
 ## Development setup
 
@@ -45,7 +45,7 @@ Keep Rust toolchain changes in `rust-toolchain.toml`; a `rust` tool entry in `mi
 
 ## Parser generation and tuning
 
-The CLI generates parsers with separately shared terminal and goto rows, per-nonterminal default gotos, rows of unvisited states stored as differences from similar rows, shared lookahead bitsets, bitmap-ranked sparse lookup, one-word parse actions, compact lexer-mode IDs, query-state bitmaps, and language ABI
+The CLI generates parsers with separately shared terminal and goto rows, per-nonterminal default gotos, rows of unvisited states stored as differences from similar rows, shared lookahead bitsets, bitmap-ranked sparse lookup, one-word parse actions, compact lexer-mode IDs, primary-state bitmaps, and language ABI
 `0x5742000c`. The upper 16 bits (`0x5742`, "WB") identify the fork; the lower 16 bits count its ABI revisions. The
 runtime also accepts ABI `0x5742000b`, whose parse tables are a subset of those of `0x5742000c`, so parsers generated
 by the previous release keep working until they are regenerated; runtimes of the previous release reject parsers

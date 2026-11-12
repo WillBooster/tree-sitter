@@ -1,34 +1,10 @@
 import { INTERNAL, Point, Range, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT, C } from "./constants";
 import { Node } from "./node";
 import { Tree } from "./tree";
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { Query, QueryCapture, type QueryMatch } from "./query";
 import { TreeCursor } from "./tree_cursor";
 import { TRANSFER_BUFFER } from "./parser";
 import { LanguageMetadata } from "./language";
 import { Edit } from "./edit";
-
-/**
- * @internal
- *
- * Unmarshals a {@link QueryMatch} to the transfer buffer.
- */
-export function unmarshalCaptures(
-  query: Query,
-  tree: Tree,
-  address: number,
-  patternIndex: number,
-  result: QueryCapture[]
-) {
-  for (let i = 0, n = result.length; i < n; i++) {
-    const captureIndex = C.getValue(address, 'i32');
-    address += SIZE_OF_INT;
-    const node = unmarshalNode(tree, address)!;
-    address += SIZE_OF_NODE;
-    result[i] = {patternIndex, name: query.captureNames[captureIndex], node};
-  }
-  return address;
-}
 
 /**
  * @internal

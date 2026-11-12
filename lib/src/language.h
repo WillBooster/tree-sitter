@@ -63,7 +63,7 @@ typedef struct {
 } LookaheadIterator;
 
 // Languages with another ABI version lack `primary_state_bitmap` and the fields after it or lay them out differently,
-// so the accessors that work on a language before a parser or a query has accepted it must not read them.
+// so the accessors that work on a language before a parser has accepted it must not read them.
 static inline bool ts_language_abi_version_is_supported(uint32_t abi_version) {
   return abi_version >= TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION && abi_version <= TREE_SITTER_LANGUAGE_VERSION;
 }
@@ -404,15 +404,6 @@ static inline bool ts_lookahead_iterator__next_group(LookaheadIterator *self) {
   return true;
 }
 
-// Whether the state is a "primary state". If this returns false, it indicates that there exists
-// another state that behaves identically to this one with respect to query analysis.
-static inline bool ts_language_state_is_primary(
-  const TSLanguage *self,
-  TSStateId state
-) {
-  return (self->primary_state_bitmap[state / 8] >> (state % 8)) & 1;
-}
-
 static inline uint32_t ts_language_external_state_stride(const TSLanguage *self) {
   return self->external_state_stride ? self->external_state_stride : self->external_token_count;
 }
@@ -460,29 +451,6 @@ static inline void ts_language_field_map(
   TSMapSlice slice = self->field_map_slices[production_id];
   *start = &self->field_map_entries[slice.index];
   *end = &self->field_map_entries[slice.index] + slice.length;
-}
-
-static inline void ts_language_aliases_for_symbol(
-  const TSLanguage *self,
-  TSSymbol original_symbol,
-  const TSSymbol **start,
-  const TSSymbol **end
-) {
-  *start = &self->public_symbol_map[original_symbol];
-  *end = *start + 1;
-
-  unsigned idx = 0;
-  for (;;) {
-    TSSymbol symbol = self->alias_map[idx++];
-    if (symbol == 0 || symbol > original_symbol) break;
-    uint16_t count = self->alias_map[idx++];
-    if (symbol == original_symbol) {
-      *start = &self->alias_map[idx];
-      *end = &self->alias_map[idx + count];
-      break;
-    }
-    idx += count;
-  }
 }
 
 static inline void ts_language_write_symbol_as_dot_string(

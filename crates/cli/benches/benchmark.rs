@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Context;
 use log::info;
-use tree_sitter::{InputEdit, Language, Parser, Point, Query};
+use tree_sitter::{InputEdit, Language, Parser, Point};
 #[cfg(feature = "wasm")]
 use tree_sitter::{WasmStore, wasmtime};
 use tree_sitter_loader::{CompileConfig, Loader};
@@ -28,54 +28,20 @@ static TEST_LOADER: LazyLock<Loader> =
 #[cfg(feature = "wasm")]
 static WASM_ENGINE: LazyLock<wasmtime::Engine> = LazyLock::new(Default::default);
 
-#[expect(
-    clippy::type_complexity,
-    reason = "complex map type reflects benchmark data structure"
-)]
-static EXAMPLE_AND_QUERY_PATHS_BY_LANGUAGE_DIR: LazyLock<
-    BTreeMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)>,
-> = LazyLock::new(|| {
-    fn process_dir(result: &mut BTreeMap<PathBuf, (Vec<PathBuf>, Vec<PathBuf>)>, dir: &Path) {
-        if dir.join("grammar.js").exists() {
-            let relative_path = dir.strip_prefix(GRAMMARS_DIR.as_path()).unwrap();
-            let (example_paths, query_paths) = result.entry(relative_path.to_owned()).or_default();
-
-            if let Ok(example_files) = fs::read_dir(dir.join("examples")) {
-                example_paths.extend(example_files.filter_map(|p| {
-                    let p = p.unwrap().path();
-                    if p.is_file() { Some(p) } else { None }
-                }));
-            }
-
-            if let Ok(query_files) = fs::read_dir(dir.join("queries")) {
-                query_paths.extend(query_files.filter_map(|p| {
-                    let p = p.unwrap().path();
-                    if p.is_file() { Some(p) } else { None }
-                }));
-            }
-        } else {
-            for entry in fs::read_dir(dir).unwrap() {
-                let entry = entry.unwrap().path();
-                if entry.is_dir() {
-                    process_dir(result, &entry);
-                }
-            }
-        }
-    }
-
-    let mut result = BTreeMap::new();
-    process_dir(&mut result, &GRAMMARS_DIR);
-    result
-});
+static EXAMPLE_PATHS_BY_LANGUAGE_DIR: LazyLock<BTreeMap<PathBuf, Vec<PathBuf>>> =
+    LazyLock::new(|| {
+        let mut result = BTreeMap::new();
+        collect_example_paths(&mut result, &GRAMMARS_DIR);
+        result
+    });
 
 fn main() {
     tree_sitter_cli::logger::init();
 
-    let max_path_length = EXAMPLE_AND_QUERY_PATHS_BY_LANGUAGE_DIR
+    let max_path_length = EXAMPLE_PATHS_BY_LANGUAGE_DIR
         .values()
-        .flat_map(|(e, q)| {
+        .flat_map(|e| {
             e.iter()
-                .chain(q.iter())
                 .map(|s| s.file_name().unwrap().to_str().unwrap().len())
         })
         .max()
@@ -87,109 +53,118 @@ fn main() {
     let mut all_normal_speeds = Vec::new();
     let mut all_error_speeds = Vec::new();
 
-    for (language_path, (example_paths, query_paths)) in
-        EXAMPLE_AND_QUERY_PATHS_BY_LANGUAGE_DIR.iter()
-    {
+    for (language_path, example_paths) in EXAMPLE_PATHS_BY_LANGUAGE_DIR.iter() {
         let language_name = language_path.file_name().unwrap().to_str().unwrap();
 
-        if let Some(filter) = LANGUAGE_FILTER.as_ref()
-            && language_name != filter.as_str()
+        if LANGUAGE_FILTER
+            .as_deref()
+            .is_some_and(|filter| language_name != filter)
         {
             continue;
         }
 
-        info!("\nLanguage: {language_name}");
-        let language = if *WASM {
-            get_wasm_language(language_name, &mut parser)
-        } else {
-            get_language(language_path)
-        };
-        parser.set_language(&language).unwrap();
-
-        info!("  Constructing Queries");
-        for path in query_paths {
-            if let Some(filter) = EXAMPLE_FILTER.as_ref()
-                && !path.to_str().unwrap().contains(filter.as_str())
-            {
-                continue;
-            }
-
-            parse(path, max_path_length, |source| {
-                Query::new(&language, str::from_utf8(source).unwrap())
-                    .with_context(|| format!("Query file path: {}", path.display()))
-                    .expect("Failed to parse query");
-            });
-        }
-
-        info!("  Parsing Valid Code:");
-        let mut normal_speeds = Vec::new();
-        for example_path in example_paths {
-            if let Some(filter) = EXAMPLE_FILTER.as_ref()
-                && !example_path.to_str().unwrap().contains(filter.as_str())
-            {
-                continue;
-            }
-
-            normal_speeds.push(parse(example_path, max_path_length, |code| {
-                parser.parse(code, None).expect("Failed to parse");
-            }));
-        }
-
-        info!("  Reparsing After Whitespace Edits:");
-        for example_path in example_paths {
-            if let Some(filter) = EXAMPLE_FILTER.as_ref()
-                && !example_path.to_str().unwrap().contains(filter.as_str())
-            {
-                continue;
-            }
-            parse_incrementally(example_path, max_path_length, &mut parser);
-        }
-
-        info!("  Parsing Invalid Code (mismatched languages):");
-        let mut error_speeds = Vec::new();
-        for (other_language_path, (example_paths, _)) in
-            EXAMPLE_AND_QUERY_PATHS_BY_LANGUAGE_DIR.iter()
-        {
-            if other_language_path != language_path {
-                for example_path in example_paths {
-                    if let Some(filter) = EXAMPLE_FILTER.as_ref()
-                        && !example_path.to_str().unwrap().contains(filter.as_str())
-                    {
-                        continue;
-                    }
-
-                    error_speeds.push(parse(example_path, max_path_length, |code| {
-                        parser.parse(code, None).expect("Failed to parse");
-                    }));
-                }
-            }
-        }
-
-        if let Some((average_normal, worst_normal)) = aggregate(&normal_speeds) {
-            info!("  Average Speed (normal): {average_normal} bytes/ms");
-            info!("  Worst Speed (normal):   {worst_normal} bytes/ms");
-        }
-
-        if let Some((average_error, worst_error)) = aggregate(&error_speeds) {
-            info!("  Average Speed (errors): {average_error} bytes/ms");
-            info!("  Worst Speed (errors):   {worst_error} bytes/ms");
-        }
-
+        let (normal_speeds, error_speeds) = benchmark_language(
+            language_path,
+            language_name,
+            example_paths,
+            max_path_length,
+            &mut parser,
+        );
         all_normal_speeds.extend(normal_speeds);
         all_error_speeds.extend(error_speeds);
     }
 
     info!("\n  Overall");
-    if let Some((average_normal, worst_normal)) = aggregate(&all_normal_speeds) {
-        info!("  Average Speed (normal): {average_normal} bytes/ms");
-        info!("  Worst Speed (normal):   {worst_normal} bytes/ms");
+    log_speed_summary("normal", &all_normal_speeds);
+    log_speed_summary("errors", &all_error_speeds);
+    info!("");
+}
+
+fn benchmark_language(
+    language_path: &Path,
+    language_name: &str,
+    example_paths: &[PathBuf],
+    max_path_length: usize,
+    parser: &mut Parser,
+) -> (Vec<usize>, Vec<usize>) {
+    info!("\nLanguage: {language_name}");
+    let language = if *WASM {
+        get_wasm_language(language_name, parser)
+    } else {
+        get_language(language_path)
+    };
+    parser.set_language(&language).unwrap();
+
+    info!("  Parsing Valid Code:");
+    let normal_speeds = example_paths
+        .iter()
+        .filter(|path| matches_example_filter(path))
+        .map(|path| {
+            parse(path, max_path_length, |code| {
+                parser.parse(code, None).expect("Failed to parse");
+            })
+        })
+        .collect::<Vec<_>>();
+
+    info!("  Reparsing After Whitespace Edits:");
+    for example_path in example_paths
+        .iter()
+        .filter(|path| matches_example_filter(path))
+    {
+        parse_incrementally(example_path, max_path_length, parser);
     }
 
-    if let Some((average_error, worst_error)) = aggregate(&all_error_speeds) {
-        info!("  Average Speed (errors): {average_error} bytes/ms");
-        info!("  Worst Speed (errors):   {worst_error} bytes/ms");
+    info!("  Parsing Invalid Code (mismatched languages):");
+    let error_speeds = EXAMPLE_PATHS_BY_LANGUAGE_DIR
+        .iter()
+        .filter(|(other_path, _)| other_path.as_path() != language_path)
+        .flat_map(|(_, paths)| paths.iter())
+        .filter(|path| matches_example_filter(path))
+        .map(|path| {
+            parse(path, max_path_length, |code| {
+                parser.parse(code, None).expect("Failed to parse");
+            })
+        })
+        .collect::<Vec<_>>();
+
+    log_speed_summary("normal", &normal_speeds);
+    log_speed_summary("errors", &error_speeds);
+    (normal_speeds, error_speeds)
+}
+
+fn collect_example_paths(result: &mut BTreeMap<PathBuf, Vec<PathBuf>>, dir: &Path) {
+    if dir.join("grammar.js").exists() {
+        let relative_path = dir.strip_prefix(GRAMMARS_DIR.as_path()).unwrap();
+        let example_paths = result.entry(relative_path.to_owned()).or_default();
+        if let Ok(example_files) = fs::read_dir(dir.join("examples")) {
+            example_paths.extend(
+                example_files
+                    .map(|p| p.unwrap().path())
+                    .filter(|p| p.is_file()),
+            );
+        }
+        return;
     }
-    info!("");
+
+    for entry in fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap().path();
+        if entry.is_dir() {
+            collect_example_paths(result, &entry);
+        }
+    }
+}
+
+fn matches_example_filter(path: &Path) -> bool {
+    EXAMPLE_FILTER
+        .as_deref()
+        .is_none_or(|filter| path.to_str().unwrap().contains(filter))
+}
+
+fn log_speed_summary(kind: &str, speeds: &[usize]) {
+    if let Some((average, worst)) = aggregate(speeds) {
+        info!("  Average Speed ({kind}): {average} bytes/ms");
+        info!("  Worst Speed ({kind}):   {worst} bytes/ms");
+    }
 }
 
 fn aggregate(speeds: &[usize]) -> Option<(usize, usize)> {

@@ -16,7 +16,7 @@ describe('Memory Management', () => {
       });
       await (async () => {
         const { JavaScript } = await (await import('./helper')).default;
-        const  { Parser, Query } = await import('../src');
+        const { Parser } = await import('../src');
         const parser = new Parser();
         parser.setLanguage(JavaScript);
         const tree = parser.parse('1+1')!;
@@ -24,14 +24,12 @@ describe('Memory Management', () => {
         const cursor = tree.walk();
         const copyCursor = cursor.copy();
         const lookaheadIterator = JavaScript.lookaheadIterator(cursor.currentNode.nextParseState)!;
-        const query = new Query(JavaScript, '(identifier) @element');
         parser.delete();
         tree.delete();
         copyTree.delete();
         cursor.delete();
         copyCursor.delete();
         lookaheadIterator.delete();
-        query.delete();
       })();
       // wait for gc
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -49,7 +47,7 @@ describe('Memory Management', () => {
       let done = 0;
       const promise = new Promise((resolve) => {
         event.on('gc', () => {
-          if (++done === 7) {
+          if (++done === 6) {
             resolve(undefined);
             clearInterval(timer);
           }
@@ -58,7 +56,7 @@ describe('Memory Management', () => {
       });
       await (async () => {
         const { JavaScript } = await (await import('./helper')).default;
-        const  { Parser, Query } = await import('../src');
+        const { Parser } = await import('../src');
         const parser = new Parser(); // 1
         parser.setLanguage(JavaScript);
         const tree = parser.parse('1+1')!; // 2
@@ -66,7 +64,6 @@ describe('Memory Management', () => {
         const cursor = tree.walk(); // 4
         cursor.copy(); // 5
         JavaScript.lookaheadIterator(cursor.currentNode.nextParseState)!; // 6
-        new Query(JavaScript, '(identifier) @element'); // 7
       })();
       await promise;
     });

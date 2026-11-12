@@ -8,9 +8,7 @@ use std::{
 use anyhow::Context;
 use tree_sitter::Language;
 use tree_sitter_generate::{ALLOC_HEADER, ARRAY_HEADER, load_grammar_file};
-use tree_sitter_highlight::HighlightConfiguration;
 use tree_sitter_loader::{CompileConfig, Loader};
-use tree_sitter_tags::TagsConfiguration;
 
 use crate::tests::generate_parser;
 
@@ -30,10 +28,6 @@ static WRITTEN_HEADER_DIRS: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(De
 
 #[cfg(feature = "wasm")]
 pub static ENGINE: LazyLock<tree_sitter::wasmtime::Engine> = LazyLock::new(Default::default);
-
-pub fn test_loader() -> &'static Loader {
-    &TEST_LOADER
-}
 
 pub fn fixtures_dir() -> &'static Path {
     &FIXTURES_DIR
@@ -107,43 +101,6 @@ fn get_test_fixture_language_internal(name: &str, wasm: bool) -> Language {
         wasm,
         None,
     )
-}
-
-pub fn get_language_queries_path(language_name: &str) -> PathBuf {
-    GRAMMARS_DIR.join(language_name).join("queries")
-}
-
-pub fn get_highlight_config(
-    language_name: &str,
-    injection_query_filename: Option<&str>,
-    highlight_names: &[String],
-) -> HighlightConfiguration {
-    let language = get_language(language_name);
-    let queries_path = get_language_queries_path(language_name);
-    let highlights_query = fs::read_to_string(queries_path.join("highlights.scm")).unwrap();
-    let injections_query =
-        injection_query_filename.map_or_else(String::new, |injection_query_filename| {
-            fs::read_to_string(queries_path.join(injection_query_filename)).unwrap()
-        });
-    let locals_query = fs::read_to_string(queries_path.join("locals.scm")).unwrap_or_default();
-    let mut result = HighlightConfiguration::new(
-        language,
-        language_name,
-        &highlights_query,
-        &injections_query,
-        &locals_query,
-    )
-    .unwrap();
-    result.configure(highlight_names);
-    result
-}
-
-pub fn get_tags_config(language_name: &str) -> TagsConfiguration {
-    let language = get_language(language_name);
-    let queries_path = get_language_queries_path(language_name);
-    let tags_query = fs::read_to_string(queries_path.join("tags.scm")).unwrap();
-    let locals_query = fs::read_to_string(queries_path.join("locals.scm")).unwrap_or_default();
-    TagsConfiguration::new(language, &tags_query, &locals_query).unwrap()
 }
 
 pub fn get_test_language(name: &str, parser_code: &str, path: Option<&Path>) -> Language {

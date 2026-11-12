@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeMap,
-    ffi::OsStr,
     fmt::{Display as _, Write as _},
     fs,
     io::{self, Write},
@@ -18,8 +17,7 @@ use regex::Regex;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Serialize;
 use similar::{ChangeTag, TextDiff};
-use tree_sitter::{Language, LogType, Parser, Query, Tree, format_sexp};
-use walkdir::WalkDir;
+use tree_sitter::{Language, LogType, Parser, Tree, format_sexp};
 
 use super::util;
 use crate::{
@@ -195,17 +193,6 @@ pub struct TestSummary {
     #[serde(skip)]
     pub parse_stat_display: TestStats,
 
-    // Other test results
-    #[schemars(schema_with = "schema_as_array")]
-    #[serde(serialize_with = "serialize_as_array")]
-    pub highlight_results: TestResultHierarchy,
-    #[schemars(schema_with = "schema_as_array")]
-    #[serde(serialize_with = "serialize_as_array")]
-    pub tag_results: TestResultHierarchy,
-    #[schemars(schema_with = "schema_as_array")]
-    #[serde(serialize_with = "serialize_as_array")]
-    pub query_results: TestResultHierarchy,
-
     // Data used during construction
     #[schemars(skip)]
     #[serde(skip)]
@@ -304,18 +291,14 @@ impl TestResultHierarchy {
             return;
         }
 
-        #[expect(
-            clippy::manual_let_else,
-            reason = "mutable borrow in match arm prevents let-else"
-        )]
         let mut curr_group = match self.root_group[self.traversal_idxs[0]].info {
             TestInfo::Group { ref mut children } => children,
-            _ => unreachable!(),
+            TestInfo::ParseTest { .. } => unreachable!(),
         };
         for idx in self.traversal_idxs.iter().skip(1) {
             curr_group = match curr_group[*idx].info {
                 TestInfo::Group { ref mut children } => children,
-                _ => unreachable!(),
+                TestInfo::ParseTest { .. } => unreachable!(),
             };
         }
 
@@ -327,18 +310,14 @@ impl TestResultHierarchy {
             return self.root_group.len();
         }
 
-        #[expect(
-            clippy::manual_let_else,
-            reason = "destructuring borrow in match arm prevents let-else"
-        )]
         let mut curr_group = match self.root_group[self.traversal_idxs[0]].info {
             TestInfo::Group { ref children } => children,
-            _ => unreachable!(),
+            TestInfo::ParseTest { .. } => unreachable!(),
         };
         for idx in self.traversal_idxs.iter().skip(1) {
             curr_group = match curr_group[*idx].info {
                 TestInfo::Group { ref children } => children,
-                _ => unreachable!(),
+                TestInfo::ParseTest { .. } => unreachable!(),
             };
         }
         curr_group.len()
@@ -399,10 +378,6 @@ pub enum TestInfo {
         parse_rate: Option<(f64, f64)>,
         test_num: usize,
     },
-    AssertionTest {
-        outcome: TestOutcome,
-        test_num: usize,
-    },
 }
 
 #[expect(
@@ -428,16 +403,11 @@ fn parse_rate_schema(schema_gen: &mut SchemaGenerator) -> Schema {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, JsonSchema)]
 pub enum TestOutcome {
-    // Parse outcomes
     Passed,
     Failed,
     Updated,
     Skipped,
     Platform,
-
-    // Highlight/Tag/Query outcomes
-    AssertionPassed { assertion_count: usize },
-    AssertionFailed { error: String },
 }
 
 impl TestSummary {
@@ -448,7 +418,6 @@ impl TestSummary {
             .filter_map(|(_, result)| match result.info {
                 TestInfo::Group { .. } => None,
                 TestInfo::ParseTest { parse_rate, .. } => parse_rate,
-                TestInfo::AssertionTest { .. } => unreachable!(),
             })
             .fold((0usize, 0.0f64), |(count, rate_accum), (_, adj_rate)| {
                 (count + 1, rate_accum + adj_rate)
@@ -462,7 +431,6 @@ impl TestSummary {
                 .filter_map(|(_, result)| match result.info {
                     TestInfo::Group { .. } => None,
                     TestInfo::ParseTest { parse_rate, .. } => parse_rate,
-                    TestInfo::AssertionTest { .. } => unreachable!(),
                 })
                 .map(|(_, rate_i)| (rate_i - avg).powi(2))
                 .sum::<f64>()
@@ -485,7 +453,6 @@ impl TestSummary {
                         TestOutcome::Updated => (AnsiColor::Blue, "✓"),
                         TestOutcome::Skipped => (AnsiColor::Yellow, "⌀"),
                         TestOutcome::Platform => (AnsiColor::Magenta, "⌀"),
-                        _ => unreachable!(),
                     };
                     let stat_display = match (self.parse_stat_display, parse_rate) {
                         (TestStats::TotalOnly, _) | (_, None) => String::new(),
@@ -517,7 +484,6 @@ impl TestSummary {
                         paint(Some(color), &entry.name),
                     )?;
                 }
-                TestInfo::AssertionTest { .. } => unreachable!(),
             }
         }
 
@@ -602,53 +568,7 @@ impl TestSummary {
 impl std::fmt::Display for TestSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.fmt_parse_results(f)?;
-
-        let mut render_assertion_results =
-            |name: &str, results: &TestResultHierarchy| -> std::fmt::Result {
-                writeln!(f, "{name}:")?;
-                for (depth, entry) in results.iter() {
-                    write!(f, "{}", "  ".repeat(depth + 2))?;
-                    match &entry.info {
-                        TestInfo::Group { .. } => writeln!(f, "{}", entry.name)?,
-                        TestInfo::AssertionTest { outcome, test_num } => match outcome {
-                            TestOutcome::AssertionPassed { assertion_count } => writeln!(
-                                f,
-                                "{:>3}. ✓ {} ({assertion_count} assertions)",
-                                test_num,
-                                paint(Some(AnsiColor::Green), &entry.name)
-                            )?,
-                            TestOutcome::AssertionFailed { error } => {
-                                writeln!(
-                                    f,
-                                    "{:>3}. ✗ {}",
-                                    test_num,
-                                    paint(Some(AnsiColor::Red), &entry.name)
-                                )?;
-                                writeln!(f, "{}  {error}", "  ".repeat(depth + 1))?;
-                            }
-                            _ => unreachable!(),
-                        },
-                        TestInfo::ParseTest { .. } => unreachable!(),
-                    }
-                }
-                Ok(())
-            };
-
-        if !self.highlight_results.root_group.is_empty() {
-            render_assertion_results("syntax highlighting", &self.highlight_results)?;
-        }
-
-        if !self.tag_results.root_group.is_empty() {
-            render_assertion_results("tags", &self.tag_results)?;
-        }
-
-        if !self.query_results.root_group.is_empty() {
-            render_assertion_results("queries", &self.query_results)?;
-        }
-
-        write!(f, "{}", self.parse_stats)?;
-
-        Ok(())
+        write!(f, "{}", self.parse_stats)
     }
 }
 
@@ -694,25 +614,6 @@ pub fn run_tests_at_path(
     } else {
         Err(anyhow!(""))
     }
-}
-
-pub fn check_queries_at_path(language: &Language, path: &Path) -> Result<()> {
-    for entry in WalkDir::new(path)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-        .filter(|e| {
-            e.file_type().is_file()
-                && e.path().extension().and_then(OsStr::to_str) == Some("scm")
-                && !e.path().starts_with(".")
-        })
-    {
-        let filepath = entry.file_name().to_str().unwrap_or("");
-        let content = fs::read_to_string(entry.path())
-            .with_context(|| format!("Error reading query file {filepath:?}"))?;
-        Query::new(language, &content)
-            .with_context(|| format!("Error in query file {filepath:?}"))?;
-    }
-    Ok(())
 }
 
 pub struct DiffKey;
@@ -2315,7 +2216,7 @@ Test with cst marker
                 assert!(parse_rate.is_some());
                 *parse_rate = None;
             }
-            TestInfo::Group { .. } | TestInfo::AssertionTest { .. } => {
+            TestInfo::Group { .. } => {
                 panic!("Unexpected test result")
             }
         }
@@ -2406,10 +2307,7 @@ Test with cst marker
                   "secs": 0,
                   "nanos": 0,
                 }
-              },
-              "highlight_results": [],
-              "tag_results": [],
-              "query_results": []
+              }
             })
             .to_string()
         );
@@ -2507,7 +2405,7 @@ Test with cst marker
             let test_group_1_info = &mut test_summary.parse_results.root_group[0].info;
             match test_group_1_info {
                 TestInfo::Group { children, .. } => clear_parse_rate(&mut children[0]),
-                TestInfo::ParseTest { .. } | TestInfo::AssertionTest { .. } => {
+                TestInfo::ParseTest { .. } => {
                     panic!("Unexpected test result");
                 }
             }
@@ -2517,7 +2415,7 @@ Test with cst marker
                     clear_parse_rate(&mut children[0]);
                     clear_parse_rate(&mut children[1]);
                 }
-                TestInfo::ParseTest { .. } | TestInfo::AssertionTest { .. } => {
+                TestInfo::ParseTest { .. } => {
                     panic!("Unexpected test result");
                 }
             }
@@ -2575,10 +2473,7 @@ Test with cst marker
                   "secs": 0,
                   "nanos": 0,
                 }
-              },
-              "highlight_results": [],
-              "tag_results": [],
-              "query_results": []
+              }
             })
             .to_string()
         );

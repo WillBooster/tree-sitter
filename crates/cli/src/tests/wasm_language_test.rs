@@ -1,7 +1,6 @@
 use std::fs;
 
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor, WasmError, WasmErrorKind, WasmStore};
+use tree_sitter::{Parser, WasmError, WasmErrorKind, WasmStore};
 use tree_sitter_loader::Loader;
 
 use crate::tests::generate_parser;
@@ -284,17 +283,12 @@ fn test_load_multiple_wasm_languages() {
         parser2
             .set_wasm_store(WasmStore::new(&ENGINE).unwrap())
             .unwrap();
-        let mut query_cursor = QueryCursor::new();
 
         // First, parse with the store that originally loaded the languages.
         // Then parse with a new parser and Wasm store, so that the languages
         // are added one-by-one, in between parses.
         for mut parser in [parser, parser2] {
             for _ in 0..2 {
-                let query_rust = Query::new(&language_rust, "(const_item) @foo").unwrap();
-                let query_typescript =
-                    Query::new(&language_typescript, "(class_declaration) @foo").unwrap();
-
                 parser.set_language(&language_cpp).unwrap();
                 let tree = parser.parse("A<B> c = d();", None).unwrap();
                 assert_eq!(
@@ -309,12 +303,6 @@ fn test_load_multiple_wasm_languages() {
                     tree.root_node().to_sexp(),
                     "(source_file (const_item name: (identifier) type: (type_identifier) value: (call_expression function: (identifier) arguments: (arguments))))"
                 );
-                assert_eq!(
-                    query_cursor
-                        .matches(&query_rust, tree.root_node(), source.as_bytes())
-                        .count(),
-                    1
-                );
 
                 parser.set_language(&language_ruby).unwrap();
                 let tree = parser.parse("class A; end", None).unwrap();
@@ -328,12 +316,6 @@ fn test_load_multiple_wasm_languages() {
                 assert_eq!(
                     tree.root_node().to_sexp(),
                     "(program (class_declaration name: (type_identifier) body: (class_body)))"
-                );
-                assert_eq!(
-                    query_cursor
-                        .matches(&query_typescript, tree.root_node(), source.as_bytes())
-                        .count(),
-                    1
                 );
             }
         }

@@ -36,10 +36,8 @@ qjs-rt = [ "tree-sitter-generate/qjs-rt" ]
 wasm = [ "tree-sitter/wasm", "tree-sitter-loader/wasm" ]
 
 [dependencies]
-ansi_colours.workspace = true
 anstyle.workspace = true
 anyhow.workspace = true
-bstr.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 clap_complete_nushell.workspace = true
@@ -60,20 +58,16 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
-streaming-iterator.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tiny_http.workspace = true
-walkdir.workspace = true
 wasmparser.workspace = true
 webbrowser.workspace = true
 
 tree-sitter.workspace = true
 tree-sitter-config.workspace = true
 tree-sitter-generate = { features = [ "load" ], workspace = true }
-tree-sitter-highlight.workspace = true
 tree-sitter-loader.workspace = true
-tree-sitter-tags.workspace = true
 
 [dev-dependencies]
 etcetera.workspace = true

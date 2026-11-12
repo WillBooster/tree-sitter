@@ -208,11 +208,6 @@ pub fn run_bindings() -> Result<()> {
         "TSLookaheadIterator",
         "TSParser",
         "TSTree",
-        "TSQuery",
-        "TSQueryCursor",
-        "TSQueryCapture",
-        "TSQueryMatch",
-        "TSQueryPredicateStep",
     ];
 
     let bindings = bindgen::Builder::default()
