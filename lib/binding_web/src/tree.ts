@@ -8,22 +8,18 @@ import { Edit } from './edit';
 import { newFinalizer } from './finalization_registry';
 
 /** @internal */
-export function getText(
-  tree: Tree,
+export function getCallbackText(
+  textSource: ParseCallback,
   startIndex: number,
   endIndex: number,
-  getStartPosition: () => Point,
+  startPosition: Point,
 ): string {
-  if (tree.sourceText !== undefined) {
-    return tree.sourceText.slice(startIndex, endIndex);
-  }
-  const startPosition = getStartPosition();
   const length = endIndex - startIndex;
-  let result = tree.textCallback(startIndex, startPosition);
+  let result = textSource(startIndex, startPosition);
   if (result) {
     startIndex += result.length;
     while (startIndex < endIndex) {
-      const string = tree.textCallback(startIndex, startPosition);
+      const string = textSource(startIndex, startPosition);
       if (string && string.length > 0) {
         startIndex += string.length;
         result += string;
@@ -48,10 +44,7 @@ export class Tree {
   private [0] = 0; // Internal handle for Wasm
 
   /** @internal */
-  textCallback: ParseCallback;
-
-  /** @internal */
-  sourceText: string | undefined;
+  textSource: string | ParseCallback;
 
   /** @internal */
   editVersion = 0;
@@ -60,25 +53,18 @@ export class Tree {
   language: Language;
 
   /** @internal */
-  constructor(
-    internal: Internal,
-    address: number,
-    language: Language,
-    textCallback: ParseCallback,
-    sourceText?: string,
-  ) {
+  constructor(internal: Internal, address: number, language: Language, textSource: string | ParseCallback) {
     assertInternal(internal);
     this[0] = address;
     this.language = language;
-    this.textCallback = textCallback;
-    this.sourceText = sourceText;
+    this.textSource = textSource;
     finalizer?.register(this, address, this);
   }
 
   /** Create a shallow copy of the syntax tree. This is very fast. */
   copy(): Tree {
     const address = C._ts_tree_copy(this[0]);
-    return new Tree(INTERNAL, address, this.language, this.textCallback, this.sourceText);
+    return new Tree(INTERNAL, address, this.language, this.textSource);
   }
 
   /** Delete the syntax tree, freeing its resources. */

@@ -272,6 +272,16 @@ describe('Tree', () => {
         endIndex: 13,
       });
 
+      cursor.resetTo(cursor);
+      assertCursorState(cursor, {
+        nodeType: 'binary_expression',
+        nodeIsNamed: true,
+        startPosition: { row: 0, column: 8 },
+        endPosition: { row: 0, column: 13 },
+        startIndex: 8,
+        endIndex: 13,
+      });
+
       const copy = tree.walk();
       copy.resetTo(cursor);
 

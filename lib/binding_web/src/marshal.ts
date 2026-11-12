@@ -1,4 +1,4 @@
-import { INTERNAL, Point, Range, SIZE_OF_NODE, SIZE_OF_POINT, SIZE_OF_RANGE, C } from './constants';
+import { INTERNAL, Point, Range, SIZE_OF_NODE, SIZE_OF_RANGE, C } from './constants';
 import { Node } from './node';
 import { Tree } from './tree';
 import { TRANSFER_BUFFER } from './parser';
@@ -105,16 +105,17 @@ export function unmarshalRange(address: number): Range {
  * Marshals an {@link Edit} to the transfer buffer.
  */
 export function marshalEdit(edit: Edit, address = TRANSFER_BUFFER): void {
-  marshalPoint(address, edit.startPosition);
-  address += SIZE_OF_POINT;
-  marshalPoint(address, edit.oldEndPosition);
-  address += SIZE_OF_POINT;
-  marshalPoint(address, edit.newEndPosition);
-  const base = (address + SIZE_OF_POINT) >>> 2;
+  const base = address >>> 2;
   const heap = C.HEAP32;
-  heap[base] = edit.startIndex;
-  heap[base + 1] = edit.oldEndIndex;
-  heap[base + 2] = edit.newEndIndex;
+  heap[base] = edit.startPosition.row;
+  heap[base + 1] = edit.startPosition.column;
+  heap[base + 2] = edit.oldEndPosition.row;
+  heap[base + 3] = edit.oldEndPosition.column;
+  heap[base + 4] = edit.newEndPosition.row;
+  heap[base + 5] = edit.newEndPosition.column;
+  heap[base + 6] = edit.startIndex;
+  heap[base + 7] = edit.oldEndIndex;
+  heap[base + 8] = edit.newEndIndex;
 }
 
 /**
@@ -150,19 +151,18 @@ export function unmarshalSymbols(): number[] {
 
 /** @internal */
 export function unmarshalRanges(useTsFree = true): Range[] {
-  return unmarshalArray(SIZE_OF_RANGE, unmarshalRange, useTsFree, false);
+  return unmarshalArray(SIZE_OF_RANGE, unmarshalRange, useTsFree);
 }
 
 /** @internal */
-export function unmarshalNodeArray(tree: Tree, useTsFree = false, alwaysFree = false): Node[] {
-  return unmarshalArray(SIZE_OF_NODE, (address) => unmarshalNode(tree, address)!, useTsFree, alwaysFree);
+export function unmarshalNodeArray(tree: Tree, useTsFree = false): Node[] {
+  return unmarshalArray(SIZE_OF_NODE, (address) => unmarshalNode(tree, address)!, useTsFree);
 }
 
 function unmarshalArray<T>(
   stride: number,
   readItem: (address: number) => T,
   useTsFree: boolean,
-  alwaysFree: boolean,
 ): T[] {
   const base = TRANSFER_BUFFER >>> 2;
   const count = C.HEAPU32[base];
@@ -171,7 +171,7 @@ function unmarshalArray<T>(
   for (let i = 0, address = buffer; i < count; i++, address += stride) {
     result[i] = readItem(address);
   }
-  if (count > 0 || alwaysFree) {
+  if (buffer) {
     if (useTsFree) C._ts_free_wasm(buffer);
     else C._free(buffer);
   }

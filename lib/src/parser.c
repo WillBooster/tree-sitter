@@ -58,6 +58,10 @@
     ts_parser__log(self);                                     \
   }
 
+#ifdef __wasm__
+#define LOG_STACK() ((void)0)
+#define LOG_TREE(tree) ((void)(tree))
+#else
 #define LOG_STACK()                                                              \
   if (self->dot_graph_file) {                                                    \
     ts_stack_print_dot_graph(self->stack, self->language, self->dot_graph_file); \
@@ -69,6 +73,7 @@
     ts_subtree_print_dot_graph(tree, self->language, self->dot_graph_file); \
     fputs("\n", self->dot_graph_file);                                      \
   }
+#endif
 
 #define SYM_NAME(symbol) ts_language_symbol_name(self->language, symbol)
 
@@ -2741,6 +2746,12 @@ void ts_parser_set_logger(TSParser *self, TSLogger logger) {
   ts_lexer_set_logger(&self->lexer, logger);
 }
 
+#ifdef __wasm__
+void ts_parser_print_dot_graphs(TSParser *self, int fd) {
+  (void)self;
+  (void)fd;
+}
+#else
 void ts_parser_print_dot_graphs(TSParser *self, int fd) {
   if (self->dot_graph_file) {
     fclose(self->dot_graph_file);
@@ -2756,6 +2767,7 @@ void ts_parser_print_dot_graphs(TSParser *self, int fd) {
     self->dot_graph_file = NULL;
   }
 }
+#endif
 
 bool ts_parser_set_included_ranges(
   TSParser *self,

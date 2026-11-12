@@ -17,7 +17,6 @@ declare namespace RuntimeExports {
      */
     function UTF8ToString(ptr: number, maxBytesToRead?: number | undefined, ignoreNul?: boolean | undefined): string;
     function lengthBytesUTF8(str: string): number;
-    function stringToUTF16(str: string, outPtr: number, maxBytesToWrite: number): number;
     type WasmExports = Record<string, () => number>;
     type LoadWebAssemblyModuleFlags = { loadAsync: boolean } & Record<string, boolean>;
     type LoadWebAssemblyModuleResult<F extends LoadWebAssemblyModuleFlags> = F extends { loadAsync: true } ? Promise<WasmExports> : F extends { loadAsync: false } ? WasmExports : Promise<WasmExports> | WasmExports;
@@ -27,7 +26,6 @@ declare namespace RuntimeExports {
      * @param {number=} handle
      */
     function loadWebAssemblyModule<F extends LoadWebAssemblyModuleFlags>(binary: Uint8Array | WebAssembly.Module, flags: F, libName?: string, localScope?: Record<string, unknown>, handle?: number): LoadWebAssemblyModuleResult<F>;
-    let HEAPU8: Uint8Array;
     let HEAPU16: Uint16Array;
     let HEAP32: Int32Array;
     let HEAPU32: Uint32Array;
@@ -62,7 +60,6 @@ interface WasmModule {
   _ts_parser_delete(_0: number): void;
   _ts_parser_reset(_0: number): void;
   _ts_parser_set_language(_0: number, _1: number): number;
-  _ts_parser_set_included_ranges(_0: number, _1: number, _2: number): number;
   _iswspace(_0: number): number;
   _iswalnum(_0: number): number;
   _ts_tree_copy(_0: number): number;
@@ -93,7 +90,7 @@ interface WasmModule {
   _ts_tree_cursor_goto_first_child_wasm(_0: number): number;
   _ts_tree_cursor_goto_last_child_wasm(_0: number): number;
   _ts_tree_cursor_goto_first_child_for_index_wasm(_0: number, _1: number): number;
-  _ts_tree_cursor_goto_first_child_for_position_wasm(_0: number): number;
+  _ts_tree_cursor_goto_first_child_for_position_wasm(_0: number, _1: number, _2: number): number;
   _ts_tree_cursor_goto_next_sibling_wasm(_0: number): number;
   _ts_tree_cursor_goto_previous_sibling_wasm(_0: number): number;
   _ts_tree_cursor_goto_descendant_wasm(_0: number, _1: number): void;
@@ -104,8 +101,8 @@ interface WasmModule {
   _ts_tree_cursor_end_position_wasm(_0: number): void;
   _ts_tree_cursor_start_index_wasm(_0: number): number;
   _ts_tree_cursor_end_index_wasm(_0: number): number;
-  _ts_tree_cursor_current_depth_wasm(_0: number): number;
-  _ts_tree_cursor_current_descendant_index_wasm(_0: number): number;
+  _ts_tree_cursor_current_depth(_0: number): number;
+  _ts_tree_cursor_current_descendant_index(_0: number): number;
   _ts_tree_cursor_current_node_wasm(_0: number): void;
   _ts_node_symbol_wasm(_0: number): number;
   _ts_node_field_name_for_child_wasm(_0: number, _1: number): number;
@@ -130,14 +127,12 @@ interface WasmModule {
   _ts_node_named_descendant_for_index_wasm(_0: number): void;
   _ts_node_descendant_for_position_wasm(_0: number): void;
   _ts_node_named_descendant_for_position_wasm(_0: number): void;
-  _ts_node_start_point_wasm(_0: number): void;
   _ts_node_end_point_wasm(_0: number): void;
-  _ts_node_start_index_wasm(_0: number): number;
   _ts_node_end_index_wasm(_0: number): number;
   _ts_node_to_string_wasm(_0: number): number;
   _ts_node_children_wasm(_0: number): void;
   _ts_node_named_children_wasm(_0: number): void;
-  _ts_node_descendants_of_type_wasm(_0: number, _1: number, _2: number, _3: number, _4: number, _5: number, _6: number): void;
+  _ts_node_descendants_of_type_wasm(_0: number, _1: number, _2: number): void;
   _ts_node_is_named_wasm(_0: number): number;
   _ts_node_has_changes_wasm(_0: number): number;
   _ts_node_has_error_wasm(_0: number): number;
@@ -166,7 +161,7 @@ interface WasmModule {
 }
 
 export type MainModule = WasmModule & typeof RuntimeExports & {
-  currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
+  currentParseCallback: string | ((index: number, position: {row: number, column: number}) => string | undefined) | null;
   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
   treeSitterSetMemoryLimit(maxBytes: number): boolean;

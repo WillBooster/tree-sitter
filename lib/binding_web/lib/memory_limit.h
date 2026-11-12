@@ -15,6 +15,7 @@ typedef struct {
   size_t count;
   size_t capacity;
   TSParser *parser;
+  void *ranges;
 } WebParseBudget;
 
 static WebParseBudget *current_parse_budget;
@@ -139,9 +140,20 @@ static void *web_realloc(void *pointer, size_t size) {
   return result;
 }
 
+static WebParseBudget *web_budget_new(void *ranges) {
+  WebParseBudget *budget = calloc(1, sizeof(WebParseBudget));
+  if (!budget) {
+    free(ranges);
+    return NULL;
+  }
+  budget->ranges = ranges;
+  return budget;
+}
+
 static void web_budget_discard(WebParseBudget *budget) {
   // A failed allocation can unwind from a half-updated parse; discard its allocations without walking that stack.
   current_parse_budget = NULL;
+  free(budget->ranges);
   for (size_t i = 0; i < budget->capacity; i++) {
     if (budget->entries[i]) free(budget->entries[i]);
   }

@@ -16,10 +16,11 @@ use notify_debouncer_full::new_debouncer;
 
 use crate::{CheckWasmExports, bail_on_err, watch_wasm};
 
-const EXCLUDES: [&str; 21] = [
+const EXCLUDES: [&str; 22] = [
     // Unneeded because the JS side has its own way of implementing it
     "ts_node_child_by_field_name",
     "ts_node_edit",
+    "ts_point_edit",
     // Precomputed and stored in the JS side
     "ts_language_field_id_for_name",
     "ts_node_type",

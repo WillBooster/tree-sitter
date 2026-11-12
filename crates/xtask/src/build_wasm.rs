@@ -31,14 +31,12 @@ enum EmccSource {
     Podman,
 }
 
-const EXPORTED_RUNTIME_METHODS: [&str; 10] = [
+const EXPORTED_RUNTIME_METHODS: [&str; 8] = [
     "AsciiToString",
     "stringToUTF8",
     "UTF8ToString",
     "lengthBytesUTF8",
-    "stringToUTF16",
     "loadWebAssemblyModule",
-    "HEAPU8",
     "HEAPU16",
     "HEAP32",
     "HEAPU32",
@@ -115,14 +113,19 @@ const ARCH_OS: Result<&str, LoaderError> = Err(LoaderError::WasiSDKPlatform);
 
 pub fn run_wasm(args: &BuildWasm) -> Result<()> {
     let mut emscripten_flags = if args.debug {
-        vec!["-O0", "--minify", "0"]
+        vec![
+            "-O0",
+            "--minify",
+            "0",
+            "-s",
+            "ASSERTIONS=1",
+            "-s",
+            "SAFE_HEAP=1",
+            "-g",
+        ]
     } else {
         vec!["-O2", "-flto", "--minify", "0"]
     };
-
-    if args.debug {
-        emscripten_flags.extend(["-s", "ASSERTIONS=1", "-s", "SAFE_HEAP=1", "-g"]);
-    }
 
     if args.verbose {
         emscripten_flags.extend(["-s", "VERBOSE=1", "-v"]);
@@ -360,10 +363,6 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                 "lengthBytesUTF8(str: string): number",
             )
             .replace(
-                "stringToUTF16(str: any, outPtr: any, maxBytesToWrite: any): number",
-                "stringToUTF16(str: string, outPtr: number, maxBytesToWrite: number): number",
-            )
-            .replace(
                 concat!(
                     "loadWebAssemblyModule(binary: any, flags: any, libName?: string | ",
                     "undefined, localScope?: any | undefined, handle?: number | undefined): any"
@@ -384,7 +383,6 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                     " localScope?: Record<string, unknown>, handle?: number): LoadWebAssemblyModuleResult<F>"
                 ),
             )
-            .replace("HEAPU8: any", "HEAPU8: Uint8Array")
             .replace("HEAPU16: any", "HEAPU16: Uint16Array")
             .replace("HEAP32: any", "HEAP32: Int32Array")
             .replace("HEAPU32: any", "HEAPU32: Uint32Array")
@@ -394,7 +392,7 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                 "WasmModule & typeof RuntimeExports;",
                 indoc! {"
                 WasmModule & typeof RuntimeExports & {
-                  currentParseCallback: ((index: number, position: {row: number, column: number}) => string | undefined) | null;
+                  currentParseCallback: string | ((index: number, position: {row: number, column: number}) => string | undefined) | null;
                   currentLogCallback: ((message: string, isLex: boolean) => void) | null;
                   currentProgressCallback: ((state: {currentOffset: number, hasError: boolean}) => boolean | void) | null;
                   treeSitterSetMemoryLimit(maxBytes: number): boolean;

@@ -119,17 +119,6 @@ const finalizer = newFinalizer((addresses: number[]) => {
   C._free(addresses[1]);
 });
 
-interface WasmParseRequest {
-  parserAddress: number;
-  callbackBuffer: number;
-  sourceText: string | undefined;
-  oldTreeAddress: number;
-  ranges: Range[] | undefined;
-  maxOperations: number | undefined;
-  hasProgressCallback: number;
-  onOperations: (operations: number) => void;
-}
-
 /**
  * A stateful object that is used to produce a {@link Tree} based on some
  * source code.
@@ -143,6 +132,9 @@ export class Parser {
 
   /** @internal */
   private logCallback: LogCallback | null = null;
+
+  /** @internal */
+  private loggerEnabled = false;
 
   /** The parser's current language. */
   language: Language | null = null;
@@ -182,6 +174,7 @@ export class Parser {
     const base = TRANSFER_BUFFER >>> 2;
     this[0] = C.HEAP32[base];
     this[1] = C.HEAP32[base + 1];
+    this.loggerEnabled = false;
   }
 
   /** Delete the parser, freeing its resources. */
@@ -243,41 +236,86 @@ export class Parser {
   ): Tree | null {
     const maxMemoryBytes = validateMemoryLimit(options?.maxMemoryBytes);
     const maxOperations = validateOperationLimit(options?.maxOperations);
-    const { sourceText, textCallback } = resolveInput(callback);
-    C.currentParseCallback = sourceText === undefined ? textCallback : null;
-    C.currentProgressCallback = options?.progressCallback ?? null;
-
-    if (this.logCallback) {
-      C.currentLogCallback = this.logCallback;
-      C._ts_parser_enable_logger_wasm(this[0], 1);
-    } else {
-      C.currentLogCallback = null;
-      C._ts_parser_enable_logger_wasm(this[0], 0);
+    if (typeof callback !== 'string' && typeof callback !== 'function') {
+      throw new Error('Argument must be a string or a function');
     }
 
+    const progressCallback = options?.progressCallback ?? null;
+    C.currentParseCallback = callback;
+    C.currentProgressCallback = progressCallback;
+    this.syncLogger();
     this.lastParseOperations = 0;
-    const request: WasmParseRequest = {
-      parserAddress: this[0],
-      callbackBuffer: this[1],
-      sourceText,
-      oldTreeAddress: oldTree ? oldTree[0] : 0,
-      ranges: options?.includedRanges,
-      maxOperations,
-      hasProgressCallback: options?.progressCallback ? 1 : 0,
-      onOperations: (operations) => {
-        this.lastParseOperations = operations;
-      },
-    };
 
     try {
-      const treeAddress = maxMemoryBytes === undefined
-        ? parseOrdinaryWasm(request)
-        : parseLimitedWasm(request, maxMemoryBytes);
+      const treeAddress = this.runParse(oldTree, options, maxMemoryBytes, maxOperations);
       if (!treeAddress) return null;
       if (!this.language) throw new Error('Parser must have a language to parse');
-      return new Tree(INTERNAL, treeAddress, this.language, textCallback, sourceText);
+      return new Tree(INTERNAL, treeAddress, this.language, callback);
     } finally {
       clearCallbacks();
+    }
+  }
+
+  /** @internal */
+  private syncLogger(): void {
+    if (this.logCallback) {
+      C.currentLogCallback = this.logCallback;
+      if (!this.loggerEnabled) {
+        C._ts_parser_enable_logger_wasm(this[0], 1);
+        this.loggerEnabled = true;
+      }
+    } else {
+      C.currentLogCallback = null;
+      if (this.loggerEnabled) {
+        C._ts_parser_enable_logger_wasm(this[0], 0);
+        this.loggerEnabled = false;
+      }
+    }
+  }
+
+  /** @internal */
+  private runParse(
+    oldTree: Tree | null | undefined,
+    options: ParseOptions | undefined,
+    maxMemoryBytes: number | undefined,
+    maxOperations: number | undefined,
+  ): number {
+    if (maxMemoryBytes !== undefined && !C.treeSitterSetMemoryLimit(maxMemoryBytes)) {
+      return 0;
+    }
+    try {
+      const [rangeAddress, rangeCount] = prepareRanges(options?.includedRanges);
+      if (rangeCount && !rangeAddress) return 0;
+      marshalParseInputs(maxOperations, rangeAddress, rangeCount, options?.progressCallback ? 1 : 0);
+      try {
+        return maxMemoryBytes === undefined
+          ? this.executeOrdinaryParse(oldTree ? oldTree[0] : 0)
+          : this.executeLimitedParse();
+      } finally {
+        this.lastParseOperations = unmarshalOperationCount();
+      }
+    } finally {
+      if (maxMemoryBytes !== undefined) C.treeSitterSetMemoryLimit(0);
+    }
+  }
+
+  /** @internal */
+  private executeOrdinaryParse(oldTreeAddress: number): number {
+    try {
+      return C._ts_parser_parse_wasm(this[0], this[1], oldTreeAddress);
+    } catch (error) {
+      C._ts_parser_last_parse_operations_wasm(this[0]);
+      throw error;
+    }
+  }
+
+  /** @internal */
+  private executeLimitedParse(): number {
+    try {
+      return C._ts_parser_parse_limited_wasm(this[0], this[1]);
+    } catch (error) {
+      C._ts_parser_abort_limited_wasm();
+      throw error;
     }
   }
 
@@ -333,112 +371,36 @@ function validateOperationLimit(maxOperations?: number): number | undefined {
   return maxOperations;
 }
 
-function resolveInput(callback: string | ParseCallback): {
-  sourceText: string | undefined;
-  textCallback: ParseCallback;
-} {
-  if (typeof callback === 'string') {
-    return { sourceText: callback, textCallback: (index: number) => callback.slice(index) };
-  }
-  if (typeof callback === 'function') {
-    return { sourceText: undefined, textCallback: callback };
-  }
-  throw new Error('Argument must be a string or a function');
-}
-
-function parseOrdinaryWasm(request: WasmParseRequest): number {
-  return withPreparedParse(request, (inputBuffer) => {
-    try {
-      return C._ts_parser_parse_wasm(request.parserAddress, inputBuffer, request.oldTreeAddress);
-    } catch (error) {
-      C._ts_parser_last_parse_operations_wasm(request.parserAddress);
-      throw error;
-    }
-  });
-}
-
-function parseLimitedWasm(request: WasmParseRequest, maxMemoryBytes: number): number {
-  if (!C.treeSitterSetMemoryLimit(maxMemoryBytes)) return 0;
-  try {
-    return withPreparedParse(request, (inputBuffer) => {
-      try {
-        return C._ts_parser_parse_limited_wasm(request.parserAddress, inputBuffer);
-      } catch (error) {
-        C._ts_parser_abort_limited_wasm();
-        throw error;
-      }
-    });
-  } finally {
-    C.treeSitterSetMemoryLimit(0);
-  }
-}
-
-function withPreparedParse(request: WasmParseRequest, execute: (inputBuffer: number) => number): number {
-  let sourceAddress = 0;
-  let rangeAddress = 0;
-  let executed = false;
-  try {
-    const [allocatedSource, byteLength, ok] = prepareSourceBuffer(request.sourceText);
-    sourceAddress = allocatedSource;
-    if (!ok) return 0;
-    const [allocatedRanges, rangeCount] = prepareRanges(request.ranges);
-    rangeAddress = allocatedRanges;
-    if (rangeCount && !allocatedRanges) return 0;
-    const isStringInput = request.sourceText !== undefined;
-    marshalParseInputs(request.maxOperations, byteLength, allocatedRanges, rangeCount, isStringInput, request.hasProgressCallback);
-    executed = true;
-    return execute(isStringInput ? allocatedSource : request.callbackBuffer);
-  } finally {
-    if (executed) request.onOperations(unmarshalOperationCount());
-    if (rangeAddress) C._free(rangeAddress);
-    if (sourceAddress) C._free(sourceAddress);
-  }
-}
-
-function prepareSourceBuffer(sourceText?: string): [number, number, boolean] {
-  if (sourceText === undefined) return [0, 0, true];
-  const codeUnits = sourceText.length;
-  if (codeUnits === 0) return [0, 0, true];
-  if (codeUnits > 0x3fffffff) return [0, 0, false];
-  const byteLength = codeUnits * 2;
-  const address = C._malloc(byteLength);
-  if (!address) return [0, 0, false];
-  const heapU16 = C.HEAPU16;
-  const base = address >>> 1;
-  for (let i = 0; i < codeUnits; i++) {
-    heapU16[base + i] = sourceText.charCodeAt(i);
-  }
-  return [address, byteLength, true];
-}
-
 function prepareRanges(ranges?: Range[]): [number, number] {
   if (!ranges?.length) return [0, 0];
   const rangeAddress = C._calloc(ranges.length, SIZE_OF_RANGE);
   if (!rangeAddress) return [0, ranges.length];
-  let address = rangeAddress;
-  for (const range of ranges) {
-    marshalRange(address, range);
-    address += SIZE_OF_RANGE;
+  try {
+    let address = rangeAddress;
+    for (const range of ranges) {
+      marshalRange(address, range);
+      address += SIZE_OF_RANGE;
+    }
+    return [rangeAddress, ranges.length];
+  } catch (error) {
+    C._free(rangeAddress);
+    throw error;
   }
-  return [rangeAddress, ranges.length];
 }
 
 function marshalParseInputs(
   maxOperations: number | undefined,
-  byteLength: number,
   rangeAddress: number,
   rangeCount: number,
-  isStringInput: boolean,
   hasProgressCallback: number,
 ): void {
   const base = TRANSFER_BUFFER >>> 2;
   const heapU32 = C.HEAPU32;
   heapU32[base] = maxOperations === undefined ? 0 : maxOperations >>> 0;
   heapU32[base + 1] = maxOperations === undefined ? 0 : Math.floor(maxOperations / TWO_POW_32) >>> 0;
-  heapU32[base + 2] = byteLength;
-  heapU32[base + 3] = rangeAddress;
-  heapU32[base + 4] = rangeCount;
-  heapU32[base + 5] = (isStringInput ? 1 : 0) | (hasProgressCallback ? 2 : 0);
+  heapU32[base + 2] = rangeAddress;
+  heapU32[base + 3] = rangeCount;
+  heapU32[base + 4] = hasProgressCallback;
 }
 
 function unmarshalOperationCount(): number {

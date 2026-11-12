@@ -1,5 +1,5 @@
 import { INTERNAL, Internal, assertInternal, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT, ZERO_POINT, isPoint, C, Point } from './constants';
-import { getText, Tree } from './tree';
+import { getCallbackText, Tree } from './tree';
 import { TreeCursor } from './tree_cursor';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Language } from './language';
@@ -169,7 +169,10 @@ export class Node {
 
   /** Get the string content of this node. */
   get text(): string {
-    return getText(this.tree, this.startIndex, this.endIndex, () => this.startPosition);
+    const { textSource } = this.tree;
+    return typeof textSource === 'string'
+      ? textSource.slice(this.startIndex, this.endIndex)
+      : getCallbackText(textSource, this.startIndex, this.endIndex, this.startPosition);
   }
 
   /** Get this node's parse state. */
@@ -399,24 +402,24 @@ export class Node {
 
     // Copy the array of symbols to the Wasm heap
     const symbolsAddress = C._malloc(SIZE_OF_INT * symbols.length);
+    const symbolsHeap = C.HEAPU32;
     const symbolsBase = symbolsAddress >>> 2;
     for (let i = 0, n = symbols.length; i < n; i++) {
-      C.HEAPU32[symbolsBase + i] = symbols[i];
+      symbolsHeap[symbolsBase + i] = symbols[i];
     }
 
     // Call the C API to compute the descendants
     marshalNode(this);
+    const pointAddress = TRANSFER_BUFFER + SIZE_OF_NODE;
+    marshalPoint(pointAddress, startPosition);
+    marshalPoint(pointAddress + SIZE_OF_POINT, endPosition);
     C._ts_node_descendants_of_type_wasm(
       this.tree[0],
       symbolsAddress,
       symbols.length,
-      startPosition.row,
-      startPosition.column,
-      endPosition.row,
-      endPosition.column
     );
 
-    const result = unmarshalNodeArray(this.tree, true, true);
+    const result = unmarshalNodeArray(this.tree, true);
     C._free(symbolsAddress);
     return result;
   }
@@ -494,8 +497,9 @@ export class Node {
 
     marshalNode(this);
     const base = (TRANSFER_BUFFER + SIZE_OF_NODE) >>> 2;
-    C.HEAP32[base] = start;
-    C.HEAP32[base + 1] = end;
+    const heap = C.HEAP32;
+    heap[base] = start;
+    heap[base + 1] = end;
     C._ts_node_descendant_for_index_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }
@@ -508,8 +512,9 @@ export class Node {
 
     marshalNode(this);
     const base = (TRANSFER_BUFFER + SIZE_OF_NODE) >>> 2;
-    C.HEAP32[base] = start;
-    C.HEAP32[base + 1] = end;
+    const heap = C.HEAP32;
+    heap[base] = start;
+    heap[base + 1] = end;
     C._ts_node_named_descendant_for_index_wasm(this.tree[0]);
     return unmarshalNode(this.tree);
   }

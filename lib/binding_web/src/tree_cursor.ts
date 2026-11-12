@@ -1,8 +1,8 @@
 import { INTERNAL, Internal, assertInternal, Point, C } from './constants';
-import { marshalNode, marshalPoint, unmarshalNode, unmarshalPoint } from './marshal';
+import { marshalNode, unmarshalNode, unmarshalPoint } from './marshal';
 import { Node } from './node';
 import { TRANSFER_BUFFER } from './parser';
-import { getText, Tree } from './tree';
+import { getCallbackText, Tree } from './tree';
 import { newFinalizer } from './finalization_registry';
 
 const finalizer = newFinalizer((address: number) => {
@@ -74,7 +74,7 @@ export class TreeCursor {
 
   /** Get the field name of this tree cursor's current node. */
   get currentFieldName(): string | null {
-    return this.tree.language.fields[this._fieldId];
+    return this.tree.language.fields[this._fieldId] ?? null;
   }
 
   /**
@@ -82,7 +82,7 @@ export class TreeCursor {
    * node that the cursor was constructed with.
    */
   get currentDepth(): number {
-    return C._ts_tree_cursor_current_depth_wasm(this[0]);
+    return C._ts_tree_cursor_current_depth(this[0]) >>> 0;
   }
 
   /**
@@ -90,7 +90,7 @@ export class TreeCursor {
    * descendants of the original node that the cursor was constructed with.
    */
   get currentDescendantIndex(): number {
-    return C._ts_tree_cursor_current_descendant_index_wasm(this[0]);
+    return C._ts_tree_cursor_current_descendant_index(this[0]) >>> 0;
   }
 
   /** Get the type of the cursor's current node. */
@@ -136,7 +136,10 @@ export class TreeCursor {
   /** Get the string content of the cursor's current node. */
   get nodeText(): string {
     this.syncIndices();
-    return getText(this.tree, this._startIndex, this._endIndex, () => this.startPosition);
+    const { textSource } = this.tree;
+    return typeof textSource === 'string'
+      ? textSource.slice(this._startIndex, this._endIndex)
+      : getCallbackText(textSource, this._startIndex, this._endIndex, this.startPosition);
   }
 
   /** Get the start position of the cursor's current node. */
@@ -272,8 +275,15 @@ export class TreeCursor {
    * `false` if no such child was found.
    */
   gotoFirstChildForPosition(goalPosition: Point): boolean {
-    marshalPoint(TRANSFER_BUFFER, goalPosition);
-    if (!C._ts_tree_cursor_goto_first_child_for_position_wasm(this[0])) return false;
+    if (
+      !C._ts_tree_cursor_goto_first_child_for_position_wasm(
+        this[0],
+        goalPosition.row,
+        goalPosition.column,
+      )
+    ) {
+      return false;
+    }
     this.readNodeCache();
     return true;
   }
@@ -296,7 +306,7 @@ export class TreeCursor {
    * information and allows reusing already created cursors.
    */
   resetTo(cursor: TreeCursor): void {
-    if (cursor === this) return;
+    if (this[0] === cursor[0]) return;
     this.tree = cursor.tree;
     C._ts_tree_cursor_reset_to_wasm(this[0], cursor[0]);
     this.readNodeCache();

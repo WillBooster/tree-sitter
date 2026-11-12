@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 493 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
+// code-gauge-allow-file fileNcss 502 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
 #include "./length.h"
 #include "./lexer.h"
 #include "./unicode.h"
@@ -174,20 +174,30 @@ static void ts_lexer__get_chunk(Lexer *self) {
   }
 }
 
-static void ts_lexer__join_split_utf8_character(
-  Lexer *self,
-  const uint8_t *chunk,
-  uint32_t size
+static bool ts_lexer__needs_more_character_bytes(
+  const Lexer *self,
+  uint32_t size,
+  uint32_t character_size
 ) {
-  uint32_t character_size = 1 + U8_COUNT_TRAIL_BYTES(chunk[0]);
+  if (size >= character_size) return false;
+  if (self->input.encoding == TSInputEncodingUTF8) {
+    return self->data.lookahead == TS_DECODE_ERROR && self->lookahead_size == size;
+  }
+  return size < 2 || U16_IS_LEAD(self->data.lookahead);
+}
+
+static void ts_lexer__join_split_character(
+  Lexer *self,
+  TSDecodeFunction decode,
+  const uint8_t *chunk,
+  uint32_t size,
+  uint32_t character_size
+) {
+  uint32_t max_size =
+    self->included_ranges[self->current_included_range_index].end_byte - self->current_position.bytes;
+  if (character_size > max_size) character_size = max_size;
   memmove(self->lookahead_buffer, chunk, size);
-  // A decode error that consumed every byte read so far may only mean that the
-  // character continues in the next chunk.
-  while (
-    self->data.lookahead == TS_DECODE_ERROR &&
-    self->lookahead_size == size &&
-    size < character_size
-  ) {
+  while (ts_lexer__needs_more_character_bytes(self, size, character_size)) {
     TSPoint point = self->current_position.extent;
     point.column += size;
     uint32_t bytes_read = 0;
@@ -198,7 +208,7 @@ static void ts_lexer__join_split_utf8_character(
     if (bytes_read > character_size - size) bytes_read = character_size - size;
     memcpy(self->lookahead_buffer + size, next, bytes_read);
     size += bytes_read;
-    self->lookahead_size = ts_decode_utf8(
+    self->lookahead_size = decode(
       (const uint8_t *)self->lookahead_buffer, size, &self->data.lookahead
     );
   }
@@ -222,8 +232,11 @@ static void ts_lexer__decode_split_lookahead(
   const uint8_t *chunk,
   uint32_t size
 ) {
-  if (self->input.encoding == TSInputEncodingUTF8 && U8_IS_LEAD(chunk[0])) {
-    ts_lexer__join_split_utf8_character(self, chunk, size);
+  uint32_t character_size = self->input.encoding == TSInputEncodingUTF8 && U8_IS_LEAD(chunk[0])
+    ? 1 + U8_COUNT_TRAIL_BYTES(chunk[0])
+    : self->ascii_stride == 2 ? 4 : 0;
+  if (character_size) {
+    ts_lexer__join_split_character(self, decode, chunk, size, character_size);
     return;
   }
   ts_lexer__get_chunk(self);
@@ -266,7 +279,12 @@ static void ts_lexer__get_lookahead(Lexer *self) {
 
   TSDecodeFunction decode = ts_lexer__decode_fn(self->input);
   self->lookahead_size = decode(chunk, size, &self->data.lookahead);
-  if (self->data.lookahead == TS_DECODE_ERROR && size < 4) {
+  if (
+    size < 4 && (
+      self->data.lookahead == TS_DECODE_ERROR ||
+      (self->ascii_stride == 2 && U16_IS_LEAD(self->data.lookahead))
+    )
+  ) {
     ts_lexer__decode_split_lookahead(self, decode, chunk, size);
   }
   if (self->data.lookahead == TS_DECODE_ERROR) {
