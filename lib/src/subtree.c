@@ -21,7 +21,7 @@ typedef struct {
 } Edit;
 
 #define TS_MAX_INLINE_TREE_LENGTH UINT8_MAX
-#define TS_MAX_TREE_POOL_SIZE 32
+#define TS_MAX_TREE_POOL_SIZE 128
 
 _Static_assert(sizeof(SubtreeHeapData) == 72, "a heap subtree must fit in 72 bytes");
 
@@ -304,7 +304,7 @@ MutableSubtree ts_subtree_clone(Subtree self) {
 // perform a copy.
 MutableSubtree ts_subtree_make_mut(SubtreePool *pool, Subtree self) {
   if (self.data.is_inline) return (MutableSubtree) {self.data};
-  if (self.ptr->ref_count == 1) return ts_subtree_to_mut_unsafe(self);
+  if (atomic_refcount_load_acquire(&self.ptr->ref_count) == 1) return ts_subtree_to_mut_unsafe(self);
   MutableSubtree result = ts_subtree_clone(self);
   ts_subtree_release(pool, self);
   return result;
@@ -713,38 +713,33 @@ Subtree ts_subtree_new_missing_leaf(
 void ts_subtree_retain(Subtree self) {
   if (self.data.is_inline) return;
   ts_assert(self.ptr->ref_count > 0);
-  atomic_inc((volatile uint32_t *)&self.ptr->ref_count);
-  ts_assert(self.ptr->ref_count != 0);
+  uint32_t count = atomic_refcount_inc((volatile uint32_t *)&self.ptr->ref_count);
+  ts_assert(count != 0);
+  (void)count;
 }
 
 void ts_subtree_release(SubtreePool *pool, Subtree self) {
   if (self.data.is_inline) return;
-  array_clear(&pool->tree_stack);
-
   ts_assert(self.ptr->ref_count > 0);
-  if (atomic_dec((volatile uint32_t *)&self.ptr->ref_count) == 0) {
-    array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(self));
-  }
+  if (!atomic_refcount_dec_is_last((volatile uint32_t *)&self.ptr->ref_count)) return;
 
+  array_clear(&pool->tree_stack);
+  array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(self));
   while (pool->tree_stack.size > 0) {
     MutableSubtree tree = array_pop(&pool->tree_stack);
-    if (tree.ptr->child_count > 0) {
-      Subtree *children = ts_subtree_children(tree);
-      for (uint32_t i = 0; i < tree.ptr->child_count; i++) {
-        Subtree child = children[i];
-        if (child.data.is_inline) continue;
-        ts_assert(child.ptr->ref_count > 0);
-        if (atomic_dec((volatile uint32_t *)&child.ptr->ref_count) == 0) {
-          array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(child));
-        }
-      }
-      ts_free(children);
-    } else {
-      if (tree.ptr->has_external_tokens) {
-        ts_external_scanner_state_delete(&tree.ptr->external_scanner_state);
-      }
+    if (tree.ptr->child_count == 0) {
+      if (tree.ptr->has_external_tokens) ts_external_scanner_state_delete(&tree.ptr->external_scanner_state);
       ts_subtree_pool_free(pool, tree.ptr);
+      continue;
     }
+    Subtree *children = ts_subtree_children(tree);
+    for (uint32_t i = 0; i < tree.ptr->child_count; i++) {
+      Subtree child = children[i];
+      if (!child.data.is_inline && atomic_refcount_dec_is_last((volatile uint32_t *)&child.ptr->ref_count)) {
+        array_push(&pool->tree_stack, ts_subtree_to_mut_unsafe(child));
+      }
+    }
+    ts_free(children);
   }
 }
 

@@ -83,6 +83,14 @@ StackSliceArray ts_stack_pop_count_for_reduce(
   StackReductionStatus *status
 );
 
+bool ts_stack_pop_count_in_place(
+  Stack *self,
+  StackVersion version,
+  uint32_t count,
+  SubtreeArray *children,
+  SubtreeArray *trailing_extras
+);
+
 // Remove an error at the top of the given version of the stack.
 SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version);
 
