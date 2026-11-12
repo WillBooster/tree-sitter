@@ -31,27 +31,16 @@ enum EmccSource {
     Podman,
 }
 
-const EXPORTED_RUNTIME_METHODS: [&str; 20] = [
+const EXPORTED_RUNTIME_METHODS: [&str; 9] = [
     "AsciiToString",
     "stringToUTF8",
     "UTF8ToString",
     "lengthBytesUTF8",
     "stringToUTF16",
     "loadWebAssemblyModule",
-    "getValue",
-    "setValue",
-    "HEAPF32",
-    "HEAPF64",
-    "HEAP_DATA_VIEW",
-    "HEAP8",
-    "HEAPU8",
-    "HEAP16",
     "HEAPU16",
     "HEAP32",
     "HEAPU32",
-    "HEAP64",
-    "HEAPU64",
-    "LE_HEAP_STORE_I64",
 ];
 
 const WASI_SDK_VERSION: &str = include_str!("../../loader/wasi-sdk-version").trim_ascii();
@@ -125,122 +114,33 @@ const ARCH_OS: Result<&str, LoaderError> = Err(LoaderError::WasiSDKPlatform);
 
 pub fn run_wasm(args: &BuildWasm) -> Result<()> {
     let mut emscripten_flags = if args.debug {
-        vec!["-O0", "--minify", "0"]
+        vec![
+            "-O0",
+            "--minify",
+            "0",
+            "-s",
+            "ASSERTIONS=1",
+            "-s",
+            "SAFE_HEAP=1",
+            "-g",
+        ]
     } else {
         vec!["-O2", "-flto", "--minify", "0"]
     };
-
-    if args.debug {
-        emscripten_flags.extend(["-s", "ASSERTIONS=1", "-s", "SAFE_HEAP=1", "-g"]);
-    }
 
     if args.verbose {
         emscripten_flags.extend(["-s", "VERBOSE=1", "-v"]);
     }
 
-    let emcc_name = if cfg!(windows) { "emcc.bat" } else { "emcc" };
-
-    // Order of preference: emscripten > docker > podman > error
-    let source = if !args.docker && Command::new(emcc_name).output().is_ok() {
-        EmccSource::Native
-    } else if Command::new("docker")
-        .output()
-        .is_ok_and(|out| out.status.success())
-    {
-        EmccSource::Docker
-    } else if Command::new("podman")
-        .arg("--version")
-        .output()
-        .is_ok_and(|out| out.status.success())
-    {
-        EmccSource::Podman
-    } else {
-        return Err(anyhow!(
-            "You must have either emcc, docker, or podman on your PATH to run this command"
-        ));
-    };
-
-    let mut command = match source {
-        EmccSource::Native => Command::new(emcc_name),
-        EmccSource::Docker | EmccSource::Podman => {
-            let mut command = match source {
-                EmccSource::Docker => Command::new("docker"),
-                EmccSource::Podman => Command::new("podman"),
-                EmccSource::Native => unreachable!(),
-            };
-            command.args(["run", "--rm"]);
-
-            // Mount the root directory as a volume, which is the repo root
-            let mut volume_string = OsString::from(std::env::current_dir().unwrap());
-            volume_string.push(":/src:Z");
-            command.args([OsStr::new("--volume"), &volume_string]);
-
-            // Keep emscripten's cache, where it compiles the system libraries, across the discarded
-            // containers. The cache stays at the image's path because the source maps record the
-            // paths of the headers in it, and `EM_CACHE` cannot move it anyway: the image's
-            // entrypoint sources `emsdk_env.sh`, which unsets it. emcc installs the headers into the
-            // mounted directory, which hides the ones the image ships there.
-            let cache_dir = std::env::current_dir()
-                .unwrap()
-                .join("target/emscripten-cache");
-            // Created here so that the container does not create it as root.
-            fs::create_dir_all(&cache_dir)?;
-            let mut cache_volume = cache_dir.into_os_string();
-            cache_volume.push(":/emsdk/upstream/emscripten/cache:Z");
-            command.args([OsStr::new("--volume"), &cache_volume]);
-
-            // In case `docker` is an alias to `podman`, ensure that podman
-            // mounts the current directory as writable by the container
-            // user which has the same uid as the host user. Setting the
-            // podman-specific variable is more reliable than attempting to
-            // detect whether `docker` is an alias for `podman`.
-            // see https://docs.podman.io/en/latest/markdown/podman-run.1.html#userns-mode
-            command.env("PODMAN_USERNS", "keep-id");
-
-            // Get the current user id so that files created in the docker container will have
-            // the same owner.
-            #[cfg(unix)]
-            {
-                #[link(name = "c")]
-                unsafe extern "C" {
-                    fn getuid() -> u32;
-                }
-                // don't need to set user for podman since PODMAN_USERNS=keep-id is already set
-                if source == EmccSource::Docker {
-                    let user_id = unsafe { getuid() };
-                    command.args(["--user", &user_id.to_string()]);
-                }
-            };
-
-            // Run `emcc` in a container using the `emscripten/emsdk` image
-            command.args([EMSCRIPTEN_TAG, "emcc"]);
-            command
-        }
-    };
-
+    let mut command = create_emcc_command(args)?;
     fs::create_dir_all("target/scratch").unwrap();
 
-    let exported_functions = format!(
-        "{}{}",
-        fs::read_to_string("lib/src/wasm-stdlib/imports.txt")?,
-        fs::read_to_string("lib/binding_web/lib/exports.txt")?
-    )
-    .replace('"', "")
-    .lines()
-    .fold(String::new(), |mut output, line| {
-        let _ = write!(output, "_{line}");
-        output
-    })
-    .trim_end_matches(',')
-    .to_string();
-
-    let exported_functions = format!("EXPORTED_FUNCTIONS={exported_functions}");
+    let exported_functions = exported_functions_arg()?;
     let exported_runtime_methods = format!(
         "EXPORTED_RUNTIME_METHODS={}",
         EXPORTED_RUNTIME_METHODS.join(",")
     );
 
-    // Clean up old files from prior runs
     for file in [
         "web-tree-sitter.mjs",
         "web-tree-sitter.cjs",
@@ -254,16 +154,10 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         emscripten_flags.extend(["-s", "EXPORT_ES6=1"]);
     }
 
-    macro_rules! binding_file {
-        ($ext:literal) => {
-            concat!("lib/binding_web/lib/web-tree-sitter", $ext)
-        };
-    }
-
     let runtime_path = if args.cjs {
-        binding_file!(".cjs")
+        "lib/binding_web/lib/web-tree-sitter.cjs"
     } else {
-        binding_file!(".mjs")
+        "lib/binding_web/lib/web-tree-sitter.mjs"
     };
 
     #[rustfmt::skip]
@@ -276,7 +170,6 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "-s", "INITIAL_MEMORY=33554432",
         "-s", "ALLOW_MEMORY_GROWTH=1",
         "-s", "MEMORY_GROWTH_GEOMETRIC_STEP=0",
-        "-s", "SUPPORT_BIG_ENDIAN=1",
         "-s", "WASM_BIGINT=1",
         "-s", "MAIN_MODULE=2",
         "-s", "FILESYSTEM=0",
@@ -297,6 +190,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "--pre-js",     "lib/binding_web/lib/prefix.js",
         "-o",           runtime_path,
         "lib/src/lib.c",
+        "lib/src/wasm-stdlib/stdio.c",
         "lib/binding_web/lib/tree-sitter.c",
     ]);
     if args.emit_tsd {
@@ -312,6 +206,91 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn exported_functions_arg() -> Result<String> {
+    let list = format!(
+        "{}{}",
+        fs::read_to_string("lib/src/wasm-stdlib/imports.txt")?,
+        fs::read_to_string("lib/binding_web/lib/exports.txt")?
+    )
+    .replace('"', "")
+    .lines()
+    .fold(String::new(), |mut output, line| {
+        let _ = write!(output, "_{line}");
+        output
+    });
+    Ok(format!("EXPORTED_FUNCTIONS={}", list.trim_end_matches(',')))
+}
+
+fn create_emcc_command(args: &BuildWasm) -> Result<Command> {
+    let emcc_name = if cfg!(windows) { "emcc.bat" } else { "emcc" };
+    let source = detect_emcc_source(args, emcc_name)?;
+    if source == EmccSource::Native {
+        return Ok(Command::new(emcc_name));
+    }
+
+    let mut command = Command::new(if source == EmccSource::Docker {
+        "docker"
+    } else {
+        "podman"
+    });
+    command.args(["run", "--rm"]);
+
+    let cwd = std::env::current_dir()?;
+    // Keep emscripten's cache, where it compiles the system libraries, across the discarded
+    // containers. The cache stays at the image's path because the source maps record the
+    // paths of the headers in it, and `EM_CACHE` cannot move it anyway: the image's
+    // entrypoint sources `emsdk_env.sh`, which unsets it. emcc installs the headers into the
+    // mounted directory, which hides the ones the image ships there.
+    let cache_dir = cwd.join("target/emscripten-cache");
+    fs::create_dir_all(&cache_dir)?;
+    for (host_dir, mount_suffix) in [
+        (&cwd, ":/src:Z"),
+        (&cache_dir, ":/emsdk/upstream/emscripten/cache:Z"),
+    ] {
+        let mut volume = OsString::from(host_dir);
+        volume.push(mount_suffix);
+        command.args([OsStr::new("--volume"), &volume]);
+    }
+
+    // Ensure podman mounts the current directory writable by the container user when `docker` aliases `podman`.
+    command.env("PODMAN_USERNS", "keep-id");
+
+    #[cfg(unix)]
+    if source == EmccSource::Docker {
+        #[link(name = "c")]
+        unsafe extern "C" {
+            fn getuid() -> u32;
+        }
+        let user_id = unsafe { getuid() };
+        command.args(["--user", &user_id.to_string()]);
+    }
+
+    command.args([EMSCRIPTEN_TAG, "emcc"]);
+    Ok(command)
+}
+
+fn detect_emcc_source(args: &BuildWasm, emcc_name: &str) -> Result<EmccSource> {
+    if !args.docker && Command::new(emcc_name).output().is_ok() {
+        return Ok(EmccSource::Native);
+    }
+    if Command::new("docker")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        return Ok(EmccSource::Docker);
+    }
+    if Command::new("podman")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        return Ok(EmccSource::Podman);
+    }
+    Err(anyhow!(
+        "You must have either emcc, docker, or podman on your PATH to run this command"
+    ))
 }
 
 fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<()> {
@@ -403,21 +382,9 @@ fn build_wasm(cmd: &mut Command, edit_tsd: bool, runtime_path: &str) -> Result<(
                     " localScope?: Record<string, unknown>, handle?: number): LoadWebAssemblyModuleResult<F>"
                 ),
             )
-            .replace(
-                "getValue(ptr: number, type?: string): any",
-                "getValue(ptr: number, type?: string): number",
-            )
-            .replace("HEAPF32: any", "HEAPF32: Float32Array")
-            .replace("HEAPF64: any", "HEAPF64: Float64Array")
-            .replace("HEAP_DATA_VIEW: any", "HEAP_DATA_VIEW: DataView")
-            .replace("HEAP8: any", "HEAP8: Int8Array")
-            .replace("HEAPU8: any", "HEAPU8: Uint8Array")
-            .replace("HEAP16: any", "HEAP16: Int16Array")
             .replace("HEAPU16: any", "HEAPU16: Uint16Array")
             .replace("HEAP32: any", "HEAP32: Int32Array")
             .replace("HEAPU32: any", "HEAPU32: Uint32Array")
-            .replace("HEAP64: any", "HEAP64: BigInt64Array")
-            .replace("HEAPU64: any", "HEAPU64: BigUint64Array")
             .replace("BigInt;", "bigint;")
             .replace("BigInt)", "bigint)")
             .replace(

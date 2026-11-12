@@ -1,6 +1,6 @@
-import { C, INTERNAL, Internal, assertInternal, SIZE_OF_INT, SIZE_OF_SHORT } from './constants';
+import { C, INTERNAL, Internal, assertInternal, SIZE_OF_INT } from './constants';
 import { LookaheadIterator } from './lookahead_iterator';
-import { unmarshalLanguageMetadata } from './marshal';
+import { unmarshalLanguageMetadata, unmarshalU16Array } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 
 const LANGUAGE_FUNCTION_REGEX = /^tree_sitter_\w+$/;
@@ -78,7 +78,7 @@ export class Language {
   */
   get metadata(): LanguageMetadata | null {
     C._ts_language_metadata_wasm(this[0]);
-    const length = C.getValue(TRANSFER_BUFFER, 'i32');
+    const length = C.HEAP32[TRANSFER_BUFFER >> 2];
     if (length === 0) return null;
     return unmarshalLanguageMetadata(TRANSFER_BUFFER + SIZE_OF_INT);
   }
@@ -162,19 +162,7 @@ export class Language {
    */
   get supertypes(): number[] {
     C._ts_language_supertypes_wasm(this[0]);
-    const count = C.getValue(TRANSFER_BUFFER, 'i32');
-    const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const result = new Array<number>(count);
-
-    if (count > 0) {
-      let address = buffer;
-      for (let i = 0; i < count; i++) {
-        result[i] = C.getValue(address, 'i16');
-        address += SIZE_OF_SHORT;
-      }
-    }
-
-    return result;
+    return unmarshalU16Array();
   }
 
   /**
@@ -182,19 +170,7 @@ export class Language {
    */
   subtypes(supertype: number): number[] {
     C._ts_language_subtypes_wasm(this[0], supertype);
-    const count = C.getValue(TRANSFER_BUFFER, 'i32');
-    const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const result = new Array<number>(count);
-
-    if (count > 0) {
-      let address = buffer;
-      for (let i = 0; i < count; i++) {
-        result[i] = C.getValue(address, 'i16');
-        address += SIZE_OF_SHORT;
-      }
-    }
-
-    return result;
+    return unmarshalU16Array();
   }
 
   /**

@@ -1,20 +1,24 @@
-import { INTERNAL, Internal, assertInternal, ParseCallback, Point, Range, SIZE_OF_NODE, SIZE_OF_INT, SIZE_OF_RANGE, C } from './constants';
+import { INTERNAL, Internal, assertInternal, ParseCallback, Point, Range, SIZE_OF_NODE, SIZE_OF_INT, C } from './constants';
 import { Language } from './language';
 import { Node } from './node';
 import { TreeCursor } from './tree_cursor';
-import { marshalEdit, marshalPoint, unmarshalNode, unmarshalRange } from './marshal';
+import { marshalEdit, marshalPoint, unmarshalNode, unmarshalRanges } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 import { Edit } from './edit';
 import { newFinalizer } from './finalization_registry';
 
 /** @internal */
 export function getText(tree: Tree, startIndex: number, endIndex: number, startPosition: Point): string {
+  const { textSource } = tree;
+  if (typeof textSource === 'string') {
+    return textSource.slice(startIndex, endIndex);
+  }
   const length = endIndex - startIndex;
-  let result = tree.textCallback(startIndex, startPosition);
+  let result = textSource(startIndex, startPosition);
   if (result) {
     startIndex += result.length;
     while (startIndex < endIndex) {
-      const string = tree.textCallback(startIndex, startPosition);
+      const string = textSource(startIndex, startPosition);
       if (string && string.length > 0) {
         startIndex += string.length;
         result += string;
@@ -39,24 +43,24 @@ export class Tree {
   private [0] = 0; // Internal handle for Wasm
 
   /** @internal */
-  textCallback: ParseCallback;
+  textSource: string | ParseCallback;
 
   /** The language that was used to parse the syntax tree. */
   language: Language;
 
   /** @internal */
-  constructor(internal: Internal, address: number, language: Language, textCallback: ParseCallback) {
+  constructor(internal: Internal, address: number, language: Language, textSource: string | ParseCallback) {
     assertInternal(internal);
     this[0] = address;
     this.language = language;
-    this.textCallback = textCallback;
+    this.textSource = textSource;
     finalizer?.register(this, address, this);
   }
 
   /** Create a shallow copy of the syntax tree. This is very fast. */
   copy(): Tree {
     const address = C._ts_tree_copy(this[0]);
-    return new Tree(INTERNAL, address, this.language, this.textCallback);
+    return new Tree(INTERNAL, address, this.language, this.textSource);
   }
 
   /** Delete the syntax tree, freeing its resources. */
@@ -78,7 +82,7 @@ export class Tree {
    */
   rootNodeWithOffset(offsetBytes: number, offsetExtent: Point): Node {
     const address = TRANSFER_BUFFER + SIZE_OF_NODE;
-    C.setValue(address, offsetBytes, 'i32');
+    C.HEAP32[address >> 2] = offsetBytes;
     marshalPoint(address + SIZE_OF_INT, offsetExtent);
     C._ts_tree_root_node_with_offset_wasm(this[0]);
     return unmarshalNode(this)!;
@@ -118,36 +122,12 @@ export class Tree {
     }
 
     C._ts_tree_get_changed_ranges_wasm(this[0], other[0]);
-    const count = C.getValue(TRANSFER_BUFFER, 'i32');
-    const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const result = new Array<Range>(count);
-
-    if (count > 0) {
-      let address = buffer;
-      for (let i = 0; i < count; i++) {
-        result[i] = unmarshalRange(address);
-        address += SIZE_OF_RANGE;
-      }
-      C._ts_free_wasm(buffer);
-    }
-    return result;
+    return unmarshalRanges();
   }
 
   /** Get the included ranges that were used to parse the syntax tree. */
   getIncludedRanges(): Range[] {
     C._ts_tree_included_ranges_wasm(this[0]);
-    const count = C.getValue(TRANSFER_BUFFER, 'i32');
-    const buffer = C.getValue(TRANSFER_BUFFER + SIZE_OF_INT, 'i32');
-    const result = new Array<Range>(count);
-
-    if (count > 0) {
-      let address = buffer;
-      for (let i = 0; i < count; i++) {
-        result[i] = unmarshalRange(address);
-        address += SIZE_OF_RANGE;
-      }
-      C._ts_free_wasm(buffer);
-    }
-    return result;
+    return unmarshalRanges();
   }
 }

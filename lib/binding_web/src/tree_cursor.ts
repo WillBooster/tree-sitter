@@ -1,51 +1,46 @@
-import { INTERNAL, Internal, assertInternal, Point, SIZE_OF_NODE, SIZE_OF_CURSOR, C } from './constants';
-import { marshalNode, marshalPoint, marshalTreeCursor, unmarshalNode, unmarshalPoint, unmarshalTreeCursor } from './marshal';
+import { INTERNAL, Internal, assertInternal, Point, C } from './constants';
+import { marshalNode, unmarshalNode, unmarshalPoint } from './marshal';
 import { Node } from './node';
 import { TRANSFER_BUFFER } from './parser';
 import { getText, Tree } from './tree';
 import { newFinalizer } from './finalization_registry';
 
-const finalizer = newFinalizer((handles: number[]) => {
-  marshalTreeCursor({ handles });
-  // Deleting a cursor only frees its stack, so it doesn't need the tree.
-  C._ts_tree_cursor_delete_wasm(0);
+const finalizer = newFinalizer((address: number) => {
+  C._ts_tree_cursor_delete_wasm(address);
 });
 
 /** A stateful object for walking a syntax {@link Tree} efficiently. */
 export class TreeCursor {
   /** @internal */
-  readonly handles = [0, 0, 0, 0]; // Internal handles for Wasm, shared with the finalizer.
+  private [0] = 0; // Internal handle for Wasm
 
   /** @internal */
   private tree: Tree;
 
   /** @internal */
-  constructor(internal: Internal, tree: Tree) {
+  constructor(internal: Internal, tree: Tree, address: number) {
     assertInternal(internal);
+    this[0] = address;
     this.tree = tree;
-    unmarshalTreeCursor(this);
-    finalizer?.register(this, this.handles, this);
+    finalizer?.register(this, address, this);
   }
 
   /** Creates a deep copy of the tree cursor. This allocates new memory. */
   copy(): TreeCursor {
-    marshalTreeCursor(this);
-    C._ts_tree_cursor_copy_wasm(this.tree[0]);
-    return new TreeCursor(INTERNAL, this.tree);
+    const address = C._ts_tree_cursor_copy_wasm(this[0]);
+    return new TreeCursor(INTERNAL, this.tree, address);
   }
 
   /** Delete the tree cursor, freeing its resources. */
   delete(): void {
     finalizer?.unregister(this);
-    marshalTreeCursor(this);
-    C._ts_tree_cursor_delete_wasm(this.tree[0]);
-    this.handles.fill(0);
+    C._ts_tree_cursor_delete_wasm(this[0]);
+    this[0] = 0;
   }
 
   /** Get the tree cursor's current {@link Node}. */
   get currentNode(): Node {
-    marshalTreeCursor(this);
-    C._ts_tree_cursor_current_node_wasm(this.tree[0]);
+    C._ts_tree_cursor_current_node_wasm(this[0]);
     return unmarshalNode(this.tree)!;
   }
 
@@ -55,8 +50,7 @@ export class TreeCursor {
    * See also {@link TreeCursor#currentFieldName}.
    */
   get currentFieldId(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_field_id_wasm(this.tree[0]);
+    return C._ts_tree_cursor_current_field_id(this[0]);
   }
 
   /** Get the field name of this tree cursor's current node. */
@@ -69,8 +63,7 @@ export class TreeCursor {
    * node that the cursor was constructed with.
    */
   get currentDepth(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_depth_wasm(this.tree[0]);
+    return C._ts_tree_cursor_current_depth(this[0]);
   }
 
   /**
@@ -78,8 +71,7 @@ export class TreeCursor {
    * descendants of the original node that the cursor was constructed with.
    */
   get currentDescendantIndex(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_descendant_index_wasm(this.tree[0]);
+    return C._ts_tree_cursor_current_descendant_index(this[0]);
   }
 
   /** Get the type of the cursor's current node. */
@@ -89,20 +81,17 @@ export class TreeCursor {
 
   /** Get the type id of the cursor's current node. */
   get nodeTypeId(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_node_type_id_wasm(this.tree[0]);
+    return C._ts_tree_cursor_current_node_type_id_wasm(this[0]);
   }
 
   /** Get the state id of the cursor's current node. */
   get nodeStateId(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_node_state_id_wasm(this.tree[0]);
+    return C._ts_tree_cursor_current_node_state_id_wasm(this[0]);
   }
 
   /** Get the id of the cursor's current node. */
   get nodeId(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_node_id_wasm(this.tree[0]);
+    return C._ts_tree_cursor_current_node_id_wasm(this[0]);
   }
 
   /**
@@ -112,8 +101,7 @@ export class TreeCursor {
    * *anonymous* nodes correspond to string literals in the grammar.
    */
   get nodeIsNamed(): boolean {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_node_is_named_wasm(this.tree[0]) === 1;
+    return C._ts_tree_cursor_current_node_is_named_wasm(this[0]) === 1;
   }
 
   /**
@@ -123,44 +111,44 @@ export class TreeCursor {
    * certain kinds of syntax errors.
    */
   get nodeIsMissing(): boolean {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_current_node_is_missing_wasm(this.tree[0]) === 1;
+    return C._ts_tree_cursor_current_node_is_missing_wasm(this[0]) === 1;
   }
 
   /** Get the string content of the cursor's current node. */
   get nodeText(): string {
-    marshalTreeCursor(this);
-    const startIndex = C._ts_tree_cursor_start_index_wasm(this.tree[0]);
-    const endIndex = C._ts_tree_cursor_end_index_wasm(this.tree[0]);
-    C._ts_tree_cursor_start_position_wasm(this.tree[0]);
-    const startPosition = unmarshalPoint(TRANSFER_BUFFER);
-    return getText(this.tree, startIndex, endIndex, startPosition);
+    const { textSource } = this.tree;
+    if (typeof textSource === 'string') {
+      C._ts_tree_cursor_text_range_wasm(this[0], 0);
+      const idx = TRANSFER_BUFFER >> 2;
+      const heap = C.HEAPU32;
+      return textSource.slice(heap[idx], heap[idx + 1]);
+    }
+    C._ts_tree_cursor_text_range_wasm(this[0], 1);
+    const idx = TRANSFER_BUFFER >> 2;
+    const heap = C.HEAPU32;
+    return getText(this.tree, heap[idx], heap[idx + 1], { row: heap[idx + 2], column: heap[idx + 3] });
   }
 
   /** Get the start position of the cursor's current node. */
   get startPosition(): Point {
-    marshalTreeCursor(this);
-    C._ts_tree_cursor_start_position_wasm(this.tree[0]);
+    C._ts_tree_cursor_start_position_wasm(this[0]);
     return unmarshalPoint(TRANSFER_BUFFER);
   }
 
   /** Get the end position of the cursor's current node. */
   get endPosition(): Point {
-    marshalTreeCursor(this);
-    C._ts_tree_cursor_end_position_wasm(this.tree[0]);
+    C._ts_tree_cursor_end_position_wasm(this[0]);
     return unmarshalPoint(TRANSFER_BUFFER);
   }
 
   /** Get the start index of the cursor's current node. */
   get startIndex(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_start_index_wasm(this.tree[0]);
+    return C._ts_tree_cursor_start_index_wasm(this[0]);
   }
 
   /** Get the end index of the cursor's current node. */
   get endIndex(): number {
-    marshalTreeCursor(this);
-    return C._ts_tree_cursor_end_index_wasm(this.tree[0]);
+    return C._ts_tree_cursor_end_index_wasm(this[0]);
   }
 
   /**
@@ -170,10 +158,7 @@ export class TreeCursor {
    * `false` if there were no children.
    */
   gotoFirstChild(): boolean {
-    marshalTreeCursor(this);
-    const result = C._ts_tree_cursor_goto_first_child_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_first_child(this[0]) === 1;
   }
 
   /**
@@ -187,10 +172,7 @@ export class TreeCursor {
    * iterate through all the children to compute the child's position.
    */
   gotoLastChild(): boolean {
-    marshalTreeCursor(this);
-    const result = C._ts_tree_cursor_goto_last_child_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_last_child(this[0]) === 1;
   }
 
   /**
@@ -204,10 +186,7 @@ export class TreeCursor {
    * of the cursor, and the cursor cannot walk outside this node.
    */
   gotoParent(): boolean {
-    marshalTreeCursor(this);
-    const result = C._ts_tree_cursor_goto_parent_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_parent(this[0]) === 1;
   }
 
   /**
@@ -220,10 +199,7 @@ export class TreeCursor {
    * of the cursor, and the cursor cannot walk outside this node.
    */
   gotoNextSibling(): boolean {
-    marshalTreeCursor(this);
-    const result = C._ts_tree_cursor_goto_next_sibling_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_next_sibling(this[0]) === 1;
   }
 
   /**
@@ -240,10 +216,7 @@ export class TreeCursor {
    * considered the root of the cursor, and the cursor cannot walk outside this node.
    */
   gotoPreviousSibling(): boolean {
-    marshalTreeCursor(this);
-    const result = C._ts_tree_cursor_goto_previous_sibling_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_previous_sibling(this[0]) === 1;
   }
 
   /**
@@ -252,9 +225,7 @@ export class TreeCursor {
    * zero represents the original node itself.
    */
   gotoDescendant(goalDescendantIndex: number): void {
-    marshalTreeCursor(this);
-    C._ts_tree_cursor_goto_descendant_wasm(this.tree[0], goalDescendantIndex);
-    unmarshalTreeCursor(this);
+    C._ts_tree_cursor_goto_descendant(this[0], goalDescendantIndex);
   }
 
   /**
@@ -265,11 +236,7 @@ export class TreeCursor {
    * `false` if no such child was found.
    */
   gotoFirstChildForIndex(goalIndex: number): boolean {
-    marshalTreeCursor(this);
-    C.setValue(TRANSFER_BUFFER + SIZE_OF_CURSOR, goalIndex, 'i32');
-    const result = C._ts_tree_cursor_goto_first_child_for_index_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_first_child_for_index_wasm(this[0], goalIndex) === 1;
   }
 
   /**
@@ -280,11 +247,11 @@ export class TreeCursor {
    * `false` if no such child was found.
    */
   gotoFirstChildForPosition(goalPosition: Point): boolean {
-    marshalTreeCursor(this);
-    marshalPoint(TRANSFER_BUFFER + SIZE_OF_CURSOR, goalPosition);
-    const result = C._ts_tree_cursor_goto_first_child_for_position_wasm(this.tree[0]);
-    unmarshalTreeCursor(this);
-    return result === 1;
+    return C._ts_tree_cursor_goto_first_child_for_position_wasm(
+      this[0],
+      goalPosition.row,
+      goalPosition.column,
+    ) === 1;
   }
 
   /**
@@ -293,9 +260,7 @@ export class TreeCursor {
    */
   reset(node: Node): void {
     marshalNode(node);
-    marshalTreeCursor(this, TRANSFER_BUFFER + SIZE_OF_NODE);
-    C._ts_tree_cursor_reset_wasm(node.tree[0]);
-    unmarshalTreeCursor(this);
+    C._ts_tree_cursor_reset_wasm(this[0], node.tree[0]);
     this.tree = node.tree;
   }
 
@@ -306,10 +271,7 @@ export class TreeCursor {
    * information and allows reusing already created cursors.
    */
   resetTo(cursor: TreeCursor): void {
-    marshalTreeCursor(this, TRANSFER_BUFFER);
-    marshalTreeCursor(cursor, TRANSFER_BUFFER + SIZE_OF_CURSOR);
-    C._ts_tree_cursor_reset_to_wasm(this.tree[0], cursor.tree[0]);
-    unmarshalTreeCursor(this);
+    C._ts_tree_cursor_reset_to(this[0], cursor[0]);
     this.tree = cursor.tree;
   }
 }
