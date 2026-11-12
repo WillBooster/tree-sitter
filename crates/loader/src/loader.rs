@@ -1,16 +1,14 @@
+// code-gauge-allow-file fileNcss 785 -- grammar discovery, compilation, and loading share private Loader state
 #![cfg_attr(not(any(test, doctest)), doc = include_str!("../README.md"))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(unix)]
 use std::fmt::Write as _;
-#[cfg(any(feature = "tree-sitter-highlight", feature = "tree-sitter-tags"))]
-use std::ops::Range;
 use std::{
     collections::HashMap,
     env, fs,
     hash::{Hash as _, Hasher as _},
     io::{BufRead, BufReader},
-    marker::PhantomData,
     mem,
     path::{Path, PathBuf},
     process::Command,
@@ -20,23 +18,15 @@ use std::{
 
 use etcetera::BaseStrategy as _;
 use libloading::{Library, Symbol};
-use log::{error, info, warn};
+use log::{info, warn};
 use once_cell::sync::OnceCell;
 use regex::{Regex, RegexBuilder};
 use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use tree_sitter::Language;
-#[cfg(any(feature = "tree-sitter-highlight", feature = "tree-sitter-tags"))]
-use tree_sitter::QueryError;
-#[cfg(feature = "tree-sitter-highlight")]
-use tree_sitter::QueryErrorKind;
 #[cfg(feature = "wasm")]
 use tree_sitter::WasmError;
-#[cfg(feature = "tree-sitter-highlight")]
-use tree_sitter_highlight::HighlightConfiguration;
-#[cfg(feature = "tree-sitter-tags")]
-use tree_sitter_tags::{Error as TagsError, TagsConfiguration};
 
 static WASM_TOOL_LOCK: Mutex<()> = Mutex::new(());
 
@@ -106,16 +96,12 @@ pub enum LoaderError {
     ModifiedTime(Box<Self>),
     #[error("No language found")]
     NoLanguage,
-    #[error(transparent)]
-    Query(LoaderQueryError),
     #[error("Failed to load language for scope '{0}':\n{1}")]
     ScopeLoad(String, Box<Self>),
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
     #[error(transparent)]
     Symbol(SymbolError),
-    #[error(transparent)]
-    Tags(#[from] TagsError),
     #[error("Failed to execute tar for {0} -- {1}")]
     Tar(String, std::io::Error),
     #[error("Unknown scope '{0}'")]
@@ -199,22 +185,6 @@ impl std::fmt::Display for LibraryError {
 }
 
 #[derive(Debug, Error)]
-pub struct LoaderQueryError {
-    pub error: QueryError,
-    pub file: Option<String>,
-}
-
-impl std::fmt::Display for LoaderQueryError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(ref path) = self.file {
-            writeln!(f, "Error in query file {path}:")?;
-        }
-        write!(f, "{}", self.error)?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Error)]
 pub struct SymbolError {
     pub error: libloading::Error,
     pub symbol_name: String,
@@ -265,14 +235,6 @@ impl std::fmt::Display for WasmToolError {
     }
 }
 
-pub const DEFAULT_HIGHLIGHTS_QUERY_FILE_NAME: &str = "highlights.scm";
-
-pub const DEFAULT_INJECTIONS_QUERY_FILE_NAME: &str = "injections.scm";
-
-pub const DEFAULT_LOCALS_QUERY_FILE_NAME: &str = "locals.scm";
-
-pub const DEFAULT_TAGS_QUERY_FILE_NAME: &str = "tags.scm";
-
 #[derive(Default, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -303,17 +265,6 @@ impl PathsJSON {
 
     const fn is_empty(&self) -> bool {
         matches!(self, Self::Empty)
-    }
-
-    /// Represent this set of paths as a string that can be included in templates
-    #[must_use]
-    pub fn to_variable_value<'a>(&'a self, default: &'a PathBuf) -> &'a str {
-        match self {
-            Self::Empty => Some(default),
-            Self::Single(path_buf) => Some(path_buf),
-            Self::Multiple(paths) => paths.first(),
-        }
-        .map_or("", |path| path.as_os_str().to_str().unwrap_or(""))
     }
 }
 
@@ -362,15 +313,6 @@ pub struct LanguageConfigurationJSON {
     pub file_types: Option<Vec<String>>,
     pub content_regex: Option<String>,
     pub first_line_regex: Option<String>,
-    pub injection_regex: Option<String>,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub highlights: PathsJSON,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub injections: PathsJSON,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub locals: PathsJSON,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub tags: PathsJSON,
     #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
     pub external_files: PathsJSON,
 }
@@ -414,16 +356,6 @@ pub struct Grammar {
     #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
     pub external_files: PathsJSON,
     pub file_types: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub highlights: PathsJSON,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub injections: PathsJSON,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub locals: PathsJSON,
-    #[serde(default, skip_serializing_if = "PathsJSON::is_empty")]
-    pub tags: PathsJSON,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub injection_regex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_line_regex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -630,28 +562,14 @@ impl Config {
 
 const BUILD_TARGET: &str = env!("BUILD_TARGET");
 
-pub struct LanguageConfiguration<'a> {
+pub struct LanguageConfiguration {
     pub scope: Option<String>,
     pub content_regex: Option<Regex>,
     pub first_line_regex: Option<Regex>,
-    pub injection_regex: Option<Regex>,
     pub file_types: Vec<String>,
     pub root_path: PathBuf,
-    pub highlights_filenames: Option<Vec<PathBuf>>,
-    pub injections_filenames: Option<Vec<PathBuf>>,
-    pub locals_filenames: Option<Vec<PathBuf>>,
-    pub tags_filenames: Option<Vec<PathBuf>>,
     pub language_name: String,
     language_id: usize,
-    #[cfg(feature = "tree-sitter-highlight")]
-    highlight_config: OnceCell<Option<HighlightConfiguration>>,
-    #[cfg(feature = "tree-sitter-tags")]
-    tags_config: OnceCell<Option<TagsConfiguration>>,
-    #[cfg(feature = "tree-sitter-highlight")]
-    highlight_names: &'a Mutex<Vec<String>>,
-    #[cfg(feature = "tree-sitter-highlight")]
-    use_all_highlight_names: bool,
-    _phantom: PhantomData<&'a ()>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -698,14 +616,10 @@ impl std::str::FromStr for OptimizationLevel {
 pub struct Loader {
     pub parser_lib_path: PathBuf,
     languages_by_id: Vec<(PathBuf, OnceCell<Language>, Option<Vec<PathBuf>>)>,
-    language_configurations: Vec<LanguageConfiguration<'static>>,
+    language_configurations: Vec<LanguageConfiguration>,
     language_configuration_ids_by_file_type: HashMap<String, Vec<usize>>,
     language_configuration_in_current_path: Option<usize>,
     language_configuration_ids_by_first_line_regex: HashMap<String, Vec<usize>>,
-    #[cfg(feature = "tree-sitter-highlight")]
-    highlight_names: Box<Mutex<Vec<String>>>,
-    #[cfg(feature = "tree-sitter-highlight")]
-    use_all_highlight_names: bool,
     debug_build: bool,
     optimization_level: Option<OptimizationLevel>,
     sanitize_build: bool,
@@ -797,10 +711,6 @@ impl Loader {
             language_configuration_ids_by_file_type: HashMap::new(),
             language_configuration_in_current_path: None,
             language_configuration_ids_by_first_line_regex: HashMap::new(),
-            #[cfg(feature = "tree-sitter-highlight")]
-            highlight_names: Box::new(Mutex::new(Vec::new())),
-            #[cfg(feature = "tree-sitter-highlight")]
-            use_all_highlight_names: true,
             debug_build: false,
             optimization_level: None,
             sanitize_build: false,
@@ -810,22 +720,6 @@ impl Loader {
             #[cfg(feature = "wasm")]
             wasm_store: Mutex::default(),
         }
-    }
-
-    #[cfg(feature = "tree-sitter-highlight")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tree-sitter-highlight")))]
-    pub fn configure_highlights(&mut self, names: &[String]) {
-        self.use_all_highlight_names = false;
-        let mut highlights = self.highlight_names.lock().unwrap();
-        highlights.clear();
-        highlights.extend(names.iter().cloned());
-    }
-
-    #[must_use]
-    #[cfg(feature = "tree-sitter-highlight")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "tree-sitter-highlight")))]
-    pub fn highlight_names(&self) -> Vec<String> {
-        self.highlight_names.lock().unwrap().clone()
     }
 
     pub fn find_all_languages(&mut self, config: &Config) -> LoaderResult<()> {
@@ -908,7 +802,7 @@ impl Loader {
     }
 
     #[must_use]
-    pub fn get_all_language_configurations(&self) -> Vec<(&LanguageConfiguration<'static>, &Path)> {
+    pub fn get_all_language_configurations(&self) -> Vec<(&LanguageConfiguration, &Path)> {
         self.language_configurations
             .iter()
             .map(|c| (c, self.languages_by_id[c.language_id].0.as_ref()))
@@ -918,7 +812,7 @@ impl Loader {
     pub fn language_configuration_for_scope(
         &self,
         scope: &str,
-    ) -> LoaderResult<Option<(Language, &LanguageConfiguration<'static>)>> {
+    ) -> LoaderResult<Option<(Language, &LanguageConfiguration)>> {
         for configuration in &self.language_configurations {
             if configuration.scope.as_ref().is_some_and(|s| s == scope) {
                 let language = self.language_for_id(configuration.language_id)?;
@@ -931,7 +825,7 @@ impl Loader {
     pub fn language_configuration_for_first_line_regex(
         &self,
         path: &Path,
-    ) -> LoaderResult<Option<(Language, &LanguageConfiguration<'static>)>> {
+    ) -> LoaderResult<Option<(Language, &LanguageConfiguration)>> {
         self.language_configuration_ids_by_first_line_regex
             .iter()
             .try_fold(None, |_, (regex, ids)| {
@@ -961,103 +855,69 @@ impl Loader {
     pub fn language_configuration_for_file_name(
         &self,
         path: &Path,
-    ) -> LoaderResult<Option<(Language, &LanguageConfiguration<'static>)>> {
+    ) -> LoaderResult<Option<(Language, &LanguageConfiguration)>> {
         // Find all the language configurations that match this file name
         // or a suffix of the file name.
         let configuration_ids = path
             .file_name()
             .and_then(|n| n.to_str())
             .and_then(|file_name| self.language_configuration_ids_by_file_type.get(file_name))
-            .or_else(|| {
-                let mut path = path.to_owned();
-                let mut extensions = Vec::with_capacity(2);
-                while let Some(extension) = path.extension() {
-                    extensions.push(extension.to_str()?.to_string());
-                    path = PathBuf::from(path.file_stem()?.to_os_string());
-                }
-                extensions.reverse();
-                // Try longest extension suffixs first (e.g. "foo.bar.baz"->"bar.baz"->"baz"),
-                // stopping at the first match.
-                (0..extensions.len())
-                    .map(|i| extensions[i..].join("."))
-                    .find_map(|key| self.language_configuration_ids_by_file_type.get(&key))
-            });
+            .or_else(|| self.extension_configuration_ids(path));
 
-        if let Some(configuration_ids) = configuration_ids
-            && !configuration_ids.is_empty()
-        {
-            let configuration = if configuration_ids.len() == 1 {
-                &self.language_configurations[configuration_ids[0]]
-            }
-            // If multiple language configurations match, then determine which
-            // one to use by applying the configurations' content regexes.
-            else {
-                let file_contents =
-                    fs::read(path).map_err(|e| LoaderError::IO(IoError::new(e, Some(path))))?;
-                let file_contents = String::from_utf8_lossy(&file_contents);
-                let mut best_score = -2isize;
-                let mut best_configuration_id = None;
-                for configuration_id in configuration_ids {
-                    let config = &self.language_configurations[*configuration_id];
+        let Some(configuration_ids) = configuration_ids.filter(|ids| !ids.is_empty()) else {
+            return Ok(None);
+        };
 
-                    // If the language configuration has a content regex, assign
-                    // a score based on the length of the first match.
-                    let score;
-                    if let Some(content_regex) = &config.content_regex {
-                        if let Some(mat) = content_regex.find(&file_contents) {
-                            score = (mat.end() - mat.start()) as isize;
-                        }
-                        // If the content regex does not match, then *penalize* this
-                        // language configuration, so that language configurations
-                        // without content regexes are preferred over those with
-                        // non-matching content regexes.
-                        else {
-                            score = -1;
-                        }
-                    } else {
-                        score = 0;
-                    }
-                    if score > best_score {
-                        best_configuration_id = Some(*configuration_id);
-                        best_score = score;
-                    }
-                }
+        let configuration = if configuration_ids.len() == 1 {
+            &self.language_configurations[configuration_ids[0]]
+        } else {
+            self.select_configuration_by_content(configuration_ids, path)?
+        };
 
-                &self.language_configurations[best_configuration_id.unwrap()]
-            };
-
-            let language = self.language_for_id(configuration.language_id)?;
-            return Ok(Some((language, configuration)));
-        }
-
-        Ok(None)
+        let language = self.language_for_id(configuration.language_id)?;
+        Ok(Some((language, configuration)))
     }
 
-    pub fn language_configuration_for_injection_string(
+    fn extension_configuration_ids(&self, path: &Path) -> Option<&Vec<usize>> {
+        let mut path = path.to_owned();
+        let mut extensions = Vec::with_capacity(2);
+        while let Some(extension) = path.extension() {
+            extensions.push(extension.to_str()?.to_string());
+            path = PathBuf::from(path.file_stem()?.to_os_string());
+        }
+        extensions.reverse();
+        // Try longest extension suffixes first (e.g. "foo.bar.baz"->"bar.baz"->"baz"),
+        // stopping at the first match.
+        (0..extensions.len())
+            .map(|i| extensions[i..].join("."))
+            .find_map(|key| self.language_configuration_ids_by_file_type.get(&key))
+    }
+
+    fn select_configuration_by_content(
         &self,
-        string: &str,
-    ) -> LoaderResult<Option<(Language, &LanguageConfiguration<'static>)>> {
-        let mut best_match_length = 0;
-        let mut best_match_position = None;
-        for (i, configuration) in self.language_configurations.iter().enumerate() {
-            if let Some(injection_regex) = &configuration.injection_regex
-                && let Some(mat) = injection_regex.find(string)
-            {
-                let length = mat.end() - mat.start();
-                if length > best_match_length {
-                    best_match_position = Some(i);
-                    best_match_length = length;
-                }
+        configuration_ids: &[usize],
+        path: &Path,
+    ) -> LoaderResult<&LanguageConfiguration> {
+        let file_contents =
+            fs::read(path).map_err(|e| LoaderError::IO(IoError::new(e, Some(path))))?;
+        let file_contents = String::from_utf8_lossy(&file_contents);
+        let mut best_score = -2isize;
+        let mut best_configuration_id = configuration_ids[0];
+        for &id in configuration_ids {
+            let score = self.language_configurations[id]
+                .content_regex
+                .as_ref()
+                .map_or(0isize, |regex| {
+                    regex
+                        .find(&file_contents)
+                        .map_or(-1, |mat| (mat.end() - mat.start()) as isize)
+                });
+            if score > best_score {
+                best_configuration_id = id;
+                best_score = score;
             }
         }
-
-        if let Some(i) = best_match_position {
-            let configuration = &self.language_configurations[i];
-            let language = self.language_for_id(configuration.language_id)?;
-            Ok(Some((language, configuration)))
-        } else {
-            Ok(None)
-        }
+        Ok(&self.language_configurations[best_configuration_id])
     }
 
     pub fn language_for_configuration(
@@ -1777,36 +1637,7 @@ impl Loader {
     }
 
     #[must_use]
-    #[cfg(feature = "tree-sitter-highlight")]
-    pub fn highlight_config_for_injection_string<'a>(
-        &'a self,
-        string: &str,
-    ) -> Option<&'a HighlightConfiguration> {
-        match self.language_configuration_for_injection_string(string) {
-            Err(e) => {
-                error!("Failed to load language for injection string '{string}': {e}");
-                None
-            }
-            Ok(None) => None,
-            Ok(Some((language, configuration))) => {
-                match configuration.highlight_config(language, None) {
-                    Err(e) => {
-                        error!(
-                            "Failed to load highlight config for injection string '{string}': {e}"
-                        );
-                        None
-                    }
-                    Ok(None) => None,
-                    Ok(Some(config)) => Some(config),
-                }
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn get_language_configuration_in_current_path(
-        &self,
-    ) -> Option<&LanguageConfiguration<'static>> {
+    pub fn get_language_configuration_in_current_path(&self) -> Option<&LanguageConfiguration> {
         self.language_configuration_in_current_path
             .map(|i| &self.language_configurations[i])
     }
@@ -1815,105 +1646,14 @@ impl Loader {
         &mut self,
         parser_path: &Path,
         set_current_path_config: bool,
-    ) -> LoaderResult<&[LanguageConfiguration<'static>]> {
+    ) -> LoaderResult<&[LanguageConfiguration]> {
         let initial_language_configuration_count = self.language_configurations.len();
 
         match TreeSitterJSON::from_file(parser_path) {
             Ok(config) => {
                 let language_count = self.languages_by_id.len();
                 for grammar in config.grammars {
-                    // Determine the path to the parser directory. This can be specified in
-                    // the tree-sitter.json, but defaults to the directory containing the
-                    // tree-sitter.json.
-                    let language_path =
-                        parser_path.join(grammar.path.unwrap_or_else(|| PathBuf::from(".")));
-
-                    // Determine if a previous language configuration in this tree-sitter.json file
-                    // already uses the same language.
-                    let mut language_id = None;
-                    for (id, (path, _, _)) in
-                        self.languages_by_id.iter().enumerate().skip(language_count)
-                    {
-                        if language_path == *path {
-                            language_id = Some(id);
-                        }
-                    }
-
-                    // If not, add a new language path to the list.
-                    let language_id = if let Some(language_id) = language_id {
-                        language_id
-                    } else {
-                        self.languages_by_id.push((
-                            language_path,
-                            OnceCell::new(),
-                            grammar
-                                .external_files
-                                .clone()
-                                .into_vec()
-                                .map(|files| {
-                                    files
-                                        .into_iter()
-                                        .map(|path| {
-                                            let path = parser_path.join(path);
-                                            // prevent p being above/outside of parser_path
-                                            if path.starts_with(parser_path) {
-                                                Ok(path)
-                                            } else {
-                                                Err(LoaderError::ExternalFile(
-                                                    path.to_string_lossy().to_string(),
-                                                    parser_path.to_string_lossy().to_string(),
-                                                ))
-                                            }
-                                        })
-                                        .collect::<LoaderResult<Vec<_>>>()
-                                })
-                                .transpose()?,
-                        ));
-                        self.languages_by_id.len() - 1
-                    };
-
-                    let configuration = LanguageConfiguration {
-                        root_path: parser_path.to_path_buf(),
-                        language_name: grammar.name,
-                        scope: Some(grammar.scope),
-                        language_id,
-                        file_types: grammar.file_types.unwrap_or_default(),
-                        content_regex: Self::regex(grammar.content_regex.as_deref()),
-                        first_line_regex: Self::regex(grammar.first_line_regex.as_deref()),
-                        injection_regex: Self::regex(grammar.injection_regex.as_deref()),
-                        injections_filenames: grammar.injections.into_vec(),
-                        locals_filenames: grammar.locals.into_vec(),
-                        tags_filenames: grammar.tags.into_vec(),
-                        highlights_filenames: grammar.highlights.into_vec(),
-                        #[cfg(feature = "tree-sitter-highlight")]
-                        highlight_config: OnceCell::new(),
-                        #[cfg(feature = "tree-sitter-tags")]
-                        tags_config: OnceCell::new(),
-                        #[cfg(feature = "tree-sitter-highlight")]
-                        highlight_names: &self.highlight_names,
-                        #[cfg(feature = "tree-sitter-highlight")]
-                        use_all_highlight_names: self.use_all_highlight_names,
-                        _phantom: PhantomData,
-                    };
-
-                    for file_type in &configuration.file_types {
-                        self.language_configuration_ids_by_file_type
-                            .entry(file_type.clone())
-                            .or_default()
-                            .push(self.language_configurations.len());
-                    }
-                    if let Some(first_line_regex) = &configuration.first_line_regex {
-                        self.language_configuration_ids_by_first_line_regex
-                            .entry(first_line_regex.to_string())
-                            .or_default()
-                            .push(self.language_configurations.len());
-                    }
-
-                    self.language_configurations.push(unsafe {
-                        mem::transmute::<LanguageConfiguration<'_>, LanguageConfiguration<'static>>(
-                            configuration,
-                        )
-                    });
+                    self.add_grammar_configuration(parser_path, language_count, grammar)?;
                 }
             }
             Err(LoaderError::Serialization(e)) => {
@@ -1941,26 +1681,8 @@ impl Loader {
                 scope: None,
                 content_regex: None,
                 first_line_regex: None,
-                injection_regex: None,
-                injections_filenames: None,
-                locals_filenames: None,
-                highlights_filenames: None,
-                tags_filenames: None,
-                #[cfg(feature = "tree-sitter-highlight")]
-                highlight_config: OnceCell::new(),
-                #[cfg(feature = "tree-sitter-tags")]
-                tags_config: OnceCell::new(),
-                #[cfg(feature = "tree-sitter-highlight")]
-                highlight_names: &self.highlight_names,
-                #[cfg(feature = "tree-sitter-highlight")]
-                use_all_highlight_names: self.use_all_highlight_names,
-                _phantom: PhantomData,
             };
-            self.language_configurations.push(unsafe {
-                mem::transmute::<LanguageConfiguration<'_>, LanguageConfiguration<'static>>(
-                    configuration,
-                )
-            });
+            self.language_configurations.push(configuration);
             self.languages_by_id
                 .push((parser_path.to_owned(), OnceCell::new(), None));
         }
@@ -1974,6 +1696,80 @@ impl Loader {
         }
 
         Ok(&self.language_configurations[initial_language_configuration_count..])
+    }
+
+    fn add_grammar_configuration(
+        &mut self,
+        parser_path: &Path,
+        language_count: usize,
+        grammar: Grammar,
+    ) -> LoaderResult<()> {
+        let language_path = parser_path.join(grammar.path.unwrap_or_else(|| PathBuf::from(".")));
+        let language_id = if let Some((id, _)) = self
+            .languages_by_id
+            .iter()
+            .enumerate()
+            .skip(language_count)
+            .rfind(|(_, (path, _, _))| *path == language_path)
+        {
+            id
+        } else {
+            let external_files = Self::resolve_external_files(parser_path, grammar.external_files)?;
+            self.languages_by_id
+                .push((language_path, OnceCell::new(), external_files));
+            self.languages_by_id.len() - 1
+        };
+
+        let configuration = LanguageConfiguration {
+            root_path: parser_path.to_path_buf(),
+            language_name: grammar.name,
+            scope: Some(grammar.scope),
+            language_id,
+            file_types: grammar.file_types.unwrap_or_default(),
+            content_regex: Self::regex(grammar.content_regex.as_deref()),
+            first_line_regex: Self::regex(grammar.first_line_regex.as_deref()),
+        };
+
+        let configuration_id = self.language_configurations.len();
+        for file_type in &configuration.file_types {
+            self.language_configuration_ids_by_file_type
+                .entry(file_type.clone())
+                .or_default()
+                .push(configuration_id);
+        }
+        if let Some(first_line_regex) = &configuration.first_line_regex {
+            self.language_configuration_ids_by_first_line_regex
+                .entry(first_line_regex.to_string())
+                .or_default()
+                .push(configuration_id);
+        }
+        self.language_configurations.push(configuration);
+        Ok(())
+    }
+
+    fn resolve_external_files(
+        parser_path: &Path,
+        external_files: PathsJSON,
+    ) -> LoaderResult<Option<Vec<PathBuf>>> {
+        external_files
+            .into_vec()
+            .map(|files| {
+                files
+                    .into_iter()
+                    .map(|path| {
+                        let path = parser_path.join(path);
+                        if path.starts_with(parser_path) {
+                            Ok(path)
+                        } else {
+                            Err(LoaderError::ExternalFile(
+                                path.to_string_lossy().to_string(),
+                                parser_path.to_string_lossy().to_string(),
+                            ))
+                        }
+                    })
+                    .collect()
+            })
+            .transpose()
     }
 
     fn regex(pattern: Option<&str>) -> Option<Regex> {
@@ -2089,232 +1885,6 @@ impl Loader {
     pub fn get_scanner_path(&self, src_path: &Path) -> Option<PathBuf> {
         let path = src_path.join("scanner.c");
         path.exists().then_some(path)
-    }
-}
-
-impl LanguageConfiguration<'_> {
-    #[cfg(feature = "tree-sitter-highlight")]
-    pub fn highlight_config(
-        &self,
-        language: Language,
-        paths: Option<&[PathBuf]>,
-    ) -> LoaderResult<Option<&HighlightConfiguration>> {
-        let (highlights_filenames, injections_filenames, locals_filenames) = match paths {
-            Some(paths) => (
-                Some(
-                    paths
-                        .iter()
-                        .filter(|p| p.ends_with(DEFAULT_HIGHLIGHTS_QUERY_FILE_NAME))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                ),
-                Some(
-                    paths
-                        .iter()
-                        .filter(|p| p.ends_with(DEFAULT_TAGS_QUERY_FILE_NAME))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                ),
-                Some(
-                    paths
-                        .iter()
-                        .filter(|p| p.ends_with(DEFAULT_LOCALS_QUERY_FILE_NAME))
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                ),
-            ),
-            None => (None, None, None),
-        };
-        self.highlight_config
-            .get_or_try_init(|| {
-                let (highlights_query, highlight_ranges) = self.read_queries(
-                    if highlights_filenames.is_some() {
-                        highlights_filenames.as_deref()
-                    } else {
-                        self.highlights_filenames.as_deref()
-                    },
-                    DEFAULT_HIGHLIGHTS_QUERY_FILE_NAME,
-                )?;
-                let (injections_query, injection_ranges) = self.read_queries(
-                    if injections_filenames.is_some() {
-                        injections_filenames.as_deref()
-                    } else {
-                        self.injections_filenames.as_deref()
-                    },
-                    DEFAULT_INJECTIONS_QUERY_FILE_NAME,
-                )?;
-                let (locals_query, locals_ranges) = self.read_queries(
-                    if locals_filenames.is_some() {
-                        locals_filenames.as_deref()
-                    } else {
-                        self.locals_filenames.as_deref()
-                    },
-                    DEFAULT_LOCALS_QUERY_FILE_NAME,
-                )?;
-
-                if highlights_query.is_empty() {
-                    Ok(None)
-                } else {
-                    let mut result = HighlightConfiguration::new(
-                        language,
-                        &self.language_name,
-                        &highlights_query,
-                        &injections_query,
-                        &locals_query,
-                    )
-                    .map_err(|error| match error.kind {
-                        QueryErrorKind::Language => {
-                            LoaderError::Query(LoaderQueryError { error, file: None })
-                        }
-                        _ => {
-                            if error.offset < injections_query.len() {
-                                Self::include_path_in_query_error(
-                                    error,
-                                    &injection_ranges,
-                                    &injections_query,
-                                    0,
-                                )
-                            } else if error.offset < injections_query.len() + locals_query.len() {
-                                Self::include_path_in_query_error(
-                                    error,
-                                    &locals_ranges,
-                                    &locals_query,
-                                    injections_query.len(),
-                                )
-                            } else {
-                                Self::include_path_in_query_error(
-                                    error,
-                                    &highlight_ranges,
-                                    &highlights_query,
-                                    injections_query.len() + locals_query.len(),
-                                )
-                            }
-                        }
-                    })?;
-                    let mut all_highlight_names = self.highlight_names.lock().unwrap();
-                    if self.use_all_highlight_names {
-                        for capture_name in result.query.capture_names() {
-                            if !all_highlight_names.iter().any(|x| x == capture_name) {
-                                all_highlight_names.push((*capture_name).to_string());
-                            }
-                        }
-                    }
-                    result.configure(all_highlight_names.as_slice());
-                    drop(all_highlight_names);
-                    Ok(Some(result))
-                }
-            })
-            .map(Option::as_ref)
-    }
-
-    #[cfg(feature = "tree-sitter-tags")]
-    pub fn tags_config(&self, language: Language) -> LoaderResult<Option<&TagsConfiguration>> {
-        self.tags_config
-            .get_or_try_init(|| {
-                let (tags_query, tags_ranges) = self
-                    .read_queries(self.tags_filenames.as_deref(), DEFAULT_TAGS_QUERY_FILE_NAME)?;
-                let (locals_query, locals_ranges) = self.read_queries(
-                    self.locals_filenames.as_deref(),
-                    DEFAULT_LOCALS_QUERY_FILE_NAME,
-                )?;
-                if tags_query.is_empty() {
-                    Ok(None)
-                } else {
-                    TagsConfiguration::new(language, &tags_query, &locals_query)
-                        .map(Some)
-                        .map_err(|error| {
-                            if let TagsError::Query(error) = error {
-                                if error.offset < locals_query.len() {
-                                    Self::include_path_in_query_error(
-                                        error,
-                                        &locals_ranges,
-                                        &locals_query,
-                                        0,
-                                    )
-                                } else {
-                                    Self::include_path_in_query_error(
-                                        error,
-                                        &tags_ranges,
-                                        &tags_query,
-                                        locals_query.len(),
-                                    )
-                                }
-                            } else {
-                                error.into()
-                            }
-                        })
-                }
-            })
-            .map(Option::as_ref)
-    }
-
-    #[cfg(any(feature = "tree-sitter-highlight", feature = "tree-sitter-tags"))]
-    fn include_path_in_query_error(
-        mut error: QueryError,
-        ranges: &[(PathBuf, Range<usize>)],
-        source: &str,
-        start_offset: usize,
-    ) -> LoaderError {
-        let offset_within_section = error.offset - start_offset;
-        let (path, range) = ranges
-            .iter()
-            .find(|(_, range)| range.contains(&offset_within_section))
-            .unwrap_or_else(|| ranges.last().unwrap());
-        error.offset = offset_within_section - range.start;
-        error.row = source[range.start..offset_within_section]
-            .matches('\n')
-            .count();
-        LoaderError::Query(LoaderQueryError {
-            error,
-            file: Some(path.to_string_lossy().to_string()),
-        })
-    }
-
-    #[expect(
-        clippy::type_complexity,
-        reason = "return type pairs query text with source file ranges"
-    )]
-    #[cfg(any(feature = "tree-sitter-highlight", feature = "tree-sitter-tags"))]
-    fn read_queries(
-        &self,
-        paths: Option<&[PathBuf]>,
-        default_path: &str,
-    ) -> LoaderResult<(String, Vec<(PathBuf, Range<usize>)>)> {
-        let mut query = String::new();
-        let mut path_ranges = Vec::new();
-        if let Some(paths) = paths {
-            for path in paths {
-                let abs_path = self.root_path.join(path);
-                let prev_query_len = query.len();
-                query += &fs::read_to_string(&abs_path)
-                    .map_err(|e| LoaderError::IO(IoError::new(e, Some(abs_path.as_path()))))?;
-                path_ranges.push((path.clone(), prev_query_len..query.len()));
-            }
-        } else {
-            // highlights.scm is needed to test highlights, and tags.scm to test tags
-            if default_path == DEFAULT_HIGHLIGHTS_QUERY_FILE_NAME
-                || default_path == DEFAULT_TAGS_QUERY_FILE_NAME
-            {
-                warn!(
-                    concat!(
-                        "You should add a `{}` entry pointing to the {} path in the `tree-sitter` ",
-                        "object in the grammar's tree-sitter.json file. See more here: ",
-                        "https://tree-sitter.github.io/tree-sitter/3-syntax-highlighting#query-paths"
-                    ),
-                    default_path.replace(".scm", ""),
-                    default_path
-                );
-            }
-            let queries_path = self.root_path.join("queries");
-            let path = queries_path.join(default_path);
-            if path.exists() {
-                query = fs::read_to_string(&path)
-                    .map_err(|e| LoaderError::IO(IoError::new(e, Some(path.as_path()))))?;
-                path_ranges.push((PathBuf::from(default_path), 0..query.len()));
-            }
-        }
-
-        Ok((query, path_ranges))
     }
 }
 

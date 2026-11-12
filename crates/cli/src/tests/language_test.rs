@@ -1,6 +1,8 @@
 use tree_sitter::{self, Parser};
+use tree_sitter_generate::load_grammar_file;
 
 use super::helpers::fixtures::{get_language, get_test_fixture_language};
+use crate::tests::generate_parser;
 
 #[test]
 fn test_lookaheads_after_identifier_with_many_following_keywords() {
@@ -445,4 +447,173 @@ fn test_nested_inline_alias_metadata_matches_visible_nodes() {
     }
     assert!(found_recovered_token);
     assert!(found_inline_extra);
+}
+
+#[test]
+fn test_supertype_field_node_schema() {
+    let entries = super::helpers::fixtures::fixture_node_types("supertype_fields");
+    for (kind, required, multiple, field_type) in [
+        ("list", false, true, "spread"),
+        ("assigned", true, false, "item"),
+        ("restricted", true, false, "spread"),
+        ("wrapped_single", true, false, "item"),
+        ("wrapped_pair", true, true, "item"),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        let field = &node["fields"]["spread"];
+        assert_eq!(field["required"], required, "{kind}");
+        assert_eq!(field["multiple"], multiple, "{kind}");
+        assert_eq!(
+            field["types"],
+            serde_json::json!([{"type": field_type, "named": true}]),
+            "{kind}",
+        );
+    }
+    for (kind, expected) in [
+        (
+            "list",
+            serde_json::json!({"multiple":true,"required":false,"types":[{"type":"name","named":true}]}),
+        ),
+        ("restricted", serde_json::Value::Null),
+    ] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(node["children"], expected, "{kind}");
+    }
+    for (kind, required) in [("deep_required", true), ("deep_optional", false)] {
+        let node = entries.iter().find(|entry| entry["type"] == kind).unwrap();
+        assert_eq!(
+            node["fields"]["value"],
+            serde_json::json!({
+                "required": required,
+                "multiple": false,
+                "types": [{"type": "name", "named": true}, {"type": "spread", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+    let aliased = entries
+        .iter()
+        .find(|entry| entry["type"] == "aliased")
+        .unwrap();
+    assert!(aliased["fields"].as_object().unwrap().is_empty());
+}
+
+#[test]
+fn test_hidden_child_requiredness_in_node_schema() {
+    let entries = super::helpers::fixtures::generate_node_types(
+        r"
+        module.exports = grammar({
+            name: 'hidden_child_cardinality',
+            rules: {
+                source_file: $ => choice($.required_children, $.optional_children),
+                required_children: $ => seq('required', $._statements, 'end'),
+                optional_children: $ => seq('optional', optional($._statements), 'end'),
+                _statements: $ => repeat1(seq($._statement, ';')),
+                _statement: $ => choice($.command, $.other),
+                command: _ => 'c',
+                other: _ => 'o',
+            },
+        });
+    ",
+    );
+    for (kind, required) in [("required_children", true), ("optional_children", false)] {
+        let node = entries.iter().find(|node| node["type"] == kind).unwrap();
+        assert_eq!(
+            node["children"],
+            serde_json::json!({
+                "required": required, "multiple": true,
+                "types": [{"type": "command", "named": true}, {"type": "other", "named": true}],
+            }),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn test_transparent_supertype_alias_node_schema() {
+    for fixture in ["transparent_supertype_alias", "indirect_supertype_alias"] {
+        let entries = super::helpers::fixtures::fixture_node_types(fixture);
+        let expressions: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry["type"] == "expression")
+            .collect();
+        assert_eq!(expressions.len(), 1);
+        assert_eq!(
+            expressions[0]["subtypes"],
+            serde_json::json!([
+                {"type": "identifier", "named": true}, {"type": "number", "named": true}
+            ])
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry["type"] == "_restricted_expression")
+        );
+        let root = entries
+            .iter()
+            .find(|entry| entry["type"] == "source_file")
+            .unwrap();
+        assert_eq!(
+            root["fields"]["value"]["types"],
+            serde_json::json!([{"type": "expression", "named": true}])
+        );
+    }
+}
+
+#[test]
+fn test_external_tokens_cannot_be_supertypes() {
+    for with_unrelated_fields in [false, true] {
+        let mut grammar = serde_json::json!({
+            "name": "external_supertype",
+            "externals": [{"type": "SYMBOL", "name": "unused"}, {"type": "SYMBOL", "name": "external"}],
+            "supertypes": ["external"],
+            "rules": {"source_file": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "a"}, {"type": "SYMBOL", "name": "external"}
+            ]}}
+        });
+        if with_unrelated_fields {
+            grammar["extras"] = serde_json::json!([{"type": "SYMBOL", "name": "comment"}]);
+            grammar["rules"]["comment"] = serde_json::json!({"type": "CHOICE", "members": [
+                {"type": "FIELD", "name": "left", "content": {"type": "STRING", "value": "x"}},
+                {"type": "FIELD", "name": "right", "content": {"type": "STRING", "value": "y"}}
+            ]});
+        }
+        let error = generate_parser(&grammar.to_string()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Terminal rule 'external' cannot be used as a supertype"),
+            "{error}"
+        );
+        grammar["supertypes"] = serde_json::json!([]);
+        assert!(generate_parser(&grammar.to_string()).is_ok());
+    }
+}
+
+#[test]
+fn test_supertype_alias_rejects_mixed_visible_uses() {
+    let grammar_path = super::helpers::fixtures::fixtures_dir()
+        .join("test_grammars/transparent_supertype_alias/grammar.js");
+    let grammar: serde_json::Value =
+        serde_json::from_str(&load_grammar_file(&grammar_path, None).unwrap()).unwrap();
+    for value in [
+        serde_json::json!({"type": "SYMBOL", "name": "_restricted_expression"}),
+        serde_json::json!({"type": "ALIAS", "named": true, "value": "other_expression",
+            "content": {"type": "SYMBOL", "name": "_restricted_expression"}}),
+    ] {
+        let mut grammar = grammar.clone();
+        grammar["rules"]["source_file"]["members"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "type": "SEQ", "members": [{"type": "STRING", "value": "other"}, value]
+            }));
+        let error = generate_parser(&grammar.to_string()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Named alias `expression` conflicts with a supertype"),
+            "{error}"
+        );
+    }
 }

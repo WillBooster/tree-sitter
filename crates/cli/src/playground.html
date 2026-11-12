@@ -119,23 +119,6 @@
         flex-direction: column;
       }
 
-      #query-container:not([style*="visibility: hidden"]) {
-        flex: 1;
-        min-height: 0;
-        display: flex;
-        flex-direction: column;
-      }
-
-      #query-container .panel-header {
-        flex: 0 0 auto;
-      }
-
-      #query-container .CodeMirror {
-        flex: 1;
-        position: relative;
-        min-height: 0;
-      }
-
       #output-container-scroll {
         width: 50%;
         overflow: auto;
@@ -175,11 +158,6 @@
         line-height: 1.6;
         background-color: var(--code-bg) !important;
         color: var(--text-color) !important;
-      }
-
-      .query-error {
-        text-decoration: underline red dashed;
-        -webkit-text-decoration: underline red dashed;
       }
 
       /* Scrollbars */
@@ -402,16 +380,6 @@
         </div>
 
         <div class="header-item">
-          <input id="query-checkbox" type="checkbox">
-          <label for="query-checkbox">query</label>
-        </div>
-
-        <div class="header-item">
-          <input id="accessibility-checkbox" type="checkbox">
-          <label for="accessibility-checkbox">accessibility</label>
-        </div>
-
-        <div class="header-item">
           <label for="update-time">parse time: </label>
           <span id="update-time"></span>
         </div>
@@ -443,11 +411,6 @@
           <div class="panel-header">Code</div>
           <div id="code-container">
             <textarea id="code-input"></textarea>
-          </div>
-
-          <div id="query-container" style="visibility: hidden; position: absolute;">
-            <div class="panel-header">Query</div>
-            <textarea id="query-input"></textarea>
           </div>
         </div>
 

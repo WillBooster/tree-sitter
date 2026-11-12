@@ -22,7 +22,6 @@ const inputFiles = [
   '../src/marshal.ts',
   '../src/node.ts',
   '../src/parser.ts',
-  '../src/query.ts',
   '../src/tree.ts',
   '../src/tree_cursor.ts',
   '../lib/exports.txt',

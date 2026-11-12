@@ -36,7 +36,6 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
     fs::write(grammar_dir.join("tree-sitter.json"), TREE_SITTER_JSON).unwrap();
     fs::write(grammar_dir.join("test/corpus/words.txt"), CORPUS).unwrap();
     fs::write(grammar_dir.join("input.words"), "ab cd\n").unwrap();
-    fs::write(grammar_dir.join("words.scm"), "(word) @word\n").unwrap();
 
     let lib_path = temp_dir.path().join(format!("words.{DLL_EXTENSION}"));
     let lib_path = lib_path.to_str().unwrap();
@@ -54,7 +53,6 @@ fn test_commands_with_lib_path_leave_the_parser_cache_alone() {
         &["test"],
         &["parse", "input.words"],
         &["parse", "--test-number", "1"],
-        &["query", "words.scm", "--test-number", "1"],
     ] {
         let output = run(&grammar_dir, &cache_dir, &[args, &lib_args].concat());
         // `fuzz` exits successfully even when a case fails, and logs the summary to stderr.

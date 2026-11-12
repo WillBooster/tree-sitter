@@ -4,9 +4,7 @@ members = [
   "crates/cli",
   "crates/config",
   "crates/generate",
-  "crates/highlight",
   "crates/loader",
-  "crates/tags",
   "crates/xtask",
   "lib",
 ]
@@ -72,10 +70,8 @@ overflow-checks = true
 strip = false
 
 [workspace.dependencies]
-ansi_colours = "1.2.3"
 anstyle = "1.0.14"
 anyhow = "1.0.102"
-bstr = "1.12.1"
 cc = "1.2.63"
 clap = { features = [
   "cargo",
@@ -112,21 +108,17 @@ semver = { features = [ "serde" ], version = "1.0.27" }
 serde = { features = [ "derive" ], version = "1.0.228" }
 serde_json = { features = [ "preserve_order" ], version = "1.0.150" }
 similar = "3.0.0"
-streaming-iterator = "0.1.9"
 tempfile = "3.25.0"
 thiserror = "2.0.18"
 tiny_http = "0.12.0"
 topological-sort = "0.3.0"
 unindent = "0.2.4"
-walkdir = "2.5.0"
 wasmparser = "0.262.0"
 webbrowser = "1.2.1"
 
 tree-sitter = { package = "willbooster-tree-sitter", path = "./lib", version = "0.27.0" }
 tree-sitter-config = { path = "./crates/config", version = "0.27.0" }
 tree-sitter-generate = { default-features = false, path = "./crates/generate", version = "0.27.0" }
-tree-sitter-highlight = { path = "./crates/highlight", version = "0.27.0" }
 tree-sitter-loader = { path = "./crates/loader", version = "0.27.0" }
-tree-sitter-tags = { path = "./crates/tags", version = "0.27.0" }
 
 tree-sitter-language = "0.1.8"

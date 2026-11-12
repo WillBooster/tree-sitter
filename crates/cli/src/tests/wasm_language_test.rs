@@ -1,7 +1,6 @@
 use std::fs;
 
-use streaming_iterator::StreamingIterator;
-use tree_sitter::{Parser, Query, QueryCursor, WasmError, WasmErrorKind, WasmStore};
+use tree_sitter::{Parser, WasmError, WasmErrorKind, WasmStore};
 use tree_sitter_loader::Loader;
 
 use crate::tests::generate_parser;
@@ -284,17 +283,12 @@ fn test_load_multiple_wasm_languages() {
         parser2
             .set_wasm_store(WasmStore::new(&ENGINE).unwrap())
             .unwrap();
-        let mut query_cursor = QueryCursor::new();
 
         // First, parse with the store that originally loaded the languages.
         // Then parse with a new parser and Wasm store, so that the languages
         // are added one-by-one, in between parses.
         for mut parser in [parser, parser2] {
             for _ in 0..2 {
-                let query_rust = Query::new(&language_rust, "(const_item) @foo").unwrap();
-                let query_typescript =
-                    Query::new(&language_typescript, "(class_declaration) @foo").unwrap();
-
                 parser.set_language(&language_cpp).unwrap();
                 let tree = parser.parse("A<B> c = d();", None).unwrap();
                 assert_eq!(
@@ -309,12 +303,6 @@ fn test_load_multiple_wasm_languages() {
                     tree.root_node().to_sexp(),
                     "(source_file (const_item name: (identifier) type: (type_identifier) value: (call_expression function: (identifier) arguments: (arguments))))"
                 );
-                assert_eq!(
-                    query_cursor
-                        .matches(&query_rust, tree.root_node(), source.as_bytes())
-                        .count(),
-                    1
-                );
 
                 parser.set_language(&language_ruby).unwrap();
                 let tree = parser.parse("class A; end", None).unwrap();
@@ -328,12 +316,6 @@ fn test_load_multiple_wasm_languages() {
                 assert_eq!(
                     tree.root_node().to_sexp(),
                     "(program (class_declaration name: (type_identifier) body: (class_body)))"
-                );
-                assert_eq!(
-                    query_cursor
-                        .matches(&query_typescript, tree.root_node(), source.as_bytes())
-                        .count(),
-                    1
                 );
             }
         }
@@ -554,4 +536,32 @@ fn test_lookahead_iterator_outlives_wasm_language() {
         // The iterator retains the language, so the names are still live.
         assert!(lookahead.iter_names().count() > 0);
     });
+}
+
+#[test]
+fn test_playground_export_writes_local_assets() {
+    let grammar_dir = tempfile::tempdir_in(scratch_dir()).unwrap();
+    let export_dir = tempfile::tempdir_in(scratch_dir()).unwrap();
+    fs::create_dir_all(grammar_dir.path().join("src")).unwrap();
+    fs::write(
+        grammar_dir.path().join("src/grammar.json"),
+        r#"{"name":"javascript","rules":{"source_file":{"type":"BLANK"}}}"#,
+    )
+    .unwrap();
+    fs::copy(
+        WASM_DIR.join("tree-sitter-javascript.wasm"),
+        grammar_dir.path().join("tree-sitter-javascript.wasm"),
+    )
+    .unwrap();
+
+    crate::playground::export(grammar_dir.path(), export_dir.path()).unwrap();
+
+    let html = fs::read_to_string(export_dir.path().join("index.html")).unwrap();
+    let script = fs::read_to_string(export_dir.path().join("playground.js")).unwrap();
+    assert!(html.contains("Language: javascript"));
+    assert!(html.contains(r#"<script type="module" src="playground.js"></script>"#));
+    assert!(!html.contains("tree-sitter.github.io/tree-sitter/assets/js/playground.js"));
+    assert!(script.contains("window.initializePlayground"));
+    assert!(!script.contains("query-input"));
+    assert!(export_dir.path().join("tree-sitter-parser.wasm").exists());
 }

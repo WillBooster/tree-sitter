@@ -11,7 +11,7 @@ use std::{
 
 use tree_sitter::{
     Decode, IncludedRangesError, InputEdit, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
-    ParseState, Parser, Point, Query, Range, Tree,
+    ParseState, Parser, Point, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -1346,7 +1346,25 @@ fn test_recovery_accepts_keywords_as_command_names() {
 
 #[test]
 fn test_keyword_recovery_preserves_contextual_method_names() {
-    use tree_sitter::{Query, StreamingIterator};
+    fn collect_nodes<'a>(
+        node: tree_sitter::Node<'_>,
+        source: &'a [u8],
+        found: &mut Vec<(&'static str, &'a str)>,
+    ) {
+        if node.is_error() {
+            found.push(("error", node.utf8_text(source).unwrap()));
+        } else if node.kind() == "method_definition"
+            && let Some(name) = node.child_by_field_name("name")
+            && name.kind() == "property_identifier"
+        {
+            found.push(("name", name.utf8_text(source).unwrap()));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_nodes(child, source, found);
+        }
+    }
+
     for language in ["javascript", "typescript/typescript", "typescript/tsx"] {
         let mut parser = Parser::new();
         parser.set_language(&get_language(language)).unwrap();
@@ -1355,24 +1373,10 @@ fn test_keyword_recovery_preserves_contextual_method_names() {
             ("class A { x finally() {} }", "x"),
         ] {
             let tree = parser.parse(source, None).unwrap();
-            let query = Query::new(
-                &parser.language().unwrap(),
-                "(method_definition name: (property_identifier) @name) (ERROR) @error",
-            )
-            .unwrap();
-            let mut cursor = tree_sitter::QueryCursor::new();
-            let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
-            let mut captures = Vec::new();
-            while let Some(m) = matches.next() {
-                for capture in m.captures() {
-                    captures.push((
-                        query.capture_names()[capture.index as usize],
-                        capture.node.utf8_text(source.as_bytes()).unwrap(),
-                    ));
-                }
-            }
+            let mut found = Vec::new();
+            collect_nodes(tree.root_node(), source.as_bytes(), &mut found);
             assert_eq!(
-                captures,
+                found,
                 vec![("error", error_text), ("name", "finally")],
                 "{language}: {source}: {}",
                 tree.root_node().to_sexp()
@@ -2793,36 +2797,46 @@ fn test_recovery_allocation_growth_with_repeated_errors() {
 }
 
 #[test]
-fn test_recovery_extra_groups_preserve_merged_error_query_ranges() {
-    use tree_sitter::StreamingIterator;
+fn test_recovery_extra_groups_preserve_merged_error_ranges() {
+    fn collect_error_token_ranges(
+        node: tree_sitter::Node<'_>,
+        nested_error: bool,
+        token_kind: &str,
+        ranges: &mut Vec<(usize, usize)>,
+    ) {
+        if !node.is_named()
+            && node.kind() == token_kind
+            && let Some(parent) = node.parent()
+            && parent.is_error()
+            && (!nested_error || parent.parent().is_some_and(|gp| gp.is_error()))
+        {
+            ranges.push((node.start_byte(), node.end_byte()));
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_error_token_ranges(child, nested_error, token_kind, ranges);
+        }
+    }
+
     let languages = [
         get_test_fixture_language("recovery_extra_groups"),
         #[cfg(feature = "wasm")]
         super::helpers::fixtures::get_test_fixture_language_wasm("recovery_extra_groups"),
     ];
     for mut parser in parsers_for_languages(languages) {
-        for (source, query_source, expected) in [
-            (
-                "ab:?/**/:/**/",
-                r#"(ERROR (ERROR ":" @token))"#,
-                vec![(8, 9)],
-            ),
-            ("a{?/**/{bx;}tail;", r#"(ERROR "{" @token)"#, vec![(7, 8)]),
+        for (source, nested_error, token_kind, expected) in [
+            ("ab:?/**/:/**/", true, ":", vec![(8, 9)]),
+            ("a{?/**/{bx;}tail;", false, "{", vec![(7, 8)]),
             (
                 "x/*{*/atail;}a:/**//*{*//**//*{*/a/*{*/a/*{*//**/{",
-                r#"(ERROR (ERROR "a" @token))"#,
+                true,
+                "a",
                 vec![(6, 7), (13, 14), (39, 40)],
             ),
         ] {
             let tree = parser.parse(source, None).unwrap();
-            let query = Query::new(&parser.language().unwrap(), query_source).unwrap();
-            let mut cursor = tree_sitter::QueryCursor::new();
-            let mut captures = cursor.captures(&query, tree.root_node(), source.as_bytes());
             let mut ranges = Vec::new();
-            while let Some((query_match, index)) = captures.next() {
-                let node = query_match.captures()[*index].node;
-                ranges.push((node.start_byte(), node.end_byte()));
-            }
+            collect_error_token_ranges(tree.root_node(), nested_error, token_kind, &mut ranges);
             assert_eq!(ranges, expected, "{}", tree.root_node().to_sexp());
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
         }

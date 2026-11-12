@@ -28,7 +28,6 @@
     "binding.gyp",
     "prebuilds/**",
     "bindings/node/*",
-    "queries/*",
     "src/**",
     "*.wasm"
   ],

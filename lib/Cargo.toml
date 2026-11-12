@@ -38,12 +38,10 @@ workspace = true
 
 [features]
 default = [ "std" ]
-std = [ "regex/std", "regex/perf" ]
+std = [  ]
 wasm = [ "std", "wasmtime-c-api" ]
 
 [dependencies]
-regex = { default-features = false, features = [ "unicode" ], version = "1.12.3" }
-streaming-iterator = "0.1.9"
 tree-sitter-language.workspace = true
 
 [dependencies.wasmtime-c-api]
