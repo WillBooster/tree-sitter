@@ -600,6 +600,16 @@ static bool ts_parser__can_reuse_first_leaf(
 static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
 static bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
 
+static bool ts_parser__check_lexer_progress(void *payload, unsigned operations) {
+  TSParser *self = payload;
+  self->total_operation_count += operations;
+  if (self->max_operations && self->total_operation_count > self->max_operations) {
+    self->exceeded_max_operations = true;
+    return false;
+  }
+  return true;
+}
+
 static Subtree ts_parser__lex(
   TSParser *self,
   StackVersion version,
@@ -633,9 +643,12 @@ static Subtree ts_parser__lex(
   uint32_t lookahead_end_byte = 0;
   uint32_t external_scanner_state_len = 0;
   bool external_scanner_state_changed = false;
+  bool did_iterate = false;
   ts_lexer_reset(&self->lexer, start_position);
 
   for (;;) {
+    if (did_iterate && !ts_parser__check_lexer_progress(self, 1)) return NULL_SUBTREE;
+    did_iterate = true;
     bool found_token = false;
     bool internal_only = retry_internal;
     retry_internal = false;
@@ -654,7 +667,7 @@ static Subtree ts_parser__lex(
       found_token = ts_parser__external_scanner_scan(self, lex_mode.external_lex_state);
       called_get_column |= self->lexer.did_get_column;
       called_get_position |= self->lexer.did_get_position;
-      if (self->has_scanner_error) return NULL_SUBTREE;
+      if (self->has_scanner_error || self->exceeded_max_operations) return NULL_SUBTREE;
       ts_lexer_finish(&self->lexer, &lookahead_end_byte);
 
       if (found_token) {
@@ -706,6 +719,7 @@ static Subtree ts_parser__lex(
       );
       ts_lexer_start(&self->lexer);
       found_token = ts_parser__call_main_lex_fn(self, lex_mode);
+      if (self->exceeded_max_operations) return NULL_SUBTREE;
       ts_lexer_finish(&self->lexer, &lookahead_end_byte);
     }
     if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
@@ -760,6 +774,7 @@ static Subtree ts_parser__lex(
         break;
       }
       self->lexer.data.advance(&self->lexer.data, false);
+      if (self->exceeded_max_operations) return NULL_SUBTREE;
     }
 
     error_end_position = self->lexer.current_position;
@@ -798,6 +813,7 @@ static Subtree ts_parser__lex(
         ts_lexer_start(&self->lexer);
 
         is_keyword = ts_parser__call_keyword_lex_fn(self);
+        if (self->exceeded_max_operations) return NULL_SUBTREE;
         self->lexer.end_column_checkpoint = end_column_checkpoint;
 
         if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
@@ -2147,9 +2163,7 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
 }
 
 static bool ts_parser__check_progress(TSParser *self, Subtree *lookahead, const uint32_t *position, unsigned operations) {
-  self->total_operation_count += operations;
-  if (self->max_operations && self->total_operation_count > self->max_operations) {
-    self->exceeded_max_operations = true;
+  if (!ts_parser__check_lexer_progress(self, operations)) {
     if (lookahead && lookahead->ptr) {
       ts_subtree_release(&self->tree_pool, *lookahead);
     }
@@ -2217,7 +2231,7 @@ static bool ts_parser__advance(
     if (needs_lex) {
       needs_lex = false;
       lookahead = ts_parser__lex(self, version, state);
-      if (self->has_scanner_error) return false;
+      if (self->has_scanner_error || self->exceeded_max_operations) return false;
 
       if (lookahead.ptr) {
         ts_parser__set_cached_token(self, position, last_external_token, lookahead, ts_stack_after_extra(self->stack, version));
@@ -2631,6 +2645,7 @@ static bool ts_parser_has_outstanding_parse(TSParser *self) {
 TSParser *ts_parser_new(void) {
   TSParser *self = ts_calloc(1, sizeof(TSParser));
   ts_lexer_init(&self->lexer);
+  ts_lexer_set_progress_callback(&self->lexer, ts_parser__check_lexer_progress, self);
   array_init(&self->reduce_actions);
   array_reserve(&self->reduce_actions, 4);
   self->tree_pool = ts_subtree_pool_new(32);
@@ -2794,6 +2809,7 @@ TSTree *ts_parser_parse(
   TSTree *result = NULL;
   self->total_operation_count = 0;
   self->exceeded_max_operations = false;
+  self->lexer.advance_count = 0;
   if (
     !self->language || !input.read ||
     (old_tree && old_tree->language != self->language)

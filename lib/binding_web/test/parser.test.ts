@@ -483,5 +483,29 @@ describe('Parser', () => {
       expect(tree.rootNode.descendantsOfType('string')[0]?.text).toBe('"🚀"');
       expect(parser.lastParseOperations).toBeGreaterThan(0);
     });
+
+    it('bounds lexical scanning of single huge tokens and error runs under maxOperations', () => {
+      parser.setLanguage(JavaScript);
+      const shortTree = parser.parse('a'.repeat(100))!;
+      const shortOps = parser.lastParseOperations;
+      shortTree.delete();
+
+      const longTree = parser.parse('a'.repeat(64_000))!;
+      expect(parser.lastParseOperations).toBeGreaterThan(shortOps + 900);
+      longTree.delete();
+
+      for (const source of [
+        'a'.repeat(500_000),
+        `"${'x'.repeat(500_000)}"`,
+        `\`${'t'.repeat(500_000)}\``,
+        '§'.repeat(100_000),
+      ]) {
+        expect(parser.parse(source, null, { maxOperations: 5 })).toBeNull();
+        expect(parser.lastParseOperations).toBe(6);
+      }
+
+      tree = parser.parse('const afterLexCancel = 42;')!;
+      expect(tree.rootNode.hasError).toBe(false);
+    });
   });
 });

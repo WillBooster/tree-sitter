@@ -42,6 +42,9 @@ typedef struct {
   uint32_t lookahead_size;
   uint32_t ascii_stride;
   uint32_t ascii_limit;
+  uint32_t advance_count;
+  bool (*check_progress)(void *payload, unsigned operations);
+  void *progress_payload;
   char lookahead_buffer[4];
   bool did_get_column;
   bool did_get_position;
@@ -60,6 +63,11 @@ void ts_lexer_init(Lexer *self);
 void ts_lexer_delete(Lexer *self);
 void ts_lexer_set_input(Lexer *self, TSInput input);
 void ts_lexer_set_logger(Lexer *self, TSLogger logger);
+void ts_lexer_set_progress_callback(
+  Lexer *self,
+  bool (*check_progress)(void *payload, unsigned operations),
+  void *payload
+);
 void ts_lexer_reset(Lexer *self, Length position);
 void ts_lexer_start(Lexer *self);
 void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte);
