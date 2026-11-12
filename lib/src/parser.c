@@ -1297,7 +1297,23 @@ static void ts_parser__shift(
 }
 
 static void ts_parser__confirm_incorporated_recovery(TSParser *self, StackVersion version, const SubtreeArray *children, bool normal_reduction);
+static uint32_t ts_parser__discard_overflow_slices(
+  TSParser *self, const StackSliceArray *pop, uint32_t index, StackVersion slice_version
+);
+static MutableSubtree ts_parser__build_slice_parent(
+  TSParser *self, const StackSliceArray *pop, uint32_t *index,
+  StackVersion slice_version, TSSymbol symbol, uint16_t production_id
+);
+static void ts_parser__push_reduced_node(
+  TSParser *self,
+  StackVersion slice_version,
+  TSSymbol symbol,
+  MutableSubtree parent,
+  bool is_fragile,
+  bool is_extra
+);
 
+// code-gauge-allow functionParameterCount 8 -- the parse loop passes every property of the reduction action
 static StackVersion ts_parser__reduce(
   TSParser *self,
   StackVersion version,
@@ -1309,119 +1325,134 @@ static StackVersion ts_parser__reduce(
   bool is_extra
 ) {
   uint32_t initial_version_count = ts_stack_version_count(self->stack);
+  SubtreeArray in_place_children;
+  if (!is_fragile && ts_stack_pop_count_in_place(self->stack, version, count, &in_place_children, &self->trailing_extras)) {
+    ts_parser__confirm_incorporated_recovery(self, version, &in_place_children, true);
+    MutableSubtree parent = ts_subtree_new_node(symbol, &in_place_children, production_id, self->language);
+    parent.ptr->dynamic_precedence += dynamic_precedence;
+    ts_parser__push_reduced_node(self, version, symbol, parent, false, is_extra);
+    return version;
+  }
 
-  // Pop the given number of nodes from the given version of the parse stack.
-  // If stack versions have previously merged, then there may be more than one
-  // path back through the stack. For each path, create a new parent node to
-  // contain the popped children, and push it onto the stack in place of the
-  // children.
   StackReductionStatus reduction_status;
   StackSliceArray pop = ts_stack_pop_count_for_reduce(
     self->stack, version, count, MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW,
     &reduction_status
   );
-  is_fragile |= reduction_status.has_multiple_paths;
+  bool parent_is_fragile = is_fragile || reduction_status.has_multiple_paths || pop.size > 1 || initial_version_count > 1;
   ts_parser__log_version_limit(self, "reduce_paths", version, reduction_status.was_truncated);
   uint32_t removed_version_count = 0;
-  uint32_t halted_version_count = ts_stack_halted_version_count(self->stack);
+  uint64_t version_limit = (uint64_t)MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW + ts_stack_halted_version_count(self->stack);
   for (uint32_t i = 0; i < pop.size; i++) {
     StackSlice slice = *array_get(&pop, i);
     StackVersion slice_version = slice.version - removed_version_count;
-
-    // This is where new versions are added to the parse stack. The versions
-    // will all be sorted and truncated at the end of the outer parsing loop.
-    // Allow the maximum version count to be temporarily exceeded, but only
-    // by a limited threshold.
-    if ((uint64_t)slice_version > (uint64_t)MAX_VERSION_COUNT + MAX_VERSION_COUNT_OVERFLOW + halted_version_count) {
-      ts_parser__log_version_limit(self, "reduce", slice_version, true);
-      ts_stack_remove_version(self->stack, slice_version);
-      ts_subtree_array_delete(&self->tree_pool, &slice.subtrees);
+    if ((uint64_t)slice_version > version_limit) {
+      i = ts_parser__discard_overflow_slices(self, &pop, i, slice_version);
       removed_version_count++;
-      while (i + 1 < pop.size) {
-        LOG("aborting reduce with too many versions")
-        StackSlice next_slice = *array_get(&pop, i + 1);
-        if (next_slice.version != slice.version) break;
-        ts_subtree_array_delete(&self->tree_pool, &next_slice.subtrees);
-        i++;
-      }
       continue;
     }
 
-    // Extra tokens on top of the stack should not be included in this new parent
-    // node. They will be re-pushed onto the stack after the parent node is
-    // created and pushed.
-    SubtreeArray children = slice.subtrees;
-    ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
-    ts_parser__confirm_incorporated_recovery(self, slice_version, &children, true);
-
-    MutableSubtree parent = ts_subtree_new_node(
-      symbol, &children, production_id, self->language
+    MutableSubtree parent = ts_parser__build_slice_parent(
+      self, &pop, &i, slice_version, symbol, production_id
     );
-
-    // This pop operation may have caused multiple stack versions to collapse
-    // into one, because they all diverged from a common state. In that case,
-    // choose one of the arrays of trees to be the parent node's children, and
-    // delete the rest of the tree arrays.
-    while (i + 1 < pop.size) {
-      StackSlice next_slice = *array_get(&pop, i + 1);
-      if (next_slice.version != slice.version) break;
-      i++;
-
-      SubtreeArray next_slice_children = next_slice.subtrees;
-      ts_subtree_array_remove_trailing_extras(&next_slice_children, &self->trailing_extras2);
-
-      if (ts_parser__select_children(
-        self,
-        ts_subtree_from_mut(parent),
-        &next_slice_children
-      )) {
-        ts_subtree_array_clear(&self->tree_pool, &self->trailing_extras);
-        ts_subtree_release(&self->tree_pool, ts_subtree_from_mut(parent));
-        array_swap(&self->trailing_extras, &self->trailing_extras2);
-        parent = ts_subtree_new_node(
-          symbol, &next_slice_children, production_id, self->language
-        );
-      } else {
-        array_clear(&self->trailing_extras2);
-        ts_subtree_array_delete(&self->tree_pool, &next_slice.subtrees);
-      }
-    }
-
-    TSStateId state = ts_stack_state(self->stack, slice_version);
-    TSStateId next_state = ts_language_next_state(self->language, state, symbol);
-    if (is_extra) {
-      next_state = state;
-      parent.ptr->extra = true;
-    }
-    if (is_fragile || pop.size > 1 || initial_version_count > 1) {
-      parent.ptr->fragile_left = true;
-      parent.ptr->fragile_right = true;
-      parent.ptr->parse_state = TS_TREE_STATE_NONE;
-    } else {
-      parent.ptr->parse_state = state;
-    }
     parent.ptr->dynamic_precedence += dynamic_precedence;
-
-    // Push the parent node onto the stack, along with any extra tokens that
-    // were previously on top of the stack.
-    ts_stack_push(self->stack, slice_version, ts_subtree_from_mut(parent), false, next_state);
-    for (uint32_t j = 0; j < self->trailing_extras.size; j++) {
-      ts_stack_push(self->stack, slice_version, *array_get(&self->trailing_extras, j), false, next_state);
-    }
+    ts_parser__push_reduced_node(self, slice_version, symbol, parent, parent_is_fragile, is_extra);
 
     for (StackVersion j = 0; j < slice_version; j++) {
-      if (j == version) continue;
-      if (ts_stack_merge(self->stack, j, slice_version)) {
+      if (j != version && ts_stack_merge(self->stack, j, slice_version)) {
         removed_version_count++;
         break;
       }
     }
   }
 
-  // Return the first new stack version that was created.
   return ts_stack_version_count(self->stack) > initial_version_count
     ? initial_version_count
     : STACK_VERSION_NONE;
+}
+
+static uint32_t ts_parser__discard_overflow_slices(
+  TSParser *self,
+  const StackSliceArray *pop,
+  uint32_t index,
+  StackVersion slice_version
+) {
+  StackSlice slice = *array_get(pop, index);
+  ts_parser__log_version_limit(self, "reduce", slice_version, true);
+  ts_stack_remove_version(self->stack, slice_version);
+  ts_subtree_array_delete(&self->tree_pool, &slice.subtrees);
+  while (index + 1 < pop->size) {
+    LOG("aborting reduce with too many versions")
+    StackSlice next_slice = *array_get(pop, index + 1);
+    if (next_slice.version != slice.version) break;
+    ts_subtree_array_delete(&self->tree_pool, &next_slice.subtrees);
+    index++;
+  }
+  return index;
+}
+
+static MutableSubtree ts_parser__build_slice_parent(
+  TSParser *self,
+  const StackSliceArray *pop,
+  uint32_t *index,
+  StackVersion slice_version,
+  TSSymbol symbol,
+  uint16_t production_id
+) {
+  StackSlice slice = *array_get(pop, *index);
+  SubtreeArray children = slice.subtrees;
+  ts_subtree_array_remove_trailing_extras(&children, &self->trailing_extras);
+  ts_parser__confirm_incorporated_recovery(self, slice_version, &children, true);
+  MutableSubtree parent = ts_subtree_new_node(symbol, &children, production_id, self->language);
+
+  while (*index + 1 < pop->size) {
+    StackSlice next_slice = *array_get(pop, *index + 1);
+    if (next_slice.version != slice.version) break;
+    (*index)++;
+
+    SubtreeArray next_slice_children = next_slice.subtrees;
+    ts_subtree_array_remove_trailing_extras(&next_slice_children, &self->trailing_extras2);
+    if (ts_parser__select_children(self, ts_subtree_from_mut(parent), &next_slice_children)) {
+      ts_subtree_array_clear(&self->tree_pool, &self->trailing_extras);
+      ts_subtree_release(&self->tree_pool, ts_subtree_from_mut(parent));
+      array_swap(&self->trailing_extras, &self->trailing_extras2);
+      parent = ts_subtree_new_node(symbol, &next_slice_children, production_id, self->language);
+    } else {
+      array_clear(&self->trailing_extras2);
+      ts_subtree_array_delete(&self->tree_pool, &next_slice.subtrees);
+    }
+  }
+  return parent;
+}
+
+static void ts_parser__push_reduced_node(
+  TSParser *self,
+  StackVersion slice_version,
+  TSSymbol symbol,
+  MutableSubtree parent,
+  bool is_fragile,
+  bool is_extra
+) {
+  TSStateId state = ts_stack_state(self->stack, slice_version);
+  TSStateId next_state = ts_language_next_state(self->language, state, symbol);
+  if (is_extra) {
+    next_state = state;
+    parent.ptr->extra = true;
+  }
+  if (is_fragile) {
+    parent.ptr->fragile_left = true;
+    parent.ptr->fragile_right = true;
+    parent.ptr->parse_state = TS_TREE_STATE_NONE;
+  } else {
+    parent.ptr->parse_state = state;
+  }
+
+  // Push the parent node onto the stack, along with any extra tokens that
+  // were previously on top of the stack.
+  ts_stack_push(self->stack, slice_version, ts_subtree_from_mut(parent), false, next_state);
+  for (uint32_t j = 0; j < self->trailing_extras.size; j++) {
+    ts_stack_push(self->stack, slice_version, *array_get(&self->trailing_extras, j), false, next_state);
+  }
 }
 
 static void ts_parser__confirm_incorporated_recovery(
