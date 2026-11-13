@@ -1,4 +1,5 @@
 // code-gauge-allow-file fileNcss 652 -- CLI grammar scaffolding templates and config writers stay in one module
+pub mod rust_version;
 mod zig;
 
 use std::{
@@ -83,7 +84,6 @@ const GITIGNORE_TEMPLATE: &str = include_str!("./templates/gitignore");
 const GITATTRIBUTES_TEMPLATE: &str = include_str!("./templates/gitattributes");
 const EDITORCONFIG_TEMPLATE: &str = include_str!("./templates/.editorconfig");
 
-const RUST_BINDING_VERSION: &str = env!("RUST_BINDING_VERSION");
 const RUST_BINDING_VERSION_PLACEHOLDER: &str = "RUST_BINDING_VERSION";
 
 const LIB_RS_TEMPLATE: &str = include_str!("./templates/lib.rs");
@@ -1367,7 +1367,13 @@ fn render_file(
         .replace(LOWER_PARSER_NAME_PLACEHOLDER, &lower_parser_name)
         .replace(PARSER_NAME_PLACEHOLDER, language_name)
         .replace(CLI_VERSION_PLACEHOLDER, CLI_VERSION)
-        .replace(RUST_BINDING_VERSION_PLACEHOLDER, RUST_BINDING_VERSION)
+        .replace(
+            RUST_BINDING_VERSION_PLACEHOLDER,
+            &rust_version::resolve_rust_binding_version(
+                option_env!("TREE_SITTER_FORK_VERSION"),
+                Some(env!("RUST_BINDING_VERSION")),
+            ),
+        )
         .replace(
             PARSER_VERSION_PLACEHOLDER,
             &generate_opts.version.to_string(),

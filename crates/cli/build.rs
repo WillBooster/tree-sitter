@@ -1,17 +1,27 @@
+#[path = "src/init/rust_version.rs"]
+mod rust_version;
+
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     time::SystemTime,
 };
 
-const MIN_RUST_BINDING_MAJOR: u64 = 20;
+const WEB_BINDING_DIR: &str = "../../lib/binding_web";
+const WEB_BINDING_PATHS: [&str; 2] = [
+    "../../lib/binding_web/web-tree-sitter.js",
+    "../../lib/binding_web/web-tree-sitter.wasm",
+];
 
 fn main() {
+    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    emit_rerun_inputs(&crate_dir);
+
     if let Some(git_sha) = read_git_sha() {
         println!("cargo:rustc-env=BUILD_SHA={git_sha}");
     }
-    let rust_binding_version = read_rust_binding_version();
+    let rust_binding_version = read_rust_binding_version(&crate_dir);
     println!("cargo:rustc-env=RUST_BINDING_VERSION={rust_binding_version}");
 
     println!("cargo:rustc-check-cfg=cfg(sanitizing)");
@@ -37,7 +47,7 @@ fn main() {
     ))]
     {
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap()).join("dynamic-symbols.txt");
-        std::fs::write(
+        fs::write(
             &out_dir,
             "{
                 ts_current_malloc;
@@ -54,13 +64,84 @@ fn main() {
     }
 }
 
-fn web_binding_files_present() -> bool {
-    let paths = [
-        "../../lib/binding_web/web-tree-sitter.js",
-        "../../lib/binding_web/web-tree-sitter.wasm",
-    ];
+fn emit_rerun_inputs(crate_dir: &Path) {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/init/rust_version.rs");
+    println!("cargo:rerun-if-env-changed=TREE_SITTER_FORK_VERSION");
 
-    paths.iter().all(|p| Path::new(p).exists())
+    if web_binding_files_present() {
+        for path in WEB_BINDING_PATHS {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    } else if Path::new(WEB_BINDING_DIR).exists() {
+        println!("cargo:rerun-if-changed={WEB_BINDING_DIR}");
+    }
+
+    emit_git_rerun_inputs(crate_dir);
+}
+
+fn emit_git_rerun_inputs(crate_dir: &Path) {
+    let Some(git_dir_raw) = git_stdout(crate_dir, &["rev-parse", "--git-dir"]) else {
+        return;
+    };
+    let Some(common_dir_raw) = git_stdout(crate_dir, &["rev-parse", "--git-common-dir"]) else {
+        return;
+    };
+    let git_dir = crate_dir.join(git_dir_raw.trim());
+    let common_dir = crate_dir.join(common_dir_raw.trim());
+
+    let head_path = git_dir.join("HEAD");
+    emit_if_exists(&head_path);
+    if let Ok(head_contents) = fs::read_to_string(&head_path)
+        && let Some(ref_target) = head_contents.trim().strip_prefix("ref:")
+        && let Some(watched) = nearest_existing_ancestor(&common_dir.join(ref_target.trim()))
+    {
+        println!("cargo:rerun-if-changed={}", watched.display());
+    }
+
+    emit_if_exists(&common_dir.join("packed-refs"));
+    emit_tag_rerun_inputs(&common_dir.join("refs/tags"));
+}
+
+fn emit_tag_rerun_inputs(tags_dir: &Path) {
+    if !tags_dir.exists() {
+        return;
+    }
+    println!("cargo:rerun-if-changed={}", tags_dir.display());
+    let Ok(entries) = fs::read_dir(tags_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('v'))
+        {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
+fn emit_if_exists(path: &Path) {
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut current = Some(path);
+    while let Some(candidate) = current {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+    None
+}
+
+fn web_binding_files_present() -> bool {
+    WEB_BINDING_PATHS.iter().all(|p| Path::new(p).exists())
 }
 
 fn read_git_sha() -> Option<String> {
@@ -82,20 +163,15 @@ fn read_git_sha() -> Option<String> {
         })
 }
 
-fn read_rust_binding_version() -> String {
-    if let Ok(version) = env::var("TREE_SITTER_FORK_VERSION") {
-        let trimmed = version.trim().trim_start_matches('v');
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    read_git_fork_version().unwrap_or_else(|| MIN_RUST_BINDING_MAJOR.to_string())
+fn read_rust_binding_version(crate_dir: &Path) -> String {
+    let fork_version = env::var("TREE_SITTER_FORK_VERSION").ok();
+    let git_version = read_git_fork_version(crate_dir);
+    rust_version::resolve_rust_binding_version(fork_version.as_deref(), git_version.as_deref())
 }
 
-fn read_git_fork_version() -> Option<String> {
-    let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").ok()?);
+fn read_git_fork_version(crate_dir: &Path) -> Option<String> {
     let tag = git_stdout(
-        &crate_dir,
+        crate_dir,
         &["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"],
     )?;
     let tag = tag.trim();
@@ -105,40 +181,11 @@ fn read_git_fork_version() -> Option<String> {
         .filter_map(|part| part.parse::<u64>().ok());
     let (major, minor, patch) = (parts.next()?, parts.next()?, parts.next()?);
     let log = git_stdout(
-        &crate_dir,
+        crate_dir,
         &["log", &format!("{tag}..HEAD"), "--format=%s%n%b"],
     )?;
-    let (major, minor, patch) = bump_version_from_log((major, minor, patch), &log);
-    if major < MIN_RUST_BINDING_MAJOR {
-        return Some(MIN_RUST_BINDING_MAJOR.to_string());
-    }
+    let (major, minor, patch) = rust_version::bump_version_from_log((major, minor, patch), &log);
     Some(format!("{major}.{minor}.{patch}"))
-}
-
-fn bump_version_from_log(base: (u64, u64, u64), log: &str) -> (u64, u64, u64) {
-    let mut has_minor = false;
-    let mut has_patch = false;
-    for line in log.lines() {
-        if line.starts_with("BREAKING CHANGE:")
-            || line
-                .split_once(':')
-                .is_some_and(|(head, _)| head.ends_with('!'))
-        {
-            return (base.0 + 1, 0, 0);
-        }
-        has_minor |= line.starts_with("feat:") || line.starts_with("feat(");
-        has_patch |= line.starts_with("fix:")
-            || line.starts_with("fix(")
-            || line.starts_with("perf:")
-            || line.starts_with("perf(");
-    }
-    if has_minor {
-        (base.0, base.1 + 1, 0)
-    } else if has_patch {
-        (base.0, base.1, base.2 + 1)
-    } else {
-        base
-    }
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> Option<String> {

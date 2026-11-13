@@ -2,6 +2,7 @@ mod async_boundary_test;
 mod corpus_test;
 mod detect_language;
 mod helpers;
+mod init_test;
 mod language_test;
 mod node_test;
 mod parser_test;
