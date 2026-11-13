@@ -11,7 +11,7 @@
 //! parser
 //!     .set_language(&language.into())
 //!     .expect("Error loading TITLE_PARSER_NAME parser");
-//! let tree = parser.parse(code, None).unwrap();
+//! let tree = parser.parse(code).unwrap();
 //! assert!(!tree.root_node().has_error());
 //! ```
 //!

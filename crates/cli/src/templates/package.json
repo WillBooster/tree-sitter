@@ -17,7 +17,6 @@
   "main": "bindings/node",
   "types": "bindings/node",
   "keywords": [
-    "incremental",
     "parsing",
     "tree-sitter",
     "LOWER_PARSER_NAME"

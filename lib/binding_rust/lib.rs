@@ -6,7 +6,6 @@
 pub mod ffi;
 mod lookahead;
 mod sexp;
-mod util;
 
 pub use lookahead::LookaheadIterator;
 #[doc(hidden)]
@@ -123,59 +122,6 @@ pub struct Range {
     pub end_byte: usize,
     pub start_point: Point,
     pub end_point: Point,
-}
-
-/// A summary of a change to a text document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct InputEdit {
-    pub start_byte: usize,
-    pub old_end_byte: usize,
-    pub new_end_byte: usize,
-    pub start_position: Point,
-    pub old_end_position: Point,
-    pub new_end_position: Point,
-}
-
-impl InputEdit {
-    /// Edit a point to keep it in-sync with source code that has been edited.
-    ///
-    /// This function updates a single point's byte offset and row/column position
-    /// based on this edit operation. This is useful for editing points without
-    /// requiring a tree or node instance.
-    #[doc(alias = "ts_point_edit")]
-    pub fn edit_point(&self, point: &mut Point, byte: &mut usize) {
-        let edit = self.into();
-        let mut ts_point = (*point).into();
-        let mut ts_byte = *byte as u32;
-
-        unsafe {
-            ffi::ts_point_edit(
-                core::ptr::addr_of_mut!(ts_point),
-                core::ptr::addr_of_mut!(ts_byte),
-                &raw const edit,
-            );
-        }
-
-        *point = ts_point.into();
-        *byte = ts_byte as usize;
-    }
-
-    /// Edit a range to keep it in-sync with source code that has been edited.
-    ///
-    /// This function updates a range's start and end positions based on this edit
-    /// operation. This is useful for editing ranges without requiring a tree
-    /// or node instance.
-    #[doc(alias = "ts_range_edit")]
-    pub fn edit_range(&self, range: &mut Range) {
-        let edit = self.into();
-        let mut ts_range = (*range).into();
-
-        unsafe {
-            ffi::ts_range_edit(core::ptr::addr_of_mut!(ts_range), &raw const edit);
-        }
-
-        *range = ts_range.into();
-    }
 }
 
 /// A single node within a syntax [`Tree`].
@@ -701,20 +647,16 @@ impl Parser {
     ///
     /// # Arguments:
     /// * `text` The UTF8-encoded text to parse.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
     ///
     /// Returns a [`Tree`] if parsing succeeded, or `None` if:
     ///  * The parser has not yet had a language assigned with [`Parser::set_language`]
     #[doc(alias = "ts_parser_parse")]
-    pub fn parse(&mut self, text: impl AsRef<[u8]>, old_tree: Option<&Tree>) -> Option<Tree> {
+    pub fn parse(&mut self, text: impl AsRef<[u8]>) -> Option<Tree> {
         let bytes = text.as_ref();
         if let Ok(len) = u32::try_from(bytes.len()) {
             return unsafe {
                 self.parse_raw_bytes(
                     (bytes.as_ptr().cast::<c_char>(), len),
-                    old_tree,
                     ffi::TSInputEncodingUTF8,
                 )
             };
@@ -728,7 +670,6 @@ impl Parser {
                     Default::default()
                 }
             },
-            old_tree,
             None,
         )
     }
@@ -740,36 +681,21 @@ impl Parser {
     ///   UTF8-encoded text starting at that byte offset and position. The slices can be of any
     ///   length. If the given position is at the end of the text, the callback should return an
     ///   empty slice.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
     /// * `options` Options for parsing the text. This can be used to set a progress callback.
     pub fn parse_with_options<T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        self.parse_chunks::<0, u8, T, F>(
-            callback,
-            old_tree,
-            (options, ffi::TSInputEncodingUTF8, None),
-        )
+        self.parse_chunks::<0, u8, T, F>(callback, (options, ffi::TSInputEncodingUTF8, None))
     }
 
     /// Parse a slice of UTF16 little-endian text.
     ///
     /// # Arguments:
-    /// * `text` The UTF16-encoded text to parse.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
-    pub fn parse_utf16_le(
-        &mut self,
-        input: impl AsRef<[u16]>,
-        old_tree: Option<&Tree>,
-    ) -> Option<Tree> {
-        self.parse_utf16_slice::<true>(input.as_ref(), old_tree)
+    /// * `input` The UTF16-encoded text to parse.
+    pub fn parse_utf16_le(&mut self, input: impl AsRef<[u16]>) -> Option<Tree> {
+        self.parse_utf16_slice::<true>(input.as_ref())
     }
 
     /// Parse UTF16 little-endian text provided in chunks by a callback.
@@ -779,32 +705,21 @@ impl Parser {
     ///   UTF16-encoded text starting at that byte offset and position. The slices can be of any
     ///   length. If the given position is at the end of the text, the callback should return an
     ///   empty slice.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
     /// * `options` Options for parsing the text. This can be used to set a progress callback.
     pub fn parse_utf16_le_with_options<T: AsRef<[u16]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        self.parse_utf16_with_options::<true, T, F>(callback, old_tree, options)
+        self.parse_utf16_with_options::<true, T, F>(callback, options)
     }
 
     /// Parse a slice of UTF16 big-endian text.
     ///
     /// # Arguments:
-    /// * `text` The UTF16-encoded text to parse.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
-    pub fn parse_utf16_be(
-        &mut self,
-        input: impl AsRef<[u16]>,
-        old_tree: Option<&Tree>,
-    ) -> Option<Tree> {
-        self.parse_utf16_slice::<false>(input.as_ref(), old_tree)
+    /// * `input` The UTF16-encoded text to parse.
+    pub fn parse_utf16_be(&mut self, input: impl AsRef<[u16]>) -> Option<Tree> {
+        self.parse_utf16_slice::<false>(input.as_ref())
     }
 
     /// Parse UTF16 big-endian text provided in chunks by a callback.
@@ -814,17 +729,13 @@ impl Parser {
     ///   UTF16-encoded text starting at that byte offset and position. The slices can be of any
     ///   length. If the given position is at the end of the text, the callback should return an
     ///   empty slice.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
     /// * `options` Options for parsing the text. This can be used to set a progress callback.
     pub fn parse_utf16_be_with_options<T: AsRef<[u16]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
-        self.parse_utf16_with_options::<false, T, F>(callback, old_tree, options)
+        self.parse_utf16_with_options::<false, T, F>(callback, options)
     }
 
     /// Parse text provided in chunks by a callback using a custom encoding.
@@ -834,9 +745,6 @@ impl Parser {
     /// * `callback` A function that takes a byte offset and position and returns a slice of text
     ///   starting at that byte offset and position. The slices can be of any length. If the given
     ///   position is at the end of the text, the callback should return an empty slice.
-    /// * `old_tree` A previous syntax tree parsed from the same document. If the text of the
-    ///   document has changed since `old_tree` was created, then you must edit `old_tree` to match
-    ///   the new text using [`Tree::edit`].
     /// * `options` Options for parsing the text. This can be used to set a progress callback.
     ///
     /// Additionally, you must set the generic parameter [`D`] to a type that implements the
@@ -846,7 +754,6 @@ impl Parser {
     pub fn parse_custom_encoding<D: Decode, T: AsRef<[u8]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
         unsafe extern "C" fn decode_fn<D: Decode>(
@@ -865,16 +772,11 @@ impl Parser {
 
         self.parse_chunks::<0, u8, T, F>(
             callback,
-            old_tree,
             (options, ffi::TSInputEncodingCustom, Some(decode_fn::<D>)),
         )
     }
 
-    fn parse_utf16_slice<const LE: bool>(
-        &mut self,
-        code_points: &[u16],
-        old_tree: Option<&Tree>,
-    ) -> Option<Tree> {
+    fn parse_utf16_slice<const LE: bool>(&mut self, code_points: &[u16]) -> Option<Tree> {
         let encoding = if LE {
             ffi::TSInputEncodingUTF16LE
         } else {
@@ -886,17 +788,12 @@ impl Parser {
             .and_then(|n| u32::try_from(n).ok())
         {
             return unsafe {
-                self.parse_raw_bytes(
-                    (code_points.as_ptr().cast::<c_char>(), byte_len),
-                    old_tree,
-                    encoding,
-                )
+                self.parse_raw_bytes((code_points.as_ptr().cast::<c_char>(), byte_len), encoding)
             };
         }
         let len = code_points.len();
         self.parse_utf16_with_options::<LE, _, _>(
             &mut |i, _| if i < len { &code_points[i..] } else { &[] },
-            old_tree,
             None,
         )
     }
@@ -904,7 +801,6 @@ impl Parser {
     fn parse_utf16_with_options<const LE: bool, T: AsRef<[u16]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
         let encoding = if LE {
@@ -912,13 +808,12 @@ impl Parser {
         } else {
             ffi::TSInputEncodingUTF16BE
         };
-        self.parse_chunks::<1, u16, T, F>(callback, old_tree, (options, encoding, None))
+        self.parse_chunks::<1, u16, T, F>(callback, (options, encoding, None))
     }
 
     fn parse_chunks<const UNIT_SHIFT: u32, U, T: AsRef<[U]>, F: FnMut(usize, Point) -> T>(
         &mut self,
         callback: &mut F,
-        old_tree: Option<&Tree>,
         (options, encoding, decode): (
             Option<ParseOptions>,
             ffi::TSInputEncoding,
@@ -962,24 +857,16 @@ impl Parser {
             encoding,
             decode,
         };
-        unsafe { self.parse_c_input(c_input, old_tree, options) }
+        unsafe { self.parse_c_input(c_input, options) }
     }
 
     unsafe fn parse_raw_bytes(
         &mut self,
         (bytes, byte_len): (*const c_char, u32),
-        old_tree: Option<&Tree>,
         encoding: ffi::TSInputEncoding,
     ) -> Option<Tree> {
-        let c_old_tree = old_tree.map_or(ptr::null(), |t| t.0.as_ptr().cast_const());
         let c_new_tree = unsafe {
-            ffi::ts_parser_parse_string_encoding(
-                self.0.as_ptr(),
-                c_old_tree,
-                bytes,
-                byte_len,
-                encoding,
-            )
+            ffi::ts_parser_parse_string_encoding(self.0.as_ptr(), bytes, byte_len, encoding)
         };
         NonNull::new(c_new_tree).map(Tree)
     }
@@ -987,7 +874,6 @@ impl Parser {
     unsafe fn parse_c_input(
         &mut self,
         c_input: ffi::TSInput,
-        old_tree: Option<&Tree>,
         options: Option<ParseOptions>,
     ) -> Option<Tree> {
         unsafe extern "C" fn progress(state: *mut ffi::TSParseState) -> bool {
@@ -1018,10 +904,8 @@ impl Parser {
             }
         };
 
-        let c_old_tree = old_tree.map_or(ptr::null_mut(), |t| t.0.as_ptr());
-        let c_new_tree = unsafe {
-            ffi::ts_parser_parse_with_options(self.0.as_ptr(), c_old_tree, c_input, parse_options)
-        };
+        let c_new_tree =
+            unsafe { ffi::ts_parser_parse_with_options(self.0.as_ptr(), c_input, parse_options) };
         NonNull::new(c_new_tree).map(Tree)
     }
 
@@ -1147,43 +1031,10 @@ impl Tree {
         )
     }
 
-    /// Edit the syntax tree to keep it in sync with source code that has been
-    /// edited.
-    ///
-    /// You must describe the edit both in terms of byte offsets and in terms of
-    /// row/column coordinates.
-    #[doc(alias = "ts_tree_edit")]
-    pub fn edit(&mut self, edit: &InputEdit) {
-        let edit = edit.into();
-        unsafe { ffi::ts_tree_edit(self.0.as_ptr(), &raw const edit) };
-    }
-
     /// Create a new [`TreeCursor`] starting from the root of the tree.
     #[must_use]
     pub fn walk(&self) -> TreeCursor {
         self.root_node().walk()
-    }
-
-    /// Compare this old edited syntax tree to a new syntax tree representing
-    /// the same document, returning a sequence of ranges whose syntactic
-    /// structure has changed.
-    ///
-    /// For this to work correctly, this syntax tree must have been edited such
-    /// that its ranges match up to the new tree. Generally, you'll want to
-    /// call this method right after calling one of the [`Parser::parse`]
-    /// functions. Call it on the old tree that was passed to parse, and
-    /// pass the new tree that was returned from `parse`.
-    #[doc(alias = "ts_tree_get_changed_ranges")]
-    pub fn changed_ranges(&self, other: &Self) -> impl ExactSizeIterator<Item = Range> {
-        let mut count = 0u32;
-        unsafe {
-            let ptr = ffi::ts_tree_get_changed_ranges(
-                self.0.as_ptr(),
-                other.0.as_ptr(),
-                core::ptr::addr_of_mut!(count),
-            );
-            util::CBufferIter::new(ptr, count as usize).map(Into::into)
-        }
     }
 
     /// Get the included ranges that were used to parse the syntax tree.
@@ -1251,16 +1102,7 @@ impl<'tree> Node<'tree> {
         (!node.id.is_null()).then_some(Node(node, PhantomData))
     }
 
-    /// Get a numeric id for this node that is unique.
-    ///
-    /// Within a given syntax tree, no two nodes have the same id. However:
-    ///
-    /// - If a new tree is created based on an older tree, and a node from the old tree is reused in
-    ///   the process, then that node will have the same id in both trees.
-    ///
-    /// - A node not marked as having changes does not guarantee it was reused.
-    ///
-    /// - If a node is marked as having changed in the old tree, it will not be reused.
+    /// Get a numeric id for this node that is unique within its syntax tree.
     #[must_use]
     pub fn id(&self) -> usize {
         self.0.id as usize
@@ -1331,13 +1173,6 @@ impl<'tree> Node<'tree> {
     #[must_use]
     pub fn is_extra(&self) -> bool {
         unsafe { ffi::ts_node_is_extra(self.0) }
-    }
-
-    /// Check if this node has been edited.
-    #[doc(alias = "ts_node_has_changes")]
-    #[must_use]
-    pub fn has_changes(&self) -> bool {
-        unsafe { ffi::ts_node_has_changes(self.0) }
     }
 
     /// Check if this node represents a syntax error or contains any syntax
@@ -1759,19 +1594,6 @@ impl<'tree> Node<'tree> {
     pub fn walk(&self) -> TreeCursor<'tree> {
         TreeCursor(unsafe { ffi::ts_tree_cursor_new(self.0) }, PhantomData)
     }
-
-    /// Edit this node to keep it in-sync with source code that has been edited.
-    ///
-    /// This function is only rarely needed. When you edit a syntax tree with
-    /// the [`Tree::edit`] method, all of the nodes that you retrieve from
-    /// the tree afterward will already reflect the edit. You only need to
-    /// use [`Node::edit`] when you have a specific [`Node`] instance that
-    /// you want to keep and continue to use after an edit.
-    #[doc(alias = "ts_node_edit")]
-    pub fn edit(&mut self, edit: &InputEdit) {
-        let edit = edit.into();
-        unsafe { ffi::ts_node_edit(core::ptr::addr_of_mut!(self.0), &raw const edit) }
-    }
 }
 
 impl PartialEq for Node<'_> {
@@ -2043,19 +1865,6 @@ impl From<ffi::TSRange> for Range {
             end_byte: range.end_byte as usize,
             start_point: range.start_point.into(),
             end_point: range.end_point.into(),
-        }
-    }
-}
-
-impl From<&InputEdit> for ffi::TSInputEdit {
-    fn from(val: &InputEdit) -> Self {
-        Self {
-            start_byte: val.start_byte as u32,
-            old_end_byte: val.old_end_byte as u32,
-            new_end_byte: val.new_end_byte as u32,
-            start_point: val.start_position.into(),
-            old_end_point: val.old_end_position.into(),
-            new_end_point: val.new_end_position.into(),
         }
     }
 }

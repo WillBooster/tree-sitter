@@ -39,7 +39,7 @@ describe('Parse memory limit', () => {
     const secondStart = firstFragment.length + filler.length;
     const beforeBytes = memory.buffer.byteLength;
 
-    const singleRangeTree = parser.parse(source, undefined, {
+    const singleRangeTree = parser.parse(source, {
       includedRanges: [{
         startPosition: { row: 0, column: secondStart },
         endPosition: { row: 0, column: source.length },
@@ -52,7 +52,7 @@ describe('Parse memory limit', () => {
     expect(memory.buffer.byteLength).toBe(beforeBytes);
     singleRangeTree?.delete();
 
-    const multiRangeTree = parser.parse(source, undefined, {
+    const multiRangeTree = parser.parse(source, {
       includedRanges: [
         {
           startPosition: { row: 0, column: 0 },
@@ -73,7 +73,7 @@ describe('Parse memory limit', () => {
     expect(memory.buffer.byteLength).toBe(beforeBytes);
     multiRangeTree?.delete();
 
-    const emptyRangeListTree = parser.parse('const third = 3;', undefined, { includedRanges: [] });
+    const emptyRangeListTree = parser.parse('const third = 3;', { includedRanges: [] });
     expect(emptyRangeListTree?.rootNode.text).toBe('const third = 3;');
     emptyRangeListTree?.delete();
   });
@@ -82,9 +82,9 @@ describe('Parse memory limit', () => {
     const maxMemoryBytes = 48 * 2 ** 20;
     const source = 'f<'.repeat(50_000);
     for (let i = 0; i < 2; i++) {
-      expect(parser.parse(source, undefined, { maxMemoryBytes })).toBeNull();
+      expect(parser.parse(source, { maxMemoryBytes })).toBeNull();
       expect(memory.buffer.byteLength).toBeLessThanOrEqual(maxMemoryBytes);
-      const tree = parser.parse('const value = 1;', undefined, { maxMemoryBytes });
+      const tree = parser.parse('const value = 1;', { maxMemoryBytes });
       expect(tree?.rootNode.hasError).toBe(false);
       expect(tree?.rootNode.toString()).toContain('variable_declarator');
       tree?.delete();
@@ -95,7 +95,7 @@ describe('Parse memory limit', () => {
   });
 
   it('cleans up when a callback throws during a limited parse', () => {
-    expect(() => parser.parse('f<'.repeat(1000), undefined, {
+    expect(() => parser.parse('f<'.repeat(1000), {
       includedRanges: [{
         startPosition: { row: 0, column: 0 },
         endPosition: { row: 0, column: 2000 },
@@ -105,7 +105,7 @@ describe('Parse memory limit', () => {
       maxMemoryBytes: 48 * 2 ** 20,
       progressCallback: () => { throw new Error('callback failed'); },
     })).toThrow('callback failed');
-    const tree = parser.parse('const value = 1;', undefined, { maxMemoryBytes: 48 * 2 ** 20 });
+    const tree = parser.parse('const value = 1;', { maxMemoryBytes: 48 * 2 ** 20 });
     expect(tree?.rootNode.hasError).toBe(false);
     tree?.delete();
   });
@@ -119,7 +119,7 @@ describe('Parse memory limit', () => {
       startIndex,
       endIndex: source.length,
     };
-    const tree = parser.parse(source, undefined, {
+    const tree = parser.parse(source, {
       includedRanges: [range],
       maxMemoryBytes: 48 * 2 ** 20,
     });
@@ -141,7 +141,7 @@ describe('Parse memory limit', () => {
     };
     const maxMemoryBytes = 48 * 2 ** 20;
 
-    expect(parser.parse(source, undefined, {
+    expect(parser.parse(source, {
       includedRanges: [range],
       maxMemoryBytes,
       progressCallback: () => true,
@@ -153,7 +153,7 @@ describe('Parse memory limit', () => {
     expect(fullTree?.rootNode.text).toBe('const value = 1;');
     fullTree?.delete();
 
-    const rangedTree = parser.parse('const first = 1; const second = 2;', undefined, {
+    const rangedTree = parser.parse('const first = 1; const second = 2;', {
       includedRanges: [{
         startPosition: { row: 0, column: startIndex },
         endPosition: { row: 0, column: 34 },
@@ -164,7 +164,7 @@ describe('Parse memory limit', () => {
     expect(rangedTree?.rootNode.text).toBe('const second = 2;');
     rangedTree?.delete();
 
-    expect(parser.parse(source, undefined, {
+    expect(parser.parse(source, {
       maxMemoryBytes,
       progressCallback: () => true,
     })).toBeNull();
@@ -178,7 +178,7 @@ describe('Parse memory limit', () => {
 
   it('applies the limit when memory already exceeds it or before copying included ranges into Wasm', () => {
     const currentBytes = memory.buffer.byteLength;
-    expect(parser.parse('const value = 1;', undefined, { maxMemoryBytes: currentBytes - 1 })).toBeNull();
+    expect(parser.parse('const value = 1;', { maxMemoryBytes: currentBytes - 1 })).toBeNull();
     expect(memory.buffer.byteLength).toBe(currentBytes);
 
     const range = {
@@ -188,7 +188,7 @@ describe('Parse memory limit', () => {
       endIndex: 1,
     };
     const includedRanges = new Array<typeof range>(4_000_000).fill(range);
-    expect(parser.parse('x', undefined, { includedRanges, maxMemoryBytes: currentBytes })).toBeNull();
+    expect(parser.parse('x', { includedRanges, maxMemoryBytes: currentBytes })).toBeNull();
     expect(memory.buffer.byteLength).toBe(currentBytes);
     const tree = parser.parse('const value = 1;');
     expect(tree?.rootNode.hasError).toBe(false);
@@ -197,9 +197,9 @@ describe('Parse memory limit', () => {
 
   it('enforces maxOperations alongside maxMemoryBytes and reports lastParseOperations', () => {
     const maxMemoryBytes = 48 * 2 ** 20;
-    expect(parser.parse('f<'.repeat(10_000), undefined, { maxMemoryBytes, maxOperations: 500 })).toBeNull();
+    expect(parser.parse('f<'.repeat(10_000), { maxMemoryBytes, maxOperations: 500 })).toBeNull();
     expect(parser.lastParseOperations).toBeGreaterThan(500);
-    const tree = parser.parse('const value = 1;', undefined, { maxMemoryBytes, maxOperations: 10_000 });
+    const tree = parser.parse('const value = 1;', { maxMemoryBytes, maxOperations: 10_000 });
     expect(tree?.rootNode.hasError).toBe(false);
     expect(parser.lastParseOperations).toBeGreaterThan(0);
     expect(parser.lastParseOperations).toBeLessThanOrEqual(10_000);
@@ -209,7 +209,7 @@ describe('Parse memory limit', () => {
   it('recovers when an allocating external scanner reaches the limit', () => {
     parser.setLanguage(html);
     const maxMemoryBytes = memory.buffer.byteLength + 2 * 2 ** 20;
-    expect(parser.parse('<div>'.repeat(60_000), undefined, { maxMemoryBytes })).toBeNull();
+    expect(parser.parse('<div>'.repeat(60_000), { maxMemoryBytes })).toBeNull();
     expect(memory.buffer.byteLength).toBeLessThanOrEqual(maxMemoryBytes);
     const tree = parser.parse('<div>ok</div>');
     expect(tree?.rootNode.hasError).toBe(false);

@@ -10,7 +10,7 @@ use std::{
 };
 
 use tree_sitter::{
-    Decode, IncludedRangesError, InputEdit, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
+    Decode, IncludedRangesError, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
     ParseState, Parser, Point, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
@@ -18,17 +18,11 @@ use tree_sitter_proc_macro::retry;
 
 use super::helpers::{
     allocations,
-    edits::ReadRecorder,
     fixtures::{get_language, get_test_language, get_test_language_with_header},
 };
-use crate::{
-    fuzz::edits::Edit,
-    parse::perform_edit,
-    tests::{
-        generate_parser,
-        helpers::fixtures::{fixtures_dir, get_test_fixture_language},
-        invert_edit,
-    },
+use crate::tests::{
+    generate_parser,
+    helpers::fixtures::{fixtures_dir, get_test_fixture_language},
 };
 
 #[test]
@@ -66,13 +60,13 @@ fn test_reserved_named_tokens_shared_with_inline_rules() {
             let json = load_grammar_file(&path, None).unwrap();
             for mut parser in parsers_for_grammar(&json) {
                 let source = "if name";
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 let root = tree.root_node();
                 assert!(!root.has_error(), "{wrapper}: {}", root.to_sexp());
                 assert_eq!(root.to_sexp(), "(source_file (identifier))");
                 assert_eq!(root.byte_range(), 0..source.len());
                 assert_eq!(root.named_child(0).unwrap().byte_range(), 3..7);
-                let reserved = parser.parse("if if", None).unwrap();
+                let reserved = parser.parse("if if").unwrap();
                 assert!(
                     reserved.root_node().has_error(),
                     "{wrapper}: {}",
@@ -146,7 +140,7 @@ fn test_identifier_only_grammar_compiles_without_c_warnings() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let source = " identifier ";
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     assert!(!tree.root_node().has_error());
     assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
     assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 1..11);
@@ -185,7 +179,7 @@ fn test_lexer_preserves_lower_precedence_comment_continuations() {
         let prefix = "a { x: red";
         for ending in [" // note\n", ";", " // other\n"] {
             let source = format!("{prefix}{ending} }}\n");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{}", root.to_sexp());
             let mut cursor = root.walk();
@@ -233,7 +227,7 @@ fn test_lexer_preserves_lower_precedence_separator_continuations() {
         });
         for mut parser in parsers_for_grammar(&grammar.to_string()) {
             for prefix in ["//x ", "/ ", "//x //x ", ""] {
-                let tree = parser.parse(format!("{prefix}z"), None).unwrap();
+                let tree = parser.parse(format!("{prefix}z")).unwrap();
                 let root = tree.root_node();
                 assert!(!root.has_error(), "{}", root.to_sexp());
                 let identifier = root
@@ -256,7 +250,7 @@ fn test_lexer_preserves_precedence_before_speculative_continuations() {
             for gap in [" ", "\t", "\r\n", "\u{a0}", "\u{2028}", " text ", ""] {
                 let source = format!("{quote}{gap}&amp;{quote}; following");
                 let source = source.as_bytes();
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 let root = tree.root_node();
                 assert!(!root.has_error(), "{}", root.to_sexp());
                 let string = root.named_child(0).unwrap();
@@ -380,15 +374,11 @@ fn test_tokens_preserve_ranges_when_separators_overlap_token_prefixes() {
         for mut parser in parsers_for_grammar(&grammar) {
             for encoding in ["utf8", "utf16le", "utf16be"] {
                 let tree = match encoding {
-                    "utf16le" => parser.parse_utf16_le(
-                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
-                        None,
-                    ),
-                    "utf16be" => parser.parse_utf16_be(
-                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
-                        None,
-                    ),
-                    _ => parser.parse(source, None),
+                    "utf16le" => parser
+                        .parse_utf16_le(source.encode_utf16().map(u16::to_le).collect::<Vec<_>>()),
+                    "utf16be" => parser
+                        .parse_utf16_be(source.encode_utf16().map(u16::to_be).collect::<Vec<_>>()),
+                    _ => parser.parse(source),
                 }
                 .unwrap();
                 assert_eq!(
@@ -452,7 +442,7 @@ fn test_explicit_comments_can_precede_an_immediate_newline() {
             "l#first##second#\n",
             "l#multi\nline#\n",
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{}", root.to_sexp());
             assert_eq!(root.end_byte(), source.len());
@@ -463,7 +453,7 @@ fn test_explicit_comments_can_precede_an_immediate_newline() {
         }
         assert!(
             parser
-                .parse("l#comment# \n", None)
+                .parse("l#comment# \n")
                 .unwrap()
                 .root_node()
                 .has_error()
@@ -502,7 +492,7 @@ fn test_immediate_token_recovery_with_ambiguous_error_paths() {
             "x ; @@ y z @ ; x @ x @ ;",
             "y zz @ z; \u{1} x \u{2}",
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(tree.root_node().has_error());
             assert_eq!(tree.root_node().end_byte(), source.len());
         }
@@ -543,7 +533,7 @@ fn assert_first_named_token(
     expected: &str,
     range: std::ops::Range<usize>,
 ) {
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     assert!(
         !tree.root_node().has_error(),
         "{source:?}: {}",
@@ -598,10 +588,10 @@ fn test_partial_reduction_precedence_is_independent_of_rule_order() {
             let mut parser = Parser::new();
             parser.set_language(&language).unwrap();
             for source in ["zxa", "zxc"] {
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 assert!(!tree.root_node().has_error(), "{mode}: {order:?}: {source}");
             }
-            let tree = parser.parse("zxb", None).unwrap();
+            let tree = parser.parse("zxb").unwrap();
             assert!(tree.root_node().has_error(), "{mode}: {order:?}: zxb");
         }
     }
@@ -633,7 +623,7 @@ fn test_named_reduction_precedence_with_a_shared_rule_symbol() {
             let language = get_test_language(&name, &code, None);
             let mut parser = Parser::new();
             parser.set_language(&language).unwrap();
-            let tree = parser.parse("z", None).unwrap();
+            let tree = parser.parse("z").unwrap();
             assert!(!tree.root_node().has_error(), "{shared_first}: {reverse}");
             assert_eq!(
                 tree.root_node().to_sexp(),
@@ -666,7 +656,7 @@ fn test_conflict_declarations_allow_precedence_discarded_reductions() {
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
         for (source, expected) in [("zx", "(source (a))"), ("zxy", "(source (s))")] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(!tree.root_node().has_error(), "{legacy}: {source}");
             assert_eq!(tree.root_node().to_sexp(), expected, "{legacy}: {source}");
         }
@@ -713,7 +703,7 @@ fn test_collective_shift_precedence_with_unordered_reductions() {
                 let language = get_test_language(&name, &code, None);
                 let mut parser = Parser::new();
                 parser.set_language(&language).unwrap();
-                let tree = parser.parse("zxy", None).unwrap();
+                let tree = parser.parse("zxy").unwrap();
                 assert!(!tree.root_node().has_error(), "{order:?}");
                 assert_eq!(tree.root_node().to_sexp(), "(source (s))", "{order:?}");
             } else {
@@ -763,7 +753,7 @@ fn test_missing_token_recovery_does_not_change_later_ambiguities() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("cpp")).unwrap();
     let mut parse_last_child = |source: &str| {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         let mut cursor = root.walk();
         root.named_children(&mut cursor).last().unwrap().to_sexp()
@@ -776,7 +766,7 @@ fn test_nested_json_error_recovery_preserves_following_token_ranges() {
     let source = r#"{"one":{"bar" "baz"},"two":"bar"}"#;
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     let root = tree.root_node();
     assert_eq!(root.kind(), "document");
     assert!(root.has_error());
@@ -819,11 +809,11 @@ fn test_recovery_inserts_missing_opening_delimiter() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("go")).unwrap();
     let tree = parser
-        .parse("package p\nconst a = []string{\"a\", \"b\"}\n", None)
+        .parse("package p\nconst a = []string{\"a\", \"b\"}\n")
         .unwrap();
     assert!(!tree.root_node().has_error());
     let tree = parser
-        .parse("package p\nconst a = []stri\"a\", \"b\"}\n", None)
+        .parse("package p\nconst a = []stri\"a\", \"b\"}\n")
         .unwrap();
     assert!(tree.root_node().to_sexp().contains("(MISSING \"{\")"));
 }
@@ -833,7 +823,7 @@ fn test_recovery_wraps_skipped_extras_in_one_error() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
     let source = "s(){/**/";
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     let root = tree.root_node();
     assert_eq!(root.child_count(), 1, "{}", root.to_sexp());
     let error = root.child(0).unwrap();
@@ -854,7 +844,7 @@ fn test_recovery_respects_completed_prefixes() {
     ] {
         let mut parser = Parser::new();
         parser.set_language(&get_language(language)).unwrap();
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         let mut cursor = root.walk();
         let declaration = root
@@ -873,7 +863,7 @@ fn test_recovery_after_malformed_class_prefix() {
     for (before, after) in [("", ""), ("int before;\n", "\nint after;")] {
         for prefix in ["", "class C implements A, B<C\n"] {
             let source = format!("{before}{prefix}struct b c;{after}");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             assert_eq!(tree.root_node().has_error(), !prefix.is_empty(), "{source}");
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
         }
@@ -895,19 +885,19 @@ fn test_recovery_after_incomplete_generics() {
         ] {
             for ending in ["> {}", ";", "", " {}"] {
                 let source = format!("class C implements A, number<B{ending}\n{following}");
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 assert_eq!(tree.root_node().has_error(), ending != "> {}", "{source}");
                 crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
             }
         }
         let source = "class C \n implements number<B; \n export function f() {} const x = export";
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(tree.root_node().has_error());
         crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
 
         for name in ["const", "function", "export"] {
             let source = format!("class C implements Box<{name}> {{}}");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             assert!(
                 !tree.root_node().has_error(),
                 "{}",
@@ -927,7 +917,7 @@ fn test_recovery_retains_export_assignment_after_incomplete_annotation() {
         let annotation = format!("{prefix}const a: Foo<Bar");
         for ending in ["", ">;"] {
             let source = format!("{annotation}{ending}\nexport = {{}};\nconst sentinel = 1;");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             assert_eq!(tree.root_node().has_error(), ending.is_empty());
             let root = tree.root_node();
             let mut cursor = tree.walk();
@@ -1031,7 +1021,7 @@ fn assert_recovery_after_newline_prefixes(language: &str, source: &str) {
     parser.set_language(&get_language(language)).unwrap();
     for prefix in ["", "\n", "\n\n"] {
         let source = format!("{prefix}{source}");
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         assert!(tree.root_node().has_error(), "{source:?}");
         crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
     }
@@ -1049,7 +1039,7 @@ fn test_recovery_after_malformed_generic_arguments() {
             ("class C implements Box<const> {}", false),
             ("class C implements Box(t> {}", true),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().has_error(), has_error, "{source}");
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
         }
@@ -1068,7 +1058,7 @@ fn test_recovery_after_malformed_declarator() {
             ("i(x){if(x){case 1:[[a]]e:[[a]];;}e k;}", false),
             ("i x){if(x){case 1:[[a]]e:[[a]];;}e k;}", true),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().has_error(), has_error, "{source}");
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
         }
@@ -1080,7 +1070,7 @@ fn test_recovery_with_unbalanced_delimiters_in_an_object() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
     let tree = parser
-        .parse("export default grammar({s:{,),)x}});", None)
+        .parse("export default grammar({s:{,),)x}});")
         .unwrap();
     assert!(tree.root_node().has_error());
 }
@@ -1093,7 +1083,7 @@ fn test_recovery_retains_following_declaration_keywords() {
         let newlines = "\n".repeat(newline_count);
         let source =
             format!("typedef int my_int;\n\nint f(int a{newlines}typedef unsigned long ulong_t;\n");
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         let mut cursor = tree.walk();
         let declarations = tree
             .root_node()
@@ -1116,7 +1106,7 @@ fn test_recovery_keeps_visibility_after_missing_token() {
     let declaration = "pub trait A<B> where B: C, {}";
     for suffix in ["", "\nfn g() {}", "\nstruct Following { value: i32 }"] {
         let source = format!("{prefix}{declaration}{suffix}");
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         let mut cursor = tree.walk();
         let item = tree
             .root_node()
@@ -1149,7 +1139,7 @@ fn test_recovery_in_statement_lists() {
             for heritage in ["", " implements A"] {
                 let source =
                     format!("{prefix}\nnumber<B;\nclass E{heritage} {{}}\nconst sentinel = 1;");
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
             }
         }
@@ -1205,7 +1195,7 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
             ("let x = class;", "class", "identifier"),
             ("class c;", "class", "class"),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let start = source.find(word).unwrap();
             let node = tree
                 .root_node()
@@ -1220,7 +1210,7 @@ fn test_recovery_lexer_preserves_keyword_tokens() {
             assert_eq!(node.byte_range(), start..start + word.len());
         }
         let source = "let x = y = class c;";
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         assert!(root.has_error());
         let declaration = root.named_children(&mut root.walk()).last().unwrap();
@@ -1304,7 +1294,7 @@ bool tree_sitter_NAME_external_scanner_scan(void *payload, TSLexer *lexer, const
         let language = get_test_language(&name, &code, Some(fixture.path()));
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         (language.parse_state_count(), tree.root_node().to_sexp())
     };
 
@@ -1337,7 +1327,7 @@ fn test_recovery_accepts_keywords_as_command_names() {
         .set_language(&get_test_language(&name, &code, Some(fixture.path())))
         .unwrap();
     let source = "while x; do echo; ;; fi; done";
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(program (while_statement (command (command_name (word))) (command (command_name (word))) (ERROR) (command (command_name (word)))))"
@@ -1372,7 +1362,7 @@ fn test_keyword_recovery_preserves_contextual_method_names() {
             ("{with finally(){}};", "with"),
             ("class A { x finally() {} }", "x"),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let mut found = Vec::new();
             collect_nodes(tree.root_node(), source.as_bytes(), &mut found);
             assert_eq!(
@@ -1467,7 +1457,7 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
         ))
         .unwrap();
     let source = "let value = 123; if ready { let item = 9; }";
-    let expected = parser.parse(source, None).unwrap();
+    let expected = parser.parse(source).unwrap();
     assert!(!expected.root_node().has_error());
     let mut profile = crate::generation_profile::record_profile(
         &mut parser,
@@ -1522,7 +1512,7 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
         ("dispatch case_15 value_15 item;", false),
         ("dispatch case_0 value_15 item;", true),
     ] {
-        let actual = parser.parse(input, None).unwrap();
+        let actual = parser.parse(input).unwrap();
         let mut baseline = Parser::new();
         baseline
             .set_language(&get_test_language_with_header(
@@ -1531,7 +1521,7 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
                 tree_sitter_generate::PARSER_HEADER,
             ))
             .unwrap();
-        let expected = baseline.parse(input, None).unwrap();
+        let expected = baseline.parse(input).unwrap();
         assert_eq!(expected.root_node().has_error(), has_error, "{input}");
         assert_eq!(actual.root_node().to_sexp(), expected.root_node().to_sexp());
         assert_eq!(
@@ -1656,7 +1646,7 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
         }
         parser.set_language(language).unwrap();
 
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         let root = tree.root_node();
         assert_eq!(
             root.to_sexp(),
@@ -1680,7 +1670,7 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
         }
 
         let source = source.replace("value", "");
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         let root = tree.root_node();
         assert_eq!(
             root.to_sexp(),
@@ -1721,16 +1711,15 @@ fn test_keyword_lookup_with_overlapping_unicode_word_prefixes() {
             for prefix in ["\u{200e}", " \u{200e}"] {
                 for suffix in ["", " x"] {
                     let source = format!("{prefix}{keyword}{suffix}");
-                    let contiguous = parser.parse(&source, None).unwrap();
+                    let contiguous = parser.parse(&source).unwrap();
                     let streamed = parser
                         .parse_with_options(
                             &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
                             None,
-                            None,
                         )
                         .unwrap();
                     let utf16 = parser
-                        .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+                        .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>())
                         .unwrap();
                     for tree in [&contiguous, &streamed, &utf16] {
                         assert!(!tree.root_node().has_error());
@@ -1805,12 +1794,11 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             let source = format!(
                 "{separator}{keyword}{separator}{keyword}_suffix{separator}{keyword}é{separator}{high_byte_collision}{separator}{long_ident}"
             );
-            let expected = parser.parse(&source, None).unwrap();
+            let expected = parser.parse(&source).unwrap();
             assert!(!expected.root_node().has_error());
             let streamed = parser
                 .parse_with_options(
                     &mut |byte, _| &source.as_bytes()[byte..(byte + 3).min(source.len())],
-                    None,
                     None,
                 )
                 .unwrap();
@@ -1825,27 +1813,21 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             assert_eq!(streamed.root_node().child(3).unwrap().kind(), "identifier");
             assert_eq!(streamed.root_node().child(4).unwrap().kind(), "identifier");
             let utf16 = parser
-                .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+                .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>())
                 .unwrap();
             assert_eq!(utf16.root_node().to_sexp(), expected.root_node().to_sexp());
             assert_eq!(utf16.root_node().child(0).unwrap().kind(), keyword);
             let utf16_be = parser
-                .parse_utf16_be(
-                    source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
-                    None,
-                )
+                .parse_utf16_be(source.encode_utf16().map(u16::to_be).collect::<Vec<_>>())
                 .unwrap();
             assert_eq!(
                 utf16_be.root_node().to_sexp(),
                 expected.root_node().to_sexp()
             );
-            assert_eq!(
-                parser.parse(b"", None).unwrap().root_node().child_count(),
-                0
-            );
+            assert_eq!(parser.parse(b"").unwrap().root_node().child_count(), 0);
             assert_eq!(
                 parser
-                    .parse_utf16_le([] as [u16; 0], None)
+                    .parse_utf16_le([] as [u16; 0])
                     .unwrap()
                     .root_node()
                     .child_count(),
@@ -1853,7 +1835,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             );
             assert_eq!(
                 parser
-                    .parse_utf16_be([] as [u16; 0], None)
+                    .parse_utf16_be([] as [u16; 0])
                     .unwrap()
                     .root_node()
                     .child_count(),
@@ -1861,7 +1843,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
             );
             let mut malformed = vec![0xff];
             malformed.extend_from_slice(keyword.as_bytes());
-            let recovered = parser.parse(&malformed, None).unwrap();
+            let recovered = parser.parse(&malformed).unwrap();
             assert!(recovered.root_node().has_error());
             let last = recovered.root_node().child_count() - 1;
             assert_eq!(recovered.root_node().child(last).unwrap().kind(), keyword);
@@ -1883,7 +1865,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
                     },
                 ])
                 .unwrap();
-            let tree = parser.parse(&excluded, None).unwrap();
+            let tree = parser.parse(&excluded).unwrap();
             assert!(!tree.root_node().has_error());
             let node = tree.root_node().child(0).unwrap();
             assert_eq!(node.kind(), keyword);
@@ -1906,17 +1888,11 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
                 ])
                 .unwrap();
             let excluded_le = parser
-                .parse_utf16_le(
-                    excluded.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
-                    None,
-                )
+                .parse_utf16_le(excluded.encode_utf16().map(u16::to_le).collect::<Vec<_>>())
                 .unwrap();
             assert_eq!(excluded_le.root_node().child(0).unwrap().kind(), keyword);
             let excluded_be = parser
-                .parse_utf16_be(
-                    excluded.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
-                    None,
-                )
+                .parse_utf16_be(excluded.encode_utf16().map(u16::to_be).collect::<Vec<_>>())
                 .unwrap();
             assert_eq!(excluded_be.root_node().child(0).unwrap().kind(), keyword);
 
@@ -1945,7 +1921,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
                 expected_tokens.push((start, token));
             }
             parser.set_included_ranges(&ranges).unwrap();
-            let tree = parser.parse(&embedded, None).unwrap();
+            let tree = parser.parse(&embedded).unwrap();
             assert!(!tree.root_node().has_error());
             assert_eq!(
                 tree.root_node().child_count() as usize,
@@ -2020,7 +1996,7 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                 keywords[0],
                 keywords.last().unwrap()
             );
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error());
             assert_eq!(root.child_count() as usize, keywords.len() + 2);
@@ -2033,7 +2009,7 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                 offset += keyword.len() + 1;
             }
             let source = format!("{}_suffix{}", keywords[0], &source[keywords[0].len()..]);
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (identifier) (identifier) (identifier))"
@@ -2078,7 +2054,7 @@ fn test_generated_accepting_loops_preserve_token_boundaries() {
         let number = format!("{}.45", "123".repeat(64));
         let source = format!("{identifier} {number}");
         let expected = "(source_file (identifier) (number))";
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected);
         assert_eq!(
             tree.root_node().named_child(0).unwrap().byte_range(),
@@ -2089,12 +2065,12 @@ fn test_generated_accepting_loops_preserve_token_boundaries() {
             identifier.len() + 1..source.len()
         );
         let utf16 = source.encode_utf16().collect::<Vec<_>>();
-        let tree = parser.parse_utf16_le(&utf16, None).unwrap();
+        let tree = parser.parse_utf16_le(&utf16).unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected);
         assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
 
         for source in ["123.", "123.a", "123.\0"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(tree.root_node().has_error());
             let number = tree.root_node().named_child(0).unwrap();
             assert_eq!(number.kind(), "number");
@@ -2118,7 +2094,7 @@ fn test_generated_accepting_loops_preserve_token_boundaries() {
                 },
             ])
             .unwrap();
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected);
         assert_eq!(tree.root_node().named_child(0).unwrap().byte_range(), 0..3);
         assert_eq!(
@@ -2144,18 +2120,18 @@ fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for source in ["_name", "café", "日本語", "𝔘nicode", "e\u{301}"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), "(identifier)");
         assert!(!tree.root_node().has_error());
         assert_eq!(tree.root_node().end_byte(), source.len());
         let source = source.encode_utf16().collect::<Vec<_>>();
-        let tree = parser.parse_utf16_le(&source, None).unwrap();
+        let tree = parser.parse_utf16_le(&source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), "(identifier)");
         assert!(!tree.root_node().has_error());
         assert_eq!(tree.root_node().end_byte(), source.len() * 2);
     }
     for source in [b"\0".as_slice(), b"\xff", "😀".as_bytes(), b"~"] {
-        assert!(parser.parse(source, None).unwrap().root_node().has_error());
+        assert!(parser.parse(source).unwrap().root_node().has_error());
     }
 }
 
@@ -2192,7 +2168,7 @@ fn test_generated_lexer_character_boundaries() {
         parser.set_language(&language).unwrap();
 
         for &literal in literals {
-            let tree = parser.parse(literal, None).unwrap();
+            let tree = parser.parse(literal).unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (item))",
@@ -2206,12 +2182,12 @@ fn test_generated_lexer_character_boundaries() {
             "\u{80}\u{100}\u{370}\u{2000}\u{3042}\u{1f600}",
         ] {
             let expected = "(source_file (item (word)))";
-            let tree = parser.parse(word, None).unwrap();
+            let tree = parser.parse(word).unwrap();
             assert_eq!(tree.root_node().to_sexp(), expected);
             assert!(!tree.root_node().has_error());
             assert_eq!(tree.root_node().end_byte(), word.len());
             let utf16 = word.encode_utf16().collect::<Vec<_>>();
-            let tree = parser.parse_utf16_le(&utf16, None).unwrap();
+            let tree = parser.parse_utf16_le(&utf16).unwrap();
             assert_eq!(tree.root_node().to_sexp(), expected);
             assert!(!tree.root_node().has_error());
             assert_eq!(tree.root_node().end_byte(), utf16.len() * 2);
@@ -2226,13 +2202,13 @@ fn test_generated_lexer_character_boundaries() {
             "\u{101}",
             "\u{1f601}",
         ] {
-            let tree = parser.parse(invalid, None).unwrap();
+            let tree = parser.parse(invalid).unwrap();
             assert!(tree.root_node().has_error(), "{invalid:?}");
         }
 
         for literal in literals {
             let source = format!("{literal}b1d2f3h4");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (item) (item) (item) (item) (item))"
@@ -2257,7 +2233,7 @@ fn test_header_override_does_not_reuse_another_headers_library() {
         get_test_language_with_header(&name, &parser_code, header),
     ] {
         parser.set_language(&language).unwrap();
-        let tree = parser.parse("x", None).unwrap();
+        let tree = parser.parse("x").unwrap();
         assert_eq!(tree.root_node().to_sexp(), "(program)");
         assert!(!tree.root_node().has_error());
     }
@@ -2272,7 +2248,7 @@ fn test_header_override_does_not_reuse_another_headers_library() {
         let language = get_test_language_with_header(&name, &parser_code, header);
         parser.set_language(&language).unwrap();
         assert_eq!(
-            parser.parse("x", None).unwrap().root_node().to_sexp(),
+            parser.parse("x").unwrap().root_node().to_sexp(),
             "(program)"
         );
     }
@@ -2314,7 +2290,7 @@ fn test_character_set_constants_do_not_shadow_grammar_symbols() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let source = "ace!?#あ😀";
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     let root = tree.root_node();
     assert!(!root.has_error());
     assert_eq!(root.end_byte(), source.len());
@@ -2349,7 +2325,7 @@ fn test_generated_symbol_identifiers_with_colliding_names_and_suffixes() {
     let language = get_test_language(&name, &parser_code, None);
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    let tree = parser.parse("abcdefgh", None).unwrap();
+    let tree = parser.parse("abcdefgh").unwrap();
     let root = tree.root_node();
     assert!(!root.has_error());
     assert_eq!(root.end_byte(), 8);
@@ -2387,7 +2363,7 @@ fn test_anonymous_external_pattern_used_as_extra() {
             let mut parser = Parser::new();
             parser.set_language(&language).unwrap();
             for source in ["", "a", "\na\na\n", "\n\n"] {
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 let root = tree.root_node();
                 assert_eq!(
                     root.has_error(),
@@ -2436,7 +2412,7 @@ fn test_immediate_token_alternatives_after_extras() {
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
         for prefix in ["", "#", "##", "[]", "[][]", " ", "# "] {
-            let tree = parser.parse(format!("{prefix}x!; b;"), None).unwrap();
+            let tree = parser.parse(format!("{prefix}x!; b;")).unwrap();
             assert_eq!(
                 tree.root_node().has_error(),
                 !prefix.is_empty(),
@@ -2465,7 +2441,7 @@ fn test_shared_extra_with_mixed_immediate_syntax() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for source in ["x", "xy", "\nx", "\nxy"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(
             tree.root_node().has_error(),
             source.starts_with('\n'),
@@ -2491,7 +2467,7 @@ fn test_shared_extra_with_immediate_alternative() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for (source, has_error) in [("x", false), ("y", false), ("\nx", true), ("\ny", false)] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().has_error(), has_error, "{source:?}");
         assert_eq!(tree.root_node().end_byte(), source.len());
     }
@@ -2547,7 +2523,7 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for source in ["\na", "\n\na", "a"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().has_error(), source == "a", "{source:?}");
         assert_eq!(tree.root_node().end_byte(), source.len());
     }
@@ -2566,7 +2542,7 @@ fn test_literal_token_with_overlapping_external_extra_pattern() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for source in ["a", "aa", "aaa"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         assert!(!root.has_error(), "{source:?}");
         let children = root.children(&mut root.walk()).collect::<Vec<_>>();
@@ -2596,7 +2572,7 @@ fn test_immediate_token_with_overlapping_external_extra_pattern() {
         get_test_language_wasm_with_declining_scanner(&name, &parser_code),
     ]) {
         for source in ["", "ab", "abab", "aab", "a"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert_eq!(
                 root.has_error(),
@@ -2634,12 +2610,12 @@ fn test_immediate_token_with_reused_anonymous_extra_pattern() {
         parser.set_language(&language).unwrap();
 
         for source in ["x", "x ", "x\n"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(!tree.root_node().has_error(), "{source:?}");
             assert_eq!(tree.root_node().end_byte(), source.len());
         }
         for source in [" x", "\tx", "\nx", " x "] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(tree.root_node().has_error(), "{source:?}");
         }
     }
@@ -2721,7 +2697,7 @@ fn test_regex_extra_preserves_matching_named_token() {
         let language = get_test_language(&name, &parser_code, None);
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
-        let tree = parser.parse("x # hi\ny # there\n", None).unwrap();
+        let tree = parser.parse("x # hi\ny # there\n").unwrap();
         assert!(!tree.root_node().has_error());
         let expected = if token_name == "comment" {
             "(program (comment) (comment))"
@@ -2757,11 +2733,11 @@ fn test_nonterminal_extras_preserve_eof_gated_reductions() {
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
         for source in ["a", "a/**/"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(!tree.root_node().has_error(), "{source}");
         }
         for source in ["ab", "a/**/b", "a/**//**/b"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(tree.root_node().has_error(), "{source}");
         }
     }
@@ -2780,7 +2756,7 @@ fn test_parsing_empty_input_with_a_named_eof_rule() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let tree = parser.parse("", None).unwrap();
+        let tree = parser.parse("").unwrap();
         assert_eq!(tree.root_node().end_byte(), 0);
     }
 }
@@ -2795,7 +2771,7 @@ fn test_completed_nodes_before_unfinished_nonterminal_extras() {
     for mut parser in parsers_for_languages(languages) {
         for suffix in ["", " */", " */ item x;"] {
             let source = format!("/// documentation\n/* comment{suffix}");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             let actual = tree.root_node().to_sexp();
             assert!(
                 actual.contains("(documentation (doc_text))"),
@@ -2834,7 +2810,7 @@ fn test_recovery_allocation_growth_with_repeated_errors() {
             let ((), bytes) = allocations::record_allocated_bytes(|| {
                 let mut parser = Parser::new();
                 parser.set_language(&language).unwrap();
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 let root = tree.root_node();
                 assert!(root.has_error());
                 crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
@@ -2890,7 +2866,7 @@ fn test_recovery_extra_groups_preserve_merged_error_ranges() {
                 vec![(6, 7), (13, 14), (39, 40)],
             ),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let mut ranges = Vec::new();
             collect_error_token_ranges(tree.root_node(), nested_error, token_kind, &mut ranges);
             assert_eq!(ranges, expected, "{}", tree.root_node().to_sexp());
@@ -2910,7 +2886,7 @@ fn test_recovery_extra_groups_with_multibyte_text_keep_consistent_sizes() {
         let fragment = "b:/*é*/?";
         for first in ["b:x;", "b:/*漢*/?", "b:/*é*/]", fragment] {
             let source = format!("a{{{first}{}}}tail;", fragment.repeat(63));
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
         }
     }
@@ -2928,7 +2904,7 @@ fn test_parsing_text_around_nonterminal_extras() {
             let mut source = initial.to_string();
             for appended in ["", "e", "&f", "&!漢\ng"] {
                 source.push_str(appended);
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 assert!(
                     !tree.root_node().has_error(),
                     "{}",
@@ -2938,11 +2914,11 @@ fn test_parsing_text_around_nonterminal_extras() {
             }
         }
         let source = "a& #x\n a#\n&\n!\na";
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(!tree.root_node().has_error());
         crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
         let source = "a& #x\n a#\na\n!\na";
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
     }
 }
@@ -2960,7 +2936,7 @@ fn test_recovery_through_many_nonterminal_extras() {
             let started = cpu_time::ThreadTime::now();
             let mut samples = 0;
             let elapsed = loop {
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 samples += 1;
                 let root = tree.root_node();
                 assert!(root.has_error());
@@ -3027,9 +3003,9 @@ fn test_recovery_with_ambiguous_lookahead() {
 
 fn parse_utf8_and_utf16(parser: &mut Parser, source: &str) -> [Tree; 2] {
     [
-        parser.parse(source, None).unwrap(),
+        parser.parse(source).unwrap(),
         parser
-            .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>(), None)
+            .parse_utf16_le(source.encode_utf16().collect::<Vec<_>>())
             .unwrap(),
     ]
 }
@@ -3040,7 +3016,7 @@ fn test_lexing_after_nonterminal_extra() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let tree = parser
-        .parse("main :: () {}\n// comment\n#import \"Basic\";\n", None)
+        .parse("main :: () {}\n// comment\n#import \"Basic\";\n")
         .unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
@@ -3059,7 +3035,6 @@ fn test_parsing_simple_string() {
         struct Stuff {}
         fn main() {}
     ",
-            None,
         )
         .unwrap();
 
@@ -3122,11 +3097,11 @@ fn test_parsing_reports_version_budget_when_valid_alternatives_are_lost() {
             sender.send(message.to_owned()).unwrap();
         }
     })));
-    assert!(!parser.parse("x", None).unwrap().root_node().has_error());
+    assert!(!parser.parse("x").unwrap().root_node().has_error());
     assert!(receiver.try_iter().next().is_none());
     for i in 0..12 {
         let source = format!("abc{i}");
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         let limit_count = receiver.try_iter().count();
         if tree.root_node().has_error() {
             assert!(
@@ -3157,7 +3132,6 @@ fn test_parsing_with_logging() {
         struct Stuff {}
         fn main() {}
     ",
-            None,
         )
         .unwrap();
 
@@ -3188,7 +3162,7 @@ fn test_parsing_with_debug_graph_enabled() {
 
     let mut debug_graph_file = tempfile::tempfile().unwrap();
     parser.print_dot_graphs(&debug_graph_file);
-    parser.parse("const zero = 0", None).unwrap();
+    parser.parse("const zero = 0").unwrap();
 
     debug_graph_file.rewind().unwrap();
     let log_reader = BufReader::new(debug_graph_file)
@@ -3225,7 +3199,6 @@ fn test_parsing_with_custom_utf8_input() {
                 }
             },
             None,
-            None,
         )
         .unwrap();
 
@@ -3256,7 +3229,7 @@ fn test_parsing_utf8_with_short_input_chunks() {
         b"\"\xf0\x9f\x98", // Truncated character at EOF.
         b"\xc0\xaf;\n\xe2\x82;\n\xed\xa0\x80;\n\xf4\x90\x80\x80;", // Invalid UTF-8.
     ] {
-        let expected = parser.parse(source, None).unwrap();
+        let expected = parser.parse(source).unwrap();
         for size in 1..=4 {
             let actual = parser
                 .parse_with_options(
@@ -3269,7 +3242,6 @@ fn test_parsing_utf8_with_short_input_chunks() {
                         // Owned chunks exercise buffer replacement on each read.
                         source[offset..source.len().min(offset + size)].to_vec()
                     },
-                    None,
                     None,
                 )
                 .unwrap();
@@ -3293,8 +3265,8 @@ fn test_parsing_utf16_with_short_input_chunks() {
     ] {
         let le_units = units.iter().copied().map(u16::to_le).collect::<Vec<_>>();
         let be_units = units.iter().copied().map(u16::to_be).collect::<Vec<_>>();
-        let expected_le = parser.parse_utf16_le(&le_units, None).unwrap();
-        let expected_be = parser.parse_utf16_be(&be_units, None).unwrap();
+        let expected_le = parser.parse_utf16_le(&le_units).unwrap();
+        let expected_be = parser.parse_utf16_be(&be_units).unwrap();
         assert_eq!(
             expected_le.root_node().to_sexp(),
             expected_be.root_node().to_sexp()
@@ -3311,7 +3283,6 @@ fn test_parsing_utf16_with_short_input_chunks() {
                         assert_eq!(point, Point::new(row, column));
                         le_units[offset..le_units.len().min(offset + size)].to_vec()
                     },
-                    None,
                     None,
                 )
                 .unwrap();
@@ -3334,7 +3305,6 @@ fn test_parsing_utf16_with_short_input_chunks() {
                         assert_eq!(point, Point::new(row, column));
                         be_units[offset..be_units.len().min(offset + size)].to_vec()
                     },
-                    None,
                     None,
                 )
                 .unwrap();
@@ -3378,7 +3348,6 @@ fn test_parsing_with_custom_utf16le_input() {
                 }
             },
             None,
-            None,
         )
         .unwrap();
 
@@ -3421,7 +3390,6 @@ fn test_parsing_with_custom_utf16_be_input() {
                 }
             },
             None,
-            None,
         )
         .unwrap();
     let root = tree.root_node();
@@ -3441,11 +3409,11 @@ fn test_utf16_decodes_surrogate_pairs() {
     parser.set_language(&language).unwrap();
 
     let le = [0xD83D_u16.to_le(), 0xDE00_u16.to_le()];
-    let tree = parser.parse_utf16_le(le, None).unwrap();
+    let tree = parser.parse_utf16_le(le).unwrap();
     assert_eq!(tree.root_node().to_sexp(), "(program (supplementary))");
 
     let be = [0xD83D_u16.to_be(), 0xDE00_u16.to_be()];
-    let tree = parser.parse_utf16_be(be, None).unwrap();
+    let tree = parser.parse_utf16_be(be).unwrap();
     assert_eq!(tree.root_node().to_sexp(), "(program (supplementary))");
 }
 
@@ -3488,11 +3456,11 @@ fn test_utf16_decode_does_not_read_oob() {
     // buffer contains native u16 values.
     #[cfg(target_endian = "little")]
     let tree = parser
-        .parse_utf16_le_with_options(&mut callback, None, None)
+        .parse_utf16_le_with_options(&mut callback, None)
         .unwrap();
     #[cfg(target_endian = "big")]
     let tree = parser
-        .parse_utf16_be_with_options(&mut callback, None, None)
+        .parse_utf16_be_with_options(&mut callback, None)
         .unwrap();
 
     let root = tree.root_node();
@@ -3518,7 +3486,6 @@ fn test_parsing_with_callback_returning_owned_strings() {
         .parse_with_options(
             &mut |i, _| String::from_utf8(text[i..].to_vec()).unwrap(),
             None,
-            None,
         )
         .unwrap();
 
@@ -3541,7 +3508,6 @@ fn test_parsing_text_with_byte_order_mark() {
                 .encode_utf16()
                 .map(u16::to_le)
                 .collect::<Vec<_>>(),
-            None,
         )
         .unwrap();
     assert_eq!(
@@ -3551,44 +3517,20 @@ fn test_parsing_text_with_byte_order_mark() {
     assert_eq!(tree.root_node().start_byte(), 2);
 
     // Parse UTF8 text with a BOM
-    let mut tree = parser.parse("\u{FEFF}fn a() {}", None).unwrap();
+    let tree = parser.parse("\u{FEFF}fn a() {}").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(source_file (function_item name: (identifier) parameters: (parameters) body: (block)))"
     );
     assert_eq!(tree.root_node().start_byte(), 3);
 
-    // Edit the text, inserting a character before the BOM. The BOM is now an error.
-    tree.edit(&InputEdit {
-        start_byte: 0,
-        old_end_byte: 0,
-        new_end_byte: 1,
-        start_position: Point::new(0, 0),
-        old_end_position: Point::new(0, 0),
-        new_end_position: Point::new(0, 1),
-    });
-    let mut tree = parser.parse(" \u{FEFF}fn a() {}", Some(&tree)).unwrap();
+    // When a character precedes the BOM, the BOM is an error.
+    let tree = parser.parse(" \u{FEFF}fn a() {}").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(source_file (ERROR (UNEXPECTED 65279)) (function_item name: (identifier) parameters: (parameters) body: (block)))"
     );
     assert_eq!(tree.root_node().start_byte(), 1);
-
-    // Edit the text again, putting the BOM back at the beginning.
-    tree.edit(&InputEdit {
-        start_byte: 0,
-        old_end_byte: 1,
-        new_end_byte: 0,
-        start_position: Point::new(0, 0),
-        old_end_position: Point::new(0, 1),
-        new_end_position: Point::new(0, 0),
-    });
-    let tree = parser.parse("\u{FEFF}fn a() {}", Some(&tree)).unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        "(source_file (function_item name: (identifier) parameters: (parameters) body: (block)))"
-    );
-    assert_eq!(tree.root_node().start_byte(), 3);
 }
 
 #[test]
@@ -3618,7 +3560,7 @@ fn test_eof_extras_preserve_immediate_token_longest_match() {
                 ("ab", "(source (long))"),
                 ("aab", "(source (short) (long))"),
             ] {
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 assert_eq!(
                     tree.root_node().to_sexp(),
                     expected,
@@ -3651,7 +3593,6 @@ fn test_complete_continuation_extras_at_eof() {
                                 &source.as_bytes()[offset..source.len().min(offset + chunk)]
                             },
                             None,
-                            None,
                         )
                         .unwrap();
                     assert_eq!(
@@ -3665,16 +3606,10 @@ fn test_complete_continuation_extras_at_eof() {
                 let utf16 = source.encode_utf16().collect::<Vec<_>>();
                 for tree in [
                     parser
-                        .parse_utf16_le(
-                            utf16.iter().copied().map(u16::to_le).collect::<Vec<_>>(),
-                            None,
-                        )
+                        .parse_utf16_le(utf16.iter().copied().map(u16::to_le).collect::<Vec<_>>())
                         .unwrap(),
                     parser
-                        .parse_utf16_be(
-                            utf16.iter().copied().map(u16::to_be).collect::<Vec<_>>(),
-                            None,
-                        )
+                        .parse_utf16_be(utf16.iter().copied().map(u16::to_be).collect::<Vec<_>>())
                         .unwrap(),
                 ] {
                     assert_eq!(tree.root_node().to_sexp(), "(source_file (identifier))");
@@ -3691,20 +3626,20 @@ fn test_complete_continuation_extras_at_eof() {
                 }
             }
         }
-        let ordinary = parser.parse("int value;\n", None).unwrap();
+        let ordinary = parser.parse("int value;\n").unwrap();
         assert_eq!(ordinary.root_node().to_sexp(), "(source_file (identifier))");
         assert_eq!(ordinary.root_node().end_position(), Point::new(1, 0));
         for source in ["", "\\\n", "\\\r", "\\\r\n", "\\\n\r"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().to_sexp(), "(source_file)");
         }
-        let tree = parser.parse("int value;\\\nint next;", None).unwrap();
+        let tree = parser.parse("int value;\\\nint next;").unwrap();
         assert_eq!(
             tree.root_node().to_sexp(),
             "(source_file (identifier) (identifier))"
         );
         for source in [r"int value;\", r"int value;\u", r"int value;\u000"] {
-            assert!(parser.parse(source, None).unwrap().root_node().has_error());
+            assert!(parser.parse(source).unwrap().root_node().has_error());
         }
     }
 }
@@ -3713,7 +3648,7 @@ fn test_complete_continuation_extras_at_eof() {
 fn test_parsing_invalid_chars_at_eof() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
-    let tree = parser.parse(b"\xdf", None).unwrap();
+    let tree = parser.parse(b"\xdf").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(document (ERROR (UNEXPECTED INVALID)))"
@@ -3724,7 +3659,7 @@ fn test_parsing_invalid_chars_at_eof() {
 fn test_parsing_unexpected_null_characters_within_source() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse(b"var \0 something;", None).unwrap();
+    let tree = parser.parse(b"var \0 something;").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(program (variable_declaration (ERROR (UNEXPECTED '\\0')) (variable_declarator name: (identifier))))"
@@ -3748,106 +3683,9 @@ fn test_parsing_ends_when_input_callback_returns_empty() {
                 }
             },
             None,
-            None,
         )
         .unwrap();
     assert_eq!(tree.root_node().end_byte(), 6);
-}
-
-#[test]
-fn test_parsing_after_editing_beginning_of_code() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("javascript")).unwrap();
-
-    let mut code = b"123 + 456 * (10 + x);".to_vec();
-    let mut tree = parser.parse(&code, None).unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(program (expression_statement (binary_expression ",
-            "left: (number) ",
-            "right: (binary_expression left: (number) right: (parenthesized_expression ",
-            "(binary_expression left: (number) right: (identifier)))))))",
-        )
-    );
-
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position: 3,
-            deleted_length: 0,
-            inserted_text: b" || 5".to_vec(),
-        },
-    )
-    .unwrap();
-
-    let mut recorder = ReadRecorder::new(&code);
-    let tree = parser
-        .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
-        .unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(program (expression_statement (binary_expression ",
-            "left: (number) ",
-            "right: (binary_expression ",
-            "left: (number) ",
-            "right: (binary_expression ",
-            "left: (number) ",
-            "right: (parenthesized_expression (binary_expression left: (number) right: (identifier))))))))",
-        )
-    );
-
-    assert_eq!(recorder.strings_read(), vec!["123 || 5 "]);
-}
-
-#[test]
-fn test_parsing_after_editing_end_of_code() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("javascript")).unwrap();
-
-    let mut code = b"x * (100 + abc);".to_vec();
-    let mut tree = parser.parse(&code, None).unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(program (expression_statement (binary_expression ",
-            "left: (identifier) ",
-            "right: (parenthesized_expression (binary_expression left: (number) right: (identifier))))))",
-        )
-    );
-
-    let position = code.len() - 2;
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position,
-            deleted_length: 0,
-            inserted_text: b".d".to_vec(),
-        },
-    )
-    .unwrap();
-
-    let mut recorder = ReadRecorder::new(&code);
-    let tree = parser
-        .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
-        .unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(program (expression_statement (binary_expression ",
-            "left: (identifier) ",
-            "right: (parenthesized_expression (binary_expression ",
-            "left: (number) ",
-            "right: (member_expression ",
-            "object: (identifier) ",
-            "property: (property_identifier)))))))"
-        )
-    );
-
-    assert_eq!(recorder.strings_read(), vec![" * ", "abc.d)",]);
 }
 
 #[test]
@@ -3857,7 +3695,7 @@ fn test_parsing_keyword_context_reaches_end_of_input() {
         .set_language(&get_test_fixture_language("keyword_reuse"))
         .unwrap();
     let source = "\"``\"&while'';esacif;then;elif;then``;fi";
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     assert_eq!(tree.root_node().end_byte(), source.len());
 }
 
@@ -3867,25 +3705,13 @@ fn test_parsing_multibyte_characters_after_an_identifier() {
     parser.set_language(&get_language("javascript")).unwrap();
 
     // U+200B cannot continue an identifier and U+200C can.
-    let tree = parser.parse("a\u{200B}b;", None).unwrap();
+    let tree = parser.parse("a\u{200B}b;").unwrap();
     assert!(tree.root_node().has_error());
-    let tree = parser.parse("a\u{200C}b;", None).unwrap();
+    let tree = parser.parse("a\u{200C}b;").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(program (expression_statement (identifier)))"
     );
-}
-
-#[test]
-fn test_parsing_empty_file_with_reused_tree() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("rust")).unwrap();
-
-    let tree = parser.parse("", None);
-    parser.parse("", tree.as_ref());
-
-    let tree = parser.parse("\n  ", None);
-    parser.parse("\n  ", tree.as_ref());
 }
 
 #[test]
@@ -3906,7 +3732,7 @@ fn assert_keyword_relex_is_linear(parser: &mut Parser) {
                         parse_column_keyword_input(parser, source.as_bytes(), chunk_size);
                     assert!(!tree.root_node().has_error(), "{word:?} {ending:?}");
                     assert_eq!(tree.root_node().named_child_count(), count);
-                    let fresh = parser.parse(&source, None).unwrap();
+                    let fresh = parser.parse(&source).unwrap();
                     assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
                     assert!(
                         reads < source.len() * 8,
@@ -3950,7 +3776,7 @@ fn test_keyword_relex_column_checkpoints_with_included_ranges() {
                 ])
                 .unwrap();
             let (tree, reads) = parse_column_keyword_input(&mut parser, source.as_bytes(), 7);
-            let fresh = parser.parse(&source, None).unwrap();
+            let fresh = parser.parse(&source).unwrap();
             assert!(!tree.root_node().has_error());
             assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
             assert_eq!(tree.root_node().range(), fresh.root_node().range());
@@ -3991,7 +3817,7 @@ fn test_keyword_relex_column_checkpoints_with_utf16_input() {
     for mut parser in column_keyword_parsers() {
         for word in ["x", "whilex", "while", "λx", "😀x", "dx", "sx"] {
             let source = format!("{word} = 1\r").repeat(500);
-            let expected = parser.parse(&source, None).unwrap();
+            let expected = parser.parse(&source).unwrap();
             for big_endian in [false, true] {
                 let units = source
                     .encode_utf16()
@@ -4050,9 +3876,9 @@ fn parse_column_keyword_utf16_input(
         &remaining[..size]
     };
     let tree = if big_endian {
-        parser.parse_utf16_be_with_options(&mut read, None, None)
+        parser.parse_utf16_be_with_options(&mut read, None)
     } else {
-        parser.parse_utf16_le_with_options(&mut read, None, None)
+        parser.parse_utf16_le_with_options(&mut read, None)
     }
     .unwrap();
     (tree, reads)
@@ -4080,7 +3906,6 @@ fn parse_column_keyword_input(
                 reads += chunk.len();
                 chunk
             },
-            None,
             None,
         )
         .unwrap();
@@ -4114,7 +3939,7 @@ fn test_position_dependent_scanners() {
                                     Vec::new()
                                 })
                                 .unwrap();
-                            let tree = parser.parse(&source, None).unwrap();
+                            let tree = parser.parse(&source).unwrap();
                             assert!(
                                 !tree.root_node().has_error(),
                                 "{reader} {field} failed={failed_scan} included={included}"
@@ -4151,7 +3976,7 @@ fn test_position_checkpoint_restore_scanner() {
                         Vec::new()
                     })
                     .unwrap();
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 assert!(!tree.root_node().has_error(), "included={included}");
             }
         }
@@ -4296,7 +4121,6 @@ fn test_column_replay_work_is_linear_after_scanner_lookahead() {
                         chunk
                     },
                     None,
-                    None,
                 )
                 .unwrap();
             assert!(!tree.root_node().has_error(), "{separator:?}");
@@ -4324,18 +4148,15 @@ fn test_column_replay_preserves_unicode_columns() {
         ),
     ] {
         for encoding in ["utf8", "utf16le", "utf16be"] {
-            let tree = match encoding {
-                "utf16le" => parser.parse_utf16_le(
-                    source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
-                    None,
-                ),
-                "utf16be" => parser.parse_utf16_be(
-                    source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
-                    None,
-                ),
-                _ => parser.parse(source, None),
-            }
-            .unwrap();
+            let tree =
+                match encoding {
+                    "utf16le" => parser
+                        .parse_utf16_le(source.encode_utf16().map(u16::to_le).collect::<Vec<_>>()),
+                    "utf16be" => parser
+                        .parse_utf16_be(source.encode_utf16().map(u16::to_be).collect::<Vec<_>>()),
+                    _ => parser.parse(source),
+                }
+                .unwrap();
             assert!(!tree.root_node().has_error(), "{source:?} {encoding}");
             let kinds = tree
                 .root_node()
@@ -4373,7 +4194,7 @@ fn test_column_replay_across_row_changing_range_gaps() {
                 },
             ])
             .unwrap();
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(!tree.root_node().has_error(), "{source:?}");
         let kinds = tree
             .root_node()
@@ -4420,7 +4241,7 @@ fn test_column_query_replay_preserves_included_range_provenance() {
                     })
                     .collect::<Vec<_>>();
                 parser.set_included_ranges(&ranges).unwrap();
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 assert!(!tree.root_node().has_error(), "{segment:?} {columns:?}");
                 let kinds = tree
                     .root_node()
@@ -4438,7 +4259,7 @@ fn test_column_query_replay_preserves_included_range_provenance() {
                     "{segment:?} {columns:?}"
                 );
                 parser.set_included_ranges(&[]).unwrap();
-                let replacement = parser.parse(segment, None).unwrap();
+                let replacement = parser.parse(segment).unwrap();
                 assert!(!replacement.root_node().has_error());
                 assert_eq!(
                     replacement.root_node().named_child(0).unwrap().kind(),
@@ -4472,7 +4293,7 @@ fn test_column_query_replay_in_row_changing_ranges() {
                 },
             ])
             .unwrap();
-        let tree = parser.parse("axXXax", None).unwrap();
+        let tree = parser.parse("axXXax").unwrap();
         assert_eq!(
             tree.root_node().to_sexp(),
             "(document (odd_column) (even_column))"
@@ -4509,7 +4330,6 @@ fn test_scalar_column_replay_preserves_active_display_width() {
                 .parse_with_options(
                     &mut |offset, _| &source[offset..source.len().min(offset + chunk)],
                     None,
-                    None,
                 )
                 .unwrap();
             assert_eq!(
@@ -4521,142 +4341,17 @@ fn test_scalar_column_replay_preserves_active_display_width() {
 }
 
 #[test]
-fn test_parsing_after_editing_tree_that_depends_on_column_values() {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_test_fixture_language("uses_current_column"))
-        .unwrap();
-
-    let mut code = b"
-a = b
-c = do d
-       e + f
-       g
-h + i
-    "
-    .to_vec();
-    let mut tree = parser.parse(&code, None).unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(block ",
-            "(binary_expression (identifier) (identifier)) ",
-            "(binary_expression (identifier) (do_expression (block (identifier) (binary_expression (identifier) (identifier)) (identifier)))) ",
-            "(binary_expression (identifier) (identifier)))",
-        )
-    );
-
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position: 8,
-            deleted_length: 0,
-            inserted_text: b"1234".to_vec(),
-        },
-    )
-    .unwrap();
-
-    assert_eq!(
-        code,
-        b"
-a = b
-c1234 = do d
-       e + f
-       g
-h + i
-    "
-    );
-
-    let mut recorder = ReadRecorder::new(&code);
-    let tree = parser
-        .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
-        .unwrap();
-
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(block ",
-            "(binary_expression (identifier) (identifier)) ",
-            "(binary_expression (identifier) (do_expression (block (identifier)))) ",
-            "(binary_expression (identifier) (identifier)) ",
-            "(identifier) ",
-            "(binary_expression (identifier) (identifier)))",
-        )
-    );
-
-    assert_eq!(
-        recorder.strings_read(),
-        vec!["\nc1234 = do d\n       e + f\n       g\n"]
-    );
-}
-
-#[test]
-fn test_parsing_after_editing_tree_that_depends_on_column_position() {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_test_fixture_language("depends_on_column"))
-        .unwrap();
-
-    let mut code = b"\n x".to_vec();
-    let mut tree = parser.parse(&code, None).unwrap();
-    assert_eq!(tree.root_node().to_sexp(), "(x_is_at (odd_column))");
-
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position: 1,
-            deleted_length: 0,
-            inserted_text: b" ".to_vec(),
-        },
-    )
-    .unwrap();
-
-    assert_eq!(code, b"\n  x");
-
-    let mut recorder = ReadRecorder::new(&code);
-    let mut tree = parser
-        .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
-        .unwrap();
-
-    assert_eq!(tree.root_node().to_sexp(), "(x_is_at (even_column))",);
-    assert_eq!(recorder.strings_read(), vec!["\n  x"]);
-
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position: 1,
-            deleted_length: 0,
-            inserted_text: b"\n".to_vec(),
-        },
-    )
-    .unwrap();
-
-    assert_eq!(code, b"\n\n  x");
-
-    let mut recorder = ReadRecorder::new(&code);
-    let tree = parser
-        .parse_with_options(&mut |i, _| recorder.read(i), Some(&tree), None)
-        .unwrap();
-
-    assert_eq!(tree.root_node().to_sexp(), "(x_is_at (even_column))",);
-    assert_eq!(recorder.strings_read(), vec!["\n\n  x"]);
-}
-
-#[test]
 fn test_column_dependent_token_after_balancing_repeat() {
     let mut parser = Parser::new();
     parser
         .set_language(&get_test_fixture_language("column_dependent_repeat"))
         .unwrap();
-    let tree = parser.parse("\nax\na", None).unwrap();
+    let tree = parser.parse("\nax\na").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(document (newline) (word) (tail) (newline) (word))"
     );
-    let tree = parser.parse("\na\nx\na", None).unwrap();
+    let tree = parser.parse("\na\nx\na").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(document (newline) (word) (newline) (head) (newline) (word))"
@@ -4664,115 +4359,28 @@ fn test_column_dependent_token_after_balancing_repeat() {
 }
 
 #[test]
-fn test_parsing_after_failed_external_scan_that_depends_on_column() {
-    let mut parser = Parser::new();
-    parser
-        .set_language(&get_test_fixture_language("depends_on_column_failed_scan"))
-        .unwrap();
-
-    let mut code = b"ax".to_vec();
-    let mut tree = parser.parse(&code, None).unwrap();
-    assert_eq!(tree.root_node().to_sexp(), "(document (letter) (tail))");
-
-    perform_edit(
-        &mut tree,
-        &mut code,
-        &Edit {
-            position: 0,
-            deleted_length: 1,
-            inserted_text: b"\n".to_vec(),
-        },
-    )
-    .unwrap();
-
-    let incremental = parser.parse(&code, Some(&tree)).unwrap();
-    let fresh = parser.parse(&code, None).unwrap();
-    assert_eq!(fresh.root_node().to_sexp(), "(document (newline) (head))");
-    assert_eq!(
-        incremental.root_node().to_sexp(),
-        fresh.root_node().to_sexp()
-    );
-}
-
-#[test]
-fn test_parsing_after_detecting_error_in_the_middle_of_a_string_token() {
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("python")).unwrap();
-
-    let mut source = b"a = b, 'c, d'".to_vec();
-    let tree = parser.parse(&source, None).unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        "(module (expression_statement (assignment left: (identifier) right: (expression_list (identifier) (string (string_start) (string_content) (string_end))))))"
-    );
-
-    // Delete a suffix of the source code, starting in the middle of the string
-    // literal, after some whitespace. With this deletion, the remaining string
-    // content: "c, " looks like two valid python tokens: an identifier and a comma.
-    // When this edit is undone, in order correctly recover the original tree, the
-    // parser needs to remember that before matching the `c` as an identifier, it
-    // lookahead ahead several bytes, trying to find the closing quotation mark in
-    // order to match the "string content" node.
-    let edit_ix = std::str::from_utf8(&source).unwrap().find("d'").unwrap();
-    let edit = Edit {
-        position: edit_ix,
-        deleted_length: source.len() - edit_ix,
-        inserted_text: Vec::new(),
-    };
-    let undo = invert_edit(&source, &edit);
-
-    let mut tree2 = tree.clone();
-    perform_edit(&mut tree2, &mut source, &edit).unwrap();
-    tree2 = parser.parse(&source, Some(&tree2)).unwrap();
-    assert!(tree2.root_node().has_error());
-
-    let mut tree3 = tree2.clone();
-    perform_edit(&mut tree3, &mut source, &undo).unwrap();
-    tree3 = parser.parse(&source, Some(&tree3)).unwrap();
-    assert_eq!(tree3.root_node().to_sexp(), tree.root_node().to_sexp(),);
-}
-
-#[test]
 fn test_parsing_on_multiple_threads() {
-    // Parse this source file so that each thread has a non-trivial amount of
-    // work to do.
     let this_file_source = include_str!("parser_test.rs");
 
     let mut parser = Parser::new();
     parser.set_language(&get_language("rust")).unwrap();
-    let tree = parser.parse(this_file_source, None).unwrap();
+    let tree = parser.parse(this_file_source).unwrap();
 
     let mut parse_threads = Vec::new();
     for thread_id in 1..5 {
-        let mut tree_clone = tree.clone();
         parse_threads.push(thread::spawn(move || {
-            // For each thread, prepend a different number of declarations to the
-            // source code.
-            let mut prepend_line_count = 0;
             let mut prepended_source = String::new();
             for _ in 0..thread_id {
-                prepend_line_count += 2;
                 prepended_source += "struct X {}\n\n";
             }
-
-            tree_clone.edit(&InputEdit {
-                start_byte: 0,
-                old_end_byte: 0,
-                new_end_byte: prepended_source.len(),
-                start_position: Point::new(0, 0),
-                old_end_position: Point::new(0, 0),
-                new_end_position: Point::new(prepend_line_count, 0),
-            });
             prepended_source += this_file_source;
 
-            // Reparse using the old tree as a starting point.
             let mut parser = Parser::new();
             parser.set_language(&get_language("rust")).unwrap();
-            parser.parse(&prepended_source, Some(&tree_clone)).unwrap()
+            parser.parse(&prepended_source).unwrap()
         }));
     }
 
-    // Check that the trees have the expected relationship to one another.
     let trees = parse_threads
         .into_iter()
         .map(|thread| thread.join().unwrap());
@@ -4809,7 +4417,6 @@ fn test_parsing_cancelled_by_another_thread() {
                 "0,".as_bytes()
             }
         },
-        None,
         Some(ParseOptions::new().progress_callback(callback)),
     );
     assert!(tree.is_some());
@@ -4826,7 +4433,6 @@ fn test_parsing_cancelled_by_another_thread() {
             thread::sleep(time::Duration::from_millis(10));
             if offset == 0 { b" [" } else { b"0," }
         },
-        None,
         Some(ParseOptions::new().progress_callback(callback)),
     );
 
@@ -4855,7 +4461,6 @@ fn test_parsing_with_a_timeout() {
         let start_time = time::Instant::now();
         let tree = parser.parse_with_options(
             &mut read,
-            None,
             Some(ParseOptions::new().progress_callback(&mut |_| {
                 if start_time.elapsed().as_micros() > timeout_micros {
                     ControlFlow::Break(())
@@ -4871,8 +4476,8 @@ fn test_parsing_with_a_timeout() {
     }
 
     let source = format!(" [{}]", ",0".repeat(read_end / 2 + 1));
-    let tree = parser.parse(source.as_bytes(), None).unwrap();
-    let fresh = parser.parse(source.as_bytes(), None).unwrap();
+    let tree = parser.parse(source.as_bytes()).unwrap();
+    let fresh = parser.parse(source.as_bytes()).unwrap();
     assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
     assert_eq!(tree.root_node().child(0).unwrap().kind(), "array");
 }
@@ -4893,7 +4498,6 @@ fn test_parsing_with_a_timeout_and_a_reset() {
                 &code.as_bytes()[offset..]
             }
         },
-        None,
         Some(ParseOptions::new().progress_callback(&mut |_| {
             if start_time.elapsed().as_micros() > 5 {
                 ControlFlow::Break(())
@@ -4906,10 +4510,7 @@ fn test_parsing_with_a_timeout_and_a_reset() {
 
     // Without calling reset, the parser continues from where it left off, so
     // it does not see the changes to the beginning of the source code.
-    let tree = parser.parse(
-        "[null, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]",
-        None,
-    ).unwrap();
+    let tree = parser.parse("[null, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]").unwrap();
     assert_eq!(
         tree.root_node()
             .named_child(0)
@@ -4930,7 +4531,6 @@ fn test_parsing_with_a_timeout_and_a_reset() {
                 &code.as_bytes()[offset..]
             }
         },
-        None,
         Some(ParseOptions::new().progress_callback(&mut |_| {
             if start_time.elapsed().as_micros() > 5 {
                 ControlFlow::Break(())
@@ -4944,10 +4544,7 @@ fn test_parsing_with_a_timeout_and_a_reset() {
     // By calling reset, we force the parser to start over from scratch so
     // that it sees the changes to the beginning of the source code.
     parser.reset();
-    let tree = parser.parse(
-        "[null, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]",
-        None,
-    ).unwrap();
+    let tree = parser.parse("[null, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]").unwrap();
     assert_eq!(
         tree.root_node()
             .named_child(0)
@@ -4976,7 +4573,6 @@ fn test_parsing_with_a_timeout_and_implicit_reset() {
                     &code.as_bytes()[offset..]
                 }
             },
-            None,
             Some(ParseOptions::new().progress_callback(&mut |_| {
                 if start_time.elapsed().as_micros() > 5 {
                     ControlFlow::Break(())
@@ -4990,10 +4586,7 @@ fn test_parsing_with_a_timeout_and_implicit_reset() {
         // Changing the parser's language implicitly resets, discarding
         // the previous partial parse.
         parser.set_language(&get_language("json")).unwrap();
-        let tree = parser.parse(
-            "[null, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]",
-            None,
-        ).unwrap();
+        let tree = parser.parse("[null, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]").unwrap();
         assert_eq!(
             tree.root_node()
                 .named_child(0)
@@ -5023,7 +4616,6 @@ fn test_parsing_with_timeout_and_no_completion() {
                     &code.as_bytes()[offset..]
                 }
             },
-            None,
             Some(ParseOptions::new().progress_callback(&mut |_| {
                 if start_time.elapsed().as_micros() > 5 {
                     ControlFlow::Break(())
@@ -5045,7 +4637,7 @@ fn test_parsing_cancellation_limits_acceptance_allocation() {
     let ((), complete_bytes) = allocations::record_allocated_bytes(|| {
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         assert!(tree.root_node().has_error());
     });
     let ((), canceled_bytes) = allocations::record_allocated_bytes(|| {
@@ -5053,7 +4645,6 @@ fn test_parsing_cancellation_limits_acceptance_allocation() {
         parser.set_language(&language).unwrap();
         let tree = parser.parse_with_options(
             &mut |offset, _| source.as_bytes().get(offset..).unwrap_or_default(),
-            None,
             Some(ParseOptions::new().progress_callback(&mut |state| {
                 if state.current_byte_offset() == source.len() {
                     ControlFlow::Break(())
@@ -5077,7 +4668,7 @@ fn test_parsing_cancellation_resumes_acceptance() {
     allocations::record(|| {
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
-        let expected = parser.parse(&source, None).unwrap().root_node().to_sexp();
+        let expected = parser.parse(&source).unwrap().root_node().to_sexp();
         let end_checks = Cell::new(0);
         let mut callback = |state: &ParseState| {
             if state.current_byte_offset() == source.len() {
@@ -5092,8 +4683,7 @@ fn test_parsing_cancellation_resumes_acceptance() {
             parser
                 .parse_with_options(
                     &mut read,
-                    None,
-                    Some(ParseOptions::new().progress_callback(&mut callback)),
+                    Some(ParseOptions::new().progress_callback(&mut callback))
                 )
                 .is_none()
         );
@@ -5101,7 +4691,6 @@ fn test_parsing_cancellation_resumes_acceptance() {
         for _ in 0..source.len() * 2 {
             completed = parser.parse_with_options(
                 &mut read,
-                None,
                 Some(ParseOptions::new().progress_callback(&mut callback)),
             );
             if completed.is_some() {
@@ -5115,7 +4704,6 @@ fn test_parsing_cancellation_resumes_acceptance() {
         let tree = parser
             .parse_with_options(
                 &mut read,
-                None,
                 Some(ParseOptions::new().progress_callback(&mut |state| {
                     if state.current_byte_offset() == source.len() {
                         uninterrupted_checks += 1;
@@ -5130,7 +4718,6 @@ fn test_parsing_cancellation_resumes_acceptance() {
             let mut checks = 0;
             let tree = parser.parse_with_options(
                 &mut read,
-                None,
                 Some(ParseOptions::new().progress_callback(&mut |state| {
                     if state.current_byte_offset() == source.len() {
                         checks += 1;
@@ -5144,7 +4731,7 @@ fn test_parsing_cancellation_resumes_acceptance() {
             );
             assert!(tree.is_none());
             parser.reset();
-            let tree = parser.parse("const valid = 1;", None).unwrap();
+            let tree = parser.parse("const valid = 1;").unwrap();
             assert!(!tree.root_node().has_error());
         }
 
@@ -5152,8 +4739,7 @@ fn test_parsing_cancellation_resumes_acceptance() {
             parser
                 .parse_with_options(
                     &mut read,
-                    None,
-                    Some(ParseOptions::new().progress_callback(&mut callback)),
+                    Some(ParseOptions::new().progress_callback(&mut callback))
                 )
                 .is_none()
         );
@@ -5179,7 +4765,6 @@ fn test_parsing_with_timeout_during_balancing() {
                     &code.as_bytes()[offset..]
                 }
             },
-            None,
             Some(ParseOptions::new().progress_callback(&mut |state| {
                 // The parser will call the progress_callback during parsing, and at the very end
                 // during tree-balancing. For very large trees, this balancing act can take quite
@@ -5212,7 +4797,6 @@ fn test_parsing_with_timeout_during_balancing() {
                     &code.as_bytes()[offset..]
                 }
             },
-            None,
             Some(ParseOptions::new().progress_callback(&mut |state| {
                 if state.current_byte_offset() != current_byte_offset {
                     current_byte_offset = state.current_byte_offset();
@@ -5238,7 +4822,6 @@ fn test_parsing_with_timeout_during_balancing() {
                         &code.as_bytes()[offset..]
                     }
                 },
-                None,
                 Some(ParseOptions::new().progress_callback(&mut |state| {
                     // Because we've already finished parsing, we should only be resuming the
                     // balancing phase.
@@ -5266,7 +4849,6 @@ fn test_parsing_with_timeout_when_error_detected() {
             1..=1000 => "0,",
             _ => erroneous_code,
         },
-        None,
         Some(ParseOptions::new().progress_callback(&mut |state| {
             offset = state.current_byte_offset();
             if state.has_error() {
@@ -5293,7 +4875,7 @@ fn test_parsing_with_one_included_range() {
 
     let mut parser = Parser::new();
     parser.set_language(&get_language("html")).unwrap();
-    let html_tree = parser.parse(source_code, None).unwrap();
+    let html_tree = parser.parse(source_code).unwrap();
     let script_content_node = html_tree.root_node().child(1).unwrap().child(1).unwrap();
     assert_eq!(script_content_node.kind(), "raw_text");
 
@@ -5311,7 +4893,7 @@ fn test_parsing_with_one_included_range() {
         .unwrap();
     assert_eq!(parser.included_ranges(), &[script_content_node.range()]);
     parser.set_language(&get_language("javascript")).unwrap();
-    let js_tree = parser.parse(source_code, None).unwrap();
+    let js_tree = parser.parse(source_code).unwrap();
 
     assert_eq!(
         js_tree.root_node().to_sexp(),
@@ -5339,7 +4921,7 @@ fn test_contiguous_included_ranges_preserve_javascript_expressions() {
         "function f() { return value; }",
     ] {
         parser.set_included_ranges(&[]).unwrap();
-        let expected = parser.parse(source, None).unwrap().root_node().to_sexp();
+        let expected = parser.parse(source).unwrap().root_node().to_sexp();
         for split in 1..source.len() {
             let ranges = [
                 Range {
@@ -5371,7 +4953,7 @@ fn test_contiguous_included_ranges_preserve_javascript_expressions() {
             ];
             for ranges in [&ranges[..], &with_empty[..]] {
                 parser.set_included_ranges(ranges).unwrap();
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 assert_eq!(
                     tree.root_node().to_sexp(),
                     expected,
@@ -5395,7 +4977,7 @@ fn test_empty_included_ranges_preserve_disjoint_statement_boundaries() {
     parser.set_language(&get_language("javascript")).unwrap();
     let ranges = [range(0, 3), range(4, 9)];
     parser.set_included_ranges(&ranges).unwrap();
-    let expected = parser.parse("foo (bar)", None).unwrap();
+    let expected = parser.parse("foo (bar)").unwrap();
     assert_eq!(
         expected.root_node().to_sexp(),
         "(program (expression_statement (identifier)) (expression_statement (parenthesized_expression (identifier))))"
@@ -5411,7 +4993,7 @@ fn test_empty_included_ranges_preserve_disjoint_statement_boundaries() {
         ],
     ] {
         parser.set_included_ranges(&ranges).unwrap();
-        let tree = parser.parse("foo (bar)", None).unwrap();
+        let tree = parser.parse("foo (bar)").unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected.root_node().to_sexp());
         assert_eq!(tree.included_ranges(), ranges);
     }
@@ -5453,7 +5035,7 @@ fn test_parsing_with_empty_included_ranges_and_parser_reuse() {
     parser.set_language(&get_language("json")).unwrap();
     for included_ranges in [&ranges, &ranges_with_empty, &ranges] {
         parser.set_included_ranges(included_ranges).unwrap();
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         assert!(!root.has_error());
         assert_eq!(
@@ -5480,7 +5062,7 @@ fn test_parsing_with_empty_included_ranges_and_parser_reuse() {
             empty_range(source.len(), Point::new(4, 0)),
         ])
         .unwrap();
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     assert_eq!(tree.root_node().to_sexp(), "(document)");
     assert_eq!(tree.root_node().start_byte(), source.len());
     assert_eq!(tree.root_node().end_byte(), source.len());
@@ -5492,7 +5074,7 @@ fn test_parsing_with_multiple_included_ranges() {
 
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let js_tree = parser.parse(source_code, None).unwrap();
+    let js_tree = parser.parse(source_code).unwrap();
     let template_string_node = js_tree
         .root_node()
         .descendant_for_byte_range(
@@ -5529,7 +5111,7 @@ fn test_parsing_with_multiple_included_ranges() {
         },
     ];
     parser.set_included_ranges(html_ranges).unwrap();
-    let html_tree = parser.parse(source_code, None).unwrap();
+    let html_tree = parser.parse(source_code).unwrap();
 
     assert_eq!(
         html_tree.root_node().to_sexp(),
@@ -5606,7 +5188,7 @@ fn test_parsing_with_included_range_containing_mismatched_positions() {
     parser.set_included_ranges(&[range_to_parse]).unwrap();
 
     let html_tree = parser
-        .parse_with_options(&mut chunked_input(source_code, 3), None, None)
+        .parse_with_options(&mut chunked_input(source_code, 3), None)
         .unwrap();
 
     assert_eq!(html_tree.root_node().range(), range_to_parse);
@@ -5679,7 +5261,7 @@ fn test_parsing_utf16_code_with_errors_at_the_end_of_an_included_range() {
             end_point: Point::new(0, end_byte),
         }])
         .unwrap();
-    let tree = parser.parse_utf16_le(&utf16_source_code, None).unwrap();
+    let tree = parser.parse_utf16_le(&utf16_source_code).unwrap();
     assert_eq!(tree.root_node().to_sexp(), "(program (ERROR (identifier)))");
 }
 
@@ -5710,7 +5292,7 @@ fn test_parsing_with_external_scanner_that_uses_included_range_boundaries() {
         ])
         .unwrap();
 
-    let tree = parser.parse(source_code, None).unwrap();
+    let tree = parser.parse(source_code).unwrap();
     let root = tree.root_node();
     let statement1 = root.child(0).unwrap();
     let statement2 = root.child(1).unwrap();
@@ -5728,163 +5310,6 @@ fn test_parsing_with_external_scanner_that_uses_included_range_boundaries() {
     assert_eq!(statement1.end_byte(), source_code.find(" %> c").unwrap());
     assert_eq!(statement2.start_byte(), source_code.find("d()").unwrap());
     assert_eq!(statement2.end_byte(), source_code.len() - " %>".len());
-}
-
-#[test]
-fn test_parsing_with_a_newly_excluded_range() {
-    let mut source_code = String::from("<div><span><%= something %></span></div>");
-
-    // Parse HTML including the template directive, which will cause an error
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("html")).unwrap();
-    let mut first_tree = parser
-        .parse_with_options(&mut chunked_input(&source_code, 3), None, None)
-        .unwrap();
-
-    // Insert code at the beginning of the document.
-    let prefix = "a very very long line of plain text. ";
-    first_tree.edit(&InputEdit {
-        start_byte: 0,
-        old_end_byte: 0,
-        new_end_byte: prefix.len(),
-        start_position: Point::new(0, 0),
-        old_end_position: Point::new(0, 0),
-        new_end_position: Point::new(0, prefix.len()),
-    });
-    source_code.insert_str(0, prefix);
-
-    // Parse the HTML again, this time *excluding* the template directive
-    // (which has moved since the previous parse).
-    let directive_start = source_code.find("<%=").unwrap();
-    let directive_end = source_code.find("</span>").unwrap();
-    let source_code_end = source_code.len();
-    parser
-        .set_included_ranges(&[
-            Range {
-                start_byte: 0,
-                end_byte: directive_start,
-                start_point: Point::new(0, 0),
-                end_point: Point::new(0, directive_start),
-            },
-            Range {
-                start_byte: directive_end,
-                end_byte: source_code_end,
-                start_point: Point::new(0, directive_end),
-                end_point: Point::new(0, source_code_end),
-            },
-        ])
-        .unwrap();
-    let tree = parser
-        .parse_with_options(&mut chunked_input(&source_code, 3), Some(&first_tree), None)
-        .unwrap();
-
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(document (text) (element",
-            " (start_tag (tag_name))",
-            " (element (start_tag (tag_name)) (end_tag (tag_name)))",
-            " (end_tag (tag_name))))"
-        )
-    );
-
-    assert_eq!(
-        tree.changed_ranges(&first_tree).collect::<Vec<_>>(),
-        vec![
-            // The first range that has changed syntax is the range of the newly-inserted text.
-            Range {
-                start_byte: 0,
-                end_byte: prefix.len(),
-                start_point: Point::new(0, 0),
-                end_point: Point::new(0, prefix.len()),
-            },
-            // Even though no edits were applied to the outer `div` element,
-            // its contents have changed syntax because a range of text that
-            // was previously included is now excluded.
-            Range {
-                start_byte: directive_start,
-                end_byte: directive_end,
-                start_point: Point::new(0, directive_start),
-                end_point: Point::new(0, directive_end),
-            },
-        ]
-    );
-}
-
-#[test]
-fn test_parsing_with_a_newly_included_range() {
-    let source_code = "<div><%= foo() %></div><span><%= bar() %></span><%= baz() %>";
-    let range1_start = source_code.find(" foo").unwrap();
-    let range2_start = source_code.find(" bar").unwrap();
-    let range3_start = source_code.find(" baz").unwrap();
-    let range1_end = range1_start + 7;
-    let range2_end = range2_start + 7;
-    let range3_end = range3_start + 7;
-
-    // Parse only the first code directive as JavaScript
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("javascript")).unwrap();
-    parser
-        .set_included_ranges(&[simple_range(range1_start, range1_end)])
-        .unwrap();
-    let tree = parser
-        .parse_with_options(&mut chunked_input(source_code, 3), None, None)
-        .unwrap();
-    assert_eq!(
-        tree.root_node().to_sexp(),
-        concat!(
-            "(program",
-            " (expression_statement (call_expression function: (identifier) arguments: (arguments))))",
-        )
-    );
-
-    // Parse both the first and third code directives as JavaScript, using the old tree as a
-    // reference.
-    parser
-        .set_included_ranges(&[
-            simple_range(range1_start, range1_end),
-            simple_range(range3_start, range3_end),
-        ])
-        .unwrap();
-    let tree2 = parser
-        .parse_with_options(&mut chunked_input(source_code, 3), Some(&tree), None)
-        .unwrap();
-    assert_eq!(
-        tree2.root_node().to_sexp(),
-        concat!(
-            "(program",
-            " (expression_statement (call_expression function: (identifier) arguments: (arguments)))",
-            " (expression_statement (call_expression function: (identifier) arguments: (arguments))))",
-        )
-    );
-    assert_eq!(
-        tree2.changed_ranges(&tree).collect::<Vec<_>>(),
-        &[simple_range(range1_end, range3_end)]
-    );
-
-    // Parse all three code directives as JavaScript, using the old tree as a
-    // reference.
-    parser
-        .set_included_ranges(&[
-            simple_range(range1_start, range1_end),
-            simple_range(range2_start, range2_end),
-            simple_range(range3_start, range3_end),
-        ])
-        .unwrap();
-    let tree3 = parser.parse(source_code, Some(&tree)).unwrap();
-    assert_eq!(
-        tree3.root_node().to_sexp(),
-        concat!(
-            "(program",
-            " (expression_statement (call_expression function: (identifier) arguments: (arguments)))",
-            " (expression_statement (call_expression function: (identifier) arguments: (arguments)))",
-            " (expression_statement (call_expression function: (identifier) arguments: (arguments))))",
-        )
-    );
-    assert_eq!(
-        tree3.changed_ranges(&tree2).collect::<Vec<_>>(),
-        &[simple_range(range2_start + 1, range2_end - 1)]
-    );
 }
 
 #[test]
@@ -5938,7 +5363,7 @@ fn test_parsing_with_included_ranges_and_missing_tokens() {
         ])
         .unwrap();
 
-    let tree = parser.parse(source_code, None).unwrap();
+    let tree = parser.parse(source_code).unwrap();
     let root = tree.root_node();
     assert_eq!(
         root.to_sexp(),
@@ -5978,12 +5403,12 @@ fn test_keyword_guard_preserves_trailing_input() {
         .unwrap();
 
     for source in ["at at", "at box", "box box", "matmat box"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(tree.root_node().has_error(), "{source}");
         assert_eq!(tree.root_node().end_byte(), source.len(), "{source}");
     }
     for source in ["at", "matmat", "at ", "matmat \n"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(!tree.root_node().has_error(), "{source}");
     }
 }
@@ -6048,7 +5473,7 @@ fn test_keyword_boundary_after_reduction() {
         "if a:value is# other",
         "if (value) is other",
     ] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(
             !tree.root_node().has_error(),
             "{source}: {}",
@@ -6060,7 +5485,7 @@ fn test_keyword_boundary_after_reduction() {
         );
     }
     for source in ["is#name", "isb#name", "isother"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), "(program (word))");
         assert_eq!(
             tree.root_node().named_child(0).unwrap().end_byte(),
@@ -6092,7 +5517,7 @@ fn test_keyword_boundary_with_negative_precedence() {
         parser
             .set_language(&get_test_language(&parser_name, &parser_code, None))
             .unwrap();
-        let t = parser.parse("!ab", None).unwrap();
+        let t = parser.parse("!ab").unwrap();
         assert!(
             t.root_node().has_error(),
             "prec={prec}: {}",
@@ -6129,7 +5554,7 @@ fn test_nonkeyword_preserves_wrapped_token_immediacy() {
             let json = load_grammar_file(file.path(), None).unwrap();
             for mut parser in parsers_for_grammar(&json) {
                 for (source, valid) in [("pifx", true), ("p ifx", allows_space)] {
-                    let tree = parser.parse(source, None).unwrap();
+                    let tree = parser.parse(source).unwrap();
                     let root = tree.root_node();
                     assert_eq!(
                         !root.has_error(),
@@ -6184,7 +5609,7 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
             for prefix in ["", " ", "\u{2003}"] {
                 if raw == "do" {
                     let source = format!("{prefix}ifname");
-                    let tree = parser.parse(&source, None).unwrap();
+                    let tree = parser.parse(&source).unwrap();
                     assert!(
                         tree.root_node().has_error(),
                         "{source}: {}",
@@ -6201,7 +5626,6 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
                                 parser
                                     .parse_utf16_le(
                                         source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
-                                        None,
                                     )
                                     .unwrap(),
                                 prefix.encode_utf16().count() * 2,
@@ -6211,17 +5635,12 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
                                 parser
                                     .parse_utf16_be(
                                         source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
-                                        None,
                                     )
                                     .unwrap(),
                                 prefix.encode_utf16().count() * 2,
                                 source.encode_utf16().count() * 2,
                             ),
-                            _ => (
-                                parser.parse(&source, None).unwrap(),
-                                prefix.len(),
-                                source.len(),
-                            ),
+                            _ => (parser.parse(&source).unwrap(), prefix.len(), source.len()),
                         };
                         let root = tree.root_node();
                         assert!(!root.has_error(), "{source}: {}", root.to_sexp());
@@ -6258,7 +5677,7 @@ fn test_nonkeyword_preserves_other_keyword_boundaries() {
                             },
                         ])
                         .unwrap();
-                    let tree = parser.parse(source, None).unwrap();
+                    let tree = parser.parse(source).unwrap();
                     assert!(
                         !tree.root_node().has_error(),
                         "{}",
@@ -6297,7 +5716,6 @@ fn test_nonkeyword_fallback_bounds_streamed_lookahead() {
                     reads += 1;
                     &source.as_bytes()[byte..(byte + 1).min(source.len())]
                 },
-                None,
                 None,
             )
             .unwrap();
@@ -6356,7 +5774,7 @@ fn test_nonkeyword_fallback_respects_lexical_precedence() {
         let json = load_grammar_file(file.path(), None).unwrap();
         for mut parser in parsers_for_grammar(&json) {
             for (source, branch) in [("iffy!", expected), ("iffyname!", "raw")] {
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 let root = tree.root_node();
                 assert!(
                     !root.has_error(),
@@ -6434,7 +5852,7 @@ fn test_nonkeyword_fallback_preserves_accepted_word_token() {
                     ("iz?", "ident_stmt"),
                     ("!if;", "after_bang"),
                 ] {
-                    let tree = parser.parse(source, None).unwrap();
+                    let tree = parser.parse(source).unwrap();
                     let root = tree.root_node();
                     assert!(!root.has_error(), "{source}: {}", root.to_sexp());
                     assert_eq!(root.end_byte(), source.len());
@@ -6462,10 +5880,10 @@ fn test_immediate_word_preserves_identifiers_during_keyword_recovery() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let tree = parser.parse(";is", None).unwrap();
+        let tree = parser.parse(";is").unwrap();
         assert!(!tree.root_node().has_error());
         for source in ["is", "name", ";a", "x"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert!(root.has_error(), "{source}: {}", root.to_sexp());
             assert_eq!(root.named_child_count(), 1, "{source}: {}", root.to_sexp());
@@ -6521,7 +5939,7 @@ fn test_ordinary_keywords_after_named_extras_with_immediate_word() {
                     (format!("{extra}name?"), immediate, "identifier_use"),
                     (format!("{extra}dox?"), immediate, "identifier_use"),
                 ] {
-                    let tree = parser.parse(&source, None).unwrap();
+                    let tree = parser.parse(&source).unwrap();
                     let root = tree.root_node();
                     assert_eq!(
                         root.has_error(),
@@ -6581,7 +5999,7 @@ fn test_retained_keyword_after_named_extra_with_immediate_word_stays_unguarded()
                 "(source_file (comment) (keyword_use (exclaim)))",
             ),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().to_sexp(), expected, "{source}");
         }
     }
@@ -6627,7 +6045,7 @@ fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
             let json = load_grammar_file(&path, None).unwrap();
             for mut parser in parsers_for_grammar(&json) {
                 for source in ["iffyname?", "#iffyname?", "A#iffyname?"] {
-                    let tree = parser.parse(source, None).unwrap();
+                    let tree = parser.parse(source).unwrap();
                     let root = tree.root_node();
                     assert!(!root.has_error(), "{source}: {}", root.to_sexp());
                     assert_eq!(root.byte_range(), 0..source.len());
@@ -6651,7 +6069,7 @@ fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
                     );
                 }
                 for source in std::iter::once("do?").chain((!immediate).then_some("#do?")) {
-                    let tree = parser.parse(source, None).unwrap();
+                    let tree = parser.parse(source).unwrap();
                     assert!(
                         !tree.root_node().has_error(),
                         "{source}: {}",
@@ -6668,7 +6086,7 @@ fn test_nonkeyword_fallback_after_immediate_word_is_filtered() {
                     );
                 }
                 for source in ["#name?", "#dox?"] {
-                    let tree = parser.parse(source, None).unwrap();
+                    let tree = parser.parse(source).unwrap();
                     assert_eq!(tree.root_node().has_error(), immediate);
                 }
             }
@@ -6693,7 +6111,7 @@ fn test_nonkeyword_word_guard_preserves_lower_precedence_content() {
     }"#;
     for mut parser in parsers_for_grammar(grammar) {
         for source in ["/'/", "/'/''/"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert_eq!(root.to_sexp(), "(source_file (content))");
             assert_eq!(root.named_child(0).unwrap().byte_range(), 0..source.len());
@@ -6734,7 +6152,7 @@ fn test_nonkeyword_preserves_wrapped_lexical_precedence() {
             std::fs::write(file.path(), grammar).unwrap();
             let json = load_grammar_file(file.path(), None).unwrap();
             for mut parser in parsers_for_grammar(&json) {
-                let tree = parser.parse("pif", None).unwrap();
+                let tree = parser.parse("pif").unwrap();
                 let root = tree.root_node();
                 assert!(!root.has_error(), "{expression}: {}", root.to_sexp());
                 assert_eq!(root.end_byte(), 3);
@@ -6775,7 +6193,7 @@ fn test_nonkeyword_fallback_preserves_other_substituted_keywords() {
         let json = load_grammar_file(&path, None).unwrap();
         for mut parser in parsers_for_grammar(&json) {
             for source in ["2do", "2fydo", "2fyfy", "2 do", "2fy do", "2fyx"] {
-                let tree = parser.parse(source, None).unwrap();
+                let tree = parser.parse(source).unwrap();
                 let root = tree.root_node();
                 assert!(
                     !root.has_error(),
@@ -6786,7 +6204,7 @@ fn test_nonkeyword_fallback_preserves_other_substituted_keywords() {
                 assert_eq!(root.named_child(0).unwrap().kind(), "list2");
             }
             for source in ["2dox", "2fyxy"] {
-                assert!(parser.parse(source, None).unwrap().root_node().has_error());
+                assert!(parser.parse(source).unwrap().root_node().has_error());
             }
         }
     }
@@ -6813,7 +6231,7 @@ fn test_nonkeyword_reserved_named_declaration() {
     std::fs::write(&path, grammar).unwrap();
     let json = load_grammar_file(&path, None).unwrap();
     for mut parser in parsers_for_grammar(&json) {
-        let tree = parser.parse("Sifname", None).unwrap();
+        let tree = parser.parse("Sifname").unwrap();
         let root = tree.root_node();
         assert_eq!(root.to_sexp(), "(source_file (prefix) (identifier))");
         assert!(!root.has_error());
@@ -6882,7 +6300,7 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             ("Vifx", "reserved_wrapped_immediate"),
             ("Z ifx", "reserved_wrapped_precedence"),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{source}: {}", root.to_sexp());
             assert_eq!(root.end_byte(), source.len());
@@ -6903,12 +6321,12 @@ fn test_nonkeyword_tokens_preserve_context_and_composition() {
             }
         }
         for source in ["E!x", "!E!x!"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().to_sexp(), "(document (extra))");
             assert_eq!(tree.root_node().end_byte(), source.len());
         }
         for source in ["N ifx", "I ifx", "O ifx", "T ifx", "V ifx", "I!ifx"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(
                 tree.root_node().has_error(),
                 "{source}: {}",
@@ -6965,7 +6383,7 @@ fn test_keyword_precedence_with_word() {
             .set_language(&get_test_language(&parser_name, &parser_code, None))
             .unwrap();
 
-        let rgb = parser.parse("rgb(1)", None).unwrap();
+        let rgb = parser.parse("rgb(1)").unwrap();
         assert_eq!(
             !rgb.root_node().has_error(),
             permits_call,
@@ -6975,7 +6393,7 @@ fn test_keyword_precedence_with_word() {
         if permits_call {
             assert_eq!(rgb.root_node().to_sexp(), "(program (rgb))");
         }
-        let word = parser.parse("otherxyz", None).unwrap();
+        let word = parser.parse("otherxyz").unwrap();
         assert_eq!(word.root_node().to_sexp(), "(program (word))");
     }
 }
@@ -7005,14 +6423,14 @@ fn test_keyword_boundary_for_immediate_with_word() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
     for source in ["matchbox", " matchbox"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), "(program (identifier))");
         assert_eq!(
             tree.root_node().named_child(0).unwrap().end_byte(),
             source.len()
         );
     }
-    let tree = parser.parse("match box", None).unwrap();
+    let tree = parser.parse("match box").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(program (statement (identifier)))"
@@ -7053,14 +6471,14 @@ fn test_keyword_boundary_with_retained_immediate_prefix() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
     for source in ["value.othermatch box", "value.other(box)"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(
             !tree.root_node().has_error(),
             "{source}: {}",
             tree.root_node().to_sexp()
         );
     }
-    let tree = parser.parse("value.othermatchbox", None).unwrap();
+    let tree = parser.parse("value.othermatchbox").unwrap();
     assert!(
         tree.root_node().has_error(),
         "{}",
@@ -7099,7 +6517,7 @@ fn test_keyword_boundary_preserves_competing_precedence() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
     for source in ["othermatchbox", "other1matchbox", "other box"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(
             tree.root_node().to_sexp(),
             "(program (raw_statement (raw) (identifier)))"
@@ -7145,13 +6563,13 @@ fn test_keyword_boundary_for_reserved_immediate() {
     parser
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
-    let valid = parser.parse("value.match box", None).unwrap();
+    let valid = parser.parse("value.match box").unwrap();
     assert_eq!(
         valid.root_node().to_sexp(),
         "(program (identifier) (identifier))"
     );
     for source in ["value.matchbox", "match.match box"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(
             tree.root_node().has_error(),
             "{source}: {}",
@@ -7243,7 +6661,7 @@ fn test_keyword_reserved_immediate() {
             ("def match = value", true),
             ("def value = match", true),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(
                 tree.root_node().has_error(),
                 has_error,
@@ -7252,7 +6670,7 @@ fn test_keyword_reserved_immediate() {
             );
         }
         for source in ["value. match {}", "value.\nmatch {}"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(tree.root_node().has_error(), "{source}");
         }
     }
@@ -7284,7 +6702,7 @@ fn test_grammars_that_can_hang_on_eof() {
     parser
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
-    parser.parse("\"", None).unwrap();
+    parser.parse("\"").unwrap();
 
     let (parser_name, parser_code) = generate_parser(
         r#"
@@ -7309,7 +6727,7 @@ fn test_grammars_that_can_hang_on_eof() {
     parser
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
-    parser.parse("\"", None).unwrap();
+    parser.parse("\"").unwrap();
 
     let (parser_name, parser_code) = generate_parser(
         r#"
@@ -7334,7 +6752,7 @@ fn test_grammars_that_can_hang_on_eof() {
     parser
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
-    parser.parse("\"", None).unwrap();
+    parser.parse("\"").unwrap();
 
     // Two lex states that advance to each other on NUL, each with enough single-character
     // transitions for an advance map.
@@ -7361,7 +6779,7 @@ fn test_grammars_that_can_hang_on_eof() {
     parser
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
-    parser.parse("\"", None).unwrap();
+    parser.parse("\"").unwrap();
 }
 
 #[test]
@@ -7416,7 +6834,7 @@ fn test_parsing_null_characters_in_character_classes_containing_them() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
 
-    let tree = parser.parse("\"a\0b\\\0\"#c\0d", None).unwrap();
+    let tree = parser.parse("\"a\0b\\\0\"#c\0d").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(source_file (string (fragment) (escape)) (comment))"
@@ -7424,7 +6842,7 @@ fn test_parsing_null_characters_in_character_classes_containing_them() {
 
     // The lookahead is also 0 at the end of the input, which none of the classes may match.
     for source in ["\"a", "\"\\"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let sexp = tree.root_node().to_sexp();
         assert!(
             tree.root_node().has_error(),
@@ -7519,7 +6937,7 @@ fn test_parsing_end_of_input_as_null_terminator() {
             "(source_file (statement (identifier)) (statement (identifier)))",
         ),
     ] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         assert_eq!(root.to_sexp(), expected, "source: {source:?}");
         assert!(!root.has_error(), "source: {source:?}");
@@ -7534,50 +6952,17 @@ fn test_parsing_end_of_input_as_null_terminator() {
             r#"{ "type": "PATTERN", "value": "[\\x00+]" }"#,
         ))
         .unwrap();
-    let tree = parser.parse("a\0b\n", None).unwrap();
+    let tree = parser.parse("a\0b\n").unwrap();
     assert_eq!(
         tree.root_node().to_sexp(),
         "(source_file (statement (identifier)) (statement (identifier)))"
     );
-    let tree = parser.parse("a+b", None).unwrap();
+    let tree = parser.parse("a+b").unwrap();
     assert!(
         tree.root_node().has_error(),
         "{}",
         tree.root_node().to_sexp()
     );
-}
-
-#[test]
-fn test_parse_stack_recursive_merge_error_cost_calculation_bug() {
-    let source_code = r"
-fn main() {
-  if n == 1 {
-  } else if n == 2 {
-  } else {
-  }
-}
-
-let y = if x == 5 { 10 } else { 15 };
-
-if foo && bar {}
-
-if foo && bar || baz {}
-";
-
-    let mut parser = Parser::new();
-    parser.set_language(&get_language("rust")).unwrap();
-
-    let mut tree = parser.parse(source_code, None).unwrap();
-
-    let edit = Edit {
-        position: 60,
-        deleted_length: 63,
-        inserted_text: Vec::new(),
-    };
-    let mut input = source_code.as_bytes().to_vec();
-    perform_edit(&mut tree, &mut input, &edit).unwrap();
-
-    parser.parse(&input, Some(&tree)).unwrap();
 }
 
 #[test]
@@ -7600,7 +6985,7 @@ fn test_parsing_with_scanner_logging() {
 
     let source_code = "x + %(sup (external) scanner?)";
 
-    parser.parse(source_code, None).unwrap();
+    parser.parse(source_code).unwrap();
     assert!(found);
 }
 
@@ -7622,15 +7007,11 @@ fn test_external_scanner_display_columns() {
         ] {
             for encoding in ["utf8", "utf16le", "utf16be"] {
                 let tree = match encoding {
-                    "utf16le" => parser.parse_utf16_le(
-                        source.encode_utf16().map(u16::to_le).collect::<Vec<_>>(),
-                        None,
-                    ),
-                    "utf16be" => parser.parse_utf16_be(
-                        source.encode_utf16().map(u16::to_be).collect::<Vec<_>>(),
-                        None,
-                    ),
-                    _ => parser.parse(source, None),
+                    "utf16le" => parser
+                        .parse_utf16_le(source.encode_utf16().map(u16::to_le).collect::<Vec<_>>()),
+                    "utf16be" => parser
+                        .parse_utf16_be(source.encode_utf16().map(u16::to_be).collect::<Vec<_>>()),
+                    _ => parser.parse(source),
                 }
                 .unwrap();
                 assert!(
@@ -7662,13 +7043,7 @@ fn test_external_scanner_display_columns() {
                 assert_eq!(actual, expected, "{source:?} {encoding}");
             }
         }
-        assert!(
-            parser
-                .parse("abc\t#3!", None)
-                .unwrap()
-                .root_node()
-                .has_error()
-        );
+        assert!(parser.parse("abc\t#3!").unwrap().root_node().has_error());
     }
 }
 
@@ -7699,7 +7074,7 @@ fn test_external_scanner_display_columns_across_range_gaps() {
                     },
                 ])
                 .unwrap();
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(
                 !tree.root_node().has_error(),
                 "{source:?}: {}",
@@ -7730,7 +7105,7 @@ fn test_display_column_query_preserves_later_scalar_columns() {
             ])
             .unwrap();
         for source in ["a&\n  2!", "a^\n  2!"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(
                 !tree.root_node().has_error(),
                 "{source:?}: {}",
@@ -7758,7 +7133,7 @@ fn test_parsing_get_column_at_eof() {
         .set_language(&get_test_fixture_language("get_col_eof"))
         .unwrap();
 
-    parser.parse("a", None).unwrap();
+    parser.parse("a").unwrap();
 }
 
 #[test]
@@ -7769,7 +7144,7 @@ fn test_parsing_external_indentation_at_eof_after_padding() {
         .unwrap();
 
     for source in ["do", "do ", "do  ", "do\t", "do\n"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), "(ERROR)", "{source:?}");
     }
 }
@@ -7786,7 +7161,7 @@ fn test_parsing_truncated_external_words() {
         "\nlet a = b;\n@ here\nl",
         "\nlet a = b;\n@ here\nle",
     ] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let start = source.rfind('\n').unwrap() + 1;
         let word = tree
             .root_node()
@@ -7810,12 +7185,12 @@ fn test_parsing_truncated_indentation_blocks() {
         ("\ndo a\n   ", "(ERROR (block (identifier)))"),
         ("\ndo a\n   e", "(ERROR (identifier) (identifier))"),
     ] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
     }
     let source = "\na = do b\n       c + do e\n              f\n              g\n       h\ni\n";
     for length in 32..=37 {
-        let tree = parser.parse(&source[..length], None).unwrap();
+        let tree = parser.parse(&source[..length]).unwrap();
         let block = tree.root_node().descendant_for_byte_range(8, 25).unwrap();
         assert_eq!(block.kind(), "block", "prefix {length}");
         assert_eq!(block.byte_range(), 8..25, "prefix {length}");
@@ -7827,7 +7202,7 @@ fn test_parsing_truncated_python_match_patterns() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("python")).unwrap();
     let source = "\nmatch command.split():\n    case [\"north\"] | [\"go\", \"north\"]:\n        current_room = current_room.neighbor(\"north\")\n    case [\"get\", obj] | [\"pick\", \"up\", obj] | [\"pick\", ";
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     let root = tree.root_node();
     assert_eq!(root.kind(), "module");
     assert_eq!(root.named_child(0).unwrap().kind(), "match_statement");
@@ -7861,7 +7236,7 @@ fn test_parsing_truncated_bash_with_missing_tokens_at_eof() {
             "(program (command name: (command_name (command_substitution (command name: (command_name (word)) argument: (word)) (MISSING \")\")))))",
         ),
     ] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert_eq!(tree.root_node().to_sexp(), expected, "{source:?}");
     }
 }
@@ -7884,7 +7259,6 @@ fn test_parsing_by_halting_at_offset() {
                     &[]
                 }
             },
-            None,
             Some(ParseOptions::new().progress_callback(&mut |p| {
                 seen_byte_offsets.push(p.current_byte_offset());
                 ControlFlow::Continue(())
@@ -7943,7 +7317,6 @@ fn test_decode_utf32() {
                 }
             },
             None,
-            None,
         )
         .unwrap();
 
@@ -7979,7 +7352,6 @@ fn test_decode_cp1252() {
         .parse_custom_encoding::<Cp1252Decoder, _, _>(
             &mut |offset, _| &windows_1252_text[offset..],
             None,
-            None,
         )
         .unwrap();
 
@@ -8014,7 +7386,6 @@ fn test_decode_macintosh() {
     let tree = parser
         .parse_custom_encoding::<MacintoshDecoder, _, _>(
             &mut |offset, _| &macintosh_text[offset..],
-            None,
             None,
         )
         .unwrap();
@@ -8053,7 +7424,6 @@ fn test_decode_utf24le() {
     let tree = parser
         .parse_custom_encoding::<Utf24LeDecoder, _, _>(
             &mut |offset, _| &utf24le_text[offset..],
-            None,
             None,
         )
         .unwrap();
@@ -8188,15 +7558,6 @@ fn test_grammars_that_should_not_compile() {
     );
 }
 
-const fn simple_range(start: usize, end: usize) -> Range {
-    Range {
-        start_byte: start,
-        end_byte: end,
-        start_point: Point::new(0, start),
-        end_point: Point::new(0, end),
-    }
-}
-
 fn chunked_input<'a>(text: &'a str, size: usize) -> impl FnMut(usize, Point) -> &'a [u8] {
     move |offset, _| &text.as_bytes()[offset..text.len().min(offset + size)]
 }
@@ -8226,7 +7587,6 @@ fn test_parse_options_reborrow() {
                     &text1.as_bytes()[offset..]
                 }
             },
-            None,
             Some(options.reborrow()),
         )
         .unwrap();
@@ -8242,7 +7602,6 @@ fn test_parse_options_reborrow() {
                     &text2.as_bytes()[offset..]
                 }
             },
-            None,
             Some(options.reborrow()),
         )
         .unwrap();
@@ -8276,7 +7635,7 @@ fn test_grammar_that_should_hang_and_not_segfault() {
         let code_that_should_hang = "\nHello";
 
         parser
-            .parse(code_that_should_hang, None)
+            .parse(code_that_should_hang)
             .expect("Parse operation completed unexpectedly");
     }
 
@@ -8315,7 +7674,7 @@ fn test_required_nonterminal_extra_preserves_line_before_error() {
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
         for source in ["l#a#\nx", "l#a#x"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (line (comment)) (ERROR))",
@@ -8336,7 +7695,7 @@ fn test_required_nonterminal_extra_recovers_before_external_eof() {
     ];
     for mut parser in parsers_for_languages(languages) {
         for source in ["a", "ab", "abq"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let expected = match source {
                 "a" => "(source_file (prefix (MISSING \"b\")) (comment (marker)))",
                 "ab" => "(source_file (prefix) (comment (marker)))",
@@ -8369,7 +7728,7 @@ fn test_required_nonterminal_extra_recovers_missing_start() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let tree = parser.parse("lx#\n", None).unwrap();
+        let tree = parser.parse("lx#\n").unwrap();
         assert_eq!(
             tree.root_node().to_sexp(),
             "(source_file (line (comment (MISSING \"#\"))))"
@@ -8384,7 +7743,7 @@ fn test_required_nonterminal_extra_recovers_missing_start() {
         let missing = comment.child(0).unwrap();
         assert!(missing.is_missing());
         assert_eq!(missing.byte_range(), 1..1);
-        let tree = parser.parse("l#x#\n", None).unwrap();
+        let tree = parser.parse("l#x#\n").unwrap();
         assert!(!tree.root_node().has_error());
         assert_eq!(tree.root_node().byte_range(), 0..5);
     }
@@ -8432,7 +7791,7 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
                     let started = cpu_time::ThreadTime::now();
                     let mut samples = 0;
                     let elapsed = loop {
-                        let tree = parser.parse(&source, None).unwrap();
+                        let tree = parser.parse(&source).unwrap();
                         let root = tree.root_node();
                         assert_eq!(root.has_error(), has_error);
                         assert_eq!(root.end_byte(), source.len());
@@ -8473,7 +7832,7 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
         });
         for mut parser in parsers_for_grammar(&grammar.to_string()) {
             let source = format!("l{}", "#a# ".repeat(40));
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             assert!(!tree.root_node().has_error());
             let line = tree.root_node().named_child(0).unwrap();
             assert_eq!(line.kind(), "line");
@@ -8516,7 +7875,7 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
             ("l#before# #inside#\n", 1),
             ("l#before##before##inside#\n", 2),
         ] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
             assert_eq!(root.end_byte(), source.len());
@@ -8555,14 +7914,14 @@ fn test_explicit_nonterminal_extras_preserve_required_occurrences() {
                 assert_eq!(child.utf8_text(source.as_bytes()).unwrap(), text);
             }
         }
-        let tree = parser.parse("l##\n \n#a#\n", None).unwrap();
+        let tree = parser.parse("l##\n \n#a#\n").unwrap();
         assert!(!tree.root_node().has_error());
         let line = tree.root_node().named_child(0).unwrap();
         assert_eq!(line.byte_range(), 0..10);
         assert!(line.named_child(0).unwrap().is_extra());
         assert!(!line.named_child(1).unwrap().is_extra());
         for source in ["l\n", "l#inside# \n"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             assert!(
                 tree.root_node().has_error(),
                 "{source:?}: {}",
@@ -8662,23 +8021,23 @@ fn test_immediate_tokens_preserve_extra_context() {
             ),
         ];
         for mut parser in parsers_for_languages(languages) {
-            let valid = parser.parse("b\"s\"", None).unwrap();
+            let valid = parser.parse("b\"s\"").unwrap();
             assert!(!valid.root_node().has_error());
-            let invalid = parser.parse("b#comment#\"s\"", None).unwrap();
+            let invalid = parser.parse("b#comment#\"s\"").unwrap();
             assert!(invalid.root_node().has_error());
             for input in ["cy", "c#comment#z"] {
-                assert!(!parser.parse(input, None).unwrap().root_node().has_error());
+                assert!(!parser.parse(input).unwrap().root_node().has_error());
             }
             let rejected_source = "c#comment#y";
-            let rejected = parser.parse(rejected_source, None).unwrap();
+            let rejected = parser.parse(rejected_source).unwrap();
             assert!(rejected.root_node().has_error());
             assert_eq!(rejected.root_node().end_byte(), rejected_source.len());
-            let tree = parser.parse("axx", None).unwrap();
+            let tree = parser.parse("axx").unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (mixed (immediate)))"
             );
-            let tree = parser.parse("a#comment#xx", None).unwrap();
+            let tree = parser.parse("a#comment#xx").unwrap();
             assert_eq!(
                 tree.root_node().to_sexp(),
                 "(source_file (mixed (comment) (regular)))"
@@ -8710,7 +8069,7 @@ fn test_immediate_string_content_precedes_nonterminal_extras() {
     let json = load_grammar_file(file.path(), None).unwrap();
     for mut parser in parsers_for_grammar(&json) {
         for source in ["\"/*\"", "\"a/*b\"", "/*outside*/\"/*\""] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{source:?}: {}", root.to_sexp());
             let string = root
@@ -8773,7 +8132,7 @@ fn test_parsing_with_trailing_empty_included_ranges() {
             },
         ])
         .unwrap();
-    let tree = parser.parse("a\n> ", None).unwrap();
+    let tree = parser.parse("a\n> ").unwrap();
     assert_eq!(tree.root_node().end_byte(), 4);
     parser
         .set_included_ranges(&[tree_sitter::Range {
@@ -8783,7 +8142,7 @@ fn test_parsing_with_trailing_empty_included_ranges() {
             end_point: Point::new(1, 0),
         }])
         .unwrap();
-    let tree = parser.parse("a[\n> ", None).unwrap();
+    let tree = parser.parse("a[\n> ").unwrap();
     assert_eq!(tree.root_node().end_byte(), 3);
     assert_eq!(tree.root_node().end_position(), Point::new(1, 0));
     parser
@@ -8802,7 +8161,7 @@ fn test_parsing_with_trailing_empty_included_ranges() {
             },
         ])
         .unwrap();
-    let tree = parser.parse("a[\n> ", None).unwrap();
+    let tree = parser.parse("a[\n> ").unwrap();
     assert_eq!(tree.root_node().end_byte(), 5);
 }
 
@@ -8836,16 +8195,12 @@ fn test_word_keywords_with_nonalphabetic_prefixes() {
         for mut parser in parsers_for_grammar(&grammar.to_string()) {
             let valid = format!("{keyword} p {prefix} b q");
             assert!(
-                !parser.parse(&valid, None).unwrap().root_node().has_error(),
+                !parser.parse(&valid).unwrap().root_node().has_error(),
                 "{valid}"
             );
             let invalid = format!("{keyword} p {keyword} q");
             assert!(
-                parser
-                    .parse(&invalid, None)
-                    .unwrap()
-                    .root_node()
-                    .has_error(),
+                parser.parse(&invalid).unwrap().root_node().has_error(),
                 "{invalid}"
             );
         }
@@ -8878,7 +8233,7 @@ fn test_low_precedence_word_keywords_ignore_initial_character_class() {
         }
     });
     for mut parser in parsers_for_grammar(&grammar.to_string()) {
-        let tree = parser.parse("\"1true@ \"\n\"false@ \"", None).unwrap();
+        let tree = parser.parse("\"1true@ \"\n\"false@ \"").unwrap();
         assert_eq!(
             tree.root_node().to_sexp(),
             "(document (string (other)) (string (other)))"

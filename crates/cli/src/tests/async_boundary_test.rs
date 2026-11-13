@@ -14,7 +14,7 @@ fn test_node_across_async_boundaries() {
     let mut parser = Parser::new();
     let language = get_language("bash");
     parser.set_language(&language).unwrap();
-    let tree = parser.parse("#", None).unwrap();
+    let tree = parser.parse("#").unwrap();
     let root = tree.root_node();
 
     let (result, yields) = simple_async_executor(async {
@@ -48,7 +48,7 @@ fn test_cursor_across_async_boundaries() {
     let mut parser = Parser::new();
     let language = get_language("c");
     parser.set_language(&language).unwrap();
-    let tree = parser.parse("#", None).unwrap();
+    let tree = parser.parse("#").unwrap();
     let mut cursor = tree.walk();
 
     let ((), yields) = simple_async_executor(async {
@@ -75,7 +75,7 @@ fn test_node_and_cursor_together() {
     let mut parser = Parser::new();
     let language = get_language("javascript");
     parser.set_language(&language).unwrap();
-    let tree = parser.parse("#", None).unwrap();
+    let tree = parser.parse("#").unwrap();
     let root = tree.root_node();
     let mut cursor = tree.walk();
 

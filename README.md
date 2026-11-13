@@ -25,9 +25,9 @@ so the newest release lacks them for a while.
 ## Support Scope
 
 This fork maintains only full parsing: valid input yields a correct tree, and invalid input yields `ERROR` or `MISSING`
-nodes without crashing, hanging, or taking more than linear time. Incremental parsing works as in upstream tree-sitter
-but is not tested here; tree queries, syntax highlighting, and symbol tagging are not supported. Node types, field
-names, and the trees that error recovery produces may change; such changes are released as new major versions.
+nodes without crashing, hanging, or taking more than linear time. Incremental parsing, tree queries, syntax highlighting,
+and symbol tagging are not supported. Node types, field names, and the trees that error recovery produces may change;
+such changes are released as new major versions.
 
 ## Development setup
 
@@ -82,7 +82,7 @@ tree-sitter generate typescript/grammar.js --profile profile.json
 
 Profiled generation also compresses sparse parse rows that training never visited, while retaining the lookup encoding of observed rows. Shared rows keep the encoding chosen for an observed state. A profile with no recorded parse actions does not enable this compression.
 
-Compare fresh and incremental parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The [parser_study example](crates/cli/examples/parser_study.rs) measures both and reports tree hashes and error status:
+Compare parsing on held-out valid and malformed inputs before choosing the profile-guided layout. The [parser_study example](crates/cli/examples/parser_study.rs) measures parsing time and reports tree hashes and error status:
 
 ```sh
 cargo run --release -p tree-sitter-cli --features wasm --example parser_study -- native <language> <src-directory> <input>...
@@ -92,13 +92,6 @@ cargo run --release -p tree-sitter-cli --features wasm --example parser_study --
 Add `--profile <output.json>` before `native` or `wasm` to record frequencies from these inputs. Recording requires an unprofiled parser. Native recording reads `<src-directory>/parser.c`; Wasm recording reads `src/parser.c` in the module's directory, which must contain the exact unprofiled source used to build that module.
 
 `build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `s`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
-
-Tree-sitter is a parser generator tool and an incremental parsing library. It can build a concrete syntax tree for a source file and efficiently update the syntax tree as the source file is edited. Tree-sitter aims to be:
-
-- **General** enough to parse any programming language
-- **Fast** enough to parse on every keystroke in a text editor
-- **Robust** enough to provide useful results even in the presence of syntax errors
-- **Dependency-free** so that the runtime library (which is written in pure C) can be embedded in any application
 
 ## Ambiguous parse limits
 
@@ -115,13 +108,11 @@ The value must be a positive C integer constant expression that leaves room for 
 ## External scanner positions
 
 Use `TSLexerPosition` with `get_position` or `get_mark_end` when a scanner inspects absolute byte offsets, rows, or
-columns. These reads make the token depend on absolute positions, so edits that shift positions invalidate dependent
-suffix tokens.
+columns.
 
-For speculative lookahead that only restores token boundaries, capture a `TSLexerCheckpoint` with `get_checkpoint` or
-`get_mark_end_checkpoint`, then pass it to `mark_start` or `mark_end_at`. Checkpoints preserve incremental reuse without
-introducing an absolute-position dependency. Their contents are opaque and valid only for boundary restoration within
-the capturing lex invocation; do not inspect them or serialize them as scanner state.
+For speculative lookahead that restores token boundaries, capture a `TSLexerCheckpoint` with `get_checkpoint` or
+`get_mark_end_checkpoint`, then pass it to `mark_start` or `mark_end_at`. Their contents are opaque and valid only for
+boundary restoration within the capturing lex invocation; do not inspect them or serialize them as scanner state.
 
 ## External scanner columns
 

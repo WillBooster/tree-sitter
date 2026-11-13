@@ -28,19 +28,13 @@ let pendingRequest = 0;
 const uiRuntime = await WebAssembly.instantiate(runtimeModule, {
   env: {
     memory,
-    request_parse(languageId, sourceAddress, sourceLength, oldTree, requestAddress) {
+    request_parse(languageId, sourceAddress, sourceLength, requestAddress) {
       if (pendingRequest !== 0) {
         throw new Error('Rust requested another parse before the prior request completed');
       }
       pendingRequest = requestAddress;
-      if (oldTree) {
-        Atomics.store(control, 0, 0);
-      }
-      worker.postMessage(
-        oldTree
-          ? { languageId, sourceAddress, sourceLength, oldTree }
-          : { languageId, sourceAddress, sourceLength },
-      );
+      Atomics.store(control, 0, 0);
+      worker.postMessage({ languageId, sourceAddress, sourceLength });
     },
     log(messageAddress, messageLength) {
       console.log(

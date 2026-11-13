@@ -120,7 +120,7 @@ describe('Language', () => {
         ],
       };
       try {
-        const tree = parser.parse(input, null, options)!;
+        const tree = parser.parse(input, options)!;
         try {
           expect(tree.rootNode.hasError).toBe(false);
           const statement = tree.rootNode.descendantsOfType('return_statement')[0];

@@ -585,10 +585,6 @@ bool ts_node_is_missing(TSNode self) {
   return ts_subtree_missing(ts_node__subtree(self));
 }
 
-bool ts_node_has_changes(TSNode self) {
-  return ts_subtree_has_changes(ts_node__subtree(self));
-}
-
 bool ts_node_has_error(TSNode self) {
   Subtree subtree = ts_node__subtree(self);
   return ts_subtree_is_error(subtree) || ts_subtree_error_cost(subtree) > 0;
@@ -1082,15 +1078,4 @@ TSNode ts_node_named_descendant_for_point_range(
   TSPoint end
 ) {
   return ts_node__descendant_for_point_range(self, start, end, false);
-}
-
-void ts_node_edit(TSNode *self, const TSInputEdit *edit) {
-  uint32_t start_byte = ts_node_start_byte(*self);
-  TSPoint start_point = ts_node_start_point(*self);
-
-  ts_point_edit(&start_point, &start_byte, edit);
-
-  self->context[0] = start_byte;
-  self->context[1] = start_point.row;
-  self->context[2] = start_point.column;
 }

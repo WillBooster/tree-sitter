@@ -101,7 +101,7 @@ pub fn record_profile(
     let result = inputs.iter().try_for_each(|input| {
         counters.lock().unwrap().3 = None;
         parser
-            .parse(input, None)
+            .parse(input)
             .map(|_| ())
             .context("profile parse cancelled")
     });

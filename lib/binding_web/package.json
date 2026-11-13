@@ -72,7 +72,6 @@
     }
   },
   "keywords": [
-    "incremental",
     "parsing",
     "tree-sitter",
     "wasm"

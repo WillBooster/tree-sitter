@@ -61,7 +61,9 @@ void ts_stack_push_recovery(Stack *self, StackVersion version, Subtree subtree, 
 // This transfers ownership of the tree to the Stack. Callers that
 // need to retain ownership of the tree for their own purposes should
 // first retain the tree.
-void ts_stack_push(Stack *self, StackVersion version, Subtree subtree, bool pending, TSStateId state);
+void ts_stack_push(Stack *self, StackVersion version, Subtree subtree, TSStateId state);
+
+void ts_stack_record_ambiguous_extra(Stack *self);
 
 // Pop the given number of entries from the given version of the stack. This
 // operation can increase the number of stack versions by revealing multiple
@@ -93,9 +95,6 @@ bool ts_stack_pop_count_in_place(
 
 // Remove an error at the top of the given version of the stack.
 SubtreeArray ts_stack_pop_error(Stack *self, StackVersion version);
-
-// Remove any pending trees from the top of the given version of the stack.
-StackSliceArray ts_stack_pop_pending(Stack *self, StackVersion version);
 
 /** Return false to pause the walk before its next traversal round. */
 typedef bool (*StackProgressCallback)(void *payload, unsigned operations);

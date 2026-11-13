@@ -217,10 +217,6 @@ export class Parser {
    *
    * @param {string | ParseCallback} callback - The UTF8-encoded text to parse or a callback function.
    *
-   * @param {Tree | null} [oldTree] - A previous syntax tree parsed from the same document. If the text of the
-   *   document has changed since `oldTree` was created, then you must edit `oldTree` to match
-   *   the new text using {@link Tree#edit}.
-   *
    * @param {ParseOptions} [options] - Options for parsing the text.
    *  This can be used to set the included ranges, or a progress callback.
    *
@@ -231,7 +227,6 @@ export class Parser {
    */
   parse(
     callback: string | ParseCallback,
-    oldTree?: Tree | null,
     options?: ParseOptions,
   ): Tree | null {
     const maxMemoryBytes = validateMemoryLimit(options?.maxMemoryBytes);
@@ -247,7 +242,7 @@ export class Parser {
     this.lastParseOperations = 0;
 
     try {
-      const treeAddress = this.runParse(oldTree, options, maxMemoryBytes, maxOperations);
+      const treeAddress = this.runParse(options, maxMemoryBytes, maxOperations);
       if (!treeAddress) return null;
       if (!this.language) throw new Error('Parser must have a language to parse');
       return new Tree(INTERNAL, treeAddress, this.language, callback);
@@ -275,7 +270,6 @@ export class Parser {
 
   /** @internal */
   private runParse(
-    oldTree: Tree | null | undefined,
     options: ParseOptions | undefined,
     maxMemoryBytes: number | undefined,
     maxOperations: number | undefined,
@@ -289,7 +283,7 @@ export class Parser {
       marshalParseInputs(maxOperations, rangeAddress, rangeCount, options?.progressCallback ? 1 : 0);
       try {
         return maxMemoryBytes === undefined
-          ? this.executeOrdinaryParse(oldTree ? oldTree[0] : 0)
+          ? this.executeOrdinaryParse()
           : this.executeLimitedParse();
       } finally {
         this.lastParseOperations = unmarshalOperationCount();
@@ -300,9 +294,9 @@ export class Parser {
   }
 
   /** @internal */
-  private executeOrdinaryParse(oldTreeAddress: number): number {
+  private executeOrdinaryParse(): number {
     try {
-      return C._ts_parser_parse_wasm(this[0], this[1], oldTreeAddress);
+      return C._ts_parser_parse_wasm(this[0], this[1]);
     } catch (error) {
       C._ts_parser_last_parse_operations_wasm(this[0]);
       throw error;

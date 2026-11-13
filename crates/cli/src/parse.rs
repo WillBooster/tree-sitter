@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 524 -- CLI parse options, CST/XML/DOT formatters, and file runner share private types
 use std::{
     fmt, fs,
     io::{self, Write},
@@ -8,17 +9,15 @@ use std::{
 };
 
 use anstyle::{AnsiColor, Color, RgbColor};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use clap::ValueEnum;
-use log::info;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tree_sitter::{
-    InputEdit, Language, LogType, ParseOptions, ParseState, Parser, Point, Range, Tree, TreeCursor,
-    ffi,
+    Language, LogType, ParseOptions, ParseState, Parser, Point, Range, Tree, TreeCursor, ffi,
 };
 
-use crate::{fuzz::edits::Edit, paint::paint, util};
+use crate::{paint::paint, util};
 
 #[derive(Debug, Default, Serialize, JsonSchema)]
 pub struct Stats {
@@ -257,7 +256,6 @@ pub enum ParseDebugType {
 }
 
 pub struct ParseFileOptions<'a> {
-    pub edits: &'a [&'a str],
     pub output: ParseOutput,
     pub stats: &'a mut ParseStats,
     pub print_time: bool,
@@ -292,7 +290,7 @@ pub fn parse_file_at_path(
     )]
     let mut _log_session = None;
     parser.set_language(language)?;
-    let mut source_code = fs::read(path).with_context(|| format!("Error reading {name:?}"))?;
+    let source_code = fs::read(path).with_context(|| format!("Error reading {name:?}"))?;
 
     // Render an HTML graph if `--debug-graph` was passed
     if opts.debug_graph {
@@ -378,53 +376,22 @@ pub fn parse_file_at_path(
     let parse_opts = ParseOptions::new().progress_callback(progress_callback);
 
     let tree = match encoding {
-        Some(encoding) if encoding == ffi::TSInputEncodingUTF16LE => {
-            let source_code_utf16 = source_code
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&chunk| u16::from_le_bytes(chunk))
-                .collect::<Vec<_>>();
+        Some(ffi::TSInputEncodingUTF16LE) => {
+            let utf16 = decode_utf16_chunks(&source_code, u16::from_le_bytes);
             parser.parse_utf16_le_with_options(
-                &mut |i, _| {
-                    if i < source_code_utf16.len() {
-                        &source_code_utf16[i..]
-                    } else {
-                        &[]
-                    }
-                },
-                None,
+                &mut |i, _| utf16.get(i..).unwrap_or(&[]),
                 Some(parse_opts),
             )
         }
-        Some(encoding) if encoding == ffi::TSInputEncodingUTF16BE => {
-            let source_code_utf16 = source_code
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|&chunk| u16::from_be_bytes(chunk))
-                .collect::<Vec<_>>();
+        Some(ffi::TSInputEncodingUTF16BE) => {
+            let utf16 = decode_utf16_chunks(&source_code, u16::from_be_bytes);
             parser.parse_utf16_be_with_options(
-                &mut |i, _| {
-                    if i < source_code_utf16.len() {
-                        &source_code_utf16[i..]
-                    } else {
-                        &[]
-                    }
-                },
-                None,
+                &mut |i, _| utf16.get(i..).unwrap_or(&[]),
                 Some(parse_opts),
             )
         }
         _ => parser.parse_with_options(
-            &mut |i, _| {
-                if i < source_code.len() {
-                    &source_code[i..]
-                } else {
-                    &[]
-                }
-            },
-            None,
+            &mut |i, _| source_code.get(i..).unwrap_or(&[]),
             Some(parse_opts),
         ),
     };
@@ -433,27 +400,10 @@ pub fn parse_file_at_path(
     let stdout = io::stdout();
     let mut stdout = io::BufWriter::with_capacity(64 * 1024, stdout.lock());
 
-    if let Some(mut tree) = tree {
-        if opts.debug_graph && !opts.edits.is_empty() {
-            info!("BEFORE:\n{}", String::from_utf8_lossy(&source_code));
-        }
-
-        let edit_time = Instant::now();
-        for (i, edit) in opts.edits.iter().enumerate() {
-            let edit = parse_edit_flag(&source_code, edit)?;
-            perform_edit(&mut tree, &mut source_code, &edit)?;
-            tree = parser.parse(&source_code, Some(&tree)).unwrap();
-
-            if opts.debug_graph {
-                info!("AFTER {i}:\n{}", String::from_utf8_lossy(&source_code));
-            }
-        }
-        let edit_duration = edit_time.elapsed();
-
+    if let Some(tree) = tree {
         parser.stop_printing_dot_graphs();
 
         let parse_duration_ms = parse_duration.as_micros() as f64 / 1e3;
-        let edit_duration_ms = edit_duration.as_micros() as f64 / 1e3;
         let mut cursor = tree.walk();
 
         if opts.output == ParseOutput::Normal {
@@ -699,14 +649,6 @@ pub fn parse_file_at_path(
                     start.row, start.column, end.row, end.column
                 )?;
             }
-            if !opts.edits.is_empty() {
-                write!(
-                    &mut stdout,
-                    "\n{:width$}\tEdit:  {edit_duration_ms:>7.2} ms",
-                    " ".repeat(name.len()),
-                    width = max_path_length,
-                )?;
-            }
             writeln!(&mut stdout)?;
         }
 
@@ -744,6 +686,16 @@ pub fn parse_file_at_path(
     Ok(())
 }
 
+fn decode_utf16_chunks(source_code: &[u8], decode: fn([u8; 2]) -> u16) -> Vec<u16> {
+    source_code
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .copied()
+        .map(decode)
+        .collect()
+}
+
 const fn escape_invisible(c: char) -> Option<&'static str> {
     Some(match c {
         '\n' => "\\n",
@@ -765,6 +717,7 @@ const fn escape_delimiter(c: char) -> Option<&'static str> {
     })
 }
 
+// code-gauge-allow functionCognitiveComplexity 21 -- iterative cursor traversal tracks child, sibling, parent, and error state in one loop
 pub fn render_cst<'a, 'b: 'a>(
     source_code: &[u8],
     tree: &'b Tree,
@@ -839,6 +792,8 @@ impl std::fmt::Display for CstNodeText<'_> {
     }
 }
 
+// code-gauge-allow functionCognitiveComplexity 25 -- formats single-line and multiline named or literal CST text with per-line ranges
+// code-gauge-allow functionParameterCount 7 -- passes theme options, cursor, writer, source text, and layout widths
 fn write_node_text(
     opts: &ParseFileOptions,
     out: &mut impl Write,
@@ -979,6 +934,8 @@ impl std::fmt::Display for CstNodeRange<'_, '_> {
     }
 }
 
+// code-gauge-allow functionCognitiveComplexity 17 -- renders named, missing, and literal CST nodes with theme styling
+// code-gauge-allow functionParameterCount 7 -- passes theme options, cursor, source slice, writer, and layout state
 fn cst_render_node(
     opts: &ParseFileOptions,
     cursor: &TreeCursor,
@@ -1066,151 +1023,4 @@ fn cst_render_node(
     writeln!(out)?;
 
     Ok(())
-}
-
-pub fn perform_edit(tree: &mut Tree, input: &mut Vec<u8>, edit: &Edit) -> Result<InputEdit> {
-    let start_byte = edit.position;
-    let old_end_byte = edit.position + edit.deleted_length;
-    let new_end_byte = edit.position + edit.inserted_text.len();
-    let start_position = position_for_offset(input, start_byte)?;
-    let old_end_position = position_for_offset(input, old_end_byte)?;
-    input.splice(start_byte..old_end_byte, edit.inserted_text.iter().copied());
-    let new_end_position = position_for_offset(input, new_end_byte)?;
-    let edit = InputEdit {
-        start_byte,
-        old_end_byte,
-        new_end_byte,
-        start_position,
-        old_end_position,
-        new_end_position,
-    };
-    tree.edit(&edit);
-    Ok(edit)
-}
-
-fn parse_edit_flag(source_code: &[u8], flag: &str) -> Result<Edit> {
-    let error = || {
-        anyhow!(
-            concat!(
-                "Invalid edit string '{}'. ",
-                "Edit strings must match the pattern '<START_BYTE_OR_POSITION> <REMOVED_LENGTH> <NEW_TEXT>'"
-            ),
-            flag
-        )
-    };
-
-    // Three whitespace-separated parts:
-    // * edit position
-    // * deleted length
-    // * inserted text
-    let mut parts = flag.split(' ');
-    let position = parts.next().ok_or_else(error)?;
-    let deleted_length = parts.next().ok_or_else(error)?;
-    let inserted_text = parts.collect::<Vec<_>>().join(" ").into_bytes();
-
-    // Position can either be a byte_offset or row,column pair, separated by a comma
-    let position = if position == "$" {
-        source_code.len()
-    } else if position.contains(',') {
-        let mut parts = position.split(',');
-        let row = parts.next().ok_or_else(error)?;
-        let row = row.parse::<usize>().map_err(|_| error())?;
-        let column = parts.next().ok_or_else(error)?;
-        let column = column.parse::<usize>().map_err(|_| error())?;
-        offset_for_position(source_code, Point { row, column })?
-    } else {
-        position.parse::<usize>().map_err(|_| error())?
-    };
-
-    // Deleted length must be a byte count.
-    let deleted_length = deleted_length.parse::<usize>().map_err(|_| error())?;
-
-    Ok(Edit {
-        position,
-        deleted_length,
-        inserted_text,
-    })
-}
-
-pub fn offset_for_position(input: &[u8], position: Point) -> Result<usize> {
-    let mut row = 0;
-    let mut line_start = 0;
-    for line_end in memchr::memchr_iter(b'\n', input) {
-        if row == position.row {
-            if position.column > line_end - line_start {
-                return Err(anyhow!("Failed to address a column: {}", position.column));
-            }
-            return Ok(line_start + position.column);
-        }
-        row += 1;
-        line_start = line_end + 1;
-    }
-
-    if row != position.row {
-        return Err(anyhow!("Failed to address a row: {}", position.row));
-    }
-    if position.column > input.len() - line_start {
-        return Err(anyhow!("Failed to address a column over the end"));
-    }
-    Ok(line_start + position.column)
-}
-
-pub fn position_for_offset(input: &[u8], offset: usize) -> Result<Point> {
-    if offset > input.len() {
-        return Err(anyhow!("Failed to address an offset: {offset}"));
-    }
-    let mut result = Point { row: 0, column: 0 };
-    let mut last = 0;
-    for pos in memchr::memchr_iter(b'\n', &input[..offset]) {
-        result.row += 1;
-        last = pos;
-    }
-    result.column = if result.row > 0 {
-        offset - last - 1
-    } else {
-        offset
-    };
-    Ok(result)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{offset_for_position, parse_edit_flag};
-    use tree_sitter::Point;
-
-    #[test]
-    fn offset_for_position_uses_zero_based_line_and_column_coordinates() {
-        let input = b"abc\n";
-        assert_eq!(
-            offset_for_position(input, Point { row: 0, column: 0 }).unwrap(),
-            0
-        );
-        assert_eq!(
-            offset_for_position(input, Point { row: 0, column: 1 }).unwrap(),
-            1
-        );
-        assert_eq!(
-            offset_for_position(input, Point { row: 0, column: 3 }).unwrap(),
-            3
-        );
-        assert_eq!(
-            offset_for_position(input, Point { row: 1, column: 0 }).unwrap(),
-            4
-        );
-    }
-
-    #[test]
-    fn offset_for_position_rejects_out_of_bounds_coordinates() {
-        let input = b"abc\ndef";
-        assert!(offset_for_position(input, Point { row: 0, column: 4 }).is_err());
-        assert!(offset_for_position(input, Point { row: 2, column: 0 }).is_err());
-    }
-
-    #[test]
-    fn parse_edit_flag_resolves_first_line_positions() {
-        let edit = parse_edit_flag(b"abc\n", "0,0 0 X").unwrap();
-        assert_eq!(edit.position, 0);
-        assert_eq!(edit.deleted_length, 0);
-        assert_eq!(edit.inserted_text, b"X");
-    }
 }

@@ -781,7 +781,7 @@ fn run_tests(
                     parser.set_language(language)?;
                 }
                 let start = std::time::Instant::now();
-                let tree = parser.parse(&input, None).unwrap();
+                let tree = parser.parse(&input).unwrap();
                 let parse_rate = {
                     let parse_time = start.elapsed();
                     let byte_len = tree.root_node().byte_range().len();
@@ -1001,7 +1001,6 @@ fn render_test_cst(input: &[u8], tree: &Tree) -> io::Result<String> {
     let mut rendered_cst: Vec<u8> = Vec::new();
     let mut cursor = tree.walk();
     let opts = ParseFileOptions {
-        edits: &[],
         output: ParseOutput::Cst,
         stats: &mut ParseStats::default(),
         print_time: false,

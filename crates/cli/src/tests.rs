@@ -13,11 +13,7 @@ mod wasm_language_test;
 
 use tree_sitter_generate::{GenerateResult, OptLevel};
 
-pub use crate::fuzz::{
-    allocations,
-    edits::{get_random_edit, invert_edit},
-    random::Rand,
-};
+pub use crate::fuzz::allocations;
 
 pub use helpers::fixtures::get_language;
 

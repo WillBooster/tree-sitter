@@ -11,7 +11,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 description = "PARSER_DESCRIPTION"
-keywords = [ "incremental", "parsing", "tree-sitter", "PARSER_NAME" ]
+keywords = [ "parsing", "tree-sitter", "PARSER_NAME" ]
 license.text = "PARSER_LICENSE"
 name = "tree-sitter-PARSER_NAME"
 readme = "README.md"

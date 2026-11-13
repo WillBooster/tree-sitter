@@ -29,7 +29,7 @@ afterEach(() => {
 
 describe('Fixed WebAssembly.Memory ceiling', () => {
   it('parses large string inputs and preserves AST headroom without allocating a second full-string copy', () => {
-    const rangedTree = parser.parse('const skipped = 0; const kept = 1;', undefined, {
+    const rangedTree = parser.parse('const skipped = 0; const kept = 1;', {
       includedRanges: [{
         startPosition: { row: 0, column: 19 },
         endPosition: { row: 0, column: 34 },
@@ -63,7 +63,7 @@ describe('Fixed WebAssembly.Memory ceiling', () => {
       startPosition: { row: i, column: 0 },
       endPosition: { row: i, column: line.length - 1 },
     }));
-    const manyRangesTree = parser.parse(manyRangesSource, undefined, { includedRanges });
+    const manyRangesTree = parser.parse(manyRangesSource, { includedRanges });
     expect(manyRangesTree?.rootNode.hasError).toBe(false);
     expect(manyRangesTree?.rootNode.namedChildCount).toBe(rangeCount);
     expect(manyRangesTree?.rootNode.endIndex).toBe(manyRangesSource.length - 1);
@@ -72,7 +72,7 @@ describe('Fixed WebAssembly.Memory ceiling', () => {
     const limitedRangeCount = 24_800;
     const limitedRangesSource = line.repeat(limitedRangeCount);
     const limitedRanges = includedRanges.slice(0, limitedRangeCount);
-    const limitedRangesTree = parser.parse(limitedRangesSource, undefined, {
+    const limitedRangesTree = parser.parse(limitedRangesSource, {
       includedRanges: limitedRanges,
       maxMemoryBytes: 32 * 2 ** 20,
     });

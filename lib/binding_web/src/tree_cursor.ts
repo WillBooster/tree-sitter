@@ -18,9 +18,6 @@ export class TreeCursor {
   private tree: Tree;
 
   /** @internal */
-  private editVersion = -1;
-
-  /** @internal */
   private _nodeTypeId = 0;
 
   /** @internal */
@@ -135,7 +132,6 @@ export class TreeCursor {
 
   /** Get the string content of the cursor's current node. */
   get nodeText(): string {
-    this.syncIndices();
     const { textSource } = this.tree;
     return typeof textSource === 'string'
       ? textSource.slice(this._startIndex, this._endIndex)
@@ -156,13 +152,11 @@ export class TreeCursor {
 
   /** Get the start index of the cursor's current node. */
   get startIndex(): number {
-    this.syncIndices();
     return this._startIndex;
   }
 
   /** Get the end index of the cursor's current node. */
   get endIndex(): number {
-    this.syncIndices();
     return this._endIndex;
   }
 
@@ -321,15 +315,5 @@ export class TreeCursor {
     this._startIndex = heap[base + 2];
     this._endIndex = heap[base + 3];
     this._flags = heap[base + 4];
-    this.editVersion = this.tree.editVersion;
-  }
-
-  /** @internal */
-  private syncIndices(): void {
-    if (this.editVersion !== this.tree.editVersion) {
-      this._startIndex = C._ts_tree_cursor_start_index_wasm(this[0]) >>> 0;
-      this._endIndex = C._ts_tree_cursor_end_index_wasm(this[0]) >>> 0;
-      this.editVersion = this.tree.editVersion;
-    }
   }
 }

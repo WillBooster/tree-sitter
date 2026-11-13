@@ -562,8 +562,7 @@ static void ts_lexer__select_advance(Lexer *self) {
 }
 
 static void ts_lexer__get_position(const TSLexer *_self, TSLexerPosition *position) {
-  Lexer *self = (Lexer *)_self;
-  self->did_get_position = true;
+  const Lexer *self = (const Lexer *)_self;
   *position = (TSLexerPosition) {
     self->current_position.bytes,
     self->current_position.extent.row,
@@ -593,8 +592,7 @@ static void ts_lexer__mark_end_at(TSLexer *_self, const TSLexerCheckpoint *check
 }
 
 static void ts_lexer__get_mark_end(const TSLexer *_self, TSLexerPosition *position) {
-  Lexer *self = (Lexer *)_self;
-  self->did_get_position = true;
+  const Lexer *self = (const Lexer *)_self;
   *position = (TSLexerPosition) {
     self->token_end_position.bytes,
     self->token_end_position.extent.row,
@@ -689,7 +687,6 @@ static void ts_lexer__replay_columns(Lexer *self, bool display) {
 
 static uint32_t ts_lexer__get_column(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
-  self->did_get_column = true;
   if (!self->column_data.valid) ts_lexer__replay_columns(self, false);
   ts_lexer__checkpoint_columns(self);
   ts_lexer__checkpoint_query_columns(self, false);
@@ -698,7 +695,6 @@ static uint32_t ts_lexer__get_column(TSLexer *_self) {
 
 static uint32_t ts_lexer__get_display_column(TSLexer *_self, uint32_t tab_width) {
   Lexer *self = (Lexer *)_self;
-  self->did_get_column = true;
   if (!tab_width) tab_width = 1;
   if (!self->display_column_data.valid || self->display_tab_width != tab_width) {
     ColumnData column_data = self->column_data;
@@ -803,8 +799,6 @@ void ts_lexer_start(Lexer *self) {
   self->token_end_position = LENGTH_UNDEFINED;
   self->marked_start_position = LENGTH_UNDEFINED;
   self->data.result_symbol = 0;
-  self->did_get_column = false;
-  self->did_get_position = false;
   if (!ts_lexer__eof(&self->data)) {
     if (!self->chunk_size) ts_lexer__get_chunk(self);
     if (!self->lookahead_size) ts_lexer__get_lookahead(self);
@@ -819,7 +813,7 @@ void ts_lexer_start(Lexer *self) {
   self->end_column_checkpoint.position = LENGTH_UNDEFINED;
 }
 
-void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte) {
+void ts_lexer_finish(Lexer *self) {
   if (!length_is_undefined(self->marked_start_position)) {
     self->token_start_position = self->marked_start_position;
   }
@@ -832,23 +826,6 @@ void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte) {
   // position to match.
   if (self->token_end_position.bytes < self->token_start_position.bytes) {
     self->token_start_position = self->token_end_position;
-  }
-
-  // The lexer has read every byte of the lookahead character, which can be
-  // longer than one byte.
-  uint32_t current_lookahead_end_byte =
-    self->current_position.bytes + (self->lookahead_size > 1 ? self->lookahead_size : 1);
-
-  // In order to determine that a byte sequence is invalid UTF8 or UTF16,
-  // the character decoding algorithm may have looked at the following byte.
-  // Therefore, the next byte *after* the current (invalid) character
-  // affects the interpretation of the current character.
-  if (self->data.lookahead == TS_DECODE_ERROR) {
-    current_lookahead_end_byte += 4; // the maximum number of bytes read to identify an invalid code point
-  }
-
-  if (current_lookahead_end_byte > *lookahead_end_byte) {
-    *lookahead_end_byte = current_lookahead_end_byte;
   }
 }
 

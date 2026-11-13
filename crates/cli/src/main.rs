@@ -256,17 +256,6 @@ struct Parse {
     /// Suppress main output
     #[arg(long, short)]
     pub quiet: bool,
-    #[expect(
-        clippy::doc_markdown,
-        reason = "doc string contains format syntax, not code identifiers"
-    )]
-    /// Apply edits in the format: \"row,col|position delcount insert_text\", can be supplied
-    /// multiple times
-    #[arg(
-        long,
-        num_args = 1..,
-    )]
-    pub edits: Option<Vec<String>>,
     /// The encoding of the input files
     #[arg(long)]
     pub encoding: Option<Encoding>,
@@ -1028,25 +1017,13 @@ impl Build {
 
 impl Parse {
     fn run(self, mut loader: loader::Loader, current_dir: &Path) -> Result<()> {
-        let config = Config::load(self.config_path)?;
+        let config = Config::load(self.config_path.clone())?;
         let json_summary = if self.json {
             warn!("--json is deprecated, use --json-summary instead");
             true
         } else {
             self.json_summary
         };
-        let output = if self.output_dot {
-            ParseOutput::Dot
-        } else if self.output_xml {
-            ParseOutput::Xml
-        } else if self.output_cst {
-            ParseOutput::Cst
-        } else if self.quiet || json_summary {
-            ParseOutput::Quiet
-        } else {
-            ParseOutput::Normal
-        };
-
         let parse_theme = if paint::color_enabled() {
             config
                 .get::<parse::Config>()
@@ -1057,204 +1034,203 @@ impl Parse {
         } else {
             ParseTheme::empty()
         };
-
-        let encoding = self.encoding.map(|e| match e {
-            Encoding::Utf8 => ffi::TSInputEncodingUTF8,
-            Encoding::Utf16LE => ffi::TSInputEncodingUTF16LE,
-            Encoding::Utf16BE => ffi::TSInputEncodingUTF16BE,
-        });
-
-        let time = self.time;
-        let edits = self.edits.unwrap_or_default();
         let cancellation_flag = util::cancel_on_signal();
-        let mut parser = Parser::new();
-
-        loader.debug_build(self.debug_build);
-        loader.force_rebuild(self.rebuild || self.grammar_path.is_some());
-
-        if self.wasm {
-            checked_wasm!({
-                let engine = tree_sitter::wasmtime::Engine::default();
-                parser
-                    .set_wasm_store(tree_sitter::WasmStore::new(&engine).unwrap())
-                    .unwrap();
-                loader.use_wasm(&engine);
-            });
-        }
-
-        let timeout = self.timeout.unwrap_or_default();
-
-        let mut has_error = false;
-        let should_track_stats = self.stat;
+        let mut parser = self.init_parser(&mut loader)?;
         let mut stats = parse::ParseStats::default();
-        let debug: ParseDebugType = match self.debug {
-            None => ParseDebugType::Quiet,
-            Some(None) => ParseDebugType::Normal,
-            Some(Some(specifier)) => specifier,
-        };
-
-        let mut options = ParseFileOptions {
-            edits: &edits
-                .iter()
-                .map(std::string::String::as_str)
-                .collect::<Vec<&str>>(),
-            output,
-            print_time: time,
-            timeout,
-            stats: &mut stats,
-            debug,
-            debug_graph: self.debug_graph,
-            cancellation_flag: Some(&cancellation_flag),
-            encoding,
-            open_log: self.open_log,
-            no_ranges: self.no_ranges,
-            parse_theme: &parse_theme,
-        };
-
-        let mut update_stats = |stats: &mut parse::ParseStats| {
-            let parse_result = stats.parse_summaries.last().unwrap();
-            if should_track_stats || json_summary {
-                stats.cumulative_stats.total_parses += 1;
-                if parse_result.successful {
-                    stats.cumulative_stats.successful_parses += 1;
-                }
-                if let (Some(duration), Some(bytes)) = (parse_result.duration, parse_result.bytes) {
-                    stats.cumulative_stats.total_bytes += bytes;
-                    stats.cumulative_stats.total_duration += duration;
-                }
-            }
-
-            has_error |= !parse_result.successful;
-        };
+        let mut options =
+            self.build_options(json_summary, &cancellation_flag, &mut stats, &parse_theme);
 
         let lib_info = get_lib_info(self.lib_path.as_ref(), self.lang_name.as_ref(), current_dir);
         if lib_info.is_none() {
-            let loader_config = config.get()?;
-            loader.find_all_languages(&loader_config)?;
+            loader.find_all_languages(&config.get()?)?;
         }
 
         let input = get_input(
             self.paths_file.as_deref(),
-            self.paths,
+            self.paths.clone(),
             self.test_number,
             &cancellation_flag,
         )?;
-        match input {
-            CliInput::Paths(paths) => {
-                let max_path_length = paths
-                    .iter()
-                    .map(|p| p.to_string_lossy().chars().count())
-                    .max()
-                    .unwrap_or(0);
-                options.stats.source_count = paths.len();
+        self.run_input(
+            input,
+            (&mut loader, current_dir, lib_info.as_ref()),
+            &mut parser,
+            &mut options,
+        )?;
+        let has_error = summarize_parses(&mut stats, self.stat || json_summary);
 
-                for path in &paths {
-                    let path = Path::new(&path);
-                    let language = loader
-                        .select_language(
-                            Some(path),
-                            current_dir,
-                            self.scope.as_deref(),
-                            lib_info.as_ref(),
-                        )
-                        .with_context(|| {
-                            anyhow!("Failed to load language for path \"{}\"", path.display())
-                        })?;
-
-                    parse::parse_file_at_path(
-                        &mut parser,
-                        &language,
-                        path,
-                        &path.display().to_string(),
-                        max_path_length,
-                        &mut options,
-                    )?;
-                    update_stats(options.stats);
-                }
-            }
-
-            CliInput::Test {
-                name,
-                contents,
-                languages: language_names,
-            } => {
-                let path = get_tmp_source_file(&contents)?;
-
-                let language = if let Some(ref lib_path) = self.lib_path {
-                    &loader
-                        .select_language(
-                            None,
-                            current_dir,
-                            self.scope.as_deref(),
-                            lib_info.as_ref(),
-                        )
-                        .with_context(|| {
-                            anyhow!(
-                                "Failed to load language for path \"{}\"",
-                                lib_path.display()
-                            )
-                        })?
-                } else {
-                    let languages = loader.languages_at_path(current_dir)?;
-                    &languages
-                        .iter()
-                        .find(|(_, n)| language_names.contains(&Box::from(n.as_str())))
-                        .or_else(|| languages.first())
-                        .map(|(l, _)| l.clone())
-                        .ok_or_else(|| anyhow!("No language found"))?
-                };
-
-                parse::parse_file_at_path(
-                    &mut parser,
-                    language,
-                    &path,
-                    &name,
-                    name.chars().count(),
-                    &mut options,
-                )?;
-                update_stats(&mut stats);
-                path.close()?;
-            }
-
-            CliInput::Stdin(contents) => {
-                // Place user input and parser output on separate lines
-                println!();
-
-                let path = get_tmp_source_file(&contents)?;
-                let name = "stdin";
-                let language = loader.select_language(
-                    None,
-                    current_dir,
-                    self.scope.as_deref(),
-                    lib_info.as_ref(),
-                )?;
-
-                parse::parse_file_at_path(
-                    &mut parser,
-                    &language,
-                    &path,
-                    name,
-                    name.chars().count(),
-                    &mut options,
-                )?;
-                update_stats(&mut stats);
-                path.close()?;
-            }
-        }
-
-        if should_track_stats {
+        if self.stat {
             println!("\n{}", stats.cumulative_stats);
         }
         if json_summary {
             println!("{}", serde_json::to_string_pretty(&stats)?);
         }
-
         if has_error {
             return Err(anyhow!(""));
         }
-
         Ok(())
     }
+
+    fn build_options<'a>(
+        &self,
+        json_summary: bool,
+        cancellation_flag: &'a std::sync::atomic::AtomicUsize,
+        stats: &'a mut parse::ParseStats,
+        parse_theme: &'a ParseTheme,
+    ) -> ParseFileOptions<'a> {
+        ParseFileOptions {
+            output: if self.output_dot {
+                ParseOutput::Dot
+            } else if self.output_xml {
+                ParseOutput::Xml
+            } else if self.output_cst {
+                ParseOutput::Cst
+            } else if self.quiet || json_summary {
+                ParseOutput::Quiet
+            } else {
+                ParseOutput::Normal
+            },
+            print_time: self.time,
+            timeout: self.timeout.unwrap_or_default(),
+            stats,
+            debug: match self.debug {
+                None => ParseDebugType::Quiet,
+                Some(None) => ParseDebugType::Normal,
+                Some(Some(specifier)) => specifier,
+            },
+            debug_graph: self.debug_graph,
+            cancellation_flag: Some(cancellation_flag),
+            encoding: self.encoding.as_ref().map(|e| match e {
+                Encoding::Utf8 => ffi::TSInputEncodingUTF8,
+                Encoding::Utf16LE => ffi::TSInputEncodingUTF16LE,
+                Encoding::Utf16BE => ffi::TSInputEncodingUTF16BE,
+            }),
+            open_log: self.open_log,
+            no_ranges: self.no_ranges,
+            parse_theme,
+        }
+    }
+
+    fn init_parser(&self, loader: &mut loader::Loader) -> Result<Parser> {
+        loader.debug_build(self.debug_build);
+        loader.force_rebuild(self.rebuild || self.grammar_path.is_some());
+        if self.wasm {
+            checked_wasm!({
+                let mut parser = Parser::new();
+                let engine = tree_sitter::wasmtime::Engine::default();
+                parser.set_wasm_store(tree_sitter::WasmStore::new(&engine)?)?;
+                loader.use_wasm(&engine);
+                return Ok(parser);
+            });
+        }
+        Ok(Parser::new())
+    }
+
+    fn run_input(
+        &self,
+        input: CliInput,
+        (loader, current_dir, lib_info): (&mut loader::Loader, &Path, Option<&(PathBuf, &str)>),
+        parser: &mut Parser,
+        options: &mut ParseFileOptions<'_>,
+    ) -> Result<()> {
+        match input {
+            CliInput::Paths(paths) => {
+                let max_len = paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().chars().count())
+                    .max()
+                    .unwrap_or(0);
+                options.stats.source_count = paths.len();
+                for path in &paths {
+                    let path = Path::new(path);
+                    let language = loader
+                        .select_language(Some(path), current_dir, self.scope.as_deref(), lib_info)
+                        .with_context(|| {
+                            anyhow!("Failed to load language for path \"{}\"", path.display())
+                        })?;
+                    parse::parse_file_at_path(
+                        parser,
+                        &language,
+                        path,
+                        &path.display().to_string(),
+                        max_len,
+                        options,
+                    )?;
+                }
+                Ok(())
+            }
+            CliInput::Test {
+                name,
+                contents,
+                languages,
+            } => {
+                let language =
+                    self.select_test_language(loader, current_dir, lib_info, &languages)?;
+                parse_temp_source(&language, &name, &contents, parser, options)
+            }
+            CliInput::Stdin(contents) => {
+                println!();
+                let language =
+                    loader.select_language(None, current_dir, self.scope.as_deref(), lib_info)?;
+                parse_temp_source(&language, "stdin", &contents, parser, options)
+            }
+        }
+    }
+
+    fn select_test_language(
+        &self,
+        loader: &mut loader::Loader,
+        current_dir: &Path,
+        lib_info: Option<&(PathBuf, &str)>,
+        language_names: &[Box<str>],
+    ) -> Result<tree_sitter::Language> {
+        if let Some(ref lib_path) = self.lib_path {
+            loader
+                .select_language(None, current_dir, self.scope.as_deref(), lib_info)
+                .with_context(|| {
+                    anyhow!(
+                        "Failed to load language for path \"{}\"",
+                        lib_path.display()
+                    )
+                })
+        } else {
+            let languages = loader.languages_at_path(current_dir)?;
+            languages
+                .iter()
+                .find(|(_, n)| language_names.contains(&Box::from(n.as_str())))
+                .or_else(|| languages.first())
+                .map(|(l, _)| l.clone())
+                .ok_or_else(|| anyhow!("No language found"))
+        }
+    }
+}
+
+fn parse_temp_source(
+    language: &tree_sitter::Language,
+    name: &str,
+    contents: &[u8],
+    parser: &mut Parser,
+    options: &mut ParseFileOptions<'_>,
+) -> Result<()> {
+    let path = get_tmp_source_file(contents)?;
+    parse::parse_file_at_path(parser, language, &path, name, name.chars().count(), options)?;
+    path.close().map_err(Into::into)
+}
+
+fn summarize_parses(stats: &mut parse::ParseStats, accumulate: bool) -> bool {
+    let mut has_error = false;
+    for result in &stats.parse_summaries {
+        has_error |= !result.successful;
+        if accumulate {
+            stats.cumulative_stats.total_parses += 1;
+            stats.cumulative_stats.successful_parses += usize::from(result.successful);
+            if let (Some(duration), Some(bytes)) = (result.duration, result.bytes) {
+                stats.cumulative_stats.total_bytes += bytes;
+                stats.cumulative_stats.total_duration += duration;
+            }
+        }
+    }
+    has_error
 }
 
 /// In case an error is encountered, prints out the contents of `test_summary` and

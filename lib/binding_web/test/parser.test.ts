@@ -114,7 +114,6 @@ describe('Parser', () => {
 
       const jsTree = parser.parse(
         sourceCode,
-        null,
         { includedRanges: ranges }
       )!;
       expect(parser.getIncludedRanges()).toEqual(ranges);
@@ -166,7 +165,7 @@ describe('Parser', () => {
         },
       ];
 
-      const htmlTree = parser.parse(sourceCode, null, { includedRanges: htmlRanges })!;
+      const htmlTree = parser.parse(sourceCode, { includedRanges: htmlRanges })!;
 
       expect(htmlTree.rootNode.toString()).toBe(
         '(document (element' +
@@ -213,7 +212,7 @@ describe('Parser', () => {
         endPosition: { row: 10, column: 12 + endIndex },
       };
 
-      const htmlTree = parser.parse(sourceCode, null, { includedRanges: [rangeToParse] })!;
+      const htmlTree = parser.parse(sourceCode, { includedRanges: [rangeToParse] })!;
 
       expect(htmlTree.getIncludedRanges()[0]).toEqual(rangeToParse);
 
@@ -370,7 +369,7 @@ describe('Parser', () => {
       const start2 = sourceCode.indexOf('bar');
       const end2 = start2 + 3;
 
-      const tree = parser.parse(sourceCode, null, {
+      const tree = parser.parse(sourceCode, {
         includedRanges: [
           {
             startIndex: start1,
@@ -419,7 +418,7 @@ describe('Parser', () => {
     it('does not cancel when a JavaScript callback returns a truthy non-boolean', () => {
       parser.setLanguage(JSON);
       let calls = 0;
-      const tree = parser.parse('[' + '0,'.repeat(1000) + '0]', null, {
+      const tree = parser.parse('[' + '0,'.repeat(1000) + '0]', {
         // @ts-expect-error JavaScript callbacks can return values outside the TypeScript contract.
         progressCallback: () => ++calls,
       });
@@ -432,7 +431,7 @@ describe('Parser', () => {
       const typescript = await Language.load(resolve('@willbooster/tree-sitter-typescript/tree-sitter-typescript.wasm'));
       parser.setLanguage(typescript);
       let calls = 0;
-      const tree = parser.parse('f<'.repeat(5000), null, { progressCallback: () => ++calls > 3000 });
+      const tree = parser.parse('f<'.repeat(5000), { progressCallback: () => ++calls > 3000 });
       expect(tree).not.toBeNull();
       expect(tree?.rootNode.hasError).toBe(true);
       expect(calls).toBeLessThan(3000);
@@ -456,7 +455,6 @@ describe('Parser', () => {
 
       expect(parser.parse(
         (offset) => offset === 0 ? '[' : ',0',
-        null,
         { progressCallback },
       )).toBeNull();
     });
@@ -477,7 +475,6 @@ describe('Parser', () => {
           if (offset >= 1 && offset < 1000) return '0,';
           return erroneousCode;
         },
-        null,
         { progressCallback },
       );
 
@@ -498,7 +495,7 @@ describe('Parser', () => {
       tree.delete();
       tree = null;
 
-      expect(parser.parse('const x = ' + '[1,'.repeat(2000) + '];', null, { maxOperations: 20 })).toBeNull();
+      expect(parser.parse('const x = ' + '[1,'.repeat(2000) + '];', { maxOperations: 20 })).toBeNull();
       expect(parser.lastParseOperations).toBeGreaterThan(20);
 
       tree = parser.parse('const recovered = "🚀";')!;
@@ -523,7 +520,7 @@ describe('Parser', () => {
         `\`${'t'.repeat(500_000)}\``,
         '§'.repeat(100_000),
       ]) {
-        expect(parser.parse(source, null, { maxOperations: 5 })).toBeNull();
+        expect(parser.parse(source, { maxOperations: 5 })).toBeNull();
         expect(parser.lastParseOperations).toBe(6);
       }
 
@@ -537,18 +534,18 @@ describe('Parser', () => {
       const measured = parser.lastParseOperations;
       tree.delete();
 
-      tree = parser.parse('let x = 1;', null, { maxOperations: measured })!;
+      tree = parser.parse('let x = 1;', { maxOperations: measured })!;
       expect(tree).not.toBeNull();
       expect(parser.lastParseOperations).toBe(measured);
       tree.delete();
       tree = null;
 
-      expect(parser.parse('let x = 1;', null, { maxOperations: measured - 1 })).toBeNull();
+      expect(parser.parse('let x = 1;', { maxOperations: measured - 1 })).toBeNull();
       expect(parser.lastParseOperations).toBe(measured);
 
       const source = 'let a = 1;'.repeat(500);
       expect(() =>
-        parser.parse(source, null, {
+        parser.parse(source, {
           progressCallback() {
             throw new Error('stop-ordinary');
           },
@@ -558,7 +555,7 @@ describe('Parser', () => {
       parser.reset();
 
       expect(() =>
-        parser.parse(source, null, {
+        parser.parse(source, {
           maxMemoryBytes: 64 * 1024 * 1024,
           progressCallback() {
             throw new Error('stop-limited');

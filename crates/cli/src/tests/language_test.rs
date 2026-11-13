@@ -30,7 +30,7 @@ fn assert_keyword_lookaheads(parser: &mut Parser, language: &tree_sitter::Langua
     parser.set_language(language).unwrap();
     for keyword in 0..80 {
         let source = format!("name k{keyword};");
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         assert!(!tree.root_node().has_error(), "{source}");
         let identifier = tree
             .root_node()
@@ -59,7 +59,7 @@ fn test_lookahead_iterator() {
     let language = get_language("rust");
     parser.set_language(&language).unwrap();
 
-    let tree = parser.parse("struct Stuff {}", None).unwrap();
+    let tree = parser.parse("struct Stuff {}").unwrap();
 
     let mut cursor = tree.walk();
 
@@ -112,7 +112,7 @@ fn test_lookahead_iterator_modifiable_only_by_mut() {
     let language = get_language("rust");
     parser.set_language(&language).unwrap();
 
-    let tree = parser.parse("struct Stuff {}", None).unwrap();
+    let tree = parser.parse("struct Stuff {}").unwrap();
 
     let mut cursor = tree.walk();
 
@@ -336,7 +336,7 @@ fn test_unreducible_inline_aliases_preserve_required_fields() {
         let language = get_test_fixture_language(name);
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
-        let tree = parser.parse("(value)", None).unwrap();
+        let tree = parser.parse("(value)").unwrap();
         assert!(!tree.root_node().has_error(), "{name}");
         let node = tree.root_node().named_child(0).unwrap();
         assert_eq!(node.kind(), "node");
@@ -345,11 +345,11 @@ fn test_unreducible_inline_aliases_preserve_required_fields() {
             "identifier"
         );
         if name == "shadowed_reduction_alias" {
-            let tree = parser.parse("!?", None).unwrap();
+            let tree = parser.parse("!?").unwrap();
             assert!(!tree.root_node().has_error());
             assert_eq!(tree.root_node().named_child(0).unwrap().kind(), "winner");
         } else {
-            assert!(parser.parse("y!", None).unwrap().root_node().has_error());
+            assert!(parser.parse("y!").unwrap().root_node().has_error());
         }
     }
 }
@@ -380,7 +380,7 @@ fn test_merged_inline_alias_shapes_preserve_fields() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for (source, field) in [("a(value)", "a"), ("b[value]", "b")] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(!tree.root_node().has_error());
         let parsed = tree.root_node().named_child(0).unwrap();
         assert_eq!(parsed.kind(), "node");
@@ -407,13 +407,10 @@ fn test_nested_inline_alias_metadata_matches_visible_nodes() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     let tree = parser
-        .parse(
-            "style; /* NOTE */ @func; plain; [name] [ns|name] (first:second)",
-            None,
-        )
+        .parse("style; /* NOTE */ @func; plain; [name] [ns|name] (first:second)")
         .unwrap();
     assert!(!tree.root_node().has_error());
-    let error_tree = parser.parse("#broken", None).unwrap();
+    let error_tree = parser.parse("#broken").unwrap();
     assert!(error_tree.root_node().has_error());
     let mut found_recovered_token = false;
     let mut found_inline_extra = false;

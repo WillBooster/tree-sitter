@@ -27,5 +27,5 @@ export async function initializeWithMemory(memory: WebAssembly.Memory): Promise<
 }
 
 export function parseWithMemoryLimit(parser: Parser, source: string, maxMemoryBytes: number): Tree | null {
-  return parser.parse(source, undefined, { maxMemoryBytes });
+  return parser.parse(source, { maxMemoryBytes });
 }

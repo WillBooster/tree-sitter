@@ -114,22 +114,6 @@ typedef struct TSLogger {
   void (*log)(void *payload, TSLogType log_type, const char *buffer);
 } TSLogger;
 
-/**
- * A summary of a change to a text document.
- *
- * The `start_byte` and `start_point` values must be less than or equal to the
- * `old_end_byte` and `old_end_point` values, respectively. Passing an edit
- * that violates these invariants may produce nonsensical results.
- */
-typedef struct TSInputEdit {
-  uint32_t start_byte;
-  uint32_t old_end_byte;
-  uint32_t new_end_byte;
-  TSPoint start_point;
-  TSPoint old_end_point;
-  TSPoint new_end_point;
-} TSInputEdit;
-
 typedef struct TSNode {
   uint32_t context[4];
   const void *id;
@@ -230,16 +214,8 @@ const TSRange *ts_parser_included_ranges(
 /**
  * Use the parser to parse some source code and create a syntax tree.
  *
- * If you are parsing this document for the first time, pass `NULL` for the
- * `old_tree` parameter. Otherwise, if you have already parsed an earlier
- * version of this document and the document has since been edited, pass the
- * previous syntax tree so that the unchanged parts of it can be reused.
- * This will save time and memory. For this to work correctly, you must have
- * already edited the old syntax tree using the [`ts_tree_edit`] function in a
- * way that exactly matches the source code changes.
- *
  * The [`TSInput`] parameter lets you specify how to read the text. It has the
- * following three fields:
+ * following four fields:
  * 1. [`read`]: A function to retrieve a chunk of text at a given byte offset
  *    and (row, column) position. The function should return a pointer to the
  *    text and write its length to the [`bytes_read`] pointer. The parser does
@@ -271,7 +247,6 @@ const TSRange *ts_parser_included_ranges(
  */
 TSTree *ts_parser_parse(
   TSParser *self,
-  const TSTree *old_tree,
   TSInput input
 );
 
@@ -284,33 +259,30 @@ TSTree *ts_parser_parse(
  */
 TSTree* ts_parser_parse_with_options(
   TSParser *self,
-  const TSTree *old_tree,
   TSInput input,
   TSParseOptions parse_options
 );
 
 /**
  * Use the parser to parse some source code stored in one contiguous buffer.
- * The first two parameters are the same as in the [`ts_parser_parse`] function
- * above. The second two parameters indicate the location of the buffer and its
- * length in bytes.
+ * The first parameter is the same as in the [`ts_parser_parse`] function
+ * above. The second and third parameters indicate the location of the buffer
+ * and its length in bytes.
  */
 TSTree *ts_parser_parse_string(
   TSParser *self,
-  const TSTree *old_tree,
   const char *string,
   uint32_t length
 );
 
 /**
  * Use the parser to parse some source code stored in one contiguous buffer with
- * a given encoding. The first four parameters work the same as in the
+ * a given encoding. The first three parameters work the same as in the
  * [`ts_parser_parse_string`] method above. The final parameter indicates whether
  * the text is encoded as UTF8 or UTF16.
  */
 TSTree *ts_parser_parse_string_encoding(
   TSParser *self,
-  const TSTree *old_tree,
   const char *string,
   uint32_t length,
   TSInputEncoding encoding
@@ -397,45 +369,6 @@ const TSLanguage *ts_tree_language(const TSTree *self);
  * The returned pointer must be freed by the caller.
  */
 TSRange *ts_tree_included_ranges(const TSTree *self, uint32_t *length);
-
-/**
- * Edit the syntax tree to keep it in sync with source code that has been
- * edited.
- *
- * You must describe the edit both in terms of byte offsets and in terms of
- * (row, column) coordinates.
- *
- * The edit's `start_byte` must be less than or equal to its `old_end_byte`,
- * and its `start_point` must be less than or equal to its `old_end_point`.
- */
-void ts_tree_edit(TSTree *self, const TSInputEdit *edit);
-
-/**
- * Compare an old edited syntax tree to a new syntax tree representing the same
- * document, returning an array of ranges whose syntactic structure has changed.
- *
- * For this to work correctly, the old syntax tree must have been edited such
- * that its ranges match up to the new tree. Generally, you'll want to call
- * this function right after calling one of the [`ts_parser_parse`] functions.
- * You need to pass the old tree that was passed to parse, as well as the new
- * tree that was returned from that function.
- *
- * The returned ranges indicate areas where the hierarchical structure of syntax
- * nodes (from root to leaf) has changed between the old and new trees. Characters
- * outside these ranges have identical ancestor nodes in both trees.
- *
- * Note that the returned ranges may be slightly larger than the exact changed areas,
- * but Tree-sitter attempts to make them as small as possible.
- *
- * The returned array is allocated using `malloc` and the caller is responsible
- * for freeing it using `free`. The length of the array will be written to the
- * given `length` pointer.
- */
-TSRange *ts_tree_get_changed_ranges(
-  const TSTree *old_tree,
-  const TSTree *new_tree,
-  uint32_t *length
-);
 
 /**
  * Write a DOT graph describing the syntax tree to the given file.
@@ -532,11 +465,6 @@ bool ts_node_is_missing(TSNode self);
  * which are not required by the grammar, but can appear anywhere.
  */
 bool ts_node_is_extra(TSNode self);
-
-/**
- * Check if a syntax node has been edited.
- */
-bool ts_node_has_changes(TSNode self);
 
 /**
  * Check if the node is a syntax error or contains any syntax errors.
@@ -673,47 +601,9 @@ TSNode ts_node_named_descendant_for_byte_range(TSNode self, uint32_t start, uint
 TSNode ts_node_named_descendant_for_point_range(TSNode self, TSPoint start, TSPoint end);
 
 /**
- * Edit the node to keep it in-sync with source code that has been edited.
- *
- * This function is only rarely needed. When you edit a syntax tree with the
- * [`ts_tree_edit`] function, all of the nodes that you retrieve from the tree
- * afterward will already reflect the edit. You only need to use [`ts_node_edit`]
- * when you have a [`TSNode`] instance that you want to keep and continue to use
- * after an edit.
- *
- * The edit's `start_byte` must be less than or equal to its `old_end_byte`,
- * and its `start_point` must be less than or equal to its `old_end_point`.
- */
-void ts_node_edit(TSNode *self, const TSInputEdit *edit);
-
-/**
  * Check if two nodes are identical.
  */
 bool ts_node_eq(TSNode self, TSNode other);
-
-/**
- * Edit a point to keep it in-sync with source code that has been edited.
- *
- * This function updates a single point's byte offset and row/column position
- * based on an edit operation. This is useful for editing points without
- * requiring a tree or node instance.
- *
- * The edit's `start_byte` must be less than or equal to its `old_end_byte`,
- * and its `start_point` must be less than or equal to its `old_end_point`.
- */
-void ts_point_edit(TSPoint *point, uint32_t *point_byte, const TSInputEdit *edit);
-
-/**
- * Edit a range to keep it in-sync with source code that has been edited.
- *
- * This function updates a range's start and end positions based on an edit
- * operation. This is useful for editing ranges without requiring a tree
- * or node instance.
- *
- * The edit's `start_byte` must be less than or equal to its `old_end_byte`,
- * and its `start_point` must be less than or equal to its `old_end_point`.
- */
-void ts_range_edit(TSRange *range, const TSInputEdit *edit);
 
 /************************/
 /* Section - TreeCursor */

@@ -1,21 +1,17 @@
 use std::{collections::HashMap, env, fs};
 
 use anyhow::Context;
-use tree_sitter::Parser;
 use tree_sitter_proc_macro::test_with_seed;
 
 use crate::{
     fuzz::{
         EDIT_COUNT, EXAMPLE_EXCLUDE, EXAMPLE_INCLUDE, ITERATION_COUNT, LANGUAGE_FILTER,
         LOG_GRAPH_ENABLED, START_SEED,
-        corpus_test::{
-            check_changed_ranges, check_consistent_sizes, get_parser, set_included_ranges,
-        },
-        edits::{get_random_edit, invert_edit},
+        corpus_test::{check_consistent_sizes, get_parser, set_included_ranges},
+        edits::{apply_edit, get_random_edit, invert_edit},
         flatten_tests, new_seed,
         random::Rand,
     },
-    parse::perform_edit,
     test::{DiffKey, TestDiff, parse_tests, render_test_output},
     tests::{
         allocations, generate_parser,
@@ -25,18 +21,7 @@ use crate::{
 
 #[test_with_seed(retry=10, seed=*START_SEED, seed_fn=new_seed)]
 fn test_corpus_for_bash_language(seed: usize) {
-    test_language_corpus(
-        "bash",
-        seed,
-        Some(&[
-            // Fragile tests where edit customization changes
-            // lead to significant parse tree structure changes.
-            "bash - corpus - commands - Nested Heredocs",
-            "bash - corpus - commands - Quoted Heredocs",
-            "bash - corpus - commands - Heredocs with weird characters",
-        ]),
-        None,
-    );
+    test_language_corpus("bash", seed, None, None);
 }
 
 #[test_with_seed(retry=10, seed=*START_SEED, seed_fn=new_seed)]
@@ -197,11 +182,6 @@ pub fn test_language_corpus(
             continue;
         }
 
-        let mut parser = Parser::new();
-        parser.set_language(&language).unwrap();
-        let tree = parser.parse(&test.input, None).unwrap();
-        drop(parser);
-
         for trial in 0..*ITERATION_COUNT {
             let seed = start_seed + trial;
             let passed = allocations::record(|| {
@@ -209,20 +189,19 @@ pub fn test_language_corpus(
                 let mut log_session = None;
                 let mut parser = get_parser(&mut log_session, "log.html");
                 parser.set_language(&language).unwrap();
-                let mut tree = tree.clone();
                 let mut input = test.input.clone();
 
                 if *LOG_GRAPH_ENABLED {
                     eprintln!("{}\n", String::from_utf8_lossy(&input));
                 }
 
-                // Perform a random series of edits and reparse.
+                // Perform a random series of edits and parse the mutated input.
                 let edit_count = rand.unsigned(*EDIT_COUNT);
                 let mut undo_stack = Vec::with_capacity(edit_count);
                 for _ in 0..=edit_count {
                     let edit = get_random_edit(&mut rand, &input);
                     undo_stack.push(invert_edit(&input, &edit));
-                    perform_edit(&mut tree, &mut input, &edit).unwrap();
+                    apply_edit(&mut input, &edit);
                 }
 
                 if log_seed {
@@ -243,27 +222,19 @@ pub fn test_language_corpus(
                 }
 
                 set_included_ranges(&mut parser, &input, test.template_delimiters);
-                let mut tree2 = parser.parse(&input, Some(&tree)).unwrap();
-
-                // Check that the new tree is consistent.
+                let tree2 = parser.parse(&input).unwrap();
                 check_consistent_sizes(&tree2, &input);
-                if let Err(message) = check_changed_ranges(&tree, &tree2, &input) {
-                    println!(
-                        "\nUnexpected scope change in seed {seed} with start seed {start_seed}\n{message}\n\n",
-                    );
-                    return false;
-                }
 
-                // Undo all of the edits and re-parse again.
+                // Undo all of the edits and re-parse on the same parser instance.
                 while let Some(edit) = undo_stack.pop() {
-                    perform_edit(&mut tree2, &mut input, &edit).unwrap();
+                    apply_edit(&mut input, &edit);
                 }
                 if *LOG_GRAPH_ENABLED {
                     eprintln!("{}\n", String::from_utf8_lossy(&input));
                 }
 
                 set_included_ranges(&mut parser, &test.input, test.template_delimiters);
-                let tree3 = parser.parse(&input, Some(&tree2)).unwrap();
+                let tree3 = parser.parse(&input).unwrap();
 
                 // Verify that the final tree matches the expectation from the corpus.
                 let actual_output =
@@ -277,14 +248,7 @@ pub fn test_language_corpus(
                     return false;
                 }
 
-                // Check that the edited tree is consistent.
                 check_consistent_sizes(&tree3, &input);
-                if let Err(message) = check_changed_ranges(&tree2, &tree3, &input) {
-                    println!(
-                        "Unexpected scope change in seed {seed} with start seed {start_seed}\n{message}\n\n"
-                    );
-                    return false;
-                }
 
                 true
             });
