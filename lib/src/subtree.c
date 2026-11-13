@@ -684,20 +684,6 @@ int ts_subtree_compare(Subtree left, Subtree right, SubtreePool *pool) {
   return 0;
 }
 
-Subtree ts_subtree_last_external_token(Subtree tree) {
-  if (!ts_subtree_has_external_tokens(tree)) return NULL_SUBTREE;
-  while (tree.ptr->child_count > 0) {
-    for (uint32_t i = tree.ptr->child_count - 1; i + 1 > 0; i--) {
-      Subtree child = ts_subtree_children(tree)[i];
-      if (ts_subtree_has_external_tokens(child)) {
-        tree = child;
-        break;
-      }
-    }
-  }
-  return tree;
-}
-
 static size_t ts_subtree__write_char_to_string(char *str, size_t n, int32_t chr) {
   if (chr == -1)
     return snprintf(str, n, "INVALID");
