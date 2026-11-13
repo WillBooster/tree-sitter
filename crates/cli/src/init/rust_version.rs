@@ -1,3 +1,5 @@
+use semver::{BuildMetadata, Version};
+
 pub const MIN_RUST_BINDING_MAJOR: u64 = 20;
 
 #[must_use]
@@ -8,34 +10,19 @@ pub fn resolve_rust_binding_version(
     fork_version
         .and_then(parse_compatible_version)
         .or_else(|| fallback_version.and_then(parse_compatible_version))
-        .unwrap_or_else(|| MIN_RUST_BINDING_MAJOR.to_string())
+        .unwrap_or_else(|| Version::new(MIN_RUST_BINDING_MAJOR, 0, 0).to_string())
 }
 
 #[must_use]
 pub fn parse_compatible_version(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     let normalized = trimmed.strip_prefix('v').unwrap_or(trimmed);
-    let core = normalized
-        .split_once(['-', '+'])
-        .map_or(normalized, |(head, _)| head);
-    let parts: Vec<&str> = core.split('.').collect();
-    if !(1..=3).contains(&parts.len()) {
+    let mut version = Version::parse(normalized).ok()?;
+    if version.major < MIN_RUST_BINDING_MAJOR {
         return None;
     }
-    let major = parts[0].parse::<u64>().ok()?;
-    if major < MIN_RUST_BINDING_MAJOR {
-        return None;
-    }
-    if parts[1..].iter().any(|part| part.parse::<u64>().is_err()) {
-        return None;
-    }
-    if normalized
-        .bytes()
-        .any(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+')))
-    {
-        return None;
-    }
-    Some(normalized.to_string())
+    version.build = BuildMetadata::EMPTY;
+    Some(version.to_string())
 }
 
 #[cfg_attr(

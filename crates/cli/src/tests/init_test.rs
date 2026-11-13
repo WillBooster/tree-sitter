@@ -1,53 +1,63 @@
 use std::fs;
 
-use semver::Version;
+use semver::{Version, VersionReq};
 use tempfile::TempDir;
 use tree_sitter_loader::Bindings;
 
 use crate::init::{
     JsonConfigOpts, generate_grammar_files,
-    rust_version::{
-        MIN_RUST_BINDING_MAJOR, bump_version_from_log, parse_compatible_version,
-        resolve_rust_binding_version,
-    },
+    rust_version::{bump_version_from_log, parse_compatible_version, resolve_rust_binding_version},
 };
 
 #[test]
 fn test_resolve_rust_binding_version_handles_overrides_and_fallbacks() {
-    assert_eq!(
-        resolve_rust_binding_version(Some("v20.0.0"), Some("20.0.0")),
-        "20.0.0"
-    );
-    assert_eq!(
-        resolve_rust_binding_version(Some("20.1.0"), Some("20.0.0")),
-        "20.1.0"
-    );
-    assert_eq!(
-        resolve_rust_binding_version(Some("v20.2.0-rc.1"), Some("20.0.0")),
-        "20.2.0-rc.1"
-    );
-    assert_eq!(
-        resolve_rust_binding_version(Some("19.1.1"), Some("20.1.0")),
-        "20.1.0"
-    );
-    assert_eq!(
-        resolve_rust_binding_version(Some("v19.1.1"), Some("19.1.1")),
-        MIN_RUST_BINDING_MAJOR.to_string()
-    );
-    assert_eq!(
-        resolve_rust_binding_version(Some("   "), Some("20.3.0")),
-        "20.3.0"
-    );
-    assert_eq!(
-        resolve_rust_binding_version(Some("not-a-version"), None),
-        MIN_RUST_BINDING_MAJOR.to_string()
-    );
-    assert_eq!(
-        resolve_rust_binding_version(None, None),
-        MIN_RUST_BINDING_MAJOR.to_string()
-    );
-    assert_eq!(parse_compatible_version("0.27.0"), None);
-    assert_eq!(parse_compatible_version("20..0"), None);
+    let valid_cases = [
+        (Some("v20.0.0"), Some("20.0.0"), "20.0.0"),
+        (Some("20.1.0"), Some("20.0.0"), "20.1.0"),
+        (Some("v20.2.0-rc.1"), Some("20.0.0"), "20.2.0-rc.1"),
+        (Some("20.0.0+20261113"), Some("20.0.0"), "20.0.0"),
+        (Some("19.1.1"), Some("20.1.0"), "20.1.0"),
+        (Some("v19.1.1"), Some("19.1.1"), "20.0.0"),
+        (Some("20.0.0-"), Some("20.1.0"), "20.1.0"),
+        (Some("20.0.0-rc..1"), Some("20.1.0"), "20.1.0"),
+        (Some("20.0.0-01"), None, "20.0.0"),
+        (Some("20.0.0+"), None, "20.0.0"),
+        (Some("20.0.0+build..1"), None, "20.0.0"),
+        (Some("   "), Some("20.3.0"), "20.3.0"),
+        (Some("not-a-version"), None, "20.0.0"),
+        (None, None, "20.0.0"),
+    ];
+    for (fork_version, fallback, expected) in valid_cases {
+        let actual = resolve_rust_binding_version(fork_version, fallback);
+        assert_eq!(
+            actual, expected,
+            "fork={fork_version:?} fallback={fallback:?}"
+        );
+        assert!(
+            VersionReq::parse(&actual).is_ok(),
+            "resolved version {actual:?} must be a valid Cargo VersionReq"
+        );
+    }
+
+    for malformed in [
+        "0.27.0",
+        "19.1.1",
+        "20",
+        "20.1",
+        "020.0.0",
+        "20..0",
+        "20.0.0-",
+        "20.0.0-rc..1",
+        "20.0.0-01",
+        "20.0.0+",
+        "20.0.0+build..1",
+    ] {
+        assert_eq!(
+            parse_compatible_version(malformed),
+            None,
+            "expected {malformed:?} to be rejected"
+        );
+    }
 }
 
 #[test]

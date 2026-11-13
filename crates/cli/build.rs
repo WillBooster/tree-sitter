@@ -175,16 +175,18 @@ fn read_git_fork_version(crate_dir: &Path) -> Option<String> {
         &["describe", "--tags", "--abbrev=0", "--match", "v[0-9]*"],
     )?;
     let tag = tag.trim();
-    let mut parts = tag
-        .strip_prefix('v')?
-        .split('.')
-        .filter_map(|part| part.parse::<u64>().ok());
-    let (major, minor, patch) = (parts.next()?, parts.next()?, parts.next()?);
+    let tag_version = semver::Version::parse(tag.strip_prefix('v')?).ok()?;
     let log = git_stdout(
         crate_dir,
         &["log", &format!("{tag}..HEAD"), "--format=%s%n%b"],
     )?;
-    let (major, minor, patch) = rust_version::bump_version_from_log((major, minor, patch), &log);
+    if log.trim().is_empty() {
+        return Some(tag_version.to_string());
+    }
+    let (major, minor, patch) = rust_version::bump_version_from_log(
+        (tag_version.major, tag_version.minor, tag_version.patch),
+        &log,
+    );
     Some(format!("{major}.{minor}.{patch}"))
 }
 
