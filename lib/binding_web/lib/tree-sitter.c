@@ -106,18 +106,6 @@ static void unmarshal_range(TSRange *range) {
   range->end_point.column = code_unit_to_byte(range->end_point.column);
 }
 
-static TSInputEdit unmarshal_edit() {
-  TSInputEdit edit;
-  const void **address = TRANSFER_BUFFER;
-  edit.start_point = unmarshal_point(address); address += SIZE_OF_POINT;
-  edit.old_end_point = unmarshal_point(address); address += SIZE_OF_POINT;
-  edit.new_end_point = unmarshal_point(address); address += SIZE_OF_POINT;
-  edit.start_byte = code_unit_to_byte((uint32_t)*address); address += 1;
-  edit.old_end_byte = code_unit_to_byte((uint32_t)*address); address += 1;
-  edit.new_end_byte = code_unit_to_byte((uint32_t)*address); address += 1;
-  return edit;
-}
-
 static void marshal_language_metadata(const TSLanguageMetadata *metadata) {
   if (metadata == NULL) {
     TRANSFER_BUFFER[0] = 0;
@@ -269,7 +257,6 @@ static void unmarshal_parse_inputs(WasmParseInputs *out) {
 static TSTree *parse_with_callback(
   TSParser *self,
   char *input_buffer,
-  const TSTree *old_tree,
   bool has_progress_callback
 ) {
   TSInput input = {input_buffer, call_parse_callback, TSInputEncodingUTF16LE, NULL};
@@ -277,19 +264,18 @@ static TSTree *parse_with_callback(
     .payload = NULL,
     .progress_callback = has_progress_callback ? progress_callback : NULL,
   };
-  return ts_parser_parse_with_options(self, old_tree, input, options);
+  return ts_parser_parse_with_options(self, input, options);
 }
 
 TSTree *ts_parser_parse_wasm(
   TSParser *self,
-  char *input_buffer,
-  const TSTree *old_tree
+  char *input_buffer
 ) {
   WasmParseInputs parsed;
   unmarshal_parse_inputs(&parsed);
   apply_included_ranges(self, &parsed.ranges, parsed.range_count);
   ts_parser_set_max_operations(self, parsed.max_operations);
-  TSTree *tree = parse_with_callback(self, input_buffer, old_tree, parsed.has_progress_callback);
+  TSTree *tree = parse_with_callback(self, input_buffer, parsed.has_progress_callback);
   marshal_u64(ts_parser_last_parse_operations(self));
   return tree;
 }
@@ -331,7 +317,7 @@ TSTree *ts_parser_parse_limited_wasm(
 
   current_parse_budget = budget;
   TSParser *limited_parser = create_limited_parser(self, budget, &parsed);
-  TSTree *tree = parse_with_callback(limited_parser, input_buffer, NULL, parsed.has_progress_callback);
+  TSTree *tree = parse_with_callback(limited_parser, input_buffer, parsed.has_progress_callback);
   uint64_t operations = ts_parser_last_parse_operations(limited_parser);
   if (parsed.range_count || !has_default_included_range(self)) {
     uint32_t included_range_count;
@@ -416,11 +402,6 @@ void ts_tree_root_node_with_offset_wasm(const TSTree *tree) {
   marshal_node(TRANSFER_BUFFER, node);
 }
 
-void ts_tree_edit_wasm(TSTree *tree) {
-  TSInputEdit edit = unmarshal_edit();
-  ts_tree_edit(tree, &edit);
-}
-
 void ts_tree_included_ranges_wasm(const TSTree *tree) {
   uint32_t range_count;
   TSRange *ranges = ts_tree_included_ranges(tree, &range_count);
@@ -428,16 +409,6 @@ void ts_tree_included_ranges_wasm(const TSTree *tree) {
     marshal_range(&ranges[i]);
   }
   TRANSFER_BUFFER[0] = (range_count ? (const void *)range_count : NULL);
-  TRANSFER_BUFFER[1] = (const void *)ranges;
-}
-
-void ts_tree_get_changed_ranges_wasm(TSTree *tree, TSTree *other) {
-  unsigned range_count;
-  TSRange *ranges = ts_tree_get_changed_ranges(tree, other, &range_count);
-  for (unsigned i = 0; i < range_count; i++) {
-    marshal_range(&ranges[i]);
-  }
-  TRANSFER_BUFFER[0] = (const void *)range_count;
   TRANSFER_BUFFER[1] = (const void *)ranges;
 }
 
@@ -539,14 +510,6 @@ void ts_tree_cursor_start_position_wasm(const TSTreeCursor *cursor) {
 
 void ts_tree_cursor_end_position_wasm(const TSTreeCursor *cursor) {
   marshal_point(ts_node_end_point(ts_tree_cursor_current_node(cursor)));
-}
-
-uint32_t ts_tree_cursor_start_index_wasm(const TSTreeCursor *cursor) {
-  return byte_to_code_unit(ts_node_start_byte(ts_tree_cursor_current_node(cursor)));
-}
-
-uint32_t ts_tree_cursor_end_index_wasm(const TSTreeCursor *cursor) {
-  return byte_to_code_unit(ts_node_end_byte(ts_tree_cursor_current_node(cursor)));
 }
 
 void ts_tree_cursor_current_node_wasm(const TSTreeCursor *cursor) {
@@ -821,11 +784,6 @@ void ts_node_descendants_of_type_wasm(
 int ts_node_is_named_wasm(const TSTree *tree) {
   TSNode node = unmarshal_node(tree);
   return ts_node_is_named(node);
-}
-
-int ts_node_has_changes_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_has_changes(node);
 }
 
 int ts_node_has_error_wasm(const TSTree *tree) {

@@ -1,6 +1,6 @@
 use tree_sitter::{LogType, Node, Parser, Point, Range, Tree};
 
-use super::{LOG_ENABLED, LOG_GRAPH_ENABLED, scope_sequence::ScopeSequence};
+use super::{LOG_ENABLED, LOG_GRAPH_ENABLED};
 use crate::util;
 
 struct SizeCheckFrame<'a> {
@@ -11,7 +11,6 @@ struct SizeCheckFrame<'a> {
     child_index: u32,
     last_child_end_byte: usize,
     last_child_end_point: Point,
-    some_child_has_changes: bool,
     actual_named_child_count: usize,
 }
 
@@ -38,7 +37,6 @@ impl SizeCheckFrame<'_> {
             child_index: 0,
             last_child_end_byte: start_byte,
             last_child_end_point: start_point,
-            some_child_has_changes: false,
             actual_named_child_count: 0,
         }
     }
@@ -60,9 +58,6 @@ pub fn check_consistent_sizes(tree: &Tree, input: &[u8]) {
 
             assert!(child.start_byte() >= top.last_child_end_byte);
             assert!(child.start_position() >= top.last_child_end_point);
-            if child.has_changes() {
-                top.some_child_has_changes = true;
-            }
             if child.is_named() {
                 top.actual_named_child_count += 1;
             }
@@ -83,34 +78,7 @@ pub fn check_consistent_sizes(tree: &Tree, input: &[u8]) {
             assert!(frame.end_byte >= frame.last_child_end_byte);
             assert!(frame.end_point >= frame.last_child_end_point);
         }
-        if frame.some_child_has_changes {
-            assert!(frame.node.has_changes());
-        }
     }
-}
-
-pub fn check_changed_ranges(old_tree: &Tree, new_tree: &Tree, input: &[u8]) -> Result<(), String> {
-    let changed_ranges = old_tree.changed_ranges(new_tree).collect::<Vec<_>>();
-    let old_scope_sequence = ScopeSequence::new(old_tree);
-    let new_scope_sequence = ScopeSequence::new(new_tree);
-
-    let old_range = old_tree.root_node().range();
-    let new_range = new_tree.root_node().range();
-
-    let byte_range =
-        old_range.start_byte.min(new_range.start_byte)..old_range.end_byte.max(new_range.end_byte);
-    let point_range = old_range.start_point.min(new_range.start_point)
-        ..old_range.end_point.max(new_range.end_point);
-
-    for range in &changed_ranges {
-        if range.end_byte > byte_range.end || range.end_point > point_range.end {
-            return Err(format!(
-                "changed range extends outside of the old and new trees {range:?}",
-            ));
-        }
-    }
-
-    old_scope_sequence.check_changes(&new_scope_sequence, input, &changed_ranges)
 }
 
 pub fn set_included_ranges(parser: &mut Parser, input: &[u8], delimiters: Option<(&str, &str)>) {

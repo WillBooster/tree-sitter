@@ -4,7 +4,7 @@ autoexamples = false
 categories = [ "parser-implementations", "parsing", "text-editors" ]
 description = "PARSER_DESCRIPTION"
 edition = "2024"
-keywords = [ "incremental", "parsing", "tree-sitter", "PARSER_NAME" ]
+keywords = [ "parsing", "tree-sitter", "PARSER_NAME" ]
 license = "PARSER_LICENSE"
 name = "tree-sitter-PARSER_NAME"
 readme = "README.md"
@@ -24,4 +24,4 @@ tree-sitter-language = "0.1"
 cc = "1.2"
 
 [dev-dependencies]
-tree-sitter = "RUST_BINDING_VERSION"
+tree-sitter = { package = "willbooster-tree-sitter", version = "RUST_BINDING_VERSION" }

@@ -46,8 +46,6 @@ typedef struct {
   bool (*check_progress)(void *payload, unsigned operations);
   void *progress_payload;
   char lookahead_buffer[4];
-  bool did_get_column;
-  bool did_get_position;
   ColumnData column_data;
   ColumnData display_column_data;
   uint32_t display_tab_width;
@@ -70,7 +68,7 @@ void ts_lexer_set_progress_callback(
 );
 void ts_lexer_reset(Lexer *self, Length position);
 void ts_lexer_start(Lexer *self);
-void ts_lexer_finish(Lexer *self, uint32_t *lookahead_end_byte);
+void ts_lexer_finish(Lexer *self);
 void ts_lexer_mark_end(Lexer *self);
 bool ts_lexer_set_included_ranges(Lexer *self, const TSRange *ranges, uint32_t count);
 TSRange *ts_lexer_included_ranges(const Lexer *self, uint32_t *count);

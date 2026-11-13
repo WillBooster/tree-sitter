@@ -110,26 +110,6 @@ console.log(callExpression.type, callExpression.startPosition, callExpression.en
 // call_expression { row: 0, column: 11 } { row: 0, column: 25 }
 ```
 
-### Editing
-
-If your source code _changes_, you can update the syntax tree. This will take less time than the first parse.
-
-```javascript
-// Replace 'let' with 'const'
-const newSourceCode = 'const x = 1; console.log(x);';
-
-tree.edit({
-  startIndex: 0,
-  oldEndIndex: 3,
-  newEndIndex: 5,
-  startPosition: { row: 0, column: 0 },
-  oldEndPosition: { row: 0, column: 3 },
-  newEndPosition: { row: 0, column: 5 },
-});
-
-const newTree = parser.parse(newSourceCode, tree);
-```
-
 ### Parsing Text From a Custom Data Structure
 
 If your text is stored in a data structure other than a single string, you can parse it by supplying a callback to `parse`

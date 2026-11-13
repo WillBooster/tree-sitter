@@ -67,7 +67,7 @@ interface WasmModule {
   _ts_init(): number;
   _ts_parser_new_wasm(): void;
   _ts_parser_enable_logger_wasm(_0: number, _1: number): void;
-  _ts_parser_parse_wasm(_0: number, _1: number, _2: number): number;
+  _ts_parser_parse_wasm(_0: number, _1: number): number;
   _ts_parser_parse_limited_wasm(_0: number, _1: number): number;
   _ts_parser_last_parse_operations_wasm(_0: number): void;
   _ts_parser_abort_limited_wasm(): void;
@@ -79,9 +79,7 @@ interface WasmModule {
   _ts_language_subtypes_wasm(_0: number, _1: number): void;
   _ts_tree_root_node_wasm(_0: number): void;
   _ts_tree_root_node_with_offset_wasm(_0: number): void;
-  _ts_tree_edit_wasm(_0: number): void;
   _ts_tree_included_ranges_wasm(_0: number): void;
-  _ts_tree_get_changed_ranges_wasm(_0: number, _1: number): void;
   _ts_tree_cursor_new_wasm(_0: number): number;
   _ts_tree_cursor_copy_wasm(_0: number): number;
   _ts_tree_cursor_delete_wasm(_0: number): void;
@@ -99,8 +97,6 @@ interface WasmModule {
   _ts_tree_cursor_current_node_id_wasm(_0: number): number;
   _ts_tree_cursor_start_position_wasm(_0: number): void;
   _ts_tree_cursor_end_position_wasm(_0: number): void;
-  _ts_tree_cursor_start_index_wasm(_0: number): number;
-  _ts_tree_cursor_end_index_wasm(_0: number): number;
   _ts_tree_cursor_current_depth(_0: number): number;
   _ts_tree_cursor_current_descendant_index(_0: number): number;
   _ts_tree_cursor_current_node_wasm(_0: number): void;
@@ -134,7 +130,6 @@ interface WasmModule {
   _ts_node_named_children_wasm(_0: number): void;
   _ts_node_descendants_of_type_wasm(_0: number, _1: number, _2: number): void;
   _ts_node_is_named_wasm(_0: number): number;
-  _ts_node_has_changes_wasm(_0: number): number;
   _ts_node_has_error_wasm(_0: number): number;
   _ts_node_is_error_wasm(_0: number): number;
   _ts_node_is_missing_wasm(_0: number): number;

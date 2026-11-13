@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Context;
 use log::info;
-use tree_sitter::{InputEdit, Language, Parser, Point};
+use tree_sitter::{Language, Parser};
 #[cfg(feature = "wasm")]
 use tree_sitter::{WasmStore, wasmtime};
 use tree_sitter_loader::{CompileConfig, Loader};
@@ -101,18 +101,10 @@ fn benchmark_language(
         .filter(|path| matches_example_filter(path))
         .map(|path| {
             parse(path, max_path_length, |code| {
-                parser.parse(code, None).expect("Failed to parse");
+                parser.parse(code).expect("Failed to parse");
             })
         })
         .collect::<Vec<_>>();
-
-    info!("  Reparsing After Whitespace Edits:");
-    for example_path in example_paths
-        .iter()
-        .filter(|path| matches_example_filter(path))
-    {
-        parse_incrementally(example_path, max_path_length, parser);
-    }
 
     info!("  Parsing Invalid Code (mismatched languages):");
     let error_speeds = EXAMPLE_PATHS_BY_LANGUAGE_DIR
@@ -122,7 +114,7 @@ fn benchmark_language(
         .filter(|path| matches_example_filter(path))
         .map(|path| {
             parse(path, max_path_length, |code| {
-                parser.parse(code, None).expect("Failed to parse");
+                parser.parse(code).expect("Failed to parse");
             })
         })
         .collect::<Vec<_>>();
@@ -180,56 +172,6 @@ fn aggregate(speeds: &[usize]) -> Option<(usize, usize)> {
         }
     }
     Some((total / speeds.len(), max))
-}
-
-fn parse_incrementally(path: &Path, max_path_length: usize, parser: &mut Parser) {
-    let mut source = fs::read(path)
-        .with_context(|| format!("Failed to read {}", path.display()))
-        .unwrap();
-    let Some(position) = source
-        .iter()
-        .enumerate()
-        .filter(|(_, byte)| **byte == b' ')
-        .min_by_key(|(position, _)| position.abs_diff(source.len() / 2))
-        .map(|(position, _)| position)
-    else {
-        return;
-    };
-    let mut point = Point::default();
-    for byte in &source[..position] {
-        if *byte == b'\n' {
-            point.row += 1;
-            point.column = 0;
-        } else {
-            point.column += 1;
-        }
-    }
-    let end_point = Point::new(point.row, point.column + 1);
-    let edit = InputEdit {
-        start_byte: position,
-        old_end_byte: position + 1,
-        new_end_byte: position + 1,
-        start_position: point,
-        old_end_position: end_point,
-        new_end_position: end_point,
-    };
-    let mut tree = parser.parse(&source, None).expect("Failed to parse");
-    let start = Instant::now();
-    for iteration in 0..*REPETITION_COUNT {
-        source[position] = if iteration % 2 == 0 { b'\t' } else { b' ' };
-        tree.edit(&edit);
-        tree = parser
-            .parse(&source, Some(&tree))
-            .expect("Failed to reparse");
-    }
-    let duration = start.elapsed().as_secs_f64() / *REPETITION_COUNT as f64;
-    let fresh = parser.parse(&source, None).expect("Failed to parse");
-    assert_eq!(tree.root_node().to_sexp(), fresh.root_node().to_sexp());
-    info!(
-        "    {:max_path_length$}\ttime {:>7.2} us",
-        path.file_name().unwrap().to_str().unwrap(),
-        duration * 1e6,
-    );
 }
 
 fn parse(path: &Path, max_path_length: usize, mut action: impl FnMut(&[u8])) -> usize {

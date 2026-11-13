@@ -2,9 +2,8 @@ import { INTERNAL, Internal, assertInternal, ParseCallback, Point, Range, SIZE_O
 import { Language } from './language';
 import { Node } from './node';
 import { TreeCursor } from './tree_cursor';
-import { marshalEdit, marshalPoint, unmarshalNode, unmarshalRanges } from './marshal';
+import { marshalPoint, unmarshalNode, unmarshalRanges } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
-import { Edit } from './edit';
 import { newFinalizer } from './finalization_registry';
 
 /** @internal */
@@ -45,9 +44,6 @@ export class Tree {
 
   /** @internal */
   textSource: string | ParseCallback;
-
-  /** @internal */
-  editVersion = 0;
 
   /** The language that was used to parse the syntax tree. */
   language: Language;
@@ -92,44 +88,11 @@ export class Tree {
     return unmarshalNode(this)!;
   }
 
-  /**
-   * Edit the syntax tree to keep it in sync with source code that has been
-   * edited.
-   *
-   * You must describe the edit both in terms of byte offsets and in terms of
-   * row/column coordinates.
-   */
-  edit(edit: Edit): void {
-    marshalEdit(edit);
-    C._ts_tree_edit_wasm(this[0]);
-    this.editVersion++;
-  }
-
   /** Create a new {@link TreeCursor} starting from the root of the tree. */
   walk(): TreeCursor {
     C._ts_tree_root_node_wasm(this[0]);
     const address = C._ts_tree_cursor_new_wasm(this[0]);
     return new TreeCursor(INTERNAL, this, address);
-  }
-
-  /**
-   * Compare this old edited syntax tree to a new syntax tree representing
-   * the same document, returning a sequence of ranges whose syntactic
-   * structure has changed.
-   *
-   * For this to work correctly, this syntax tree must have been edited such
-   * that its ranges match up to the new tree. Generally, you'll want to
-   * call this method right after calling one of the [`Parser::parse`]
-   * functions. Call it on the old tree that was passed to parse, and
-   * pass the new tree that was returned from `parse`.
-   */
-  getChangedRanges(other: Tree): Range[] {
-    if (!(other instanceof Tree)) {
-      throw new TypeError('Argument must be a Tree');
-    }
-
-    C._ts_tree_get_changed_ranges_wasm(this[0], other[0]);
-    return unmarshalRanges();
   }
 
   /** Get the included ranges that were used to parse the syntax tree. */

@@ -90,7 +90,6 @@ parentPort.on('message', message => {
     languageAddress,
     message.sourceAddress,
     message.sourceLength,
-    message.oldTree ?? 0,
   );
   if (tree === 0) {
     throw new Error(`parsing worker failed to parse language ${message.languageId}`);

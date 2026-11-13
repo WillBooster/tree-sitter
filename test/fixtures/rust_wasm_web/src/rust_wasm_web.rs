@@ -7,7 +7,7 @@ use std::{
     slice, str,
     task::{Context, Poll, Waker},
 };
-use tree_sitter::{InputEdit, Language, LanguageError, Parser, Point, Tree, ffi::TSLanguage};
+use tree_sitter::{Language, LanguageError, Parser, Tree, ffi::TSLanguage};
 
 type Application = Pin<Box<dyn Future<Output = ()>>>;
 
@@ -27,7 +27,6 @@ unsafe extern "C" {
         language_id: u32,
         source_address: u32,
         source_length: u32,
-        old_tree_address: u32,
         request_address: u32,
     );
     fn log(message_address: u32, message_length: u32);
@@ -41,7 +40,6 @@ fn log_progress(message: &str) {
 struct ParseRequest<'a> {
     language_id: u32,
     source: &'a str,
-    old_tree: Option<Tree>,
     requested: bool,
     result: Option<Tree>,
     _pinned: PhantomPinned,
@@ -56,10 +54,6 @@ impl Future for ParseRequest<'_> {
             return Poll::Ready(tree);
         }
         if !this.requested {
-            let old_tree_address = this
-                .old_tree
-                .take()
-                .map_or(0, |tree| tree.into_raw() as u32);
             this.requested = true;
             let request_address = std::ptr::from_mut(this) as u32;
             unsafe {
@@ -67,7 +61,6 @@ impl Future for ParseRequest<'_> {
                     this.language_id,
                     this.source.as_ptr() as u32,
                     this.source.len() as u32,
-                    old_tree_address,
                     request_address,
                 );
             }
@@ -76,11 +69,10 @@ impl Future for ParseRequest<'_> {
     }
 }
 
-fn spawn_parse<'a>(language_id: u32, source: &'a str, old_tree: Option<Tree>) -> ParseRequest<'a> {
+fn spawn_parse(language_id: u32, source: &str) -> ParseRequest<'_> {
     ParseRequest {
         language_id,
         source,
-        old_tree,
         requested: false,
         result: None,
         _pinned: PhantomPinned,
@@ -88,8 +80,8 @@ fn spawn_parse<'a>(language_id: u32, source: &'a str, old_tree: Option<Tree>) ->
 }
 
 async fn run() {
-    let mut source = String::from("const value = []\n");
-    let mut tree = spawn_parse(JAVASCRIPT, &source, None).await;
+    let source = "const value = [0, 1, 2]\n";
+    let tree = spawn_parse(JAVASCRIPT, source).await;
     let language = tree.language();
     assert_eq!(language.name(), Some("javascript"));
     assert!(!language.is_parseable());
@@ -100,51 +92,12 @@ async fn run() {
     );
     assert_eq!(
         tree.root_node().to_sexp(),
-        "(program (lexical_declaration (variable_declarator name: (identifier) value: (array))))"
+        "(program (lexical_declaration (variable_declarator name: (identifier) value: (array (number) (number) (number)))))"
     );
     log_progress("parsed javascript");
 
-    for integer in 0..100 {
-        let edit_start = source.find(']').unwrap();
-        let insertion = if integer == 0 {
-            integer.to_string()
-        } else {
-            format!(", {integer}")
-        };
-        source.insert_str(edit_start, &insertion);
-        let new_end = edit_start + insertion.len();
-        tree.edit(&InputEdit {
-            start_byte: edit_start,
-            old_end_byte: edit_start,
-            new_end_byte: new_end,
-            start_position: Point::new(0, edit_start),
-            old_end_position: Point::new(0, edit_start),
-            new_end_position: Point::new(0, new_end),
-        });
-
-        let prev_tree = tree.clone();
-        if integer == 0 {
-            assert_eq!(
-                Parser::new().set_language(&prev_tree.language()),
-                Err(LanguageError::NotParseable)
-            );
-        }
-        tree = spawn_parse(JAVASCRIPT, &source, Some(tree)).await;
-        let array_node = tree
-            .root_node()
-            .named_child(0)
-            .unwrap()
-            .named_child(0)
-            .unwrap()
-            .child_by_field_name("value")
-            .unwrap();
-        assert_eq!(array_node.named_child_count(), integer + 1);
-        assert!(prev_tree.changed_ranges(&tree).len() > 0);
-        log_progress(&format!("incrementally reparsed ({} / 100)", integer + 1));
-    }
-
-    let python_source = String::from("def answer():\n  return 42\n");
-    let python_tree = spawn_parse(PYTHON, &python_source, None).await;
+    let python_source = "def answer():\n  return 42\n";
+    let python_tree = spawn_parse(PYTHON, python_source).await;
     assert_eq!(
         python_tree.root_node().to_sexp(),
         "(module (function_definition name: (identifier) parameters: (parameters) body: (block (return_statement (integer)))))"
@@ -153,8 +106,8 @@ async fn run() {
 
     // Ruby's scanner uses wide-character classification for suffixed constants
     // and unquoted heredoc delimiters.
-    let ruby_source = String::from("Éclair!\nvalue = <<~ÉTÉ\n  héllo\nÉTÉ\n");
-    let ruby_tree = spawn_parse(RUBY, &ruby_source, None).await;
+    let ruby_source = "Éclair!\nvalue = <<~ÉTÉ\n  héllo\nÉTÉ\n";
+    let ruby_tree = spawn_parse(RUBY, ruby_source).await;
     assert_eq!(
         ruby_tree.root_node().to_sexp(),
         "(program (call method: (constant)) (assignment left: (identifier) right: (heredoc_beginning)) (heredoc_body (heredoc_content) (heredoc_end)))"
@@ -185,15 +138,8 @@ pub unsafe extern "C" fn run_parse(
     language_address: u32,
     source_address: u32,
     source_length: u32,
-    old_tree_address: u32,
 ) -> u32 {
-    let tree = run_parse_internal(
-        language_address,
-        source_address,
-        source_length,
-        old_tree_address,
-    )
-    .ok();
+    let tree = run_parse_internal(language_address, source_address, source_length).ok();
     tree.map_or(0, |tree| tree.into_raw() as u32)
 }
 
@@ -201,7 +147,6 @@ fn run_parse_internal(
     language_address: u32,
     source_address: u32,
     source_length: u32,
-    old_tree_address: u32,
 ) -> Result<Tree, u32> {
     let source_bytes =
         unsafe { slice::from_raw_parts(source_address as *const u8, source_length as usize) };
@@ -209,37 +154,24 @@ fn run_parse_internal(
         return Err(1);
     };
 
-    let old_tree = if old_tree_address == 0 {
-        None
-    } else {
-        Some(unsafe { Tree::from_raw(old_tree_address as *mut _) })
-    };
-
     let mut parser = Parser::new();
-    if let Some(tree) = old_tree.as_ref() {
-        if parser.set_language(&tree.language()).is_err() {
-            return Err(2);
-        }
+    let language = if language_address == JAVASCRIPT {
+        Language::from(tree_sitter_javascript::LANGUAGE)
     } else {
-        let language = if language_address == JAVASCRIPT {
-            Language::from(tree_sitter_javascript::LANGUAGE)
-        } else {
-            unsafe { Language::from_raw(language_address as *const TSLanguage) }
-        };
-        if parser.set_language(&language).is_err() {
-            return Err(3);
-        }
+        unsafe { Language::from_raw(language_address as *const TSLanguage) }
+    };
+    if parser.set_language(&language).is_err() {
+        return Err(3);
     }
     let mut paused = false;
     let Some(tree) = parser.parse_with_options(
         &mut |byte_offset, _| {
-            if old_tree.is_some() && !paused {
+            if !paused {
                 paused = true;
                 unsafe { notify_parsing_started() };
             }
             source.as_bytes().get(byte_offset..).unwrap_or_default()
         },
-        old_tree.as_ref(),
         None,
     ) else {
         return Err(4);

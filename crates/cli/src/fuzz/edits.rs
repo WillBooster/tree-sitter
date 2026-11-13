@@ -7,6 +7,13 @@ pub struct Edit {
     pub inserted_text: Vec<u8>,
 }
 
+pub fn apply_edit(input: &mut Vec<u8>, edit: &Edit) {
+    input.splice(
+        edit.position..(edit.position + edit.deleted_length),
+        edit.inserted_text.iter().copied(),
+    );
+}
+
 #[must_use]
 pub fn invert_edit(input: &[u8], edit: &Edit) -> Edit {
     let position = edit.position;

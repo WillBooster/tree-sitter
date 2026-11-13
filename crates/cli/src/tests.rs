@@ -2,6 +2,7 @@ mod async_boundary_test;
 mod corpus_test;
 mod detect_language;
 mod helpers;
+mod init_test;
 mod language_test;
 mod node_test;
 mod parser_test;
@@ -13,11 +14,7 @@ mod wasm_language_test;
 
 use tree_sitter_generate::{GenerateResult, OptLevel};
 
-pub use crate::fuzz::{
-    allocations,
-    edits::{get_random_edit, invert_edit},
-    random::Rand,
-};
+pub use crate::fuzz::allocations;
 
 pub use helpers::fixtures::get_language;
 

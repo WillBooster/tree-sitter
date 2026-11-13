@@ -8,23 +8,19 @@ use std::{
 use log::{error, info};
 use rand::RngExt;
 use regex::Regex;
-use tree_sitter::{Language, Parser};
+use tree_sitter::Language;
 
 pub mod allocations;
 pub mod corpus_test;
 pub mod edits;
 pub mod random;
-pub mod scope_sequence;
 
 use crate::{
     fuzz::{
-        corpus_test::{
-            check_changed_ranges, check_consistent_sizes, get_parser, set_included_ranges,
-        },
-        edits::{get_random_edit, invert_edit},
+        corpus_test::{check_consistent_sizes, get_parser, set_included_ranges},
+        edits::{apply_edit, get_random_edit, invert_edit},
         random::Rand,
     },
-    parse::perform_edit,
     test::{DiffKey, TestDiff, TestEntry, TestExpectation, parse_tests, render_test_output},
 };
 
@@ -88,57 +84,10 @@ pub fn fuzz_language_corpus(
     grammar_dir: &Path,
     options: &mut FuzzOptions,
 ) {
-    fn retain(entry: &mut TestEntry, language_name: &str) -> bool {
-        match entry {
-            TestEntry::Example { attributes, .. } => {
-                attributes.languages[0].is_empty()
-                    || attributes
-                        .languages
-                        .iter()
-                        .any(|lang| lang.as_ref() == language_name)
-            }
-            TestEntry::Group { children, .. } => {
-                children.retain_mut(|child| retain(child, language_name));
-                !children.is_empty()
-            }
-        }
-    }
-
-    let subdir = options.subdir.take().unwrap_or_default();
-
-    let corpus_dir = grammar_dir.join(subdir).join("test").join("corpus");
-
-    if !corpus_dir.exists() || !corpus_dir.is_dir() {
-        error!(
-            "No corpus directory found, ensure that you have a `test/corpus` directory in your grammar directory with at least one test file."
-        );
+    let Some(tests) = load_corpus_tests(language_name, grammar_dir, options) else {
         return;
-    }
-
-    if std::fs::read_dir(&corpus_dir).unwrap().count() == 0 {
-        error!(
-            "No corpus files found in `test/corpus`, ensure that you have at least one test file in your corpus directory."
-        );
-        return;
-    }
-
-    let mut main_tests = parse_tests(&corpus_dir).unwrap();
-    match main_tests {
-        TestEntry::Group {
-            ref mut children, ..
-        } => {
-            children.retain_mut(|child| retain(child, language_name));
-        }
-        TestEntry::Example { .. } => unreachable!(),
-    }
-    let tests = flatten_tests(
-        main_tests,
-        options.include.as_ref(),
-        options.exclude.as_ref(),
-    );
-
+    };
     let get_test_name = |test: &FlattenedTest| format!("{language_name} - {}", test.name);
-
     let mut skipped = options
         .skipped
         .take()
@@ -148,16 +97,21 @@ pub fn fuzz_language_corpus(
         .map(|x| (x, 0))
         .collect::<HashMap<String, usize>>();
 
-    let mut failure_count = 0;
-
     let log_seed = env::var("TREE_SITTER_LOG_SEED").is_ok();
     let dump_edits = env::var("TREE_SITTER_DUMP_EDITS").is_ok();
-
     if log_seed {
         info!("  start seed: {start_seed}");
     }
 
     println!();
+    let ctx = FuzzRunContext {
+        language,
+        start_seed,
+        options,
+        log_seed,
+        dump_edits,
+    };
+    let mut failure_count = 0;
     for (test_index, test) in tests.iter().enumerate() {
         let test_name = get_test_name(test);
         if let Some(counter) = skipped.get_mut(test_name.as_str()) {
@@ -165,127 +119,194 @@ pub fn fuzz_language_corpus(
             *counter += 1;
             continue;
         }
-
         println!("  {test_index}. {test_name}");
-
-        let passed = allocations::record_checked(|| {
-            let check_output = !test.error();
-            test.check_initial_parse(language, &test_name, check_output)
-        })
-        .unwrap_or_else(|e| {
-            error!("{e}");
-            false
-        });
-
-        if !passed {
+        if !run_fuzz_test(&ctx, test, &test_name, test_index) {
             failure_count += 1;
-            continue;
-        }
-
-        let mut parser = Parser::new();
-        parser.set_language(language).unwrap();
-        let tree = parser.parse(&test.input, None).unwrap();
-        drop(parser);
-
-        for trial in 0..options.iterations {
-            let seed = start_seed + trial;
-            let passed = allocations::record_checked(|| {
-                let mut rand = Rand::new(seed);
-                let mut log_session = None;
-                let mut parser = get_parser(&mut log_session, "log.html");
-                parser.set_language(language).unwrap();
-                let mut tree = tree.clone();
-                let mut input = test.input.clone();
-
-                if options.log_graphs {
-                    info!("{}\n", String::from_utf8_lossy(&input));
-                }
-
-                // Perform a random series of edits and reparse.
-                let edit_count = rand.unsigned(options.edits);
-                let mut undo_stack = Vec::with_capacity(edit_count);
-                for _ in 0..=edit_count {
-                    let edit = get_random_edit(&mut rand, &input);
-                    undo_stack.push(invert_edit(&input, &edit));
-                    perform_edit(&mut tree, &mut input, &edit).unwrap();
-                }
-
-                if log_seed {
-                    info!("   {test_index}.{trial:<2} seed: {seed}");
-                }
-
-                if dump_edits {
-                    fs::create_dir_all("fuzz").unwrap();
-                    fs::write(
-                        Path::new("fuzz")
-                            .join(format!("edit.{seed}.{test_index}.{trial} {test_name}")),
-                        &input,
-                    )
-                    .unwrap();
-                }
-
-                if options.log_graphs {
-                    info!("{}\n", String::from_utf8_lossy(&input));
-                }
-
-                set_included_ranges(&mut parser, &input, test.template_delimiters);
-                let mut tree2 = parser.parse(&input, Some(&tree)).unwrap();
-
-                // Check that the new tree is consistent.
-                check_consistent_sizes(&tree2, &input);
-                if let Err(message) = check_changed_ranges(&tree, &tree2, &input) {
-                    error!("\nUnexpected scope change in seed {seed} with start seed {start_seed}\n{message}\n\n");
-                    return false;
-                }
-
-                // Undo all of the edits and re-parse again.
-                while let Some(edit) = undo_stack.pop() {
-                    perform_edit(&mut tree2, &mut input, &edit).unwrap();
-                }
-                if options.log_graphs {
-                    info!("{}\n", String::from_utf8_lossy(&input));
-                }
-
-                set_included_ranges(&mut parser, &test.input, test.template_delimiters);
-                let tree3 = parser.parse(&input, Some(&tree2)).unwrap();
-
-                // Verify that the final tree matches the expectation from the corpus.
-                let actual_output = render_test_output(&input, &tree3, test.cst, test.has_fields).unwrap();
-
-                if actual_output != test.output && !test.error() {
-                    println!("Incorrect parse for {test_name} - seed {seed}");
-                    DiffKey::print();
-                    println!("{}", TestDiff::new(&actual_output, &test.output));
-                    println!();
-                    return false;
-                }
-
-                // Check that the edited tree is consistent.
-                check_consistent_sizes(&tree3, &input);
-                if let Err(message) = check_changed_ranges(&tree2, &tree3, &input) {
-                    error!("Unexpected scope change in seed {seed} with start seed {start_seed}\n{message}\n\n");
-                    return false;
-                }
-
-                true
-            }).unwrap_or_else(|e| {
-                error!("{e}");
-                false
-            });
-
-            if !passed {
-                failure_count += 1;
-                break;
-            }
         }
     }
 
     if failure_count != 0 {
         info!("{failure_count} {language_name} corpus tests failed fuzzing");
     }
+    report_unmatched_skips(&mut skipped);
+}
 
+struct FuzzRunContext<'a> {
+    language: &'a Language,
+    start_seed: usize,
+    options: &'a FuzzOptions,
+    log_seed: bool,
+    dump_edits: bool,
+}
+
+fn load_corpus_tests(
+    language_name: &str,
+    grammar_dir: &Path,
+    options: &mut FuzzOptions,
+) -> Option<Vec<FlattenedTest>> {
+    let subdir = options.subdir.take().unwrap_or_default();
+    let corpus_dir = grammar_dir.join(subdir).join("test").join("corpus");
+    if !corpus_dir.exists() || !corpus_dir.is_dir() {
+        error!(
+            "No corpus directory found, ensure that you have a `test/corpus` directory in your grammar directory with at least one test file."
+        );
+        return None;
+    }
+    if std::fs::read_dir(&corpus_dir).unwrap().count() == 0 {
+        error!(
+            "No corpus files found in `test/corpus`, ensure that you have at least one test file in your corpus directory."
+        );
+        return None;
+    }
+
+    let mut main_tests = parse_tests(&corpus_dir).unwrap();
+    match main_tests {
+        TestEntry::Group {
+            ref mut children, ..
+        } => {
+            children.retain_mut(|child| retain_language_tests(child, language_name));
+        }
+        TestEntry::Example { .. } => unreachable!(),
+    }
+    Some(flatten_tests(
+        main_tests,
+        options.include.as_ref(),
+        options.exclude.as_ref(),
+    ))
+}
+
+fn retain_language_tests(entry: &mut TestEntry, language_name: &str) -> bool {
+    match entry {
+        TestEntry::Example { attributes, .. } => {
+            attributes.languages[0].is_empty()
+                || attributes
+                    .languages
+                    .iter()
+                    .any(|lang| lang.as_ref() == language_name)
+        }
+        TestEntry::Group { children, .. } => {
+            children.retain_mut(|child| retain_language_tests(child, language_name));
+            !children.is_empty()
+        }
+    }
+}
+
+fn run_fuzz_test(
+    ctx: &FuzzRunContext<'_>,
+    test: &FlattenedTest,
+    test_name: &str,
+    test_index: usize,
+) -> bool {
+    let initial_passed = allocations::record_checked(|| {
+        test.check_initial_parse(ctx.language, test_name, !test.error())
+    })
+    .unwrap_or_else(|e| {
+        error!("{e}");
+        false
+    });
+    if !initial_passed {
+        return false;
+    }
+
+    for trial in 0..ctx.options.iterations {
+        let passed =
+            allocations::record_checked(|| run_fuzz_trial(ctx, test, test_name, test_index, trial))
+                .unwrap_or_else(|e| {
+                    error!("{e}");
+                    false
+                });
+        if !passed {
+            return false;
+        }
+    }
+    true
+}
+
+fn run_fuzz_trial(
+    ctx: &FuzzRunContext<'_>,
+    test: &FlattenedTest,
+    test_name: &str,
+    test_index: usize,
+    trial: usize,
+) -> bool {
+    let seed = ctx.start_seed + trial;
+    let mut rand = Rand::new(seed);
+    let mut log_session = None;
+    let mut parser = get_parser(&mut log_session, "log.html");
+    parser.set_language(ctx.language).unwrap();
+    let mut input = test.input.clone();
+
+    log_fuzz_input(ctx.options.log_graphs, &input);
+    let undo_stack = apply_random_edits(&mut rand, &mut input, ctx.options.edits);
+    record_trial_input(ctx, test_name, test_index, trial, seed, &input);
+
+    set_included_ranges(&mut parser, &input, test.template_delimiters);
+    let edited_tree = parser.parse(&input).unwrap();
+    check_consistent_sizes(&edited_tree, &input);
+
+    for edit in undo_stack.into_iter().rev() {
+        apply_edit(&mut input, &edit);
+    }
+    log_fuzz_input(ctx.options.log_graphs, &input);
+
+    set_included_ranges(&mut parser, &test.input, test.template_delimiters);
+    let restored_tree = parser.parse(&input).unwrap();
+    let actual_output =
+        render_test_output(&input, &restored_tree, test.cst, test.has_fields).unwrap();
+
+    if actual_output != test.output && !test.error() {
+        println!("Incorrect parse for {test_name} - seed {seed}");
+        DiffKey::print();
+        println!("{}", TestDiff::new(&actual_output, &test.output));
+        println!();
+        return false;
+    }
+
+    check_consistent_sizes(&restored_tree, &input);
+    true
+}
+
+fn record_trial_input(
+    ctx: &FuzzRunContext<'_>,
+    test_name: &str,
+    test_index: usize,
+    trial: usize,
+    seed: usize,
+    input: &[u8],
+) {
+    if ctx.log_seed {
+        info!("   {test_index}.{trial:<2} seed: {seed}");
+    }
+    if ctx.dump_edits {
+        fs::create_dir_all("fuzz").unwrap();
+        fs::write(
+            Path::new("fuzz").join(format!("edit.{seed}.{test_index}.{trial} {test_name}")),
+            input,
+        )
+        .unwrap();
+    }
+    log_fuzz_input(ctx.options.log_graphs, input);
+}
+
+fn apply_random_edits(rand: &mut Rand, input: &mut Vec<u8>, max_edits: usize) -> Vec<edits::Edit> {
+    let edit_count = rand.unsigned(max_edits);
+    let mut undo_stack = Vec::with_capacity(edit_count + 1);
+    for _ in 0..=edit_count {
+        let edit = get_random_edit(rand, input);
+        undo_stack.push(invert_edit(input, &edit));
+        apply_edit(input, &edit);
+    }
+    undo_stack
+}
+
+fn log_fuzz_input(enabled: bool, input: &[u8]) {
+    if enabled {
+        info!("{}\n", String::from_utf8_lossy(input));
+    }
+}
+
+fn report_unmatched_skips(skipped: &mut HashMap<String, usize>) {
     skipped.retain(|_, v| *v == 0);
-
     if !skipped.is_empty() {
         info!("Non matchable skip definitions:");
         for k in skipped.keys() {
@@ -329,7 +350,8 @@ impl FlattenedTest {
         parser.set_language(language).unwrap();
         set_included_ranges(&mut parser, &self.input, self.template_delimiters);
 
-        let tree = parser.parse(&self.input, None).unwrap();
+        let tree = parser.parse(&self.input).unwrap();
+        check_consistent_sizes(&tree, &self.input);
 
         if !check_output {
             return true;

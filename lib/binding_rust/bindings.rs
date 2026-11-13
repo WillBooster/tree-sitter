@@ -96,17 +96,6 @@ pub struct TSLogger {
         ),
     >,
 }
-#[doc = " A summary of a change to a text document.\n\n The `start_byte` and `start_point` values must be less than or equal to the\n `old_end_byte` and `old_end_point` values, respectively. Passing an edit\n that violates these invariants may produce nonsensical results."]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct TSInputEdit {
-    pub start_byte: u32,
-    pub old_end_byte: u32,
-    pub new_end_byte: u32,
-    pub start_point: TSPoint,
-    pub old_end_point: TSPoint,
-    pub new_end_point: TSPoint,
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct TSNode {
@@ -158,36 +147,29 @@ unsafe extern "C" {
     pub fn ts_parser_included_ranges(self_: *const TSParser, count: *mut u32) -> *const TSRange;
 }
 unsafe extern "C" {
-    #[doc = " Use the parser to parse some source code and create a syntax tree.\n\n If you are parsing this document for the first time, pass `NULL` for the\n `old_tree` parameter. Otherwise, if you have already parsed an earlier\n version of this document and the document has since been edited, pass the\n previous syntax tree so that the unchanged parts of it can be reused.\n This will save time and memory. For this to work correctly, you must have\n already edited the old syntax tree using the [`ts_tree_edit`] function in a\n way that exactly matches the source code changes.\n\n The [`TSInput`] parameter lets you specify how to read the text. It has the\n following three fields:\n 1. [`read`]: A function to retrieve a chunk of text at a given byte offset\n    and (row, column) position. The function should return a pointer to the\n    text and write its length to the [`bytes_read`] pointer. The parser does\n    not take ownership of this buffer; it just borrows it until it has\n    finished reading it. The function should write a zero value to the\n    [`bytes_read`] pointer to indicate the end of the document.\n 2. [`payload`]: An arbitrary pointer that will be passed to each invocation\n    of the [`read`] function.\n 3. [`encoding`]: An indication of how the text is encoded. Either\n    `TSInputEncodingUTF8`, `TSInputEncodingUTF16LE`, `TSInputEncoding16BE`,\n    or `TSInputEncodingCustom`.\n 4. [`decode`]: A function to read one code point from the given input. This\n    function should return the number of bytes consumed and write the code point\n    to the [`code_point`] pointer, or write -1 if the input is invalid.\n\n This function returns a syntax tree on success, and `NULL` on failure. There\n are two possible reasons for failure:\n 1. The parser does not have a language assigned. Check for this using the\n    [`ts_parser_language`] function.\n 2. Parsing was cancelled due to the progress callback returning true. This callback\n    is passed in [`ts_parser_parse_with_options`] inside the [`TSParseOptions`] struct.\n\n [`read`]: TSInput::read\n [`payload`]: TSInput::payload\n [`encoding`]: TSInput::encoding\n [`bytes_read`]: TSInput::read\n [`decode`]: TSInput::decode\n [`code_point`]: TSDecodeFunction::code_point"]
-    pub fn ts_parser_parse(
-        self_: *mut TSParser,
-        old_tree: *const TSTree,
-        input: TSInput,
-    ) -> *mut TSTree;
+    #[doc = " Use the parser to parse some source code and create a syntax tree.\n\n The [`TSInput`] parameter lets you specify how to read the text. It has the\n following four fields:\n 1. [`read`]: A function to retrieve a chunk of text at a given byte offset\n    and (row, column) position. The function should return a pointer to the\n    text and write its length to the [`bytes_read`] pointer. The parser does\n    not take ownership of this buffer; it just borrows it until it has\n    finished reading it. The function should write a zero value to the\n    [`bytes_read`] pointer to indicate the end of the document.\n 2. [`payload`]: An arbitrary pointer that will be passed to each invocation\n    of the [`read`] function.\n 3. [`encoding`]: An indication of how the text is encoded. Either\n    `TSInputEncodingUTF8`, `TSInputEncodingUTF16LE`, `TSInputEncoding16BE`,\n    or `TSInputEncodingCustom`.\n 4. [`decode`]: A function to read one code point from the given input. This\n    function should return the number of bytes consumed and write the code point\n    to the [`code_point`] pointer, or write -1 if the input is invalid.\n\n This function returns a syntax tree on success, and `NULL` on failure. There\n are two possible reasons for failure:\n 1. The parser does not have a language assigned. Check for this using the\n    [`ts_parser_language`] function.\n 2. Parsing was cancelled due to the progress callback returning true. This callback\n    is passed in [`ts_parser_parse_with_options`] inside the [`TSParseOptions`] struct.\n\n [`read`]: TSInput::read\n [`payload`]: TSInput::payload\n [`encoding`]: TSInput::encoding\n [`bytes_read`]: TSInput::read\n [`decode`]: TSInput::decode\n [`code_point`]: TSDecodeFunction::code_point"]
+    pub fn ts_parser_parse(self_: *mut TSParser, input: TSInput) -> *mut TSTree;
 }
 unsafe extern "C" {
     #[doc = " Use the parser to parse some source code and create a syntax tree, with some options.\n\n See [`ts_parser_parse`] for more details.\n\n See [`TSParseOptions`] for more details on the options."]
     pub fn ts_parser_parse_with_options(
         self_: *mut TSParser,
-        old_tree: *const TSTree,
         input: TSInput,
         parse_options: TSParseOptions,
     ) -> *mut TSTree;
 }
 unsafe extern "C" {
-    #[doc = " Use the parser to parse some source code stored in one contiguous buffer.\n The first two parameters are the same as in the [`ts_parser_parse`] function\n above. The second two parameters indicate the location of the buffer and its\n length in bytes."]
+    #[doc = " Use the parser to parse some source code stored in one contiguous buffer.\n The first parameter is the same as in the [`ts_parser_parse`] function\n above. The second and third parameters indicate the location of the buffer\n and its length in bytes."]
     pub fn ts_parser_parse_string(
         self_: *mut TSParser,
-        old_tree: *const TSTree,
         string: *const ::core::ffi::c_char,
         length: u32,
     ) -> *mut TSTree;
 }
 unsafe extern "C" {
-    #[doc = " Use the parser to parse some source code stored in one contiguous buffer with\n a given encoding. The first four parameters work the same as in the\n [`ts_parser_parse_string`] method above. The final parameter indicates whether\n the text is encoded as UTF8 or UTF16."]
+    #[doc = " Use the parser to parse some source code stored in one contiguous buffer with\n a given encoding. The first three parameters work the same as in the\n [`ts_parser_parse_string`] method above. The final parameter indicates whether\n the text is encoded as UTF8 or UTF16."]
     pub fn ts_parser_parse_string_encoding(
         self_: *mut TSParser,
-        old_tree: *const TSTree,
         string: *const ::core::ffi::c_char,
         length: u32,
         encoding: TSInputEncoding,
@@ -236,18 +218,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Get the array of included ranges that was used to parse the syntax tree.\n\n The returned pointer must be freed by the caller."]
     pub fn ts_tree_included_ranges(self_: *const TSTree, length: *mut u32) -> *mut TSRange;
-}
-unsafe extern "C" {
-    #[doc = " Edit the syntax tree to keep it in sync with source code that has been\n edited.\n\n You must describe the edit both in terms of byte offsets and in terms of\n (row, column) coordinates.\n\n The edit's `start_byte` must be less than or equal to its `old_end_byte`,\n and its `start_point` must be less than or equal to its `old_end_point`."]
-    pub fn ts_tree_edit(self_: *mut TSTree, edit: *const TSInputEdit);
-}
-unsafe extern "C" {
-    #[doc = " Compare an old edited syntax tree to a new syntax tree representing the same\n document, returning an array of ranges whose syntactic structure has changed.\n\n For this to work correctly, the old syntax tree must have been edited such\n that its ranges match up to the new tree. Generally, you'll want to call\n this function right after calling one of the [`ts_parser_parse`] functions.\n You need to pass the old tree that was passed to parse, as well as the new\n tree that was returned from that function.\n\n The returned ranges indicate areas where the hierarchical structure of syntax\n nodes (from root to leaf) has changed between the old and new trees. Characters\n outside these ranges have identical ancestor nodes in both trees.\n\n Note that the returned ranges may be slightly larger than the exact changed areas,\n but Tree-sitter attempts to make them as small as possible.\n\n The returned array is allocated using `malloc` and the caller is responsible\n for freeing it using `free`. The length of the array will be written to the\n given `length` pointer."]
-    pub fn ts_tree_get_changed_ranges(
-        old_tree: *const TSTree,
-        new_tree: *const TSTree,
-        length: *mut u32,
-    ) -> *mut TSRange;
 }
 unsafe extern "C" {
     #[doc = " Write a DOT graph describing the syntax tree to the given file."]
@@ -308,10 +278,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[doc = " Check if the node is *extra*. Extra nodes represent things like comments,\n which are not required by the grammar, but can appear anywhere."]
     pub fn ts_node_is_extra(self_: TSNode) -> bool;
-}
-unsafe extern "C" {
-    #[doc = " Check if a syntax node has been edited."]
-    pub fn ts_node_has_changes(self_: TSNode) -> bool;
 }
 unsafe extern "C" {
     #[doc = " Check if the node is a syntax error or contains any syntax errors."]
@@ -428,20 +394,8 @@ unsafe extern "C" {
     ) -> TSNode;
 }
 unsafe extern "C" {
-    #[doc = " Edit the node to keep it in-sync with source code that has been edited.\n\n This function is only rarely needed. When you edit a syntax tree with the\n [`ts_tree_edit`] function, all of the nodes that you retrieve from the tree\n afterward will already reflect the edit. You only need to use [`ts_node_edit`]\n when you have a [`TSNode`] instance that you want to keep and continue to use\n after an edit.\n\n The edit's `start_byte` must be less than or equal to its `old_end_byte`,\n and its `start_point` must be less than or equal to its `old_end_point`."]
-    pub fn ts_node_edit(self_: *mut TSNode, edit: *const TSInputEdit);
-}
-unsafe extern "C" {
     #[doc = " Check if two nodes are identical."]
     pub fn ts_node_eq(self_: TSNode, other: TSNode) -> bool;
-}
-unsafe extern "C" {
-    #[doc = " Edit a point to keep it in-sync with source code that has been edited.\n\n This function updates a single point's byte offset and row/column position\n based on an edit operation. This is useful for editing points without\n requiring a tree or node instance.\n\n The edit's `start_byte` must be less than or equal to its `old_end_byte`,\n and its `start_point` must be less than or equal to its `old_end_point`."]
-    pub fn ts_point_edit(point: *mut TSPoint, point_byte: *mut u32, edit: *const TSInputEdit);
-}
-unsafe extern "C" {
-    #[doc = " Edit a range to keep it in-sync with source code that has been edited.\n\n This function updates a range's start and end positions based on an edit\n operation. This is useful for editing ranges without requiring a tree\n or node instance.\n\n The edit's `start_byte` must be less than or equal to its `old_end_byte`,\n and its `start_point` must be less than or equal to its `old_end_point`."]
-    pub fn ts_range_edit(range: *mut TSRange, edit: *const TSInputEdit);
 }
 unsafe extern "C" {
     #[doc = " Create a new tree cursor starting from the given node.\n\n A tree cursor allows you to walk a syntax tree more efficiently than is\n possible using the [`TSNode`] functions. It is a mutable object that is always\n on a certain syntax node, and can be moved imperatively to different nodes.\n\n Note that the given node is considered the root of the cursor,\n and the cursor cannot walk outside this node."]

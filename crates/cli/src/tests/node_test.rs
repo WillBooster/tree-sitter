@@ -1,14 +1,10 @@
-use tree_sitter::{InputEdit, Node, Parser, Point, Tree};
+use tree_sitter::{Node, Parser, Point, Tree};
 use tree_sitter_generate::load_grammar_file;
 
-use super::{
-    Rand, get_random_edit,
-    helpers::fixtures::{fixtures_dir, get_language, get_test_language},
+use super::helpers::fixtures::{
+    fixtures_dir, get_language, get_test_fixture_language, get_test_language,
 };
-use crate::{
-    parse::perform_edit,
-    tests::{generate_parser, helpers::fixtures::get_test_fixture_language},
-};
+use crate::tests::generate_parser;
 
 const JSON_EXAMPLE: &str = r#"
 
@@ -193,7 +189,7 @@ fn test_node_child() {
 fn test_node_child_with_descendant_same_range() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("(a)", None).unwrap();
+    let tree = parser.parse("(a)").unwrap();
     let root = tree.root_node();
     let statement = root.child(0).unwrap();
     let expression = statement.child(0).unwrap();
@@ -232,7 +228,7 @@ fn test_node_child_with_descendant_empty_siblings() {
     parser
         .set_language(&get_test_language(&name, &code, None))
         .unwrap();
-    let tree = parser.parse("", None).unwrap();
+    let tree = parser.parse("").unwrap();
     let root = tree.root_node();
     let left = root.child(0).unwrap();
     let right = root.child(1).unwrap();
@@ -271,7 +267,7 @@ fn test_node_child_with_descendant_missing_sibling() {
     parser
         .set_language(&get_test_language(&name, &code, None))
         .unwrap();
-    let tree = parser.parse("xyw", None).unwrap();
+    let tree = parser.parse("xyw").unwrap();
     let root = tree.root_node();
     let left = root.child(0).unwrap();
     let right = root.child(1).unwrap();
@@ -331,7 +327,7 @@ fn test_node_children_by_field_name() {
             d()
     ";
 
-    let tree = parser.parse(source, None).unwrap();
+    let tree = parser.parse(source).unwrap();
     let node = tree.root_node().child(0).unwrap();
     assert_eq!(node.kind(), "if_statement");
     let mut cursor = tree.walk();
@@ -348,7 +344,7 @@ fn test_node_children_by_field_name() {
 fn test_node_parent_of_child_by_field_name() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("foo(a().b[0].c.d.e())", None).unwrap();
+    let tree = parser.parse("foo(a().b[0].c.d.e())").unwrap();
     let call_node = tree
         .root_node()
         .named_child(0)
@@ -372,7 +368,7 @@ fn test_parent_of_zero_width_node() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("python")).unwrap();
 
-    let tree = parser.parse(code, None).unwrap();
+    let tree = parser.parse(code).unwrap();
     let root = tree.root_node();
     let function_definition = root.child(0).unwrap();
     let block = function_definition.child(4).unwrap();
@@ -398,7 +394,7 @@ fn test_parent_of_zero_width_node() {
     let code = "<script></script>";
     parser.set_language(&get_language("html")).unwrap();
 
-    let tree = parser.parse(code, None).unwrap();
+    let tree = parser.parse(code).unwrap();
     let root = tree.root_node();
     let script_element = root.child(0).unwrap();
     let raw_text = script_element.child(1).unwrap();
@@ -412,7 +408,7 @@ fn test_next_sibling_of_zero_width_node() {
     let language = get_test_fixture_language("next_sibling_from_zwt");
     parser.set_language(&language).unwrap();
 
-    let tree = parser.parse("abdef", None).unwrap();
+    let tree = parser.parse("abdef").unwrap();
 
     let root_node = tree.root_node();
     let missing_c = root_node.child(2).unwrap();
@@ -429,7 +425,7 @@ fn test_next_sibling_of_zero_width_node() {
 fn test_first_child_for_offset() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("x10 + 100", None).unwrap();
+    let tree = parser.parse("x10 + 100").unwrap();
     let sum_node = tree.root_node().child(0).unwrap().child(0).unwrap();
 
     assert_eq!(
@@ -448,7 +444,7 @@ fn test_first_child_for_offset() {
 fn test_first_named_child_for_offset() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("x10 + 100", None).unwrap();
+    let tree = parser.parse("x10 + 100").unwrap();
     let sum_node = tree.root_node().child(0).unwrap().child(0).unwrap();
 
     assert_eq!(
@@ -470,7 +466,7 @@ fn test_first_named_child_for_offset_after_anonymous_children() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
     for source in ["for (;;);", "for (int i = 0; i < 3; i++) {}"] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(!tree.root_node().has_error());
         let for_node = tree.root_node().named_child(0).unwrap();
         let body = for_node.child_by_field_name("body").unwrap();
@@ -511,7 +507,7 @@ fn test_first_child_for_offset_after_nested_hidden_nodes() {
     parser
         .set_language(&get_test_fixture_language("first_child_after_hidden_nodes"))
         .unwrap();
-    let tree = parser.parse("pre pre2 n x sep B2", None).unwrap();
+    let tree = parser.parse("pre pre2 n x sep B2").unwrap();
     let root = tree.root_node();
     assert!(!root.has_error());
     for byte in 0..=root.end_byte() {
@@ -535,9 +531,7 @@ fn test_first_child_for_offset_after_nested_hidden_nodes() {
 fn test_node_field_name_for_child() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
-    let tree = parser
-        .parse("int w = x + /* y is special! */ y;", None)
-        .unwrap();
+    let tree = parser.parse("int w = x + /* y is special! */ y;").unwrap();
     let translation_unit_node = tree.root_node();
     let declaration_node = translation_unit_node.named_child(0).unwrap();
 
@@ -573,9 +567,7 @@ fn test_node_field_name_for_child() {
 fn test_node_field_name_for_named_child() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("c")).unwrap();
-    let tree = parser
-        .parse("int w = x + /* y is special! */ y;", None)
-        .unwrap();
+    let tree = parser.parse("int w = x + /* y is special! */ y;").unwrap();
     let translation_unit_node = tree.root_node();
     let declaration_node = translation_unit_node.named_child(0).unwrap();
 
@@ -616,7 +608,7 @@ fn test_node_child_by_field_name_with_extra_hidden_children() {
     // which consist of an invisible `indent` token followed by a block.
     // Check that when searching for a child with a field name, we don't
     // return a hidden child node.
-    let tree = parser.parse("while a:\n  pass", None).unwrap();
+    let tree = parser.parse("while a:\n  pass").unwrap();
     let while_node = tree.root_node().child(0).unwrap();
     assert_eq!(while_node.kind(), "while_statement");
     assert_eq!(
@@ -678,7 +670,7 @@ fn test_node_field_name_for_child_through_hidden_extras() {
             ["inner", "", "outer"],
         ),
     ] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let binding = tree.root_node().named_child(0).unwrap();
         let mut cursor = binding.walk();
         assert!(cursor.goto_first_child());
@@ -801,7 +793,7 @@ fn test_node_named_child_with_aliases_and_extras() {
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
 
-    let tree = parser.parse("b ... b ... c", None).unwrap();
+    let tree = parser.parse("b ... b ... c").unwrap();
     let root = tree.root_node();
     assert_eq!(root.to_sexp(), "(a (b) (comment) (B) (comment) (C))");
     assert_eq!(root.named_child_count(), 5);
@@ -838,7 +830,7 @@ fn test_descendant_count_single_node_tree() {
     parser
         .set_language(&get_language("embedded-template"))
         .unwrap();
-    let tree = parser.parse("hello", None).unwrap();
+    let tree = parser.parse("hello").unwrap();
 
     let nodes = get_all_nodes(&tree);
     assert_eq!(nodes.len(), 2);
@@ -971,7 +963,7 @@ fn test_node_descendant_for_range() {
         let mut parser = Parser::new();
         parser.set_language(&get_language("html")).unwrap();
 
-        let tree = parser.parse(code, None).unwrap();
+        let tree = parser.parse(code).unwrap();
         let root = tree.root_node();
 
         let child = root
@@ -1004,7 +996,7 @@ fn test_node_descendant_for_empty_range_at_hidden_subtree_end() {
             let prefix = format!("[{}", format!("0{separator}").repeat(count));
             for suffix in ["", "0", "0]"] {
                 let source = format!("{prefix}{suffix}");
-                let tree = parser.parse(&source, None).unwrap();
+                let tree = parser.parse(&source).unwrap();
                 let root = tree.root_node();
                 let array = root.named_child(0).unwrap();
                 assert_eq!(array.kind(), "array");
@@ -1100,7 +1092,7 @@ fn test_node_empty_range_skips_hidden_layout() {
             let mut parser = Parser::new();
             parser.set_language(&language).unwrap();
             let source = format!("{prefix}name");
-            let tree = parser.parse(&source, None).unwrap();
+            let tree = parser.parse(&source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{}", root.to_sexp());
             let identifier = root.named_child(0).unwrap();
@@ -1168,9 +1160,7 @@ fn test_node_empty_range_preserves_anonymous_boundaries() {
             parser
                 .set_language(&get_test_language(&name, &code, None))
                 .unwrap();
-            let tree = parser
-                .parse(if empty { "za" } else { "zab" }, None)
-                .unwrap();
+            let tree = parser.parse(if empty { "za" } else { "zab" }).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error());
             let expected = if empty { root.child(2).unwrap() } else { root };
@@ -1195,42 +1185,10 @@ fn test_node_empty_range_preserves_anonymous_boundaries() {
 }
 
 #[test]
-fn test_node_edit() {
-    let mut code = JSON_EXAMPLE.as_bytes().to_vec();
-    let mut tree = parse_json_example();
-    let mut rand = Rand::new(0);
-
-    for _ in 0..10 {
-        let mut nodes_before = get_all_nodes(&tree);
-
-        let edit = get_random_edit(&mut rand, &code);
-        let mut tree2 = tree.clone();
-        let edit = perform_edit(&mut tree2, &mut code, &edit).unwrap();
-        for node in &mut nodes_before {
-            node.edit(&edit);
-        }
-
-        let nodes_after = get_all_nodes(&tree2);
-        for (i, node) in nodes_before.into_iter().enumerate() {
-            assert_eq!(
-                (node.kind(), node.start_byte(), node.start_position()),
-                (
-                    nodes_after[i].kind(),
-                    nodes_after[i].start_byte(),
-                    nodes_after[i].start_position()
-                ),
-            );
-        }
-
-        tree = tree2;
-    }
-}
-
-#[test]
 fn test_root_node_with_offset() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("  if (a) b", None).unwrap();
+    let tree = parser.parse("  if (a) b").unwrap();
 
     let node = tree.root_node_with_offset(6, Point::new(2, 2));
     assert_eq!(node.byte_range(), 8..16);
@@ -1278,7 +1236,7 @@ fn test_missing_node_parent_with_root_offset() {
     let language = get_test_language(&parser_name, &parser_code, None);
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    let tree = parser.parse("abdef", None).unwrap();
+    let tree = parser.parse("abdef").unwrap();
     for offset in [0, 5, 100] {
         let root = tree.root_node_with_offset(offset, Point::new(1, 2));
         let missing = root.child(2).unwrap();
@@ -1321,7 +1279,7 @@ fn test_wide_missing_node_navigation() {
         .unwrap();
     for count in [1_000, 4_000] {
         let source = format!("[{}]", "a,".repeat(count as usize));
-        let tree = parser.parse(&source, None).unwrap();
+        let tree = parser.parse(&source).unwrap();
         for offset in [0, 100] {
             let root = tree.root_node_with_offset(offset, Point::new(0, offset));
             let value = root.named_child(count).unwrap();
@@ -1350,7 +1308,7 @@ fn test_wide_missing_node_navigation() {
 fn test_node_is_extra() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("foo(/* hi */);", None).unwrap();
+    let tree = parser.parse("foo(/* hi */);").unwrap();
 
     let root_node = tree.root_node();
     let comment_node = root_node.descendant_for_byte_range(7, 7).unwrap();
@@ -1365,7 +1323,7 @@ fn test_node_is_extra() {
 fn test_node_is_error() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("foo(", None).unwrap();
+    let tree = parser.parse("foo(").unwrap();
     let root_node = tree.root_node();
     assert_eq!(root_node.kind(), "program");
     assert!(root_node.has_error());
@@ -1379,7 +1337,7 @@ fn test_node_is_error() {
 fn test_leaf_error_nodes_report_errors() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
-    let tree = parser.parse("1 + }", None).unwrap();
+    let tree = parser.parse("1 + }").unwrap();
     let root = tree.root_node();
     let error = root.named_child(1).unwrap();
     let leaf_error = error.named_child(0).unwrap();
@@ -1398,96 +1356,10 @@ fn test_leaf_error_nodes_report_errors() {
 }
 
 #[test]
-fn test_edit_point() {
-    let edit = InputEdit {
-        start_byte: 5,
-        old_end_byte: 5,
-        new_end_byte: 10,
-        start_position: Point::new(0, 5),
-        old_end_position: Point::new(0, 5),
-        new_end_position: Point::new(0, 10),
-    };
-
-    // Point after edit
-    let mut point = Point::new(0, 8);
-    let mut byte = 8;
-    edit.edit_point(&mut point, &mut byte);
-    assert_eq!(point, Point::new(0, 13));
-    assert_eq!(byte, 13);
-
-    // Point before edit
-    let mut point = Point::new(0, 2);
-    let mut byte = 2;
-    edit.edit_point(&mut point, &mut byte);
-    assert_eq!(point, Point::new(0, 2));
-    assert_eq!(byte, 2);
-
-    // Point at edit start
-    let mut point = Point::new(0, 5);
-    let mut byte = 5;
-    edit.edit_point(&mut point, &mut byte);
-    assert_eq!(point, Point::new(0, 10));
-    assert_eq!(byte, 10);
-}
-
-#[test]
-fn test_edit_range() {
-    use tree_sitter::{InputEdit, Point, Range};
-
-    let edit = InputEdit {
-        start_byte: 10,
-        old_end_byte: 15,
-        new_end_byte: 20,
-        start_position: Point::new(1, 0),
-        old_end_position: Point::new(1, 5),
-        new_end_position: Point::new(2, 0),
-    };
-
-    // Range after edit
-    let mut range = Range {
-        start_byte: 20,
-        end_byte: 25,
-        start_point: Point::new(2, 0),
-        end_point: Point::new(2, 5),
-    };
-    edit.edit_range(&mut range);
-    assert_eq!(range.start_byte, 25);
-    assert_eq!(range.end_byte, 30);
-    assert_eq!(range.start_point, Point::new(3, 0));
-    assert_eq!(range.end_point, Point::new(3, 5));
-
-    // Range before edit
-    let mut range = Range {
-        start_byte: 5,
-        end_byte: 8,
-        start_point: Point::new(0, 5),
-        end_point: Point::new(0, 8),
-    };
-    edit.edit_range(&mut range);
-    assert_eq!(range.start_byte, 5);
-    assert_eq!(range.end_byte, 8);
-    assert_eq!(range.start_point, Point::new(0, 5));
-    assert_eq!(range.end_point, Point::new(0, 8));
-
-    // Range overlapping edit
-    let mut range = Range {
-        start_byte: 8,
-        end_byte: 12,
-        start_point: Point::new(0, 8),
-        end_point: Point::new(1, 2),
-    };
-    edit.edit_range(&mut range);
-    assert_eq!(range.start_byte, 8);
-    assert_eq!(range.end_byte, 10);
-    assert_eq!(range.start_point, Point::new(0, 8));
-    assert_eq!(range.end_point, Point::new(1, 0));
-}
-
-#[test]
 fn test_node_sexp() {
     let mut parser = Parser::new();
     parser.set_language(&get_language("javascript")).unwrap();
-    let tree = parser.parse("if (a) b", None).unwrap();
+    let tree = parser.parse("if (a) b").unwrap();
     let root_node = tree.root_node();
     let if_node = root_node.descendant_for_byte_range(0, 0).unwrap();
     let paren_node = root_node.descendant_for_byte_range(3, 3).unwrap();
@@ -1566,7 +1438,7 @@ fn test_node_display_with_quoted_missing_token() {
     parser
         .set_language(&get_test_language(&parser_name, &parser_code, None))
         .unwrap();
-    let tree = parser.parse("/*;", None).unwrap();
+    let tree = parser.parse("/*;").unwrap();
     let node = tree.root_node().named_child(0).unwrap();
     assert_eq!(format!("{:#}", node.child(0).unwrap()), r#"("/*")"#);
     let sexp = r#"(block_comment (MISSING "*/"))"#;
@@ -1604,7 +1476,7 @@ fn test_node_display_with_quotes_in_named_aliases() {
     parser
         .set_language(&get_test_language(&name, &code, None))
         .unwrap();
-    let tree = parser.parse("cdcd;", None).unwrap();
+    let tree = parser.parse("cdcd;").unwrap();
     let node = tree.root_node();
     assert!(!node.has_error());
     assert_eq!(
@@ -1673,7 +1545,7 @@ fn test_node_display_with_quoted_aliases() {
         parser
             .set_language(&get_test_language(&name, &code, None))
             .unwrap();
-        let complete = parser.parse("/**/;", None).unwrap();
+        let complete = parser.parse("/**/;").unwrap();
         let alias_node = complete.root_node().child(0).unwrap().child(1).unwrap();
         assert_eq!(format!("{alias_node:#}"), alias_node.to_sexp());
         assert_eq!(
@@ -1688,7 +1560,7 @@ fn test_node_display_with_quoted_aliases() {
                 format!("\n    {}", alias_node.to_sexp())
             );
         }
-        let tree = parser.parse("/*;", None).unwrap();
+        let tree = parser.parse("/*;").unwrap();
         let node = tree.root_node();
         let missing = node.child(0).unwrap().child(1).unwrap();
         assert!(missing.is_missing());
@@ -1748,7 +1620,7 @@ fn test_node_display_with_hidden_missing_and_error_children() {
     let actual: Vec<_> = [".;.name;", "name.name;"]
         .into_iter()
         .map(|source| {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             format!("{:#}", tree.root_node())
         })
         .collect();
@@ -1790,7 +1662,7 @@ fn test_node_display_rejects_impossible_quoted_payload_depth() {
     parser
         .set_language(&get_test_language(&name, &code, None))
         .unwrap();
-    let tree = parser.parse("a#@!", None).unwrap();
+    let tree = parser.parse("a#@!").unwrap();
     let node = tree.root_node();
     assert_eq!(
         node.to_sexp(),
@@ -1887,7 +1759,7 @@ fn test_node_field_names() {
     parser.set_language(&language).unwrap();
 
     let tree = parser
-        .parse("child-0 child-1 child-2 child-3 child-4", None)
+        .parse("child-0 child-1 child-2 child-3 child-4")
         .unwrap();
     let root_node = tree.root_node();
 
@@ -1958,7 +1830,7 @@ fn test_node_field_lookup_through_visible_alias() {
         parser.set_language(&language).unwrap();
 
         for source in ["(a)", "(a) (b)", "(a) c"] {
-            let tree = parser.parse(source, None).unwrap();
+            let tree = parser.parse(source).unwrap();
             let root = tree.root_node();
             assert!(!root.has_error(), "{source}: {}", root.to_sexp());
             let alias = root.child(0).unwrap();
@@ -2025,7 +1897,7 @@ fn test_node_field_calls_in_language_without_fields() {
     let language = get_test_language(&parser_name, &parser_code, None);
     parser.set_language(&language).unwrap();
 
-    let tree = parser.parse("b c d", None).unwrap();
+    let tree = parser.parse("b c d").unwrap();
 
     let root_node = tree.root_node();
     assert_eq!(root_node.kind(), "a");
@@ -2054,7 +1926,7 @@ fn test_node_is_named_but_aliased_as_anonymous() {
     let language = get_test_language(&parser_name, &parser_code, None);
     parser.set_language(&language).unwrap();
 
-    let tree = parser.parse("B C B", None).unwrap();
+    let tree = parser.parse("B C B").unwrap();
 
     let root_node = tree.root_node();
     assert!(!root_node.has_error());
@@ -2079,7 +1951,7 @@ fn test_node_numeric_symbols_respect_simple_aliases() {
     // like `(*b)`. These `parenthesized_list_splat` nodes are aliased as
     // `parenthesized_expression`. Their numeric `symbol`, aka `kind_id` should
     // match that of a normal `parenthesized_expression`.
-    let tree = parser.parse("(a((*b)))", None).unwrap();
+    let tree = parser.parse("(a((*b)))").unwrap();
     let root = tree.root_node();
     assert_eq!(
         root.to_sexp(),
@@ -2104,7 +1976,7 @@ fn test_node_numeric_symbols_respect_simple_aliases() {
     // different tokens. One or more of these is an external token that's
     // aliased as `-`. Their numeric kind ids should match.
     parser.set_language(&get_language("ruby")).unwrap();
-    let tree = parser.parse("-a - b", None).unwrap();
+    let tree = parser.parse("-a - b").unwrap();
     let root = tree.root_node();
     assert_eq!(
         root.to_sexp(),
@@ -2138,7 +2010,7 @@ private:
 
     let mut parser = Parser::new();
     parser.set_language(&get_language("cpp")).unwrap();
-    let tree = parser.parse(code, None).unwrap();
+    let tree = parser.parse(code).unwrap();
     let root = tree.root_node();
 
     let class_specifier = root.child(0).unwrap();
@@ -2173,14 +2045,13 @@ fn get_all_nodes(tree: &Tree) -> Vec<Node> {
 fn parse_json_example() -> Tree {
     let mut parser = Parser::new();
     parser.set_language(&get_language("json")).unwrap();
-    parser.parse(JSON_EXAMPLE, None).unwrap()
+    parser.parse(JSON_EXAMPLE).unwrap()
 }
 
 #[test]
 fn test_deeply_nested_node_searches_do_not_overflow_stack() {
     let depth = 100_000;
-    let mut tree = parse_deeply_nested_tree(depth);
-    collapse_deeply_nested_tree(&mut tree, depth);
+    let tree = parse_deeply_nested_tree(depth);
     let root = tree.root_node();
     let expression = root.named_child(0).unwrap();
     let mut descendant = expression;
@@ -2252,7 +2123,7 @@ fn test_deeply_nested_field_search_does_not_overflow_stack() {
         ("s", depth + 2, "z"),
     ] {
         let source = "(".repeat(depth) + leaf + &")z".repeat(depth);
-        let tree = parser.parse(source.as_bytes(), None).unwrap();
+        let tree = parser.parse(source.as_bytes()).unwrap();
         assert!(!tree.root_node().has_error());
         let target = tree.root_node().child_by_field_name("target").unwrap();
         assert_eq!(target.byte_range(), expected_offset..expected_offset + 1);
@@ -2288,19 +2159,7 @@ fn parse_deeply_nested_tree(depth: usize) -> Tree {
     let source = "(".repeat(depth) + "x" + &")".repeat(depth) + "!";
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
-    parser.parse(source, None).unwrap()
-}
-
-fn collapse_deeply_nested_tree(tree: &mut Tree, depth: usize) {
-    let old_end_byte = depth * 2 + 2;
-    tree.edit(&InputEdit {
-        start_byte: 0,
-        old_end_byte,
-        new_end_byte: 0,
-        start_position: Point::new(0, 0),
-        old_end_position: Point::new(0, old_end_byte),
-        new_end_position: Point::new(0, 0),
-    });
+    parser.parse(source).unwrap()
 }
 
 #[test]
@@ -2350,7 +2209,7 @@ fn test_hidden_node_fields_respect_inner_shadowing() {
         let language = get_test_language(&name, &code, None);
         let mut parser = Parser::new();
         parser.set_language(&language).unwrap();
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         let root = tree.root_node();
         assert!(!root.has_error());
         if case == "unshadowed" {
@@ -2408,7 +2267,7 @@ fn test_field_lookup_resumes_parent_before_shadowed_candidate() {
     let mut parser = Parser::new();
     parser.set_language(&language).unwrap();
     for (source, expected) in [("prmn", 3..4), ("qrmn", 0..1)] {
-        let tree = parser.parse(source, None).unwrap();
+        let tree = parser.parse(source).unwrap();
         assert!(!tree.root_node().has_error());
         let pair = tree.root_node().child(0).unwrap();
         let field = pair.child_by_field_name("target");

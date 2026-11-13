@@ -5,7 +5,6 @@ import { TreeCursor } from './tree_cursor';
 import { Language } from './language';
 import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodeArray, unmarshalPoint } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
-import { Edit } from './edit';
 
 /** A single node within a syntax {@link Tree}. */
 export class Node {
@@ -47,14 +46,7 @@ export class Node {
   /**
    * The numeric id for this node that is unique.
    *
-   * Within a given syntax tree, no two nodes have the same id. However:
-   *
-   * * If a new tree is created based on an older tree, and a node from the old tree is reused in
-   *   the process, then that node will have the same id in both trees.
-   *
-   * * A node not marked as having changes does not guarantee it was reused.
-   *
-   * * If a node is marked as having changed in the old tree, it will not be reused.
+   * Within a given syntax tree, no two nodes have the same id.
    */
   id: number;
 
@@ -137,12 +129,6 @@ export class Node {
   get isMissing(): boolean {
     marshalNode(this);
     return C._ts_node_is_missing_wasm(this.tree[0]) === 1;
-  }
-
-  /** Check if this node has been edited. */
-  get hasChanges(): boolean {
-    marshalNode(this);
-    return C._ts_node_has_changes_wasm(this.tree[0]) === 1;
   }
 
   /**
@@ -557,21 +543,6 @@ export class Node {
     marshalNode(this);
     const address = C._ts_tree_cursor_new_wasm(this.tree[0]);
     return new TreeCursor(INTERNAL, this.tree, address);
-  }
-
-  /**
-   * Edit this node to keep it in-sync with source code that has been edited.
-   *
-   * This function is only rarely needed. When you edit a syntax tree with
-   * the {@link Tree#edit} method, all of the nodes that you retrieve from
-   * the tree afterward will already reflect the edit. You only need to
-   * use {@link Node#edit} when you have a specific {@link Node} instance that
-   * you want to keep and continue to use after an edit.
-   */
-  edit(edit: Edit) {
-    const { point, index } = edit.editPoint(this.startPosition, this.startIndex);
-    this.startPosition = point;
-    this.startIndex = index;
   }
 
   /** Get the S-expression representation of this node. */

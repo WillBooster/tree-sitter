@@ -69,6 +69,9 @@ tree-sitter-config.workspace = true
 tree-sitter-generate = { features = [ "load" ], workspace = true }
 tree-sitter-loader.workspace = true
 
+[build-dependencies]
+semver.workspace = true
+
 [dev-dependencies]
 etcetera.workspace = true
 cpu-time = "1.0.0"
