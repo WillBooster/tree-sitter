@@ -24,4 +24,4 @@ tree-sitter-language = "0.1"
 cc = "1.2"
 
 [dev-dependencies]
-tree-sitter = "RUST_BINDING_VERSION"
+tree-sitter = { package = "willbooster-tree-sitter", version = "RUST_BINDING_VERSION" }

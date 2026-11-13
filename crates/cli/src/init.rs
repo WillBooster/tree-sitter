@@ -83,7 +83,7 @@ const GITIGNORE_TEMPLATE: &str = include_str!("./templates/gitignore");
 const GITATTRIBUTES_TEMPLATE: &str = include_str!("./templates/gitattributes");
 const EDITORCONFIG_TEMPLATE: &str = include_str!("./templates/.editorconfig");
 
-const RUST_BINDING_VERSION: &str = env!("CARGO_PKG_VERSION");
+const RUST_BINDING_VERSION: &str = env!("RUST_BINDING_VERSION");
 const RUST_BINDING_VERSION_PLACEHOLDER: &str = "RUST_BINDING_VERSION";
 
 const LIB_RS_TEMPLATE: &str = include_str!("./templates/lib.rs");

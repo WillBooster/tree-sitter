@@ -15,8 +15,8 @@
 //! assert!(!tree.root_node().has_error());
 //! ```
 //!
-//! [`Parser`]: https://docs.rs/tree-sitter/RUST_BINDING_VERSION/tree_sitter/struct.Parser.html
-//! [tree-sitter]: https://tree-sitter.github.io/
+//! [`Parser`]: https://docs.rs/willbooster-tree-sitter/RUST_BINDING_VERSION/tree_sitter/struct.Parser.html
+//! [tree-sitter]: https://github.com/WillBooster/tree-sitter
 
 use tree_sitter_language::LanguageFn;
 
