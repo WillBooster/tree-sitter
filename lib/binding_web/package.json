@@ -105,7 +105,7 @@
     "@types/node": "26.6.6",
     "@vitest/browser-playwright": "5.1.0",
     "@vitest/coverage-v8": "5.1.0",
-    "@willbooster/tree-sitter-typescript": "26.0.2",
+    "@willbooster/tree-sitter-typescript": "29.0.0",
     "dts-buddy": "0.8.3",
     "esbuild": "0.28.2",
     "eslint": "^10.9.0",
