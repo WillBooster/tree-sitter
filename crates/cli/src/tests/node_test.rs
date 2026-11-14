@@ -1135,12 +1135,13 @@ fn test_node_empty_range_preserves_anonymous_boundaries() {
                 members.push(serde_json::json!({"type": "SYMBOL", "name": "terminal"}));
             }
             let body = serde_json::json!({"type": "SEQ", "members": members});
+            let hidden_symbol = serde_json::json!({"type": "SYMBOL", "name": "_hidden"});
             let grammar = serde_json::json!({
                 "name": format!("anonymous_boundary_{}_{}", u8::from(hidden), u8::from(empty)),
                 "rules": {
                     "root": {"type": "SEQ", "members": [
                         {"type": "STRING", "value": "z"},
-                        if hidden { serde_json::json!({"type": "SYMBOL", "name": "_hidden"}) } else { body.clone() }
+                        if hidden { &hidden_symbol } else { &body }
                     ]},
                     "_hidden": body,
                     "lead": {"type": "STRING", "value": "a"},
