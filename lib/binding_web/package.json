@@ -109,13 +109,13 @@
     "dts-buddy": "0.8.3",
     "esbuild": "0.28.2",
     "eslint": "^10.9.0",
-    "playwright": "1.64.1",
+    "playwright": "1.65.0",
     "source-map": "0.8.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "typescript-eslint": "8.72.1",
     "vitest": "5.1.0",
-    "wrangler": "4.156.0"
+    "wrangler": "4.158.0"
   },
   "scripts": {
     "build:ts": "tsc -b . && tsc -p test/browser && node script/build.js",
