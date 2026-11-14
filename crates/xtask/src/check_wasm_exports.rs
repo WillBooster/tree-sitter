@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use notify::{
     EventKind, RecursiveMode,
     event::{AccessKind, AccessMode},
@@ -55,6 +55,7 @@ pub fn run(args: &CheckWasmExports) -> Result<()> {
 fn check_wasm_exports() -> Result<()> {
     let mut wasm_exports = std::fs::read_to_string("lib/binding_web/lib/exports.txt")?
         .lines()
+        .filter(|s| !s.trim().is_empty())
         .map(|s| s.replace("_wasm", "").replace("byte", "index"))
         // remove leading and trailing quotes, trailing comma
         .map(|s| s[1..s.len() - 2].to_string())
@@ -69,7 +70,7 @@ fn check_wasm_exports() -> Result<()> {
             "Name",
         ])
         .output()
-        .expect("Failed to run wasm-objdump");
+        .context("Failed to run wasm-objdump")?;
     bail_on_err(&wasm_objdump, "Failed to run wasm-objdump")?;
 
     wasm_exports.extend(
@@ -98,7 +99,7 @@ fn check_wasm_exports() -> Result<()> {
         .arg("libtree-sitter.so")
         .stdout(Stdio::piped())
         .output()
-        .expect("Failed to run nm");
+        .context("Failed to run nm")?;
     bail_on_err(&nm_child, "Failed to run nm")?;
     let export_reader = nm_child
         .stdout
@@ -107,7 +108,11 @@ fn check_wasm_exports() -> Result<()> {
         .filter(|line| line.contains(" T "));
 
     let exports = export_reader
-        .filter_map(|line| line.split_whitespace().nth(2).map(String::from))
+        .filter_map(|line| {
+            line.split_whitespace()
+                .nth(2)
+                .map(|symbol| symbol.trim_start_matches('_').to_owned())
+        })
         .filter(|symbol| !EXCLUDES.contains(&symbol.as_str()))
         .collect::<HashSet<_>>();
 

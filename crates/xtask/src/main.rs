@@ -309,41 +309,37 @@ pub fn create_commit(msg: &str, paths: &[&str]) -> Result<String> {
 #[macro_export]
 macro_rules! watch_wasm {
     ($watch_fn:expr) => {
+        let watch_files = ["tree-sitter.c", "exports.txt", "imports.js", "prefix.js"]
+            .iter()
+            .map(PathBuf::from)
+            .collect::<HashSet<PathBuf>>();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut debouncer = new_debouncer(Duration::from_secs(1), None, tx)?;
+        debouncer.watch("lib/binding_web/lib", RecursiveMode::NonRecursive)?;
+
         if let Err(e) = $watch_fn() {
-            eprintln!("{e}");
+            eprintln!("{e:#}");
         } else {
             println!("Build succeeded");
         }
 
-        let watch_files = [
-            "lib/tree-sitter.c",
-            "lib/exports.txt",
-            "lib/imports.js",
-            "lib/prefix.js",
-        ]
-        .iter()
-        .map(PathBuf::from)
-        .collect::<HashSet<PathBuf>>();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let mut debouncer = new_debouncer(Duration::from_secs(1), None, tx)?;
-        debouncer.watch("lib/binding_web", RecursiveMode::NonRecursive)?;
-
         for result in rx {
             match result {
                 Ok(events) => {
-                    for event in events {
-                        if event.kind == EventKind::Access(AccessKind::Close(AccessMode::Write))
+                    if events.iter().any(|event| {
+                        (matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_))
+                            || event.kind
+                                == EventKind::Access(AccessKind::Close(AccessMode::Write)))
                             && event
                                 .paths
                                 .iter()
                                 .filter_map(|p| p.file_name())
                                 .any(|p| watch_files.contains(&PathBuf::from(p)))
-                        {
-                            if let Err(e) = $watch_fn() {
-                                eprintln!("{e}");
-                            } else {
-                                println!("Build succeeded");
-                            }
+                    }) {
+                        if let Err(e) = $watch_fn() {
+                            eprintln!("{e:#}");
+                        } else {
+                            println!("Build succeeded");
                         }
                     }
                 }
