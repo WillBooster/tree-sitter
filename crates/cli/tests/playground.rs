@@ -28,7 +28,7 @@ fn exported_playground_runtime_parses_the_generated_language() {
         );
     }
 
-    let script = r#"
+    let script = r"
 import fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 const dir = 'export';
@@ -50,7 +50,7 @@ const parser = new runtime.Parser();
 parser.setLanguage(language);
 const tree = parser.parse('hello world');
 if (tree.rootNode.toString() !== '(source_file (word) (word))') throw new Error(tree.rootNode.toString());
-"#;
+";
     let output = Command::new("node")
         .args(["--input-type=module", "-e", script])
         .current_dir(temp.path())
