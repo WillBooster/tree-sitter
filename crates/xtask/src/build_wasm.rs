@@ -131,8 +131,10 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         emscripten_flags.extend(["-s", "VERBOSE=1", "-v"]);
     }
 
+    let mut command = emcc_command(args)?;
     fs::create_dir_all("target/scratch").unwrap();
 
+    let exported_functions = exported_functions_flag()?;
     let exported_runtime_methods = format!(
         "EXPORTED_RUNTIME_METHODS={}",
         EXPORTED_RUNTIME_METHODS.join(",")
@@ -165,6 +167,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "-s", "FILESYSTEM=0",
         "-s", "NODEJS_CATCH_EXIT=0",
         "-s", "NODEJS_CATCH_REJECTION=0",
+        "-s", &exported_functions,
         "-s", &exported_runtime_methods,
         "-D", "fprintf(...)=",
         "-D", "printf(...)=",
@@ -185,18 +188,12 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         emscripten_flags.extend(["--emit-tsd", "web-tree-sitter.d.ts"]);
     }
 
-    let build = || {
-        let mut command = emcc_command(args)?;
-        command
-            .args(&emscripten_flags)
-            .args(["-s", &exported_functions_flag()?]);
-        build_wasm(&mut command, args.emit_tsd, runtime_path)
-    };
+    let command = command.args(&emscripten_flags);
 
     if args.watch {
-        watch_wasm!(build);
+        watch_wasm!(|| build_wasm(command, args.emit_tsd, runtime_path));
     } else {
-        build()?;
+        build_wasm(command, args.emit_tsd, runtime_path)?;
     }
 
     Ok(())
@@ -259,7 +256,6 @@ fn exported_functions_flag() -> Result<String> {
     )
     .replace('"', "")
     .lines()
-    .filter(|line| !line.trim().is_empty())
     .fold(String::new(), |mut output, line| {
         let _ = write!(output, "_{line}");
         output
