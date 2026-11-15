@@ -449,31 +449,6 @@ describe('Node', () => {
     });
   });
 
-  describe('.parseState, .nextParseState', () => {
-    const text = '10 / 5';
-
-    it('returns node parse state ids', () => {
-      tree = parser.parse(text)!;
-      const quotientNode = tree.rootNode.firstChild!.firstChild!;
-      const [numerator, slash, denominator] = quotientNode.children;
-
-      expect(tree.rootNode.parseState).toBe(0);
-      // parse states will change on any change to the grammar so test that it
-      // returns something instead
-      expect(numerator.parseState).toBeGreaterThan(0);
-      expect(slash.parseState).toBeGreaterThan(0);
-      expect(denominator.parseState).toBeGreaterThan(0);
-    });
-
-    it('returns next parse state equal to the language', () => {
-      tree = parser.parse(text)!;
-      const quotientNode = tree.rootNode.firstChild!.firstChild!;
-      quotientNode.children.forEach((node) => {
-        expect(node.nextParseState).toBe(JavaScript.nextState(node.parseState, node.grammarId));
-      });
-    });
-  });
-
   describe('.descendantsOfType("ERROR")', () => {
     it('finds all of the descendants of an ERROR node', () => {
       tree = parser.parse(

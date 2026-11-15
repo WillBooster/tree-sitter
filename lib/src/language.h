@@ -76,6 +76,7 @@ static inline uint32_t ts_language__count_ones(uint32_t bits);
 static inline uint32_t ts_language__trailing_zeros(uint32_t bits);
 
 uint16_t ts_language_lookup_small_compact(const TSLanguage *self, uint32_t index, TSSymbol symbol);
+TSStateId ts_language_next_state(const TSLanguage *self, TSStateId state, TSSymbol symbol);
 
 static inline uint32_t ts_language__small_offset(const uint16_t *words) {
   return words[0] | (uint32_t)words[1] << 16;

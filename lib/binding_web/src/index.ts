@@ -17,4 +17,3 @@ export { Language } from './language';
 export { Tree } from './tree';
 export { Node } from './node';
 export { TreeCursor } from './tree_cursor';
-export { LookaheadIterator } from './lookahead_iterator';

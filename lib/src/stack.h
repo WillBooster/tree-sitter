@@ -46,10 +46,9 @@ TSStateId ts_stack_state(const Stack *self, StackVersion version);
 
 bool ts_stack_after_extra(const Stack *self, StackVersion version);
 
-Subtree ts_stack_last_external_token(const Stack *self, StackVersion version);
+uint32_t ts_stack_external_scanner_state_id(const Stack *self, StackVersion version);
 
-// Set the last external token associated with a given version of the stack.
-void ts_stack_set_last_external_token(Stack *self, StackVersion version, Subtree token);
+void ts_stack_set_external_scanner_state_id(Stack *self, StackVersion version, uint32_t state_id);
 
 // Get the position of the given version of the stack within the document.
 Length ts_stack_position(const Stack *, StackVersion);
@@ -85,11 +84,11 @@ StackSliceArray ts_stack_pop_count_for_reduce(
   StackReductionStatus *status
 );
 
-bool ts_stack_pop_count_in_place(
+SubtreeHeapData *ts_stack_pop_count_in_place(
   Stack *self,
   StackVersion version,
   uint32_t count,
-  SubtreeArray *children,
+  uint32_t *child_count,
   SubtreeArray *trailing_extras
 );
 
@@ -157,9 +156,9 @@ bool ts_stack_merge(Stack *self, StackVersion version1, StackVersion version2);
 // Determine whether the given two stack versions can be merged.
 bool ts_stack_can_merge(Stack *self, StackVersion version1, StackVersion version2);
 
-Subtree ts_stack_resume(Stack *self, StackVersion version);
+LookaheadToken ts_stack_resume(Stack *self, StackVersion version);
 
-void ts_stack_pause(Stack *self, StackVersion version, Subtree lookahead);
+void ts_stack_pause(Stack *self, StackVersion version, LookaheadToken lookahead);
 
 void ts_stack_halt(Stack *self, StackVersion version);
 

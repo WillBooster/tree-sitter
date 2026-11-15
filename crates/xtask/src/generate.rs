@@ -175,6 +175,7 @@ fn adapt_c_preprocessor_comments(path: &Path) -> Result<()> {
     Ok(())
 }
 
+// code-gauge-allow duplicateLines 16 -- mirrors lib/binding_rust/build.rs bindgen configuration without cross-crate build-script coupling
 pub fn run_bindings() -> Result<()> {
     let output = Command::new("cargo")
         .args(["metadata", "--format-version", "1"])
@@ -201,14 +202,7 @@ pub fn run_bindings() -> Result<()> {
         panic!("Failed to find the willbooster-tree-sitter package in cargo metadata");
     };
 
-    let no_copy = [
-        "TSInput",
-        "TSLanguage",
-        "TSLogger",
-        "TSLookaheadIterator",
-        "TSParser",
-        "TSTree",
-    ];
+    let no_copy = ["TSInput", "TSLanguage", "TSLogger", "TSParser", "TSTree"];
 
     let bindings = bindgen::Builder::default()
         .header(HEADER_PATH)

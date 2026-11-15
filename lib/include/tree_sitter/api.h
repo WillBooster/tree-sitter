@@ -46,7 +46,6 @@ typedef uint16_t TSFieldId;
 typedef struct TSLanguage TSLanguage;
 typedef struct TSParser TSParser;
 typedef struct TSTree TSTree;
-typedef struct TSLookaheadIterator TSLookaheadIterator;
 
 // This function signature reads one code point from the given string,
 // returning the number of bytes consumed. It should write the code point
@@ -407,8 +406,7 @@ const char *ts_node_grammar_type(TSNode self);
 
 /**
  * Get the node's type as a numerical id as it appears in the grammar ignoring
- * aliases. This should be used in [`ts_language_next_state`] instead of
- * [`ts_node_symbol`].
+ * aliases.
  */
 TSSymbol ts_node_grammar_symbol(TSNode self);
 
@@ -475,21 +473,6 @@ bool ts_node_has_error(TSNode self);
  * Check if the node is a syntax error.
 */
 bool ts_node_is_error(TSNode self);
-
-/**
- * Get this node's parse state.
- *
- * For a missing node, this is the state from the recovery path that was
- * selected by the parser. It can be used with [`ts_lookahead_iterator_new`] to
- * inspect the symbols that are valid in that state. This does not necessarily
- * include every symbol that could be recovered by inserting a missing node.
-*/
-TSStateId ts_node_parse_state(TSNode self);
-
-/**
- * Get the parse state after this node.
-*/
-TSStateId ts_node_next_parse_state(TSNode self);
 
 /**
  * Get the node's immediate parent.
@@ -861,92 +844,10 @@ uint32_t ts_language_abi_version(const TSLanguage *self);
 const TSLanguageMetadata *ts_language_metadata(const TSLanguage *self);
 
 /**
- * Get the next parse state. Combine this with lookahead iterators to generate
- * completion suggestions or valid symbols in error nodes. Use
- * [`ts_node_grammar_symbol`] for valid symbols.
-*/
-TSStateId ts_language_next_state(const TSLanguage *self, TSStateId state, TSSymbol symbol);
-
-/**
  * Get the name of this language. This returns `NULL` for a language with
  * another ABI version.
  */
 const char *ts_language_name(const TSLanguage *self);
-
-/********************************/
-/* Section - Lookahead Iterator */
-/********************************/
-
-/**
- * Create a new lookahead iterator for the given language and parse state.
- *
- * This returns `NULL` if state is invalid for the language.
- *
- * Repeatedly using [`ts_lookahead_iterator_next`] and
- * [`ts_lookahead_iterator_current_symbol`] will generate valid symbols in the
- * given parse state. A newly created iterator is not positioned on a symbol
- * until [`ts_lookahead_iterator_next`] is called.
- *
- * The iterator retains the language, so the language may be deleted while the
- * iterator is still in use.
- *
- * Lookahead iterators can be useful to generate suggestions and improve syntax
- * error diagnostics. To get symbols valid in an ERROR node, use the lookahead
- * iterator on its first leaf node state. For `MISSING` nodes, a lookahead
- * iterator created on the previous non-extra leaf node, or using the node's
- * parse state may be appropriate.
-*/
-TSLookaheadIterator *ts_lookahead_iterator_new(const TSLanguage *self, TSStateId state);
-
-/**
- * Delete a lookahead iterator freeing all the memory used.
-*/
-void ts_lookahead_iterator_delete(TSLookaheadIterator *self);
-
-/**
- * Reset the lookahead iterator to another state.
- *
- * This returns `true` if the iterator was reset to the given state and `false`
- * otherwise. A reset iterator is not positioned on a symbol.
-*/
-bool ts_lookahead_iterator_reset_state(TSLookaheadIterator *self, TSStateId state);
-
-/**
- * Reset the lookahead iterator.
- *
- * This returns `true` if the language was set successfully and `false`
- * otherwise. A reset iterator is not positioned on a symbol.
-*/
-bool ts_lookahead_iterator_reset(TSLookaheadIterator *self, const TSLanguage *language, TSStateId state);
-
-/**
- * Get the current language of the lookahead iterator.
-*/
-const TSLanguage *ts_lookahead_iterator_language(const TSLookaheadIterator *self);
-
-/**
- * Advance the lookahead iterator to the next symbol.
- *
- * This returns `true` if there is a new symbol and `false` otherwise.
-*/
-bool ts_lookahead_iterator_next(TSLookaheadIterator *self);
-
-/**
- * Get the current symbol of the lookahead iterator.
- *
- * This is only meaningful when the most recent call to
- * [`ts_lookahead_iterator_next`] on `self` returned `true`.
-*/
-TSSymbol ts_lookahead_iterator_current_symbol(const TSLookaheadIterator *self);
-
-/**
- * Get the current symbol type of the lookahead iterator as a null terminated
- * string.
- *
- * This returns `NULL` unless the most recent call to
- * [`ts_lookahead_iterator_next`] on `self` returned `true`.
-*/
-const char *ts_lookahead_iterator_current_symbol_name(const TSLookaheadIterator *self);
 
 /*************************************/
 /* Section - WebAssembly Integration */

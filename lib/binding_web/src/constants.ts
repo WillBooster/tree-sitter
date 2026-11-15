@@ -37,7 +37,7 @@ export interface Range {
 export const SIZE_OF_INT = 4;
 
 /** @internal */
-export const SIZE_OF_NODE = 5 * SIZE_OF_INT;
+export const SIZE_OF_NODE = 9 * SIZE_OF_INT;
 
 /** @internal */
 export const SIZE_OF_POINT = 2 * SIZE_OF_INT;

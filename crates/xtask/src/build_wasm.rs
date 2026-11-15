@@ -159,7 +159,7 @@ pub fn run_wasm(args: &BuildWasm) -> Result<()> {
         "-std=c11",
         "-s", "WASM=1",
         "-s", "MODULARIZE=1",
-        "-s", "INITIAL_MEMORY=4194304",
+        "-s", "INITIAL_MEMORY=524288",
         "-s", "ALLOW_MEMORY_GROWTH=1",
         "-s", "MEMORY_GROWTH_GEOMETRIC_STEP=0",
         "-s", "WASM_BIGINT=1",

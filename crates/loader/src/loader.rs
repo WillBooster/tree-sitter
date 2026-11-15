@@ -581,6 +581,9 @@ pub enum OptimizationLevel {
 }
 
 impl OptimizationLevel {
+    pub const DEFAULT_NATIVE: Self = Self::O2;
+    pub const DEFAULT_WASM: Self = Self::MinimumSize;
+
     #[must_use]
     pub const fn level(self) -> &'static str {
         match self {
@@ -1293,6 +1296,34 @@ impl Loader {
         // TODO: there's no nm command on windows, whoever wants to implement this can and should :)
     }
 
+    fn run_wasm_tool(
+        &self,
+        command: &mut Command,
+        temp_output: &Path,
+        io_err: fn(std::io::Error) -> LoaderError,
+        fail_err: fn(String) -> LoaderError,
+    ) -> LoaderResult<()> {
+        if self.verbose {
+            display_build_cmd(command);
+        }
+        let output = command.output().map_err(io_err)?;
+        if self.verbose {
+            if !output.stdout.is_empty() {
+                info!("stdout:{}", String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                info!("stderr:{}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
+        if !output.status.success() {
+            let _ = fs::remove_file(temp_output);
+            return Err(fail_err(
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn compile_parser_to_wasm(
         &self,
         language_name: &str,
@@ -1305,10 +1336,12 @@ impl Loader {
         let wasm_opt_exe = Self::ensure_binaryen_exists()?;
         drop(tool_lock);
 
-        // Compile to a temporary path, then atomically rename into place.
-        // This ensures loaders never see a half-written .wasm file.
         let temp_output = temp_path(output_path);
         let temp_output_str = temp_output.to_str().unwrap();
+        let opt_flag = self
+            .optimization_level
+            .unwrap_or(OptimizationLevel::DEFAULT_WASM)
+            .flag();
 
         let mut compile_command = Command::new(&clang_exe);
         compile_command.current_dir(src_path).args([
@@ -1318,88 +1351,47 @@ impl Loader {
             "-fPIC",
             "-shared",
             "--no-wasm-opt",
-            if self.debug_build {
-                "-g"
-            } else {
-                self.optimization_level
-                    .unwrap_or(OptimizationLevel::Size)
-                    .flag()
-            },
+            if self.debug_build { "-g" } else { opt_flag },
             format!("-Wl,--export=tree_sitter_{language_name}").as_str(),
             "-Wl,--allow-undefined",
             "-Wl,--no-entry",
             "-nostdlib",
             "-fno-exceptions",
+            "-fno-unwind-tables",
+            "-fno-asynchronous-unwind-tables",
             "-fvisibility=hidden",
             "-I",
             ".",
             "parser.c",
         ]);
-
         if let Some(scanner_filename) = scanner_filename {
             compile_command.arg(scanner_filename);
         }
-
-        if self.verbose {
-            display_build_cmd(&compile_command);
-        }
-
-        let compile_output = compile_command
-            .output()
-            .map_err(LoaderError::WasmCompiler)?;
-        if self.verbose {
-            if !compile_output.stdout.is_empty() {
-                info!("stdout:{}", String::from_utf8_lossy(&compile_output.stdout));
-            }
-            if !compile_output.stderr.is_empty() {
-                info!("stderr:{}", String::from_utf8_lossy(&compile_output.stderr));
-            }
-        }
-
-        if !compile_output.status.success() {
-            let _ = fs::remove_file(&temp_output);
-            return Err(LoaderError::WasmCompilation(
-                String::from_utf8_lossy(&compile_output.stderr).to_string(),
-            ));
-        }
+        self.run_wasm_tool(
+            &mut compile_command,
+            &temp_output,
+            LoaderError::WasmCompiler,
+            LoaderError::WasmCompilation,
+        )?;
 
         let mut opt_command = Command::new(&wasm_opt_exe);
-        opt_command.current_dir(src_path).args([
-            temp_output_str,
-            self.optimization_level
-                .unwrap_or(OptimizationLevel::Size)
-                .flag(),
-            "-o",
-            temp_output_str,
-        ]);
-
-        if self.verbose {
-            display_build_cmd(&opt_command);
+        opt_command
+            .current_dir(src_path)
+            .args([temp_output_str, opt_flag, "-o", temp_output_str]);
+        if !self.debug_build {
+            opt_command.args(["--strip-debug", "--strip-producers"]);
         }
-
-        let opt_output = opt_command.output().map_err(LoaderError::WasmOptimizer)?;
-        if self.verbose {
-            if !opt_output.stdout.is_empty() {
-                info!("stdout:{}", String::from_utf8_lossy(&opt_output.stdout));
-            }
-            if !opt_output.stderr.is_empty() {
-                info!("stderr:{}", String::from_utf8_lossy(&opt_output.stderr));
-            }
-        }
-
-        if !opt_output.status.success() {
-            let _ = fs::remove_file(&temp_output);
-            return Err(LoaderError::WasmOptimization(
-                String::from_utf8_lossy(&opt_output.stderr).to_string(),
-            ));
-        }
+        self.run_wasm_tool(
+            &mut opt_command,
+            &temp_output,
+            LoaderError::WasmOptimizer,
+            LoaderError::WasmOptimization,
+        )?;
 
         fs::rename(&temp_output, output_path).map_err(|e| {
             let _ = fs::remove_file(&temp_output);
             LoaderError::IO(IoError::new(e, Some(output_path)))
-        })?;
-
-        Ok(())
+        })
     }
 
     /// Extracts a tar.gz archive with `tar`, stripping the first path component.

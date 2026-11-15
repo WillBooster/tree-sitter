@@ -74,6 +74,7 @@ fn configure_wasm_build(config: &mut cc::Build) {
 }
 
 #[cfg(feature = "bindgen")]
+// code-gauge-allow duplicateLines 16 -- mirrors xtask bindgen configuration without cross-crate build-script coupling
 fn generate_bindings(out_dir: &std::path::Path) {
     use std::str::FromStr;
 
@@ -83,14 +84,7 @@ fn generate_bindings(out_dir: &std::path::Path) {
 
     println!("cargo:rerun-if-changed={HEADER_PATH}");
 
-    let no_copy = [
-        "TSInput",
-        "TSLanguage",
-        "TSLogger",
-        "TSLookaheadIterator",
-        "TSParser",
-        "TSTree",
-    ];
+    let no_copy = ["TSInput", "TSLanguage", "TSLogger", "TSParser", "TSTree"];
 
     let rust_version = env!("CARGO_PKG_RUST_VERSION");
 

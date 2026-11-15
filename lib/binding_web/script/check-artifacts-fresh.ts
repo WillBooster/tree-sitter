@@ -18,7 +18,6 @@ const inputFiles = [
   '../src/constants.ts',
   '../src/index.ts',
   '../src/language.ts',
-  '../src/lookahead_iterator.ts',
   '../src/marshal.ts',
   '../src/node.ts',
   '../src/parser.ts',

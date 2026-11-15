@@ -1,33 +1,50 @@
 #include "tree_sitter/api.h"
+#include "./atomic.h"
 #include "./language.h"
 #include "./length.h"
+#include "./lexer.h"
 #include "./subtree.h"
 #include "./tree.h"
 
 TSTree *ts_tree_new(
-  Subtree root, const TSLanguage *language,
-  const TSRange *included_ranges, unsigned included_range_count
+  Subtree root,
+  const TSLanguage *language,
+  const TSRange *included_ranges,
+  unsigned included_range_count,
+  TreeArenaSlab *arena
 ) {
   TSTree *result = ts_malloc(sizeof(TSTree));
   result->root = root;
+  result->arena = arena;
   result->language = ts_language_copy(language);
 #ifdef __wasm__
   result->language_context_id = ts_language_current_context_id();
   result->unparseable_language = NULL;
 #endif
-  result->included_ranges = ts_calloc(included_range_count, sizeof(TSRange));
-  memcpy(result->included_ranges, included_ranges, included_range_count * sizeof(TSRange));
+  if (
+    included_range_count == 1 &&
+    (included_ranges == &TS_DEFAULT_RANGE ||
+     memcmp(included_ranges, &TS_DEFAULT_RANGE, sizeof(TSRange)) == 0)
+  ) {
+    result->included_ranges = NULL;
+  } else {
+    result->included_ranges = ts_calloc(included_range_count, sizeof(TSRange));
+    memcpy(result->included_ranges, included_ranges, included_range_count * sizeof(TSRange));
+  }
   result->included_range_count = included_range_count;
   return result;
 }
 
 TSTree *ts_tree_copy(const TSTree *self) {
-  ts_subtree_retain(self->root);
+  if (self->arena) {
+    atomic_refcount_inc(&self->arena->ref_count);
+  }
   TSTree *result = ts_tree_new(
     self->root,
     self->language,
-    self->included_ranges,
-    self->included_range_count
+    self->included_ranges ? self->included_ranges : &TS_DEFAULT_RANGE,
+    self->included_range_count,
+    self->arena
   );
 #ifdef __wasm__
   result->language_context_id = self->language_context_id;
@@ -38,9 +55,9 @@ TSTree *ts_tree_copy(const TSTree *self) {
 void ts_tree_delete(TSTree *self) {
   if (!self) return;
 
-  SubtreePool pool = ts_subtree_pool_new(0);
-  ts_subtree_release(&pool, self->root);
-  ts_subtree_pool_delete(&pool);
+  if (self->arena && atomic_refcount_dec_is_last(&self->arena->ref_count)) {
+    ts_tree_arena_slab_free_all(self->arena);
+  }
 #ifdef __wasm__
   ts_language_delete(__atomic_load_n(&self->unparseable_language, __ATOMIC_ACQUIRE));
 #endif
@@ -94,7 +111,11 @@ const TSLanguage *ts_tree_language(const TSTree *self) {
 TSRange *ts_tree_included_ranges(const TSTree *self, uint32_t *length) {
   *length = self->included_range_count;
   TSRange *ranges = ts_calloc(self->included_range_count, sizeof(TSRange));
-  memcpy(ranges, self->included_ranges, self->included_range_count * sizeof(TSRange));
+  if (self->included_ranges) {
+    memcpy(ranges, self->included_ranges, self->included_range_count * sizeof(TSRange));
+  } else {
+    ranges[0] = TS_DEFAULT_RANGE;
+  }
   return ranges;
 }
 
@@ -120,7 +141,7 @@ void ts_tree_print_dot_graph(const TSTree *self, int fd) {
   fclose(file);
 }
 
-#elif !defined(__wasm__) // Wasm doesn't support dup
+#elif !defined(__wasm__)
 
 #include <unistd.h>
 

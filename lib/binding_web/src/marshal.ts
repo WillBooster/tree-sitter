@@ -37,6 +37,10 @@ export function unmarshalNode(tree: Tree, address = TRANSFER_BUFFER): Node | nul
     startIndex: heapU32[base + 1],
     startPosition: { row: heapU32[base + 2], column: heapU32[base + 3] },
     other: heap[base + 4],
+    endIndex: heapU32[base + 5],
+    endRow: heapU32[base + 6],
+    endColumn: heapU32[base + 7],
+    flags: heapU32[base + 8],
   });
 }
 

@@ -173,8 +173,16 @@ struct Generate {
 #[derive(Args)]
 #[command(alias = "b")]
 struct Build {
-    /// Compiler optimization: 2, 3, s (size), or z (minimum size); defaults to 2 natively and s for Wasm
-    #[arg(long, conflicts_with = "debug", value_name = "LEVEL")]
+    #[arg(
+        long,
+        conflicts_with = "debug",
+        value_name = "LEVEL",
+        help = format!(
+            "Compiler optimization: 2, 3, s (size), or z (minimum size); defaults to {} natively and {} for Wasm",
+            loader::OptimizationLevel::DEFAULT_NATIVE.level(),
+            loader::OptimizationLevel::DEFAULT_WASM.level()
+        )
+    )]
     pub optimization: Option<loader::OptimizationLevel>,
     /// Build a Wasm module instead of a dynamic library
     #[arg(short, long)]

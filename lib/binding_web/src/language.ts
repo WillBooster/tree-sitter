@@ -1,5 +1,4 @@
 import { C, INTERNAL, Internal, assertInternal, SIZE_OF_INT } from './constants';
-import { LookaheadIterator } from './lookahead_iterator';
 import { unmarshalLanguageMetadata, unmarshalSymbols } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 
@@ -171,35 +170,6 @@ export class Language {
   subtypes(supertype: number): number[] {
     C._ts_language_subtypes_wasm(this[0], supertype);
     return unmarshalSymbols();
-  }
-
-  /**
-   * Get the next state id for a given state id and node type id.
-   */
-  nextState(stateId: number, typeId: number): number {
-    return C._ts_language_next_state(this[0], stateId, typeId);
-  }
-
-  /**
-   * Create a new lookahead iterator for this language and parse state.
-   *
-   * This returns `null` if state is invalid for this language.
-   *
-   * Iterating {@link LookaheadIterator} will yield valid symbols in the given
-   * parse state. A newly created iterator is not positioned on a symbol, so
-   * {@link LookaheadIterator#currentType} returns `null` until the first
-   * iteration step.
-   *
-   * Lookahead iterators can be useful for generating suggestions and improving
-   * syntax error diagnostics. To get symbols valid in an `ERROR` node, use the
-   * lookahead iterator on its first leaf node state. For `MISSING` nodes, a
-   * lookahead iterator created on the previous non-extra leaf node may be
-   * appropriate.
-   */
-  lookaheadIterator(stateId: number): LookaheadIterator | null {
-    const address = C._ts_lookahead_iterator_new(this[0], stateId);
-    if (address) return new LookaheadIterator(INTERNAL, address, this);
-    return null;
   }
 
   /**

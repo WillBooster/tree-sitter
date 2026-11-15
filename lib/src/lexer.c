@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 502 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
+// code-gauge-allow-file fileNcss 512 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
 #include "./length.h"
 #include "./lexer.h"
 #include "./unicode.h"
@@ -29,20 +29,15 @@
 static const int32_t BYTE_ORDER_MARK = 0xFEFF;
 static const uint32_t LEXER_ADVANCES_PER_OPERATION = 64;
 
-static const TSRange DEFAULT_RANGE = {
-  .start_point = {
-    .row = 0,
-    .column = 0,
-  },
-  .end_point = {
-    .row = UINT32_MAX,
-    .column = UINT32_MAX,
-  },
+const TSRange TS_DEFAULT_RANGE = {
+  .start_point = {0, 0},
+  .end_point = {UINT32_MAX, UINT32_MAX},
   .start_byte = 0,
-  .end_byte = UINT32_MAX
+  .end_byte = UINT32_MAX,
 };
 
 static void ts_lexer__set_column_data(Lexer *self, uint32_t val) {
+  if (!self->track_columns) return;
   self->column_data.valid = true;
   self->column_data.valid_for_replay = true;
   self->column_data.value = val;
@@ -320,7 +315,7 @@ static unsigned ts_lexer__first_included_range(const Lexer *self, uint32_t byte)
 
 static bool ts_lexer__seek_included_range(Lexer *self, unsigned first_range) {
   for (unsigned i = first_range; i < self->included_range_count; i++) {
-    TSRange *included_range = &self->included_ranges[i];
+    const TSRange *included_range = &self->included_ranges[i];
     if (
       included_range->end_byte > self->current_position.bytes &&
       included_range->end_byte > included_range->start_byte
@@ -339,7 +334,7 @@ static bool ts_lexer__seek_included_range(Lexer *self, unsigned first_range) {
 }
 
 static void ts_lexer_goto(Lexer *self, Length position) {
-  if (position.bytes != self->current_position.bytes) {
+  if (self->track_columns && position.bytes != self->current_position.bytes) {
     ts_lexer__invalidate_column_data(self);
   }
 
@@ -359,7 +354,7 @@ static void ts_lexer_goto(Lexer *self, Length position) {
     self->ascii_limit = 0;
   } else {
     self->current_included_range_index = self->included_range_count;
-    TSRange *last_included_range = &self->included_ranges[self->included_range_count - 1];
+    const TSRange *last_included_range = &self->included_ranges[self->included_range_count - 1];
     self->current_position = (Length) {
       .bytes = last_included_range->end_byte,
       .extent = last_included_range->end_point,
@@ -368,7 +363,7 @@ static void ts_lexer_goto(Lexer *self, Length position) {
     self->lookahead_size = 1;
     self->data.lookahead = '\0';
   }
-  ts_lexer__restore_columns(self);
+  if (self->track_columns) ts_lexer__restore_columns(self);
 }
 
 #if defined _WIN32 && !defined __GNUC__
@@ -588,7 +583,7 @@ static void ts_lexer__mark_start(TSLexer *_self, const TSLexerCheckpoint *checkp
 static void ts_lexer__mark_end_at(TSLexer *_self, const TSLexerCheckpoint *checkpoint) {
   Lexer *self = (Lexer *)_self;
   self->token_end_position = (Length) {checkpoint->_opaque[0], {checkpoint->_opaque[1], checkpoint->_opaque[2]}};
-  ts_lexer__checkpoint_columns(self);
+  if (self->track_columns) ts_lexer__checkpoint_columns(self);
 }
 
 static void ts_lexer__get_mark_end(const TSLexer *_self, TSLexerPosition *position) {
@@ -611,18 +606,12 @@ static void ts_lexer__get_mark_end_checkpoint(const TSLexer *_self, TSLexerCheck
 
 static void ts_lexer__mark_end(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
-  if (!ts_lexer__eof(&self->data)) {
-    // If the lexer is right at the beginning of included range,
-    // then the token should be considered to end at the *end* of the
-    // previous included range, rather than here.
-    TSRange *current_included_range = &self->included_ranges[
+  if (self->current_included_range_index > 0 && !ts_lexer__eof(&self->data)) {
+    const TSRange *current_included_range = &self->included_ranges[
       self->current_included_range_index
     ];
-    if (
-      self->current_included_range_index > 0 &&
-      self->current_position.bytes == current_included_range->start_byte
-    ) {
-      TSRange *previous_included_range = current_included_range - 1;
+    if (self->current_position.bytes == current_included_range->start_byte) {
+      const TSRange *previous_included_range = current_included_range - 1;
       self->token_end_position = (Length) {
         previous_included_range->end_byte,
         previous_included_range->end_point,
@@ -631,9 +620,11 @@ static void ts_lexer__mark_end(TSLexer *_self) {
     }
   }
   self->token_end_position = self->current_position;
-  self->end_column_checkpoint = ts_lexer__column_checkpoint(self);
-  if (ts_lexer__at_position(self, self->token_start_position)) {
-    self->start_column_checkpoint = self->end_column_checkpoint;
+  if (self->track_columns) {
+    self->end_column_checkpoint = ts_lexer__column_checkpoint(self);
+    if (ts_lexer__at_position(self, self->token_start_position)) {
+      self->start_column_checkpoint = self->end_column_checkpoint;
+    }
   }
 }
 
@@ -687,6 +678,7 @@ static void ts_lexer__replay_columns(Lexer *self, bool display) {
 
 static uint32_t ts_lexer__get_column(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
+  self->track_columns = true;
   if (!self->column_data.valid) ts_lexer__replay_columns(self, false);
   ts_lexer__checkpoint_columns(self);
   ts_lexer__checkpoint_query_columns(self, false);
@@ -695,6 +687,7 @@ static uint32_t ts_lexer__get_column(TSLexer *_self) {
 
 static uint32_t ts_lexer__get_display_column(TSLexer *_self, uint32_t tab_width) {
   Lexer *self = (Lexer *)_self;
+  self->track_columns = true;
   if (!tab_width) tab_width = 1;
   if (!self->display_column_data.valid || self->display_tab_width != tab_width) {
     ColumnData column_data = self->column_data;
@@ -760,7 +753,9 @@ void ts_lexer_init(Lexer *self) {
 }
 
 void ts_lexer_delete(Lexer *self) {
-  ts_free(self->included_ranges);
+  if (self->included_ranges != &TS_DEFAULT_RANGE) {
+    ts_free((void *)self->included_ranges);
+  }
 }
 
 void ts_lexer_set_input(Lexer *self, TSInput input) {
@@ -768,6 +763,7 @@ void ts_lexer_set_input(Lexer *self, TSInput input) {
   self->ascii_stride =
     input.encoding == TSInputEncodingUTF8 ? 1 :
     input.encoding == TSInputEncodingUTF16LE || input.encoding == TSInputEncodingUTF16BE ? 2 : 0;
+  self->track_columns = self->included_ranges != &TS_DEFAULT_RANGE;
   ts_lexer__select_advance(self);
   ts_lexer__clear_column_checkpoints(self);
   ts_lexer__clear_chunk(self);
@@ -806,11 +802,13 @@ void ts_lexer_start(Lexer *self) {
       if (self->data.lookahead == BYTE_ORDER_MARK) {
         ts_lexer__advance_slow(self, true);
       }
-      ts_lexer__set_column_data(self, 0);
+      if (self->track_columns) ts_lexer__set_column_data(self, 0);
     }
   }
-  self->start_column_checkpoint = ts_lexer__column_checkpoint(self);
-  self->end_column_checkpoint.position = LENGTH_UNDEFINED;
+  if (self->track_columns) {
+    self->start_column_checkpoint = ts_lexer__column_checkpoint(self);
+    self->end_column_checkpoint.position = LENGTH_UNDEFINED;
+  }
 }
 
 void ts_lexer_finish(Lexer *self) {
@@ -833,36 +831,50 @@ void ts_lexer_mark_end(Lexer *self) {
   ts_lexer__mark_end(&self->data);
 }
 
+static bool ts_lexer__ranges_are_valid(const TSRange *ranges, uint32_t count) {
+  uint32_t previous_byte = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (ranges[i].start_byte < previous_byte || ranges[i].end_byte < ranges[i].start_byte) {
+      return false;
+    }
+    previous_byte = ranges[i].end_byte;
+  }
+  return true;
+}
+
 bool ts_lexer_set_included_ranges(
   Lexer *self,
   const TSRange *ranges,
   uint32_t count
 ) {
   if (count == 0 || !ranges) {
-    ranges = &DEFAULT_RANGE;
+    ranges = &TS_DEFAULT_RANGE;
     count = 1;
-  } else {
-    uint32_t previous_byte = 0;
-    for (unsigned i = 0; i < count; i++) {
-      const TSRange *range = &ranges[i];
-      if (
-        range->start_byte < previous_byte ||
-        range->end_byte < range->start_byte
-      ) return false;
-      previous_byte = range->end_byte;
-    }
+  } else if (!ts_lexer__ranges_are_valid(ranges, count)) {
+    return false;
   }
 
-  size_t size = count * sizeof(TSRange);
-  self->included_ranges = ts_realloc(self->included_ranges, size);
-  memcpy(self->included_ranges, ranges, size);
+  if (count == 1 && (ranges == &TS_DEFAULT_RANGE || memcmp(ranges, &TS_DEFAULT_RANGE, sizeof(TSRange)) == 0)) {
+    if (self->included_ranges != &TS_DEFAULT_RANGE) {
+      ts_free((void *)self->included_ranges);
+      self->included_ranges = &TS_DEFAULT_RANGE;
+    }
+  } else {
+    size_t size = count * sizeof(TSRange);
+    TSRange *allocated = self->included_ranges == &TS_DEFAULT_RANGE
+      ? ts_malloc(size)
+      : ts_realloc((void *)self->included_ranges, size);
+    memcpy(allocated, ranges, size);
+    self->included_ranges = allocated;
+  }
   self->included_range_count = count;
+  self->track_columns = self->included_ranges != &TS_DEFAULT_RANGE;
   ts_lexer__clear_column_checkpoints(self);
   ts_lexer_goto(self, self->current_position);
   return true;
 }
 
-TSRange *ts_lexer_included_ranges(const Lexer *self, uint32_t *count) {
+const TSRange *ts_lexer_included_ranges(const Lexer *self, uint32_t *count) {
   *count = self->included_range_count;
   return self->included_ranges;
 }
