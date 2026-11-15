@@ -786,27 +786,33 @@ static LookaheadToken ts_parser__finish_lexed_token(
 
   bool is_keyword = false;
   bool is_keyword_exact = false;
-  TSSymbol symbol = self->lexer.data.result_symbol;
+  TSSymbol result_symbol = self->lexer.data.result_symbol;
   bool has_decode_error =
     !st->found_external_token &&
     self->lexer.token_has_decode_error &&
-    symbol != ts_builtin_sym_end;
+    result_symbol != ts_builtin_sym_end;
   Length padding = length_sub(self->lexer.token_start_position, st->start_position);
   Length size = length_sub(self->lexer.token_end_position, self->lexer.token_start_position);
 
   if (st->found_external_token) {
-    symbol = self->language->external_scanner.symbol_map[symbol];
-  } else if (!has_decode_error && symbol == self->language->keyword_capture_token && symbol != 0) {
-    if (!ts_parser__resolve_keyword(self, version, parse_state, &symbol, &is_keyword, &is_keyword_exact)) {
+    result_symbol = self->language->external_scanner.symbol_map[result_symbol];
+  } else if (
+    !has_decode_error &&
+    result_symbol == self->language->keyword_capture_token &&
+    result_symbol != 0
+  ) {
+    if (!ts_parser__resolve_keyword(
+      self, version, parse_state, &result_symbol, &is_keyword, &is_keyword_exact
+    )) {
       return NULL_LOOKAHEAD;
     }
   }
 
   result.subtree = has_decode_error
-    ? ts_parser__new_decode_error_token(&self->tree_pool, symbol, padding, size, self->language)
+    ? ts_parser__new_decode_error_token(&self->tree_pool, result_symbol, padding, size, self->language)
     : ts_subtree_new_leaf(
         &self->tree_pool,
-        symbol,
+        result_symbol,
         padding,
         size,
         st->found_external_token,

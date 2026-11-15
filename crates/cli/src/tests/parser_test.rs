@@ -8407,8 +8407,11 @@ fn assert_tree_navigation_consistent(root: tree_sitter::Node<'_>) {
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
         assert_eq!(children.len() as u32, node.child_count());
-        let named_from_children: Vec<_> =
-            children.iter().copied().filter(|c| c.is_named()).collect();
+        let named_from_children: Vec<_> = children
+            .iter()
+            .copied()
+            .filter(tree_sitter::Node::is_named)
+            .collect();
         assert_eq!(named_from_children.len(), node.named_child_count());
         for (i, &expected) in named_from_children.iter().enumerate() {
             let actual = node.named_child(i as u32).unwrap();
