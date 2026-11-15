@@ -577,7 +577,14 @@ function buildSymbolsByType(typesBySymbol: (string | undefined)[]): Map<string, 
   }
   // `symbols_contain` in tree-sitter.c expects ascending symbols, and
   // ts_builtin_sym_error is -1, which is UINT16_MAX.
-  grouped.set('ERROR', [65535]);
+  const errorSymbols = grouped.get('ERROR');
+  if (errorSymbols) {
+    if (errorSymbols[errorSymbols.length - 1] !== 65535) {
+      errorSymbols.push(65535);
+    }
+  } else {
+    grouped.set('ERROR', [65535]);
+  }
   const result = new Map<string, Uint32Array>();
   for (const [type, list] of grouped) {
     result.set(type, Uint32Array.from(list));
