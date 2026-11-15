@@ -18,7 +18,6 @@ pub enum ParseAction {
     Accept,
     Shift {
         state: ParseStateId,
-        is_repetition: bool,
     },
     ShiftExtra,
     Recover,
@@ -262,6 +261,11 @@ impl<V> ParseStateEntries<V> {
         self.0.len()
     }
 
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Symbol, &V)> {
         self.0.iter().map(|(symbol, value)| (symbol, value))
     }
@@ -498,16 +502,10 @@ mod tests {
         let mut table = ParseTable::default();
         table
             .action_lists
-            .push(&ActionList::One(ParseAction::Shift {
-                state: 0,
-                is_repetition: false,
-            }));
+            .push(&ActionList::One(ParseAction::Shift { state: 0 }));
         table
             .action_lists
-            .push(&ActionList::One(ParseAction::Shift {
-                state: 1,
-                is_repetition: false,
-            }));
+            .push(&ActionList::One(ParseAction::Shift { state: 1 }));
         let mut state = ParseState::default();
         state
             .terminal_entries

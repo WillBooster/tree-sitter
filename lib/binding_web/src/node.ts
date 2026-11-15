@@ -5,7 +5,8 @@ import { Language } from './language';
 import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodeArray } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
 
-const singleTypeSymbolsCache = new WeakMap<Language, Map<string, Uint32Array>>();
+const EMPTY_SYMBOLS = new Uint32Array(0);
+const symbolsByTypeCache = new WeakMap<Language, Map<string, Uint32Array>>();
 
 /** A single node within a syntax {@link Tree}. */
 export class Node {
@@ -541,41 +542,57 @@ export class Node {
 }
 
 function symbolsForTypes(language: Language, types: string | string[]): Uint32Array {
+  const byType = symbolsByTypeForLanguage(language);
   if (typeof types === 'string') {
-    return symbolsForSingleType(language, types);
+    return byType.get(types) ?? EMPTY_SYMBOLS;
   }
+  if (types.length === 0) return EMPTY_SYMBOLS;
   if (types.length === 1) {
-    return symbolsForSingleType(language, types[0]);
+    return byType.get(types[0]) ?? EMPTY_SYMBOLS;
   }
-  return collectSymbolsForTypes(language, types);
+  return collectSymbolsForTypes(byType, types);
 }
 
-function symbolsForSingleType(language: Language, type: string): Uint32Array {
-  let byType = singleTypeSymbolsCache.get(language);
-  if (!byType) {
-    byType = new Map();
-    singleTypeSymbolsCache.set(language, byType);
-  }
-  let cached = byType.get(type);
+function symbolsByTypeForLanguage(language: Language): Map<string, Uint32Array> {
+  let cached = symbolsByTypeCache.get(language);
   if (!cached) {
-    cached = collectSymbolsForTypes(language, [type]);
-    byType.set(type, cached);
+    cached = buildSymbolsByType(language.types);
+    symbolsByTypeCache.set(language, cached);
   }
   return cached;
 }
 
-function collectSymbolsForTypes(language: Language, types: string[]): Uint32Array {
-  const symbols: number[] = [];
-  const typesBySymbol = language.types;
+function buildSymbolsByType(typesBySymbol: (string | undefined)[]): Map<string, Uint32Array> {
+  const grouped = new Map<string, number[]>();
   for (let i = 0, n = typesBySymbol.length; i < n; i++) {
-    if (types.includes(typesBySymbol[i])) {
-      symbols.push(i);
+    const type = typesBySymbol[i];
+    if (type !== undefined) {
+      let list = grouped.get(type);
+      if (!list) {
+        list = [];
+        grouped.set(type, list);
+      }
+      list.push(i);
     }
   }
   // `symbols_contain` in tree-sitter.c expects ascending symbols, and
-  // ts_builtin_sym_error is -1, which is UINT16_MAX, so it goes last.
-  if (types.includes('ERROR')) {
-    symbols.push(65535);
+  // ts_builtin_sym_error is -1, which is UINT16_MAX.
+  grouped.set('ERROR', [65535]);
+  const result = new Map<string, Uint32Array>();
+  for (const [type, list] of grouped) {
+    result.set(type, Uint32Array.from(list));
   }
-  return Uint32Array.from(symbols);
+  return result;
+}
+
+function collectSymbolsForTypes(byType: Map<string, Uint32Array>, types: string[]): Uint32Array {
+  const symbols: number[] = [];
+  for (const type of new Set(types)) {
+    const matches = byType.get(type);
+    if (matches) {
+      for (const symbol of matches) symbols.push(symbol);
+    }
+  }
+  if (symbols.length === 0) return EMPTY_SYMBOLS;
+  return Uint32Array.from(symbols).sort();
 }

@@ -924,7 +924,7 @@ static size_t ts_subtree__write_to_string(
         const char *child_field_name = frame->is_visible ? NULL : frame->field_name;
         for (const TSFieldMapEntry *map = frame->field_map; map < frame->field_map_end; map++) {
           if (!map->inherited && map->child_index == frame->structural_child_index) {
-            child_field_name = language->field_names[map->field_id];
+            child_field_name = ts_language_field_name_for_id(language, map->field_id);
             break;
           }
         }

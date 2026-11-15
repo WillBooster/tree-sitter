@@ -20,6 +20,7 @@ mod bitvec;
 mod build_tables;
 mod dedup;
 mod grammars;
+mod lex_table_pack;
 mod nfa;
 mod node_types;
 pub mod parse_grammar;
@@ -61,7 +62,7 @@ struct GeneratedParser {
     node_types_json: String,
 }
 
-const LANGUAGE_VERSION: usize = 0x5742_000c;
+const LANGUAGE_VERSION: usize = 0x5742_000d;
 
 pub const ALLOC_HEADER: &str = include_str!("templates/alloc.h");
 pub const ARRAY_HEADER: &str = include_str!("templates/array.h");

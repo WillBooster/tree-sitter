@@ -2619,7 +2619,6 @@ version = "0.27.0"
 dependencies = [
  "bindgen 0.73.2",
  "cc",
- "serde_json",
  "tree-sitter-language",
  "wasmtime-c-api-impl",
 ]

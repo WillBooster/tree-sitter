@@ -878,7 +878,7 @@ static inline const char *ts_node__field_name_from_language(TSNode self, uint32_
     );
     for (; field_map != field_map_end; field_map++) {
       if (!field_map->inherited && field_map->child_index == structural_child_index) {
-        return self.tree->language->field_names[field_map->field_id];
+        return ts_language_field_name_for_id(self.tree->language, field_map->field_id);
       }
     }
     return NULL;

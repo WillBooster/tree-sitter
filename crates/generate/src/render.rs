@@ -1,7 +1,7 @@
 use std::{
     cmp,
     collections::{BTreeMap, BTreeSet},
-    fmt::Write,
+    fmt::{Display, Write},
     mem::swap,
 };
 
@@ -17,31 +17,31 @@ use super::{
     LANGUAGE_VERSION,
     build_tables::Tables,
     grammars::{LexicalGrammar, SyntaxGrammar, VariableType},
-    nfa::{CharacterSet, NfaCursor, NfaState},
+    lex_table_pack::{can_use_direct_keyword_lookup, pack_lex_table},
     node_types::ChildType,
     rules::Alias,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::{StrId, StrPool},
-    tables::{AdvanceAction, GotoAction, LexState, LexTable, ParseAction, ParseTable},
+    tables::{GotoAction, LexTable, ParseAction, ParseTable},
 };
 
 const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 /// The largest count that fits in the 7 bits of a packed action list header.
 const MAX_ACTION_LIST_LENGTH: usize = 127;
+const MAX_ACTION_LIST_OFFSET: usize = 0x8000;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
+const PARSE_TABLE_REUSABLE_FLAG: u32 = 0x8000;
 /// Marks a map entry that refers to a descriptor, which `add_descriptor` lays out.
 const SMALL_STATE_DESCRIPTOR_FLAG: usize = 0x2000_0000;
 /// Marks the diff entry of a descriptor that ends with a base row. Row entries never set it otherwise.
 const SMALL_STATE_BASE_FLAG: usize = SMALL_STATE_DESCRIPTOR_FLAG;
 /// The words of a descriptor with a base row.
 const BASED_DESCRIPTOR_WORDS: usize = 6;
+const UNBASED_DESCRIPTOR_WORDS: usize = 4;
 const SMALL_STATE_BITMAP_FLAG: usize = 0x4000_0000;
+const SMALL_STATE_DEFAULT_GOTO_FLAG: usize = SMALL_STATE_DESCRIPTOR_FLAG | SMALL_STATE_BITMAP_FLAG;
 const SMALL_STATE_PAIR_FLAG: usize = 0x8000_0000;
 const SMALL_STATE_SET_FLAG: usize = SMALL_STATE_BITMAP_FLAG | SMALL_STATE_PAIR_FLAG;
-const MAX_SINGLE_LEXER_STATES: usize = 4096;
-const MAX_SINGLE_LEXER_BYTES: usize = 512 * 1024;
-const LEXER_CHUNK_SIZE: usize = 256;
-const KEYWORD_SKIP_FLAG: usize = 1 << 15;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +79,8 @@ pub enum RenderError {
     ParseTable(usize),
     #[error("Parse action list length {0} exceeds maximum value of {max}", max=MAX_ACTION_LIST_LENGTH)]
     ActionListLength(usize),
+    #[error("Lexer table error: {0}")]
+    LexTable(String),
 }
 
 #[clippy::format_args]
@@ -153,16 +155,13 @@ impl RowBases {
 #[derive(Default)]
 struct SmallTables {
     next_index: usize,
-    row_offsets: FxHashMap<(bool, Vec<u16>), usize>,
+    rows: Vec<SmallParseRow>,
+    row_offsets: FxHashMap<Vec<(usize, u32)>, usize>,
     symbol_sets: FxHashMap<Vec<u16>, usize>,
+    bitmap_headers: FxHashMap<Vec<u16>, usize>,
     descriptors: FxHashMap<Vec<u16>, usize>,
     /// Terminal rows, then goto rows.
     bases: [RowBases; 2],
-}
-
-struct SharedParseRows {
-    offset: usize,
-    rows: Vec<SmallParseRow>,
 }
 
 #[derive(Default)]
@@ -173,21 +172,16 @@ struct Generator {
     parse_table: ParseTable,
     main_lex_table: LexTable,
     keyword_lex_table: LexTable,
-    large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
-    large_character_set_info: Vec<LargeCharacterSetInfo>,
     large_state_count: usize,
     token_count: usize,
+    string_data_size: usize,
     /// The most common goto value of each nonterminal, by its position after the tokens.
     goto_defaults: Vec<u32>,
     alias_sequence_count: usize,
     lex_mode_count: usize,
     uses_reserved_word_slices: bool,
     external_state_stride: usize,
-    uses_keyword_table: bool,
     profile: Option<GenerationProfile>,
-    advance_maps: IndexMap<Vec<(char, u32)>, usize, FxBuildHasher>,
-    ascii_sets: IndexMap<[u32; 4], usize, FxBuildHasher>,
-    uses_lex_repeat: bool,
     syntax_grammar: SyntaxGrammar,
     lexical_grammar: LexicalGrammar,
     default_aliases: AliasMap,
@@ -208,18 +202,6 @@ struct Generator {
     str_pool: StrPool,
 }
 
-struct LargeCharacterSetInfo {
-    constant_name: String,
-    is_used: bool,
-    unicode_pages: Option<UnicodePages>,
-}
-
-struct UnicodePages {
-    first_page: u32,
-    page_ids: Vec<u16>,
-    blocks: Vec<[u32; 8]>,
-}
-
 #[derive(Clone, Copy, Default)]
 struct Metadata {
     major: u8,
@@ -236,13 +218,14 @@ impl Generator {
         self.add_pragmas();
         self.add_stats();
         self.add_symbol_enum();
-        self.add_symbol_names_list();
+        if !self.field_names.is_empty() {
+            self.add_field_name_enum();
+        }
+        self.add_string_tables();
         self.add_unique_symbol_map();
         self.add_symbol_metadata_list();
 
         if !self.field_names.is_empty() {
-            self.add_field_name_enum();
-            self.add_field_name_names_list();
             self.add_field_sequences();
         }
 
@@ -254,7 +237,7 @@ impl Generator {
             self.add_supertype_map();
         }
 
-        self.add_lex_section();
+        self.add_lex_section()?;
         self.add_lex_modes();
 
         if self.reserved_word_sets.len() > 1 {
@@ -274,49 +257,35 @@ impl Generator {
         Ok(self.buffer)
     }
 
-    fn add_lex_section(&mut self) {
-        let buffer_offset_before_lex_functions = self.buffer.len();
+    fn add_lex_section(&mut self) -> RenderResult<()> {
+        let numeric_symbol_ids = self
+            .symbol_order
+            .iter()
+            .map(|(&symbol, &order)| (symbol, order as u16))
+            .collect::<FxHashMap<_, _>>();
 
         let mut main_lex_table = LexTable::default();
         swap(&mut main_lex_table, &mut self.main_lex_table);
-        self.add_lex_function("ts_lex", &main_lex_table);
+        let packed_main = pack_lex_table(&main_lex_table, &numeric_symbol_ids, false)?;
         drop(main_lex_table);
+        self.add_integer_array("static const uint16_t ts_lex_table[]", &packed_main);
 
         if self.syntax_grammar.word_token.is_some() {
             let mut keyword_lex_table = LexTable::default();
             swap(&mut keyword_lex_table, &mut self.keyword_lex_table);
-            if self.can_use_keyword_table(&keyword_lex_table) {
-                self.uses_keyword_table = true;
-                self.add_keyword_table(&keyword_lex_table);
-            } else {
-                self.add_lex_function("ts_lex_keywords", &keyword_lex_table);
-            }
+            let allow_direct = can_use_direct_keyword_lookup(
+                &self.syntax_grammar,
+                &self.lexical_grammar,
+                &keyword_lex_table,
+            );
+            let packed_kw = pack_lex_table(&keyword_lex_table, &numeric_symbol_ids, allow_direct)?;
+            self.add_integer_array("static const uint16_t ts_keyword_lex_table[]", &packed_kw);
         }
-
-        let lex_functions = self.buffer[buffer_offset_before_lex_functions..].to_string();
-        self.buffer.truncate(buffer_offset_before_lex_functions);
-        self.add_lexer_helpers();
-        for ix in 0..self.large_character_sets.len() {
-            self.add_character_set(ix);
-        }
-        self.buffer.push_str(&lex_functions);
+        Ok(())
     }
 
-    fn can_use_keyword_table(&self, keyword_lex_table: &LexTable) -> bool {
-        !self.keyword_separators_overlap_word(keyword_lex_table)
-            && keyword_lex_table.states.len() >= 64
-            && keyword_lex_table.states.len() < KEYWORD_SKIP_FLAG
-            && keyword_lex_table.states.iter().all(|state| {
-                state.eof_action.is_none()
-                    && state.advance_actions.iter().all(|(set, action)| {
-                        set.ranges().all(|range| {
-                            *range.start() > '\0'
-                                && (!action.in_main_token || range.end().is_ascii())
-                        })
-                    })
-            })
-    }
-
+    // code-gauge-allow functionCognitiveComplexity 22 -- validates profile invariants and permutes parse and lex states together
+    // code-gauge-allow functionNcss 52 -- validates profile invariants and permutes parse and lex states together
     fn apply_profile(&mut self) -> RenderResult<()> {
         let Some(profile) = &mut self.profile else {
             return Ok(());
@@ -415,203 +384,6 @@ impl Generator {
         Ok(())
     }
 
-    fn add_keyword_table(&mut self, table: &LexTable) {
-        add_line!(self, "#define TS_KEYWORD_SKIP {KEYWORD_SKIP_FLAG}u");
-        add_line!(
-            self,
-            "#define TS_KEYWORD_STATE_MASK {}u",
-            KEYWORD_SKIP_FLAG - 1
-        );
-        add_line!(
-            self,
-            "typedef struct {{ uint8_t first, last; uint16_t state; }} TSKeywordTransition;"
-        );
-        add_line!(
-            self,
-            "static const TSKeywordTransition ts_keyword_transitions[] = {{"
-        );
-        indent!(self);
-        let mut transitions = Vec::new();
-        let mut rows = Vec::new();
-        for state in &table.states {
-            let index = transitions.len();
-            let mut ranges = Vec::new();
-            for (set, action) in &state.advance_actions {
-                let destination = action.state
-                    | if action.in_main_token {
-                        0
-                    } else {
-                        KEYWORD_SKIP_FLAG as u32
-                    };
-                for range in set.ranges() {
-                    let first = *range.start() as u32;
-                    let last = *range.end() as u32;
-                    if first < 128 {
-                        ranges.push((first as u8, last.min(127) as u8, destination));
-                    }
-                }
-            }
-            ranges.sort_unstable();
-            rows.push((index, state.accept_action));
-            transitions.extend(ranges);
-        }
-        let transition_count = transitions.len();
-        let mut first_byte = [u16::MAX; 256];
-        for &(first, last, state) in &transitions[rows[0].0..rows[1].0] {
-            first_byte[usize::from(first)..=usize::from(last)].fill(state as u16);
-        }
-        for (first, last, state) in transitions {
-            add_line!(self, "{{ {first}, {last}, {state} }},");
-        }
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(
-            self,
-            "static const uint16_t ts_keyword_first_byte[256] = {{"
-        );
-        indent!(self);
-        for values in first_byte.chunks(16) {
-            add_line!(
-                self,
-                "{},",
-                values
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        dedent!(self);
-        add_line!(self, "}};");
-        let index_width = if u16::try_from(transition_count).is_ok() {
-            16
-        } else {
-            32
-        };
-        add_line!(
-            self,
-            "typedef struct {{ uint{index_width}_t index; TSSymbol accept; }} TSKeywordState;"
-        );
-        add_line!(self, "static const TSKeywordState ts_keyword_states[] = {{");
-        indent!(self);
-        for (index, accept) in rows {
-            let accept = accept.map_or_else(
-                || "0".to_string(),
-                |symbol| self.symbol_ids[&symbol].clone(),
-            );
-            add_line!(self, "{{ {index}, {accept} }},");
-        }
-        add_line!(self, "{{ {transition_count}, 0 }},");
-        dedent!(self);
-        add_line!(self, "}};");
-        self.buffer
-            .push_str(include_str!("templates/keyword_table.h"));
-    }
-
-    fn keyword_separators_overlap_word(&self, table: &LexTable) -> bool {
-        let has_unicode_separator = table.states.iter().any(|state| {
-            state.advance_actions.iter().any(|(set, action)| {
-                !action.in_main_token && set.ranges().any(|range| !range.end().is_ascii())
-            })
-        });
-        if !has_unicode_separator {
-            return false;
-        }
-        let word = self.syntax_grammar.word_token.unwrap();
-        let nfa = &self.lexical_grammar.nfa;
-        let cursor = NfaCursor::new(
-            nfa,
-            vec![self.lexical_grammar.variables[word.index as usize].start_state],
-        );
-        cursor.state_ids.iter().any(|&token_state| {
-            let NfaState::Advance {
-                chars,
-                is_sep: false,
-                ..
-            } = &nfa.states[token_state as usize]
-            else {
-                return false;
-            };
-            table.states.iter().any(|state| {
-                state.advance_actions.iter().any(|(separators, action)| {
-                    !action.in_main_token && chars.does_intersect(separators)
-                })
-            })
-        })
-    }
-
-    fn add_lexer_helpers(&mut self) {
-        if self
-            .large_character_set_info
-            .iter()
-            .any(|info| info.is_used && info.unicode_pages.is_none())
-        {
-            self.buffer
-                .push_str(include_str!("templates/character_set.h"));
-        }
-        for width in [8, 16] {
-            if self.large_character_set_info.iter().any(|info| {
-                info.is_used
-                    && info.unicode_pages.as_ref().is_some_and(|pages| {
-                        width == if pages.blocks.len() <= 256 { 8 } else { 16 }
-                    })
-            }) {
-                self.buffer.push_str(
-                    &include_str!("templates/character_set_pages.h")
-                        .replace("WIDTH", &width.to_string()),
-                );
-            }
-        }
-        let advance_maps = std::mem::take(&mut self.advance_maps);
-        for (map, &id) in &advance_maps {
-            let (first, span, dense) = Self::advance_map_layout(map);
-            add_line!(self, "static const uint16_t ts_lex_advance_map_{id}[] = {{");
-            indent!(self);
-            if dense {
-                let mut transitions = map.iter().peekable();
-                for character in first..first + span {
-                    if let Some(&(next_character, state)) = transitions.peek()
-                        && *next_character as u32 == character
-                    {
-                        add_line!(self, "{state},");
-                        transitions.next();
-                    } else {
-                        add_line!(self, "UINT16_MAX,");
-                    }
-                }
-            } else {
-                for &(character, state) in map {
-                    add_whitespace!(self);
-                    self.add_character(character);
-                    add!(self, ", {state},\n");
-                }
-            }
-            dedent!(self);
-            add_line!(self, "}};\n");
-        }
-        if !advance_maps.is_empty() {
-            self.buffer
-                .push_str(include_str!("templates/advance_map.h"));
-        }
-        let ascii_sets = std::mem::take(&mut self.ascii_sets);
-        for (set, &id) in &ascii_sets {
-            add_line!(
-                self,
-                "static const uint32_t ts_lex_ascii_set_{id}[] = {{0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x}}};",
-                set[0],
-                set[1],
-                set[2],
-                set[3]
-            );
-        }
-        if !ascii_sets.is_empty() {
-            self.buffer.push_str(include_str!("templates/ascii_set.h"));
-        }
-        if self.uses_lex_repeat {
-            self.buffer.push_str(include_str!("templates/lex_repeat.h"));
-        }
-    }
-
     // code-gauge-allow functionCognitiveComplexity 25 -- derives every per-symbol table the renderer reads, in dependency order
     // code-gauge-allow functionNcss 59 -- derives every per-symbol table the renderer reads, in dependency order
     fn init(&mut self) {
@@ -676,22 +448,6 @@ impl Generator {
                 .then_with(|| a.is_named.cmp(&b.is_named))
         });
 
-        let mut character_set_counts = FxHashMap::default();
-        for (symbol, characters) in &self.large_character_sets {
-            let count = character_set_counts.entry(*symbol).or_insert(0);
-            *count += 1;
-            let constant_name = if let Some(symbol) = symbol {
-                format!("ts_lex_{}_character_set_{}", self.symbol_ids[symbol], count)
-            } else {
-                format!("ts_lex_extras_character_set_{count}")
-            };
-            self.large_character_set_info.push(LargeCharacterSetInfo {
-                constant_name,
-                is_used: false,
-                unicode_pages: Self::unicode_pages(characters),
-            });
-        }
-
         let empty_reserved_words = TokenSet::new();
         let mut reserved_word_set_ids = FxHashMap::default();
         reserved_word_set_ids.insert(&empty_reserved_words, 0);
@@ -753,6 +509,7 @@ impl Generator {
             .count()
     }
 
+    // code-gauge-allow functionNcss 31 -- computes canonical public symbol mappings across aliases, supertypes, and terminals
     fn init_symbol_map(&mut self) {
         let mut first_symbol_by_metadata = FxHashMap::default();
         let mut first_unaliased_symbol_by_metadata = FxHashMap::default();
@@ -826,79 +583,23 @@ impl Generator {
             .collect()
     }
 
-    fn is_goto_default(&self, symbol: Symbol, value: u32) -> bool {
-        self.goto_defaults[self.symbol_order[&symbol] - self.token_count] == value
-    }
-
     fn count_large_states(&self) -> usize {
         if let Some(profile) = &self.profile {
-            let total = profile
-                .parse_states
-                .iter()
-                .map(|&n| u128::from(n))
-                .sum::<u128>();
-            let mut count = 2;
-            let mut covered =
-                u128::from(profile.parse_states[0]) + u128::from(profile.parse_states[1]);
-            while count < profile.max_dense_states && covered * 10 < total * 9 {
-                covered += u128::from(profile.parse_states[count]);
-                count += 1;
-            }
-            return count;
+            return Self::count_profiled_large_states(profile);
         }
         let minimum = self.parse_table.states.len().min(2);
-        let dense_bytes = self.parse_table.symbols.len() * size_of::<u16>();
-        let mut groups = FxHashMap::default();
-        let mut row_ids = FxHashMap::default();
-        let mut rows = Vec::new();
-        let mut row_counts = Vec::new();
-        let mut row_bytes = Vec::new();
-        for (i, state) in self.parse_table.states.iter().enumerate().skip(minimum) {
-            let terminal_row = state
-                .terminal_entries
-                .iter()
-                .map(|(&symbol, id)| (symbol, (id.index() as u32) * 2 + u32::from(id.reusable())));
-            let goto_row = state
-                .nonterminal_entries
-                .iter()
-                .map(|(&symbol, action)| (symbol, self.small_goto_value(*action, i)))
-                .filter(|&(symbol, value)| !self.is_goto_default(symbol, value));
-            let state_rows: [(bool, Vec<_>); 2] =
-                [(false, terminal_row.collect()), (true, goto_row.collect())];
-            for (is_goto, mut row) in state_rows {
-                row.sort_unstable_by_key(|&(symbol, _)| symbol);
-                let next_id = row_counts.len();
-                let id = *row_ids
-                    .entry((is_goto, row))
-                    .or_insert_with_key(|(_, row)| {
-                        row_counts.push(0usize);
-                        groups.clear();
-                        for &(_, value) in row {
-                            *groups.entry(value).or_insert(0usize) += 1;
-                        }
-                        let (_, words) =
-                            self.small_state_encoding(groups.values().copied(), false, is_goto);
-                        row_bytes.push(words * size_of::<u16>());
-                        next_id
-                    });
-                row_counts[id] += 1;
-                rows.push(id);
-            }
-        }
-        // Each small state has two map entries; goto descriptors and sets are not counted.
-        let map_bytes = 2 * size_of::<u32>();
+        let dense_bytes = self.token_count * size_of::<u16>();
+        let (rows, mut row_counts, row_bytes) = self.unprofiled_terminal_rows(minimum);
+        let map_bytes = size_of::<u32>();
         let mut bytes =
-            minimum * dense_bytes + rows.len() / 2 * map_bytes + row_bytes.iter().sum::<usize>();
+            minimum * dense_bytes + rows.len() * map_bytes + row_bytes.iter().sum::<usize>();
         let mut best_bytes = bytes;
         let mut count = minimum;
-        for (i, ids) in rows.chunks(2).enumerate() {
-            bytes += dense_bytes;
-            bytes -= map_bytes;
-            for &id in ids {
-                row_counts[id] -= 1;
-                if row_counts[id] == 0 {
-                    bytes -= row_bytes[id];
-                }
+        for (i, &id) in rows.iter().enumerate() {
+            bytes = bytes + dense_bytes - map_bytes;
+            row_counts[id] -= 1;
+            if row_counts[id] == 0 {
+                bytes -= row_bytes[id];
             }
             if bytes <= best_bytes {
                 best_bytes = bytes;
@@ -906,6 +607,61 @@ impl Generator {
             }
         }
         count
+    }
+
+    fn count_profiled_large_states(profile: &GenerationProfile) -> usize {
+        let total = profile
+            .parse_states
+            .iter()
+            .map(|&n| u128::from(n))
+            .sum::<u128>();
+        let mut count = 2;
+        let mut covered = u128::from(profile.parse_states[0]) + u128::from(profile.parse_states[1]);
+        while count < profile.max_dense_states && covered * 10 < total * 9 {
+            covered += u128::from(profile.parse_states[count]);
+            count += 1;
+        }
+        count
+    }
+
+    fn unprofiled_terminal_rows(&self, minimum: usize) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+        let mut groups = FxHashMap::default();
+        let mut row_ids = FxHashMap::default();
+        let mut rows = Vec::new();
+        let mut row_counts = Vec::new();
+        let mut row_bytes = Vec::new();
+        for state in self.parse_table.states.iter().skip(minimum) {
+            let mut row = state
+                .terminal_entries
+                .iter()
+                .map(|(&symbol, id)| {
+                    (
+                        self.symbol_order[&symbol],
+                        (id.index() as u32) * 2 + u32::from(id.reusable()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            row.sort_unstable_by_key(|&(order, _)| order);
+            let next_id = row_counts.len();
+            let id = *row_ids.entry(row).or_insert_with_key(|row| {
+                row_counts.push(0usize);
+                groups.clear();
+                for &(_, value) in row {
+                    *groups.entry(value).or_insert(0usize) += 1;
+                }
+                let span_blocks = row
+                    .first()
+                    .zip(row.last())
+                    .map_or(0, |(&(first, _), &(last, _))| last / 64 - first / 64 + 1);
+                let (_, words) =
+                    Self::small_state_encoding(groups.values().copied(), span_blocks, false);
+                row_bytes.push(words * size_of::<u16>());
+                next_id
+            });
+            row_counts[id] += 1;
+            rows.push(id);
+        }
+        (rows, row_counts, row_bytes)
     }
 
     fn add_header(&mut self) {
@@ -1003,54 +759,89 @@ impl Generator {
         add_line!(self, "");
     }
 
-    fn add_symbol_names_list(&mut self) {
-        add_line!(self, "static const char * const ts_symbol_names[] = {{");
-        indent!(self);
-        for symbol in &self.parse_table.symbols {
-            let name = self.sanitize_string(
-                self.default_aliases
-                    .get(symbol)
-                    .map_or_else(|| self.metadata_for_symbol(*symbol).0, |alias| alias.value),
-            );
-            add_line!(self, "[{}] = \"{name}\",", self.symbol_ids[symbol]);
+    fn add_string_tables(&mut self) {
+        let (string_data, symbol_offsets, field_offsets) = self.build_string_tables();
+        self.string_data_size = string_data.len();
+        self.add_integer_array("static const uint8_t ts_string_data[]", &string_data);
+        self.add_designated_array("uint32_t", "ts_symbol_name_offsets", symbol_offsets);
+
+        if !field_offsets.is_empty() {
+            let entries = field_offsets
+                .into_iter()
+                .enumerate()
+                .map(|(ix, offset)| {
+                    let name = self.str_pool.resolve(self.field_names[ix]);
+                    (format!("{} - 1", Self::field_id(name)), offset)
+                })
+                .collect::<Vec<_>>();
+            self.add_designated_array("uint32_t", "ts_field_name_offsets", entries);
         }
-        for alias in &self.unique_aliases {
-            add_line!(
-                self,
-                "[{}] = \"{}\",",
-                self.alias_ids[alias],
-                self.sanitize_string(alias.value)
-            );
+    }
+
+    fn add_designated_array<K: Display, V: Display>(
+        &mut self,
+        c_type: &str,
+        name: &str,
+        entries: impl IntoIterator<Item = (K, V)>,
+    ) {
+        add_line!(self, "static const {c_type} {name}[] = {{");
+        indent!(self);
+        for (key, value) in entries {
+            add_line!(self, "[{key}] = {value},");
         }
         dedent!(self);
         add_line!(self, "}};");
         add_line!(self, "");
     }
 
+    fn build_string_tables(&self) -> (Vec<u8>, Vec<(String, u32)>, Vec<u32>) {
+        let mut string_data = Vec::<u8>::new();
+        let mut offsets_by_str = FxHashMap::<Vec<u8>, u32>::default();
+        let mut intern = |raw: &str| -> u32 {
+            let trimmed = raw.as_bytes().split(|&b| b == 0).next().unwrap_or(&[]);
+            let mut key = Vec::with_capacity(trimmed.len() + 1);
+            key.extend_from_slice(trimmed);
+            key.push(0);
+            if let Some(&offset) = offsets_by_str.get(&key) {
+                return offset;
+            }
+            let offset = string_data.len() as u32;
+            string_data.extend_from_slice(&key);
+            offsets_by_str.insert(key, offset);
+            offset
+        };
+        let symbol_offsets = self
+            .parse_table
+            .symbols
+            .iter()
+            .map(|symbol| {
+                let name_id = self
+                    .default_aliases
+                    .get(symbol)
+                    .map_or_else(|| self.metadata_for_symbol(*symbol).0, |alias| alias.value);
+                (self.symbol_ids[symbol].clone(), name_id)
+            })
+            .chain(
+                self.unique_aliases
+                    .iter()
+                    .map(|alias| (self.alias_ids[alias].clone(), alias.value)),
+            )
+            .map(|(id, name_id)| (id, intern(self.str_pool.resolve(name_id))))
+            .collect::<Vec<_>>();
+        let field_offsets = self
+            .field_names
+            .iter()
+            .map(|&field| intern(self.str_pool.resolve(field)))
+            .collect::<Vec<_>>();
+        (string_data, symbol_offsets, field_offsets)
+    }
+
     fn add_unique_symbol_map(&mut self) {
-        add_line!(self, "static const TSSymbol ts_symbol_map[] = {{");
-        indent!(self);
-        for symbol in &self.parse_table.symbols {
-            add_line!(
-                self,
-                "[{}] = {},",
-                self.symbol_ids[symbol],
-                self.symbol_ids[&self.symbol_map[symbol]],
-            );
-        }
-
-        for alias in &self.unique_aliases {
-            add_line!(
-                self,
-                "[{}] = {},",
-                self.alias_ids[alias],
-                self.alias_ids[alias],
-            );
-        }
-
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
+        let entries = self.symbol_and_alias_entries(
+            |symbol| self.symbol_ids[&self.symbol_map[&symbol]].clone(),
+            |alias| self.alias_ids[alias].clone(),
+        );
+        self.add_designated_array("TSSymbol", "ts_symbol_map", entries);
     }
 
     fn add_field_name_enum(&mut self) {
@@ -1069,81 +860,58 @@ impl Generator {
         add_line!(self, "");
     }
 
-    fn add_field_name_names_list(&mut self) {
-        add_line!(self, "static const char * const ts_field_names[] = {{");
-        indent!(self);
-        add_line!(self, "[0] = NULL,");
-        for &field_name in &self.field_names {
-            let field_name = self.str_pool.resolve(field_name);
-            add_line!(self, "[{}] = \"{field_name}\",", Self::field_id(field_name));
-        }
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
+    fn add_symbol_metadata_list(&mut self) {
+        let entries = self.symbol_and_alias_entries(
+            |symbol| self.symbol_metadata_flags(symbol),
+            |alias| 0x01u8 | if alias.is_named { 0x02 } else { 0 },
+        );
+        self.add_designated_array("uint8_t", "ts_symbol_metadata", entries);
     }
 
-    fn add_symbol_metadata_list(&mut self) {
-        add_line!(
-            self,
-            "static const TSSymbolMetadata ts_symbol_metadata[] = {{"
-        );
-        indent!(self);
-        for symbol in &self.parse_table.symbols {
-            add_line!(self, "[{}] = {{", self.symbol_ids[symbol]);
-            indent!(self);
-            if self
-                .syntax_grammar
-                .supertype_alias(*symbol, &self.default_aliases)
-                .is_some()
-            {
-                add_line!(self, ".visible = false,");
-                add_line!(self, ".named = true,");
-                add_line!(self, ".supertype = true,");
-            } else if let Some(Alias { is_named, .. }) = self.default_aliases.get(symbol) {
-                add_line!(self, ".visible = true,");
-                add_line!(self, ".named = {is_named},");
-            } else {
-                match self.metadata_for_symbol(*symbol).1 {
-                    VariableType::Named => {
-                        add_line!(self, ".visible = true,");
-                        add_line!(self, ".named = true,");
-                    }
-                    VariableType::Anonymous => {
-                        add_line!(self, ".visible = true,");
-                        add_line!(self, ".named = false,");
-                    }
-                    VariableType::Hidden => {
-                        add_line!(self, ".visible = false,");
-                        add_line!(self, ".named = true,");
-                        if self.syntax_grammar.supertype_symbols.contains(symbol) {
-                            add_line!(self, ".supertype = true,");
-                        }
-                    }
-                    VariableType::Auxiliary => {
-                        add_line!(self, ".visible = false,");
-                        add_line!(self, ".named = false,");
-                    }
-                }
+    fn symbol_and_alias_entries<V>(
+        &self,
+        on_symbol: impl Fn(Symbol) -> V,
+        on_alias: impl Fn(&Alias) -> V,
+    ) -> Vec<(String, V)> {
+        self.parse_table
+            .symbols
+            .iter()
+            .map(|&symbol| (self.symbol_ids[&symbol].clone(), on_symbol(symbol)))
+            .chain(
+                self.unique_aliases
+                    .iter()
+                    .map(|alias| (self.alias_ids[alias].clone(), on_alias(alias))),
+            )
+            .collect()
+    }
+
+    fn symbol_metadata_flags(&self, symbol: Symbol) -> u8 {
+        let (visible, named, supertype) = if self
+            .syntax_grammar
+            .supertype_alias(symbol, &self.default_aliases)
+            .is_some()
+        {
+            (false, true, true)
+        } else if let Some(Alias { is_named, .. }) = self.default_aliases.get(&symbol) {
+            (true, *is_named, false)
+        } else {
+            match self.metadata_for_symbol(symbol).1 {
+                VariableType::Named => (true, true, false),
+                VariableType::Anonymous => (true, false, false),
+                VariableType::Hidden => (
+                    false,
+                    true,
+                    self.syntax_grammar.supertype_symbols.contains(&symbol),
+                ),
+                VariableType::Auxiliary => (false, false, false),
             }
-            if symbol.is_terminal()
-                && self.lexical_grammar.variables[symbol.index as usize].is_immediate
-            {
-                add_line!(self, ".immediate = true,");
-            }
-            dedent!(self);
-            add_line!(self, "}},");
-        }
-        for alias in &self.unique_aliases {
-            add_line!(self, "[{}] = {{", self.alias_ids[alias]);
-            indent!(self);
-            add_line!(self, ".visible = true,");
-            add_line!(self, ".named = {},", alias.is_named);
-            dedent!(self);
-            add_line!(self, "}},");
-        }
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
+        };
+        let immediate = symbol.is_terminal()
+            && self.lexical_grammar.variables[symbol.index as usize].is_immediate;
+        u8::from(visible)
+            | (u8::from(named) << 1)
+            | (u8::from(supertype) << 2)
+            | (u8::from(immediate) << 3)
     }
 
     fn add_alias_sequences(&mut self) {
@@ -1191,6 +959,8 @@ impl Generator {
         add_line!(self, "}};\n");
     }
 
+    // code-gauge-allow functionCognitiveComplexity 20 -- deduplicates field map rows and emits slices and entries together
+    // code-gauge-allow functionNcss 44 -- deduplicates field map rows and emits slices and entries together
     fn add_field_sequences(&mut self) {
         let mut flat_field_maps = IndexMap::with_hasher(FxBuildHasher);
         let mut next_flat_field_map_index = 0;
@@ -1266,6 +1036,7 @@ impl Generator {
         add_line!(self, "");
     }
 
+    // code-gauge-allow functionNcss 40 -- resolves aliased and normal subtype sets and emits supertype slices and entries
     fn add_supertype_map(&mut self) {
         add_line!(
             self,
@@ -1341,783 +1112,6 @@ impl Generator {
         dedent!(self);
         add_line!(self, "}};");
         add_line!(self, "");
-    }
-
-    fn add_lex_function(&mut self, name: &str, lex_table: &LexTable) {
-        if lex_table
-            .states
-            .iter()
-            .all(|state| state.accept_action.is_none() && state.fallback_accept.is_none())
-        {
-            add_line!(
-                self,
-                "static bool {name}(TSLexer *lexer, TSStateId state) {{ (void)lexer; (void)state; return false; }}"
-            );
-            add_line!(self, "");
-            return;
-        }
-        let has_fallback = lex_table
-            .states
-            .iter()
-            .any(|state| state.fallback_accept.is_some() || state.restore_fallback);
-        if has_fallback {
-            add_line!(
-                self,
-                "typedef struct {{ bool valid; int32_t precedence; TSSymbol symbol; TSLexerCheckpoint start, end; }} {name}_fallback;"
-            );
-        }
-        if lex_table.states.len() > MAX_SINGLE_LEXER_STATES {
-            self.add_chunked_lex_function(name, lex_table, has_fallback);
-            return;
-        }
-        let function_start = self.buffer.len();
-        self.add_single_lex_function(name, lex_table, has_fallback);
-        if self.buffer.len() - function_start > MAX_SINGLE_LEXER_BYTES {
-            self.buffer.truncate(function_start);
-            self.add_chunked_lex_function(name, lex_table, has_fallback);
-        }
-    }
-
-    fn add_single_lex_function(&mut self, name: &str, lex_table: &LexTable, has_fallback: bool) {
-        add_line!(
-            self,
-            "static bool {name}(TSLexer *lexer, TSStateId state) {{",
-        );
-        indent!(self);
-
-        let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "UNUSED TSLexerCheckpoint start_tags[{tag_count}];");
-        if has_fallback {
-            add_line!(
-                self,
-                "{name}_fallback fallback_storage = {{0}}, *fallback = &fallback_storage;"
-            );
-        }
-        add_line!(self, "START_LEXER();");
-        add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
-        add_line!(self, "switch (state) {{");
-
-        indent!(self);
-        for (i, state) in lex_table.states.iter().enumerate() {
-            add_line!(self, "case {i}:");
-            indent!(self);
-            self.add_lex_state(i as u32, state);
-            dedent!(self);
-        }
-
-        add_line!(self, "default:");
-        indent!(self);
-        add_line!(self, "return false;");
-        dedent!(self);
-
-        dedent!(self);
-        add_line!(self, "}}");
-
-        dedent!(self);
-        add_line!(self, "}}");
-        add_line!(self, "");
-    }
-
-    fn start_tag_count(table: &LexTable) -> u32 {
-        table
-            .states
-            .iter()
-            .flat_map(|state| {
-                state
-                    .start_tag
-                    .into_iter()
-                    .chain(state.fallback_accept.and_then(|(_, _, tag)| tag))
-            })
-            .chain(table.states.iter().flat_map(|state| {
-                state
-                    .advance_actions
-                    .iter()
-                    .map(|(_, action)| action)
-                    .chain(state.eof_action.iter())
-                    .flat_map(|action| action.start_tags.iter().map(|&(tag, _)| tag))
-            }))
-            .max()
-            .map_or(1, |tag| tag + 1)
-    }
-
-    fn add_chunked_lex_function(&mut self, name: &str, lex_table: &LexTable, has_fallback: bool) {
-        let chunk_count = lex_table.states.len().div_ceil(LEXER_CHUNK_SIZE);
-        let fallback_parameter = if has_fallback {
-            format!(", {name}_fallback *")
-        } else {
-            String::new()
-        };
-        let fallback_argument = if has_fallback { ", &fallback" } else { "" };
-        for chunk in 0..chunk_count {
-            add_line!(
-                self,
-                "static uint8_t {name}_{chunk}(TSLexer *, TSStateId *, bool *, TSLexerCheckpoint *{fallback_parameter});"
-            );
-        }
-        add_line!(self, "");
-        add_line!(
-            self,
-            "static bool {name}(TSLexer *lexer, TSStateId state) {{"
-        );
-        indent!(self);
-        let tag_count = Self::start_tag_count(lex_table);
-        add_line!(self, "UNUSED TSLexerCheckpoint start_tags[{tag_count}];");
-        if has_fallback {
-            add_line!(self, "{name}_fallback fallback = {{0}};");
-        }
-        add_line!(self, "bool result = false;");
-        add_line!(self, "for (;;) {{");
-        indent!(self);
-        add_line!(self, "uint8_t status;");
-        add_line!(self, "switch (state / {LEXER_CHUNK_SIZE}) {{");
-        indent!(self);
-        for chunk in 0..chunk_count {
-            add_line!(
-                self,
-                "case {chunk}: status = {name}_{chunk}(lexer, &state, &result, start_tags{fallback_argument}); break;"
-            );
-        }
-        add_line!(self, "default: return result;");
-        dedent!(self);
-        add_line!(self, "}}");
-        add_line!(self, "if (status < 2) return status != 0;");
-        dedent!(self);
-        add_line!(self, "}}");
-        dedent!(self);
-        add_line!(self, "}}\n");
-
-        for (chunk, states) in lex_table.states.chunks(LEXER_CHUNK_SIZE).enumerate() {
-            self.add_lex_chunk(name, chunk, states, has_fallback);
-        }
-    }
-
-    fn add_lex_chunk(&mut self, name: &str, chunk: usize, states: &[LexState], has_fallback: bool) {
-        let fallback_parameter = if has_fallback {
-            format!(", {name}_fallback *fallback")
-        } else {
-            String::new()
-        };
-        let has_advances = states.iter().enumerate().any(|(offset, state)| {
-            let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
-            state.eof_action.is_some()
-                || state
-                    .advance_actions
-                    .iter()
-                    .any(|(_, action)| action.state != id)
-        });
-        add_line!(
-            self,
-            "static uint8_t {name}_{chunk}(TSLexer *lexer, TSStateId *state_out, bool *result_out, TSLexerCheckpoint *start_tags{fallback_parameter}) {{"
-        );
-        indent!(self);
-        add_line!(self, "(void)start_tags;");
-        if has_fallback {
-            add_line!(self, "(void)fallback;");
-        }
-        add_line!(self, "TSStateId state = *state_out;");
-        add_line!(self, "bool result = *result_out;");
-        if has_advances {
-            add_line!(self, "bool skip = false;");
-        }
-        add_line!(self, "UNUSED bool eof;");
-        add_line!(self, "int32_t lookahead;");
-        if has_advances {
-            add_line!(self, "goto start;");
-            add_line!(self, "next_state:");
-            add_line!(self, "lexer->advance(lexer, skip);");
-            add_line!(self, "start:");
-            add_line!(self, "skip = false;");
-        }
-        add_line!(self, "lookahead = lexer->lookahead;");
-        add_line!(self, "eof = lookahead == 0 && lexer->eof(lexer);");
-        add_line!(self, "switch (state) {{");
-        indent!(self);
-        for (offset, state) in states.iter().enumerate() {
-            let id = (chunk * LEXER_CHUNK_SIZE + offset) as u32;
-            add_line!(self, "case {id}:");
-            indent!(self);
-            self.add_lex_state(id, state);
-            dedent!(self);
-        }
-        add_line!(self, "default:");
-        indent!(self);
-        add_line!(self, "*state_out = state;");
-        add_line!(self, "*result_out = result;");
-        add_line!(self, "return 2;");
-        dedent!(self);
-        dedent!(self);
-        add_line!(self, "}}");
-        dedent!(self);
-        add_line!(self, "}}\n");
-    }
-
-    fn add_lex_state(&mut self, state_id: u32, state: &LexState) {
-        if state
-            .advance_actions
-            .iter()
-            .any(|(_, action)| action.state == state_id)
-        {
-            add_line!(self, "ts_lex_state_{state_id}:");
-        }
-        let defer_accept = state.eof_action.is_none()
-            && !state.advance_actions.is_empty()
-            && state
-                .advance_actions
-                .iter()
-                .all(|(_, action)| action.state == state_id && action.in_main_token);
-        if !defer_accept {
-            self.add_lex_accept(state);
-        }
-
-        if let Some(ref eof_action) = state.eof_action {
-            add_whitespace!(self);
-            add!(self, "if (eof) ");
-            self.add_advance_action(eof_action, state_id);
-            add!(self, "\n");
-        }
-
-        let mut chars_copy = CharacterSet::empty();
-        let mut large_set = CharacterSet::empty();
-        let mut ruled_out_chars = CharacterSet::empty();
-
-        let mut mapped_transitions = vec![false; state.advance_actions.len()];
-        let mut simple_transition_range_count = 0;
-        for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
-            // Lookahead is also zero at EOF, so the map cannot distinguish a physical NUL.
-            if action.in_main_token
-                && action.start_tags.is_empty()
-                && action.state != state_id
-                && !chars.contains('\0')
-                && chars.ranges().all(|r| {
-                    let start = *r.start() as u32;
-                    let end = *r.end() as u32;
-                    end <= start + 1 && u16::try_from(end).is_ok()
-                })
-            {
-                mapped_transitions[index] = true;
-                simple_transition_range_count += chars.range_count();
-            }
-        }
-
-        if simple_transition_range_count >= 8 {
-            let mut transitions = Vec::new();
-            for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
-                if !mapped_transitions[index] {
-                    continue;
-                }
-                for range in chars.ranges() {
-                    transitions.push((*range.start(), action.state));
-                    if range.end() > range.start() {
-                        transitions.push((*range.end(), action.state));
-                    }
-                }
-                ruled_out_chars = ruled_out_chars.add(chars);
-            }
-            transitions.sort_unstable();
-            self.add_advance_map(&transitions);
-        } else {
-            mapped_transitions.fill(false);
-        }
-
-        for (index, (chars, action)) in state.advance_actions.iter().enumerate() {
-            // Rendered ranges start and end at Unicode scalar values, so a transition on
-            // surrogate code points alone has no condition to render.
-            if mapped_transitions[index] || chars.ranges().next().is_none() {
-                continue;
-            }
-            add_whitespace!(self);
-
-            // The lex state's advance actions are represented with disjoint
-            // sets of characters. When translating these disjoint sets into a
-            // sequence of checks, we don't need to re-check conditions that
-            // have already been checked due to previous transitions.
-            //
-            // Note that this simplification may result in an empty character set.
-            // That means that the transition is guaranteed (nothing further needs to
-            // be checked), not that this transition is impossible.
-            let simplified_chars = chars.simplify_ignoring(&ruled_out_chars);
-
-            // For large character sets, find the best matching character set from
-            // a pre-selected list of large character sets, which are based on the
-            // state transitions for individual tokens. This transition may not exactly
-            // match one of the pre-selected character sets. In that case, determine
-            // the additional checks that need to be performed to match this transition.
-            let mut best_large_char_set: Option<(usize, CharacterSet, CharacterSet)> = None;
-            if simplified_chars.range_count() >= super::build_tables::LARGE_CHARACTER_RANGE_COUNT {
-                // Prefer the last candidate on ties. Searching backwards lets
-                // us stop as soon as a match needs no additional checks.
-                for (ix, (_, set)) in self.large_character_sets.iter().enumerate().rev() {
-                    chars_copy.assign(&simplified_chars);
-                    large_set.assign(set);
-                    let intersection = chars_copy.remove_intersection(&mut large_set);
-                    if !intersection.is_empty() {
-                        let additions = chars_copy.simplify_ignoring(&ruled_out_chars);
-                        let removals = large_set.simplify_ignoring(&ruled_out_chars);
-                        let total_range_count = additions.range_count() + removals.range_count();
-                        if total_range_count >= simplified_chars.range_count() {
-                            continue;
-                        }
-                        if let Some((_, best_additions, best_removals)) = &best_large_char_set {
-                            let best_range_count =
-                                best_additions.range_count() + best_removals.range_count();
-                            // Only a set that needs fewer checks replaces the best one, so on
-                            // a tie the set found first wins.
-                            if best_range_count <= total_range_count {
-                                continue;
-                            }
-                        }
-                        best_large_char_set = Some((ix, additions, removals));
-                        if total_range_count == 0 {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Add this transition's character set to the set of ruled out characters,
-            // which don't need to be checked for subsequent transitions in this state.
-            ruled_out_chars = ruled_out_chars.add(chars);
-
-            let mut large_char_set_ix = None;
-            let mut asserted_chars = simplified_chars;
-            let mut negated_chars = CharacterSet::empty();
-            if let Some((char_set_ix, additions, removals)) = best_large_char_set {
-                asserted_chars = additions;
-                negated_chars = removals;
-                large_char_set_ix = Some(char_set_ix);
-            }
-
-            let line_break = format!("\n{}", "  ".repeat(self.indent_level + 2));
-
-            let has_positive_condition = large_char_set_ix.is_some() || !asserted_chars.is_empty();
-            let has_negative_condition = !negated_chars.is_empty();
-            let has_condition = has_positive_condition || has_negative_condition;
-            if has_condition {
-                add!(self, "if (");
-                if has_positive_condition && has_negative_condition {
-                    add!(self, "(");
-                }
-            }
-
-            if let Some(large_char_set_ix) = large_char_set_ix {
-                let large_set = &self.large_character_sets[large_char_set_ix].1;
-
-                // If the character set contains the null character, check that we
-                // are not at the end of the file.
-                let check_eof = large_set.contains('\0');
-                if check_eof {
-                    add!(self, "(!eof && ");
-                }
-
-                let char_set_info = &mut self.large_character_set_info[large_char_set_ix];
-                char_set_info.is_used = true;
-                if let Some(pages) = &char_set_info.unicode_pages {
-                    let width = if pages.blocks.len() <= 256 { 8 } else { 16 };
-                    add!(
-                        self,
-                        "ts_lex_pages{width}_contains({0}_ascii, {0}_page_ids, {0}_pages, {1}, {2}, lookahead)",
-                        char_set_info.constant_name,
-                        pages.first_page,
-                        pages.page_ids.len()
-                    );
-                } else {
-                    add!(
-                        self,
-                        "ts_lex_set_contains_with_ascii({}_ascii, {}, {}, lookahead)",
-                        char_set_info.constant_name,
-                        char_set_info.constant_name,
-                        large_set.ranges().filter(|r| *r.end() >= '\u{80}').count(),
-                    );
-                }
-                if check_eof {
-                    add!(self, ")");
-                }
-            }
-
-            if !asserted_chars.is_empty() {
-                if large_char_set_ix.is_some() {
-                    add!(self, " ||{line_break}");
-                }
-
-                // If the character set contains the max character, then it probably
-                // corresponds to a negated character class in a regex, so it will be more
-                // concise and readable to express it in terms of negated ranges.
-                let is_included = !asserted_chars.contains(char::MAX);
-                if is_included {
-                    if asserted_chars.range_count() >= 4
-                        && asserted_chars.ranges().all(|range| range.end().is_ascii())
-                    {
-                        let mut ascii = [0u32; 4];
-                        for range in asserted_chars.ranges() {
-                            for character in *range.start() as usize..=*range.end() as usize {
-                                ascii[character / 32] |= 1 << (character % 32);
-                            }
-                        }
-                        let next_id = self.ascii_sets.len();
-                        let id = *self.ascii_sets.entry(ascii).or_insert(next_id);
-                        if asserted_chars.contains('\0') {
-                            add!(self, "(!eof && ");
-                        }
-                        add!(
-                            self,
-                            "ts_lex_ascii_contains(ts_lex_ascii_set_{id}, lookahead)"
-                        );
-                        if asserted_chars.contains('\0') {
-                            add!(self, ")");
-                        }
-                    } else {
-                        self.add_character_range_conditions(&asserted_chars, true, &line_break);
-                    }
-                } else {
-                    let excluded_chars = asserted_chars.negate();
-                    // The lookahead is also 0 at the end of the input, so a set containing NUL
-                    // must check for it explicitly.
-                    let check_eof = !excluded_chars.contains('\0');
-                    // Parenthesized after `||` to keep C compilers' `-Wall` from warning about
-                    // `&&` within `||`.
-                    let wrap = large_char_set_ix.is_some();
-                    if wrap {
-                        add!(self, "(");
-                    }
-                    if check_eof {
-                        add!(self, "!eof");
-                        if !excluded_chars.is_empty() {
-                            add!(self, " &&{line_break}");
-                        }
-                    }
-                    self.add_character_range_conditions(&excluded_chars, false, &line_break);
-                    if wrap {
-                        add!(self, ")");
-                    }
-                }
-            }
-
-            if has_negative_condition {
-                if has_positive_condition {
-                    add!(self, ") &&{line_break}");
-                }
-                self.add_character_range_conditions(&negated_chars, false, &line_break);
-            }
-
-            if has_condition {
-                add!(self, ") ");
-            }
-
-            self.add_advance_action(action, state_id);
-            add!(self, "\n");
-        }
-
-        if defer_accept {
-            self.add_lex_accept(state);
-        }
-        add_line!(self, "END_STATE();");
-    }
-
-    fn add_lex_accept(&mut self, state: &LexState) {
-        if let Some((symbol, precedence, start_tag)) = state.fallback_accept {
-            add_line!(
-                self,
-                "if (!fallback->valid || {precedence} >= fallback->precedence) {{"
-            );
-            indent!(self);
-            add_line!(self, "fallback->valid = true;");
-            add_line!(self, "fallback->precedence = {precedence};");
-            add_line!(self, "fallback->symbol = {};", self.symbol_ids[&symbol]);
-            if let Some(tag) = start_tag {
-                add_line!(self, "fallback->start = start_tags[{tag}];");
-            } else {
-                add_line!(self, "lexer->get_checkpoint(lexer, &fallback->start);");
-            }
-            add_line!(self, "lexer->mark_end(lexer);");
-            add_line!(
-                self,
-                "lexer->get_mark_end_checkpoint(lexer, &fallback->end);"
-            );
-            dedent!(self);
-            add_line!(self, "}}");
-        }
-        if state.restore_fallback {
-            add_line!(self, "result = fallback->valid;");
-            add_line!(self, "if (result) {{");
-            indent!(self);
-            add_line!(self, "lexer->result_symbol = fallback->symbol;");
-            add_line!(self, "lexer->mark_start(lexer, &fallback->start);");
-            add_line!(self, "lexer->mark_end_at(lexer, &fallback->end);");
-            dedent!(self);
-            add_line!(self, "}}");
-        } else if let Some(symbol) = state.accept_action {
-            if let Some(precedence) = state.guarded_precedence {
-                add_line!(
-                    self,
-                    "if (!fallback->valid || {precedence} >= fallback->precedence) {{"
-                );
-                indent!(self);
-            }
-            if let Some(tag) = state.start_tag {
-                add_line!(self, "lexer->mark_start(lexer, &start_tags[{tag}]);");
-            }
-            add_line!(self, "ACCEPT_TOKEN({});", self.symbol_ids[&symbol]);
-            if state.guarded_precedence.is_some() {
-                dedent!(self);
-                add_line!(self, "}}");
-            }
-        }
-    }
-
-    fn add_advance_map(&mut self, transitions: &[(char, u32)]) {
-        let next_id = self.advance_maps.len();
-        let id = *self
-            .advance_maps
-            .entry(transitions.to_vec())
-            .or_insert(next_id);
-        let (first, _, dense) = Self::advance_map_layout(transitions);
-        if dense {
-            add_line!(
-                self,
-                "TS_LEX_ADVANCE_MAP_DENSE({first}, ts_lex_advance_map_{id});"
-            );
-        } else {
-            add_line!(self, "TS_LEX_ADVANCE_MAP_SORTED(ts_lex_advance_map_{id});");
-        }
-    }
-
-    fn advance_map_layout(transitions: &[(char, u32)]) -> (u32, u32, bool) {
-        let first = transitions[0].0 as u32;
-        let span = transitions.last().unwrap().0 as u32 - first + 1;
-        let dense = span <= 128
-            && span as usize <= transitions.len() * 2
-            && transitions
-                .iter()
-                .all(|(_, state)| *state < u32::from(u16::MAX));
-        (first, span, dense)
-    }
-
-    fn add_character_range_conditions(
-        &mut self,
-        characters: &CharacterSet,
-        is_included: bool,
-        line_break: &str,
-    ) {
-        for (i, range) in characters.ranges().enumerate() {
-            let start = *range.start();
-            let end = *range.end();
-            if is_included {
-                if i > 0 {
-                    add!(self, " ||{line_break}");
-                }
-
-                if start == '\0' {
-                    add!(self, "(!eof && ");
-                    if end == '\0' {
-                        add!(self, "lookahead == ");
-                    } else {
-                        add!(self, "lookahead <= ");
-                    }
-                    self.add_character(end);
-                    add!(self, ")");
-                } else if end == start {
-                    add!(self, "lookahead == ");
-                    self.add_character(start);
-                } else if end as u32 == start as u32 + 1 {
-                    add!(self, "lookahead == ");
-                    self.add_character(start);
-                    add!(self, " ||{line_break}lookahead == ");
-                    self.add_character(end);
-                } else {
-                    add!(self, "(");
-                    self.add_character(start);
-                    add!(self, " <= lookahead && lookahead <= ");
-                    self.add_character(end);
-                    add!(self, ")");
-                }
-            } else {
-                if i > 0 {
-                    add!(self, " &&{line_break}");
-                }
-                if end == start {
-                    add!(self, "lookahead != ");
-                    self.add_character(start);
-                } else if end as u32 == start as u32 + 1 {
-                    add!(self, "lookahead != ");
-                    self.add_character(start);
-                    add!(self, " &&{line_break}lookahead != ");
-                    self.add_character(end);
-                } else if start != '\0' {
-                    add!(self, "(lookahead < ");
-                    self.add_character(start);
-                    add!(self, " || ");
-                    self.add_character(end);
-                    add!(self, " < lookahead)");
-                } else {
-                    add!(self, "lookahead > ");
-                    self.add_character(end);
-                }
-            }
-        }
-    }
-
-    fn add_character_set(&mut self, ix: usize) {
-        let characters = self.large_character_sets[ix].1.clone();
-        let info = &self.large_character_set_info[ix];
-        if !info.is_used {
-            return;
-        }
-
-        let mut ascii = [0u32; 4];
-        for character in 0..128 {
-            if characters.contains(char::from_u32(character).unwrap()) {
-                ascii[character as usize / 32] |= 1 << (character % 32);
-            }
-        }
-        add_line!(
-            self,
-            "static const uint32_t {}_ascii[] = {{0x{:08x}, 0x{:08x}, 0x{:08x}, 0x{:08x}}};",
-            info.constant_name,
-            ascii[0],
-            ascii[1],
-            ascii[2],
-            ascii[3],
-        );
-
-        if let Some(pages) = &info.unicode_pages {
-            let width = if pages.blocks.len() <= 256 { 8 } else { 16 };
-            add_line!(
-                self,
-                "static const uint{width}_t {}_page_ids[] = {{",
-                info.constant_name
-            );
-            indent!(self);
-            for ids in pages.page_ids.chunks(16) {
-                add_whitespace!(self);
-                for id in ids {
-                    add!(self, "{id}, ");
-                }
-                add!(self, "\n");
-            }
-            dedent!(self);
-            add_line!(self, "}};");
-            add_line!(
-                self,
-                "static const uint32_t {}_pages[][8] = {{",
-                info.constant_name
-            );
-            indent!(self);
-            for block in &pages.blocks {
-                add_whitespace!(self);
-                add!(self, "{{");
-                for word in block {
-                    add!(self, "0x{word:08x}, ");
-                }
-                add!(self, "}},\n");
-            }
-            dedent!(self);
-            add_line!(self, "}};\n");
-            return;
-        }
-
-        add_line!(
-            self,
-            "static const TSCharacterRange {}[] = {{",
-            info.constant_name
-        );
-
-        indent!(self);
-        let unicode_ranges = characters
-            .ranges()
-            .filter(|range| *range.end() >= '\u{80}')
-            .collect::<Vec<_>>();
-        if unicode_ranges.is_empty() {
-            add_line!(self, "{{0, 0}},");
-        }
-        for (ix, range) in unicode_ranges.into_iter().enumerate() {
-            let column = ix % 8;
-            if column == 0 {
-                if ix > 0 {
-                    add!(self, "\n");
-                }
-                add_whitespace!(self);
-            } else {
-                add!(self, " ");
-            }
-            add!(self, "{{");
-            self.add_character(cmp::max(*range.start(), '\u{80}'));
-            add!(self, ", ");
-            self.add_character(*range.end());
-            add!(self, "}},");
-        }
-        add!(self, "\n");
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "");
-    }
-
-    fn unicode_pages(characters: &CharacterSet) -> Option<UnicodePages> {
-        let ranges = characters
-            .ranges()
-            .filter(|range| *range.end() >= '\u{80}')
-            .map(|range| ((*range.start() as u32).max(128), *range.end() as u32))
-            .collect::<Vec<_>>();
-        let first_page = ranges.first()?.0 / 256;
-        let page_count = (ranges.last()?.1 / 256 - first_page + 1) as usize;
-        let range_bytes = ranges.len() * 2 * size_of::<u32>();
-        if page_count + 32 >= range_bytes {
-            return None;
-        }
-        let mut pages = vec![[0u32; 8]; page_count];
-        for (start, end) in ranges {
-            for character in start..=end {
-                pages[(character / 256 - first_page) as usize][(character % 256 / 32) as usize] |=
-                    1 << (character % 32);
-            }
-        }
-        let mut blocks = IndexMap::<[u32; 8], u16, FxBuildHasher>::default();
-        let page_ids = pages
-            .into_iter()
-            .map(|page| {
-                let next_id = blocks.len() as u16;
-                *blocks.entry(page).or_insert(next_id)
-            })
-            .collect::<Vec<_>>();
-        let index_bytes = page_ids.len() * if blocks.len() <= 256 { 1 } else { 2 };
-        if index_bytes + blocks.len() * 32 + 32 >= range_bytes {
-            return None;
-        }
-        Some(UnicodePages {
-            first_page,
-            page_ids,
-            blocks: blocks.into_keys().collect(),
-        })
-    }
-
-    fn add_advance_action(&mut self, action: &AdvanceAction, state_id: u32) {
-        if !action.start_tags.is_empty() {
-            add!(self, "{{ ");
-            for &(target, source) in &action.start_tags {
-                if let Some(source) = source {
-                    add!(self, "start_tags[{target}] = start_tags[{source}]; ");
-                } else {
-                    add!(
-                        self,
-                        "lexer->get_checkpoint(lexer, &start_tags[{target}]); "
-                    );
-                }
-            }
-        }
-        if action.state == state_id {
-            self.uses_lex_repeat = true;
-            add!(
-                self,
-                "TS_LEX_REPEAT({}, ts_lex_state_{state_id});",
-                !action.in_main_token
-            );
-        } else if action.in_main_token {
-            add!(self, "ADVANCE({});", action.state);
-        } else {
-            add!(self, "SKIP({});", action.state);
-        }
-        if !action.start_tags.is_empty() {
-            add!(self, " }}");
-        }
     }
 
     fn add_lex_modes(&mut self) {
@@ -2222,6 +1216,7 @@ impl Generator {
         add_line!(self, "}};\n");
     }
 
+    // code-gauge-allow functionNcss 35 -- chooses between flat and 2D reserved-word tables and emits the smaller representation
     fn add_reserved_word_sets(&mut self) {
         let total = self
             .reserved_word_sets
@@ -2322,7 +1317,7 @@ impl Generator {
     fn add_external_scanner_states_list(&mut self) {
         let tokens = self.syntax_grammar.external_tokens.len();
         let stride = tokens.div_ceil(8);
-        if self.profile.is_none()
+        if u8::try_from(stride).is_ok()
             && self.parse_table.external_lex_states.len() * (tokens - stride) > 128
         {
             self.external_state_stride = stride;
@@ -2406,15 +1401,15 @@ impl Generator {
         parse_table_entries: &mut FxHashMap<ActionListId, u32>,
         next_parse_action_list_index: &mut u32,
     ) {
+        if self.large_state_count == 0 || self.token_count == 0 {
+            return;
+        }
         add_line!(
             self,
-            "static const uint16_t ts_parse_table[LARGE_STATE_COUNT][SYMBOL_COUNT] = {{",
+            "static const uint16_t ts_parse_table[LARGE_STATE_COUNT][TOKEN_COUNT] = {{",
         );
         indent!(self);
-
         let mut terminal_entries = Vec::new();
-        let mut nonterminal_entries = Vec::new();
-
         for (i, state) in self
             .parse_table
             .states
@@ -2424,26 +1419,9 @@ impl Generator {
         {
             add_line!(self, "[STATE({i})] = {{");
             indent!(self);
-
             terminal_entries.clear();
-            nonterminal_entries.clear();
             terminal_entries.extend(state.terminal_entries.iter());
-            nonterminal_entries.extend(state.nonterminal_entries.iter());
             terminal_entries.sort_unstable_by_key(|e| self.symbol_order.get(e.0));
-            nonterminal_entries.sort_unstable_by_key(|k| k.0);
-
-            for (symbol, action) in &nonterminal_entries {
-                add_line!(
-                    self,
-                    "[{}] = STATE({}),",
-                    self.symbol_ids[symbol],
-                    match action {
-                        GotoAction::Goto(state) => *state as usize,
-                        GotoAction::ShiftExtra => i,
-                    }
-                );
-            }
-
             for (symbol, id) in &terminal_entries {
                 let entry_id = Self::get_parse_action_list_id(
                     **id,
@@ -2453,11 +1431,9 @@ impl Generator {
                 );
                 add_line!(self, "[{}] = ACTIONS({entry_id}),", self.symbol_ids[symbol]);
             }
-
             dedent!(self);
             add_line!(self, "}},");
         }
-
         dedent!(self);
         add_line!(self, "}};");
         add_line!(self, "");
@@ -2468,99 +1444,219 @@ impl Generator {
         parse_table_entries: &mut FxHashMap<ActionListId, u32>,
         next_parse_action_list_index: &mut u32,
     ) -> RenderResult<()> {
-        if self.large_state_count == self.parse_table.states.len() {
+        if !self.has_small_parse_table() {
             return Ok(());
         }
-        add_line!(self, "static const uint16_t ts_small_parse_table[] = {{");
-        indent!(self);
-        // The table starts with each nonterminal's default goto, indexed by its position after the tokens.
-        let defaults = SmallParseRow {
-            index: 0,
-            values: self
-                .goto_defaults
-                .iter()
-                .map(|&value| value as u16)
-                .collect(),
-        };
-        self.add_small_parse_row(&defaults);
+        let nonterm_count = self.parse_table.symbols.len() - self.token_count;
+        let (non_empty_goto_states, dir_words, goto_map_index, next_index) =
+            self.reserve_goto_directory(nonterm_count)?;
         let mut tables = SmallTables {
-            next_index: defaults.values.len(),
+            next_index,
             ..SmallTables::default()
         };
-        let has_samples = self
-            .profile
-            .as_ref()
-            .is_some_and(|profile| profile.parse_states.iter().any(|&count| count > 0));
-        let visits = self
-            .profile
-            .as_ref()
-            .filter(|_| has_samples)
-            .map(|profile| profile.parse_states.clone());
-        let uses_descriptors =
-            |state_id: usize| visits.as_ref().is_none_or(|visits| visits[state_id] == 0);
-        // Rows of states that training visited come first, so that described rows can use them as bases.
-        let mut state_ids =
-            (self.large_state_count..self.parse_table.states.len()).collect::<Vec<_>>();
-        state_ids.sort_by_key(|&state_id| uses_descriptors(state_id));
-        let mut indices = vec![0; 2 * state_ids.len()];
+        let (terminal_map, goto_by_state) = self.populate_small_parse_rows(
+            nonterm_count,
+            parse_table_entries,
+            next_parse_action_list_index,
+            &mut tables,
+        )?;
+        let goto_map_words = non_empty_goto_states
+            .into_iter()
+            .flat_map(|state_id| {
+                let entry = goto_by_state[state_id];
+                [(entry & 0xffff) as u16, (entry >> 16) as u16]
+            })
+            .collect::<Vec<_>>();
+        self.emit_small_parse_table_rows(
+            nonterm_count,
+            dir_words,
+            goto_map_index,
+            goto_map_words,
+            tables.rows,
+        );
+        self.emit_small_parse_table_map(&terminal_map);
+        Ok(())
+    }
+
+    fn reserve_goto_directory(
+        &self,
+        nonterm_count: usize,
+    ) -> RenderResult<(Vec<usize>, Vec<u16>, usize, usize)> {
+        if nonterm_count == 0 {
+            return Ok((Vec::new(), Vec::new(), 0, 0));
+        }
+        let state_count = self.parse_table.states.len();
+        let dir_blocks = state_count.div_ceil(64);
+        let mut non_empty_goto_states = Vec::new();
+        let mut dir_words = Vec::with_capacity(dir_blocks * 6);
+        let mut rank = 0u32;
+        for block in 0..dir_blocks {
+            let start = block * 64;
+            let end = (start + 64).min(state_count);
+            let mut bits = 0u64;
+            for (offset, state) in self.parse_table.states[start..end].iter().enumerate() {
+                if !state.nonterminal_entries.is_empty() {
+                    bits |= 1u64 << offset;
+                    non_empty_goto_states.push(start + offset);
+                }
+            }
+            dir_words.extend([
+                bits as u16,
+                (bits >> 16) as u16,
+                (bits >> 32) as u16,
+                (bits >> 48) as u16,
+                (rank & 0xffff) as u16,
+                (rank >> 16) as u16,
+            ]);
+            rank += bits.count_ones();
+        }
+        let goto_map_index = nonterm_count + dir_words.len();
+        let next_index = goto_map_index + non_empty_goto_states.len() * 2;
+        if next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
+            return Err(RenderError::SparseTable(next_index));
+        }
+        Ok((non_empty_goto_states, dir_words, goto_map_index, next_index))
+    }
+
+    fn populate_small_parse_rows(
+        &self,
+        nonterm_count: usize,
+        parse_table_entries: &mut FxHashMap<ActionListId, u32>,
+        next_parse_action_list_index: &mut u32,
+        tables: &mut SmallTables,
+    ) -> RenderResult<(Vec<usize>, Vec<usize>)> {
+        let state_count = self.parse_table.states.len();
+        let hot = self.hot_parse_states();
+        let is_cold = |state_id: usize| {
+            hot.as_ref()
+                .map_or(state_id >= self.large_state_count, |hot| !hot[state_id])
+        };
+        let mut state_ids = (0..state_count).collect::<Vec<_>>();
+        state_ids.sort_by_key(|&state_id| is_cold(state_id));
+        let mut terminal_map = vec![0usize; state_count - self.large_state_count];
+        let mut goto_by_state = vec![0usize; state_count];
         for state_id in state_ids {
-            // States that training visited keep complete rows, which take one lookup instead of up to four.
-            let described = uses_descriptors(state_id);
-            let minimize = has_samples && described;
+            let described = is_cold(state_id);
+            let minimize = hot.is_some() && described;
             let (terminal_groups, goto_groups) = self.small_state_groups(
                 state_id,
                 parse_table_entries,
                 next_parse_action_list_index,
             );
-            let index = 2 * (state_id - self.large_state_count);
-            indices[index] =
-                self.add_small_terminal_row(&terminal_groups, minimize, described, &mut tables)?;
-            indices[index + 1] =
-                self.add_small_goto_row(&goto_groups, minimize, described, &mut tables)?;
+            if state_id >= self.large_state_count {
+                terminal_map[state_id - self.large_state_count] =
+                    self.add_small_terminal_row(&terminal_groups, minimize, described, tables)?;
+            }
+            if nonterm_count > 0
+                && !self.parse_table.states[state_id]
+                    .nonterminal_entries
+                    .is_empty()
+            {
+                goto_by_state[state_id] =
+                    self.add_small_goto_row(&goto_groups, minimize, described, tables)?;
+            }
+        }
+        Ok((terminal_map, goto_by_state))
+    }
+
+    fn hot_parse_states(&self) -> Option<Vec<bool>> {
+        let profile = self.profile.as_ref()?;
+        let total = profile
+            .parse_states
+            .iter()
+            .map(|&n| u128::from(n))
+            .sum::<u128>();
+        if total == 0 {
+            return None;
+        }
+        let mut order = (0..profile.parse_states.len()).collect::<Vec<_>>();
+        order.sort_unstable_by_key(|&i| (cmp::Reverse(profile.parse_states[i]), i));
+        let mut hot = vec![false; profile.parse_states.len()];
+        for item in hot.iter_mut().take(self.large_state_count) {
+            *item = true;
+        }
+        let mut covered = 0u128;
+        for state_id in order {
+            let visits = u128::from(profile.parse_states[state_id]);
+            if visits == 0 || covered * 100 >= total * 99 {
+                break;
+            }
+            hot[state_id] = true;
+            covered += visits;
+        }
+        Some(hot)
+    }
+
+    fn emit_small_parse_table_rows(
+        &mut self,
+        nonterm_count: usize,
+        dir_words: Vec<u16>,
+        goto_map_index: usize,
+        goto_map_words: Vec<u16>,
+        mut rows: Vec<SmallParseRow>,
+    ) {
+        add_line!(self, "static const uint16_t ts_small_parse_table[] = {{");
+        indent!(self);
+        if nonterm_count > 0 {
+            let defaults = SmallParseRow {
+                index: 0,
+                values: self.goto_defaults.iter().map(|&v| v as u16).collect(),
+            };
+            self.add_small_parse_row(&defaults);
+            if !dir_words.is_empty() {
+                self.add_small_parse_row(&SmallParseRow {
+                    index: nonterm_count,
+                    values: dir_words,
+                });
+            }
+            if !goto_map_words.is_empty() {
+                self.add_small_parse_row(&SmallParseRow {
+                    index: goto_map_index,
+                    values: goto_map_words,
+                });
+            }
+        }
+        rows.sort_unstable_by_key(|row| row.index);
+        for row in &rows {
+            self.add_small_parse_row(row);
         }
         dedent!(self);
         add_line!(self, "}};\n");
+    }
+
+    fn emit_small_parse_table_map(&mut self, terminal_map: &[usize]) {
+        if terminal_map.is_empty() {
+            return;
+        }
         add_line!(
             self,
             "static const uint32_t ts_small_parse_table_map[] = {{"
         );
         indent!(self);
-        for (state, offsets) in (self.large_state_count..).zip(indices.chunks(2)) {
-            add_line!(
-                self,
-                "[SMALL_STATE({state}) * 2] = {}, {},",
-                offsets[0],
-                offsets[1]
-            );
+        for (idx, &offset) in terminal_map.iter().enumerate() {
+            let state = self.large_state_count + idx;
+            add_line!(self, "[SMALL_STATE({state})] = {offset},");
         }
         dedent!(self);
         add_line!(self, "}};\n");
-        Ok(())
     }
 
     /// Adds a state's terminal row, as a described row when that takes fewer words, and returns its map entry.
     fn add_small_terminal_row(
-        &mut self,
+        &self,
         groups: &SmallStateGroups,
         minimize: bool,
         described: bool,
         tables: &mut SmallTables,
     ) -> RenderResult<usize> {
-        let key = (false, self.encode_small_parse_row(groups, 0, false));
-        if let Some(&offset) = tables.row_offsets.get(&key) {
+        let entries = self.row_entries(groups);
+        if let Some(&offset) = tables.row_offsets.get(&entries) {
             return Ok(offset);
         }
-        let entries = self.row_entries(groups);
         if described {
-            let plain_words = self
-                .small_state_encoding(
-                    groups.iter().map(|(_, symbols)| symbols.len()),
-                    minimize,
-                    false,
-                )
-                .1;
+            let plain_words = self.plain_row_words(groups, &entries, minimize, tables);
             let base_value = |_: usize| 0;
-            let delta = self.best_delta(&tables.bases[0], &entries, &entries, false, base_value);
+            let delta = Self::best_delta(&tables.bases[0], &entries, &entries, base_value);
             if let Some((base, diff)) = delta {
                 let set = self.order_set(entries.iter().map(|&(order, _)| order));
                 let set_words = if tables.symbol_sets.contains_key(&set) {
@@ -2568,33 +1664,31 @@ impl Generator {
                 } else {
                     set.len()
                 };
-                let diff_words = self.delta_words(&diff, false);
+                let diff_words = if tables.row_offsets.contains_key(&diff) {
+                    0
+                } else {
+                    Self::delta_words(&diff)
+                };
                 if diff_words + BASED_DESCRIPTOR_WORDS + set_words < plain_words {
                     let base = tables.bases[0].rows[base].0;
-                    return self.add_described_row(set, &diff, base, false, tables);
+                    return self.add_described_row(set, &diff, base, SymbolType::Terminal, tables);
                 }
             }
         }
-        let offset = self.add_plain_row(groups, minimize, false, tables)?;
+        let offset = self.add_plain_row(groups, &entries, minimize, tables)?;
         tables.bases[0].add(offset, entries);
         Ok(offset)
     }
 
-    /// Adds a state's goto row and returns its map entry. A described goto row's diff is relative to its base
-    /// or, without a base, to the nonterminals' default gotos.
+    /// Adds a state's goto row and returns its map entry.
     fn add_small_goto_row(
-        &mut self,
+        &self,
         groups: &SmallStateGroups,
         minimize: bool,
         described: bool,
         tables: &mut SmallTables,
     ) -> RenderResult<usize> {
         let entries = self.row_entries(groups);
-        if !described {
-            let offset = self.add_plain_row(groups, minimize, true, tables)?;
-            tables.bases[1].add(offset, entries);
-            return Ok(offset);
-        }
         let default_value = |order: usize| self.goto_defaults[order - self.token_count];
         let exceptions = entries
             .iter()
@@ -2602,79 +1696,104 @@ impl Generator {
             .filter(|&(order, value)| default_value(order) != value)
             .collect::<Vec<_>>();
         let set = self.order_set(entries.iter().map(|&(order, _)| order));
-        let groups = self.entry_groups(&exceptions, SymbolType::NonTerminal);
-        if !tables
-            .row_offsets
-            .contains_key(&(true, self.encode_small_parse_row(&groups, 0, true)))
-        {
-            let delta = self
-                .best_delta(&tables.bases[1], &entries, &exceptions, true, default_value)
-                .filter(|(_, diff)| {
-                    self.delta_words(diff, true) < self.delta_words(&exceptions, true)
-                });
-            if let Some((base, diff)) = delta {
-                let base = tables.bases[1].rows[base].0;
-                return self.add_described_row(set, &diff, base, true, tables);
-            }
+        if exceptions.is_empty() {
+            let set_offset = Self::add_shared_values(
+                set,
+                &mut tables.symbol_sets,
+                &mut tables.rows,
+                &mut tables.next_index,
+            )?;
+            return Ok(set_offset | SMALL_STATE_DEFAULT_GOTO_FLAG);
         }
-        let offset = self.add_plain_row(&groups, minimize, true, tables)?;
-        tables.bases[1].add(offset, exceptions);
-        self.add_descriptor(set, offset, None, tables)
-    }
-
-    /// Adds a row of `groups` unless an identical one exists, and returns its map entry.
-    fn add_plain_row(
-        &mut self,
-        groups: &SmallStateGroups,
-        minimize: bool,
-        is_goto: bool,
-        tables: &mut SmallTables,
-    ) -> RenderResult<usize> {
-        let key = (is_goto, self.encode_small_parse_row(groups, 0, is_goto));
-        if let Some(&offset) = tables.row_offsets.get(&key) {
+        if !described {
+            let offset = self.add_plain_row(groups, &entries, minimize, tables)?;
+            tables.bases[1].add(offset, entries);
             return Ok(offset);
         }
-        let offset = self.add_small_parse_rows(
-            groups,
-            minimize,
-            is_goto,
-            &mut tables.symbol_sets,
-            &mut tables.next_index,
-        )?;
-        tables.row_offsets.insert(key, offset);
+        if let Some(&offset) = tables.row_offsets.get(&entries) {
+            return Ok(offset);
+        }
+        self.add_described_goto_or_plain(groups, entries, exceptions, set, minimize, tables)
+    }
+
+    fn add_described_goto_or_plain(
+        &self,
+        groups: &SmallStateGroups,
+        entries: Vec<(usize, u32)>,
+        exceptions: Vec<(usize, u32)>,
+        set: Vec<u16>,
+        minimize: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        let plain_words = self.plain_row_words(groups, &entries, minimize, tables);
+        let set_words = if tables.symbol_sets.contains_key(&set) {
+            0
+        } else {
+            set.len()
+        };
+        let exc_words = if tables.row_offsets.contains_key(&exceptions) {
+            0
+        } else {
+            Self::delta_words(&exceptions)
+        };
+        let unbased_cost = UNBASED_DESCRIPTOR_WORDS + set_words + exc_words;
+        let default_value = |order: usize| self.goto_defaults[order - self.token_count];
+        if let Some((base, diff)) =
+            Self::best_delta(&tables.bases[1], &entries, &exceptions, default_value)
+        {
+            let diff_words = if tables.row_offsets.contains_key(&diff) {
+                0
+            } else {
+                Self::delta_words(&diff)
+            };
+            let based_cost = BASED_DESCRIPTOR_WORDS + set_words + diff_words;
+            if based_cost < unbased_cost && based_cost < plain_words {
+                let base_offset = tables.bases[1].rows[base].0;
+                return self.add_described_row(
+                    set,
+                    &diff,
+                    base_offset,
+                    SymbolType::NonTerminal,
+                    tables,
+                );
+            }
+        }
+        if unbased_cost < plain_words {
+            let exc_groups = self.entry_groups(&exceptions, SymbolType::NonTerminal);
+            let exc_offset = self.add_plain_row(&exc_groups, &exceptions, minimize, tables)?;
+            tables.bases[1].add(exc_offset, exceptions);
+            return Self::add_descriptor(set, exc_offset, None, tables);
+        }
+        let offset = self.add_plain_row(groups, &entries, minimize, tables)?;
+        tables.bases[1].add(offset, entries);
         Ok(offset)
     }
 
     fn add_described_row(
-        &mut self,
+        &self,
         set: Vec<u16>,
         diff: &[(usize, u32)],
         base: usize,
-        is_goto: bool,
+        kind: SymbolType,
         tables: &mut SmallTables,
     ) -> RenderResult<usize> {
-        let kind = if is_goto {
-            SymbolType::NonTerminal
-        } else {
-            SymbolType::Terminal
-        };
         let groups = self.entry_groups(diff, kind);
-        let diff = self.add_plain_row(&groups, true, is_goto, tables)?;
-        self.add_descriptor(set, diff, Some(base), tables)
+        let diff_offset = self.add_plain_row(&groups, diff, true, tables)?;
+        Self::add_descriptor(set, diff_offset, Some(base), tables)
     }
 
-    /// Adds a descriptor of a row: the offset of the set of symbols that have entries, the map entry of the
-    /// row of entries that differ from the base (with `SMALL_STATE_BASE_FLAG` when there is a base), and the
-    /// map entry of the base row, if any. Returns its map entry.
     fn add_descriptor(
-        &mut self,
         set: Vec<u16>,
         diff: usize,
         base: Option<usize>,
         tables: &mut SmallTables,
     ) -> RenderResult<usize> {
-        let set_offset =
-            self.add_shared_values(set, &mut tables.symbol_sets, &mut tables.next_index)?;
+        let set_offset = Self::add_shared_values(
+            set,
+            &mut tables.symbol_sets,
+            &mut tables.rows,
+            &mut tables.next_index,
+        )?;
         let diff = if base.is_some() {
             diff | SMALL_STATE_BASE_FLAG
         } else {
@@ -2685,20 +1804,239 @@ impl Generator {
             .chain(base)
             .flat_map(|offset| [(offset & 0xffff) as u16, (offset >> 16) as u16])
             .collect();
-        let offset =
-            self.add_shared_values(descriptor, &mut tables.descriptors, &mut tables.next_index)?;
+        let offset = Self::add_shared_values(
+            descriptor,
+            &mut tables.descriptors,
+            &mut tables.rows,
+            &mut tables.next_index,
+        )?;
         Ok(offset | SMALL_STATE_DESCRIPTOR_FLAG)
     }
 
-    /// Finds the base row whose entries differ from `entries` in the fewest words, and returns it with those
-    /// differing entries. `base_value` gives the value of a symbol that the base row lacks; `probes` select the
-    /// candidates, which share the most of these entries.
-    fn best_delta(
+    fn add_plain_row(
         &self,
+        groups: &SmallStateGroups,
+        entries: &[(usize, u32)],
+        minimize: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        if let Some(&offset) = tables.row_offsets.get(entries) {
+            return Ok(offset);
+        }
+        let offset = self.add_small_parse_rows(groups, entries, minimize, tables)?;
+        tables.row_offsets.insert(entries.to_vec(), offset);
+        Ok(offset)
+    }
+
+    fn plain_row_words(
+        &self,
+        groups: &SmallStateGroups,
+        entries: &[(usize, u32)],
+        minimize: bool,
+        tables: &SmallTables,
+    ) -> usize {
+        let bitmap_words = Self::bitmap_row_words(entries, &tables.bitmap_headers);
+        let (flag, words) = Self::choose_small_state_encoding(
+            groups.iter().map(|(_, symbols)| symbols.len()),
+            bitmap_words,
+            minimize,
+        );
+        self.shared_parse_row_words(groups, minimize || flag == 0, &tables.symbol_sets)
+            .filter(|&shared_words| shared_words < words)
+            .unwrap_or(words)
+    }
+
+    fn add_small_parse_rows(
+        &self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        entries: &[(usize, u32)],
+        minimize: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<usize> {
+        let header = Self::bitmap_header(entries);
+        let bitmap_words = if entries.is_empty() {
+            usize::MAX
+        } else {
+            let hdr_words = if tables.bitmap_headers.contains_key(&header) {
+                0
+            } else {
+                header.len()
+            };
+            hdr_words + 2 + entries.len()
+        };
+        let (flag, words) = Self::choose_small_state_encoding(
+            groups.iter().map(|(_, symbols)| symbols.len()),
+            bitmap_words,
+            minimize,
+        );
+        if let Some(offset) =
+            self.encode_shared_parse_row(groups, words, minimize || flag == 0, tables)?
+        {
+            return Ok(offset);
+        }
+        if flag == SMALL_STATE_BITMAP_FLAG {
+            let hdr_offset = Self::add_shared_values(
+                header,
+                &mut tables.bitmap_headers,
+                &mut tables.rows,
+                &mut tables.next_index,
+            )?;
+            let mut values = Vec::with_capacity(2 + entries.len());
+            values.extend([(hdr_offset & 0xffff) as u16, (hdr_offset >> 16) as u16]);
+            values.extend(entries.iter().map(|&(_, value)| value as u16));
+            return Self::push_row(values, SMALL_STATE_BITMAP_FLAG, tables);
+        }
+        let values = self.encode_grouped_or_pair_row(groups, entries, flag);
+        Self::push_row(values, flag, tables)
+    }
+
+    fn push_row(values: Vec<u16>, flag: usize, tables: &mut SmallTables) -> RenderResult<usize> {
+        let index = tables.next_index;
+        tables.next_index += values.len();
+        if tables.next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
+            return Err(RenderError::SparseTable(tables.next_index));
+        }
+        tables.rows.push(SmallParseRow { index, values });
+        Ok(index | flag)
+    }
+
+    fn bitmap_row_words(
+        entries: &[(usize, u32)],
+        bitmap_headers: &FxHashMap<Vec<u16>, usize>,
+    ) -> usize {
+        if entries.is_empty() {
+            return usize::MAX;
+        }
+        let header = Self::bitmap_header(entries);
+        let hdr_words = if bitmap_headers.contains_key(&header) {
+            0
+        } else {
+            header.len()
+        };
+        hdr_words + 2 + entries.len()
+    }
+
+    fn bitmap_header(entries: &[(usize, u32)]) -> Vec<u16> {
+        let Some((&(first, _), &(last, _))) = entries.first().zip(entries.last()) else {
+            return vec![0, 0];
+        };
+        let first_block = first / 64;
+        let block_count = last / 64 - first_block + 1;
+        let mut header = vec![0u16; 2 + block_count * 5];
+        header[0] = first_block as u16;
+        header[1] = block_count as u16;
+        for &(order, _) in entries {
+            let block = order / 64 - first_block;
+            let bit = order % 64;
+            header[2 + block * 5 + bit / 16] |= 1u16 << (bit % 16);
+        }
+        let mut rank = 0u16;
+        for block in 0..block_count {
+            let base = 2 + block * 5;
+            header[base + 4] = rank;
+            let ones = header[base].count_ones()
+                + header[base + 1].count_ones()
+                + header[base + 2].count_ones()
+                + header[base + 3].count_ones();
+            rank += ones as u16;
+        }
+        header
+    }
+
+    fn encode_shared_parse_row(
+        &self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        unshared_words: usize,
+        allow_many_groups: bool,
+        tables: &mut SmallTables,
+    ) -> RenderResult<Option<usize>> {
+        if groups.len() > 4 && !allow_many_groups {
+            return Ok(None);
+        }
+        let sets = groups
+            .iter()
+            .map(|(_, symbols)| self.symbol_set(symbols))
+            .collect::<Vec<_>>();
+        let words = 1
+            + groups.len() * 3
+            + sets
+                .iter()
+                .filter(|set| !tables.symbol_sets.contains_key(*set))
+                .map(Vec::len)
+                .sum::<usize>();
+        if words >= unshared_words {
+            return Ok(None);
+        }
+        let mut offsets = Vec::with_capacity(sets.len());
+        for set in sets {
+            let offset = Self::add_shared_values(
+                set,
+                &mut tables.symbol_sets,
+                &mut tables.rows,
+                &mut tables.next_index,
+            )?;
+            offsets.push(offset);
+        }
+        let mut values = Vec::with_capacity(1 + groups.len() * 3);
+        values.push(groups.len() as u16);
+        for (((value, _), _), set_offset) in groups.iter().zip(offsets) {
+            values.extend([
+                *value as u16,
+                (set_offset & 0xffff) as u16,
+                (set_offset >> 16) as u16,
+            ]);
+        }
+        Self::push_row(values, SMALL_STATE_SET_FLAG, tables).map(Some)
+    }
+
+    fn shared_parse_row_words(
+        &self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        allow_many_groups: bool,
+        symbol_sets: &FxHashMap<Vec<u16>, usize>,
+    ) -> Option<usize> {
+        if groups.len() > 4 && !allow_many_groups {
+            return None;
+        }
+        let set_words = groups
+            .iter()
+            .map(|(_, symbols)| self.symbol_set(symbols))
+            .filter(|set| !symbol_sets.contains_key(set))
+            .map(|set| set.len())
+            .sum::<usize>();
+        Some(1 + groups.len() * 3 + set_words)
+    }
+
+    fn encode_grouped_or_pair_row(
+        &self,
+        groups: &[((u32, SymbolType), Vec<Symbol>)],
+        entries: &[(usize, u32)],
+        flag: usize,
+    ) -> Vec<u16> {
+        if flag == SMALL_STATE_PAIR_FLAG {
+            let mut row = Vec::with_capacity(1 + entries.len() * 2);
+            row.push(entries.len() as u16);
+            for &(symbol, value) in entries {
+                row.extend([symbol as u16, value as u16]);
+            }
+            return row;
+        }
+        let mut row = vec![groups.len() as u16];
+        for ((value, _), symbols) in groups {
+            row.extend([*value as u16, symbols.len() as u16]);
+            row.extend(
+                symbols
+                    .iter()
+                    .map(|symbol| self.symbol_order[symbol] as u16),
+            );
+        }
+        row
+    }
+
+    fn best_delta(
         bases: &RowBases,
         entries: &[(usize, u32)],
         probes: &[(usize, u32)],
-        is_goto: bool,
         base_value: impl Fn(usize) -> u32,
     ) -> Option<(usize, Vec<(usize, u32)>)> {
         let mut scores = FxHashMap::<u32, u32>::default();
@@ -2732,19 +2070,77 @@ impl Generator {
                     .collect::<Vec<_>>();
                 (base as usize, diff)
             })
-            .min_by_key(|(base, diff)| (self.delta_words(diff, is_goto), *base))
+            .min_by_key(|(base, diff)| (Self::delta_words(diff), *base))
     }
 
-    fn delta_words(&self, entries: &[(usize, u32)], is_goto: bool) -> usize {
+    fn delta_words(entries: &[(usize, u32)]) -> usize {
         let mut counts = FxHashMap::<u32, usize>::default();
         for &(_, value) in entries {
             *counts.entry(value).or_default() += 1;
         }
-        self.small_state_encoding(counts.into_values(), true, is_goto)
-            .1
+        Self::small_state_encoding(counts.into_values(), Self::span_blocks64(entries), true).1
     }
 
-    /// The entries of a row as symbol orders and values, sorted by symbol order.
+    fn small_state_encoding(
+        group_sizes: impl Iterator<Item = usize>,
+        span_blocks: usize,
+        minimize: bool,
+    ) -> (usize, usize) {
+        let sizes = group_sizes.collect::<Vec<_>>();
+        let entry_count = sizes.iter().sum::<usize>();
+        let bitmap_words = if span_blocks == 0 {
+            usize::MAX
+        } else {
+            4 + 5 * span_blocks + entry_count
+        };
+        Self::choose_small_state_encoding(sizes.into_iter(), bitmap_words, minimize)
+    }
+
+    fn choose_small_state_encoding(
+        group_sizes: impl Iterator<Item = usize>,
+        bitmap_words: usize,
+        minimize: bool,
+    ) -> (usize, usize) {
+        let mut entry_count = 0;
+        let mut group_count = 0;
+        let mut lookup_steps = 0;
+        for size in group_sizes {
+            entry_count += size;
+            group_count += 1;
+            lookup_steps += if size < 16 {
+                size
+            } else {
+                size.ilog2() as usize + 1
+            };
+        }
+        let grouped = (0, 1 + 2 * group_count + entry_count);
+        let bitmap = (SMALL_STATE_BITMAP_FLAG, bitmap_words);
+        let pairs = (SMALL_STATE_PAIR_FLAG, 1 + 2 * entry_count);
+        if minimize {
+            [bitmap, pairs, grouped]
+                .into_iter()
+                .min_by_key(|&(_, words)| words)
+                .unwrap()
+        } else if entry_count >= BITMAP_STATE_MIN_ENTRIES
+            && (group_count >= 8
+                || lookup_steps > MAX_GROUPED_LOOKUP_STEPS
+                || bitmap.1 <= grouped.1)
+        {
+            bitmap
+        } else if group_count >= 8 || entry_count <= 2 * group_count {
+            pairs
+        } else {
+            grouped
+        }
+    }
+
+    fn span_blocks64(entries: &[(usize, u32)]) -> usize {
+        entries
+            .first()
+            .zip(entries.last())
+            .map_or(0, |(&(first, _), &(last, _))| last / 64 - first / 64 + 1)
+    }
+
     fn row_entries(&self, groups: &SmallStateGroups) -> Vec<(usize, u32)> {
         let mut entries = groups
             .iter()
@@ -2758,7 +2154,6 @@ impl Generator {
         entries
     }
 
-    /// Groups entries as `small_state_groups` does.
     fn entry_groups(&self, entries: &[(usize, u32)], kind: SymbolType) -> SmallStateGroups {
         let mut groups = FxHashMap::<u32, Vec<Symbol>>::default();
         for &(order, value) in entries {
@@ -2786,69 +2181,36 @@ impl Generator {
         }
     }
 
-    /// Adds `values` as a row unless an identical row was added to `rows` before, and returns its offset.
-    fn add_shared_values(
-        &mut self,
-        values: Vec<u16>,
-        rows: &mut FxHashMap<Vec<u16>, usize>,
-        next_index: &mut usize,
-    ) -> RenderResult<usize> {
-        if let Some(&offset) = rows.get(&values) {
-            return Ok(offset);
+    fn symbol_set(&self, symbols: &[Symbol]) -> Vec<u16> {
+        let first = self.symbol_order[&symbols[0]] / 16;
+        let last = self.symbol_order[symbols.last().unwrap()] / 16;
+        let mut set = vec![0u16; 2 + last - first + 1];
+        set[0] = first as u16;
+        set[1] = (last - first + 1) as u16;
+        for symbol in symbols {
+            let id = self.symbol_order[symbol];
+            set[2 + id / 16 - first] |= 1 << (id % 16);
         }
-        let row = SmallParseRow {
-            index: *next_index,
-            values,
-        };
-        self.add_small_parse_row(&row);
-        *next_index += row.values.len();
-        if *next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
-            return Err(RenderError::SparseTable(*next_index));
-        }
-        rows.insert(row.values, row.index);
-        Ok(row.index)
+        set
     }
 
-    /// Adds the rows encoding `groups` and returns the map entry that refers to them.
-    fn add_small_parse_rows(
-        &mut self,
-        groups: &[((u32, SymbolType), Vec<Symbol>)],
-        minimize: bool,
-        is_goto: bool,
-        symbol_sets: &mut FxHashMap<Vec<u16>, usize>,
+    fn add_shared_values(
+        values: Vec<u16>,
+        map: &mut FxHashMap<Vec<u16>, usize>,
+        rows: &mut Vec<SmallParseRow>,
         next_index: &mut usize,
     ) -> RenderResult<usize> {
-        let (flag, words) = self.small_state_encoding(
-            groups.iter().map(|(_, symbols)| symbols.len()),
-            minimize,
-            is_goto,
-        );
-        let shared = self.encode_shared_parse_row(
-            groups,
-            words,
-            minimize || flag == 0,
-            symbol_sets,
-            next_index,
-        )?;
-        let offset = if let Some(shared) = shared {
-            for row in shared.rows {
-                self.add_small_parse_row(&row);
-            }
-            shared.offset
-        } else {
-            let row = SmallParseRow {
-                index: *next_index,
-                values: self.encode_small_parse_row(groups, flag, is_goto),
-            };
-            self.add_small_parse_row(&row);
-            let offset = *next_index | flag;
-            *next_index += row.values.len();
-            offset
-        };
+        if let Some(&offset) = map.get(&values) {
+            return Ok(offset);
+        }
+        let index = *next_index;
+        *next_index += values.len();
         if *next_index >= SMALL_STATE_DESCRIPTOR_FLAG {
             return Err(RenderError::SparseTable(*next_index));
         }
-        Ok(offset)
+        map.insert(values.clone(), index);
+        rows.push(SmallParseRow { index, values });
+        Ok(index)
     }
 
     fn add_small_parse_row(&mut self, row: &SmallParseRow) {
@@ -2872,19 +2234,21 @@ impl Generator {
     ) -> (SmallStateGroups, SmallStateGroups) {
         let state = &self.parse_table.states[state_id];
         let mut groups = FxHashMap::<(u32, SymbolType), Vec<Symbol>>::default();
-        let mut terminals = state.terminal_entries.iter().collect::<Vec<_>>();
-        terminals.sort_unstable_by_key(|(symbol, _)| self.symbol_order[symbol]);
-        for (&symbol, &entry) in terminals {
-            let value = Self::get_parse_action_list_id(
-                entry,
-                &self.parse_table.action_lists,
-                parse_table_entries,
-                next_parse_action_list_index,
-            );
-            groups
-                .entry((value, SymbolType::Terminal))
-                .or_default()
-                .push(symbol);
+        if state_id >= self.large_state_count {
+            let mut terminals = state.terminal_entries.iter().collect::<Vec<_>>();
+            terminals.sort_unstable_by_key(|(symbol, _)| self.symbol_order[symbol]);
+            for (&symbol, &entry) in terminals {
+                let value = Self::get_parse_action_list_id(
+                    entry,
+                    &self.parse_table.action_lists,
+                    parse_table_entries,
+                    next_parse_action_list_index,
+                );
+                groups
+                    .entry((value, SymbolType::Terminal))
+                    .or_default()
+                    .push(symbol);
+            }
         }
         for (&symbol, &action) in state.nonterminal_entries.iter() {
             let value = self.small_goto_value(action, state_id);
@@ -2905,188 +2269,6 @@ impl Generator {
             .partition(|((_, kind), _)| *kind == SymbolType::Terminal)
     }
 
-    /// The symbols of a small state's terminal or goto row: the first symbol and the count.
-    const fn small_row_symbols(&self, is_goto: bool) -> (usize, usize) {
-        if is_goto {
-            (
-                self.token_count,
-                self.parse_table.symbols.len() - self.token_count,
-            )
-        } else {
-            (0, self.token_count)
-        }
-    }
-
-    fn encode_small_parse_row(
-        &self,
-        groups: &[((u32, SymbolType), Vec<Symbol>)],
-        flag: usize,
-        is_goto: bool,
-    ) -> Vec<u16> {
-        if flag == 0 {
-            let mut row = vec![groups.len() as u16];
-            for ((value, _), symbols) in groups {
-                row.extend([*value as u16, symbols.len() as u16]);
-                row.extend(
-                    symbols
-                        .iter()
-                        .map(|symbol| self.symbol_order[symbol] as u16),
-                );
-            }
-            return row;
-        }
-        let mut entries = groups
-            .iter()
-            .flat_map(|((value, _), symbols)| {
-                symbols
-                    .iter()
-                    .map(|symbol| (self.symbol_order[symbol], *value as u16))
-            })
-            .collect::<Vec<_>>();
-        entries.sort_unstable_by_key(|&(symbol, _)| symbol);
-        if flag == SMALL_STATE_PAIR_FLAG {
-            let mut row = vec![entries.len() as u16];
-            row.extend(
-                entries
-                    .into_iter()
-                    .flat_map(|(symbol, value)| [symbol as u16, value]),
-            );
-            return row;
-        }
-        let (first_symbol, symbol_count) = self.small_row_symbols(is_goto);
-        let blocks = symbol_count.div_ceil(16);
-        let mut row = vec![0u16; blocks * 2];
-        for &(symbol, _) in &entries {
-            let symbol = symbol - first_symbol;
-            row[(symbol / 16) * 2] |= 1 << (symbol % 16);
-        }
-        let mut rank = 0;
-        for block in 0..blocks {
-            row[block * 2 + 1] = rank;
-            rank += row[block * 2].count_ones() as u16;
-        }
-        row.extend(entries.into_iter().map(|(_, value)| value));
-        row
-    }
-
-    fn encode_shared_parse_row(
-        &self,
-        groups: &[((u32, SymbolType), Vec<Symbol>)],
-        unshared_words: usize,
-        allow_many_groups: bool,
-        symbol_sets: &mut FxHashMap<Vec<u16>, usize>,
-        next_table_index: &mut usize,
-    ) -> RenderResult<Option<SharedParseRows>> {
-        if groups.len() > 4 && !allow_many_groups {
-            return Ok(None);
-        }
-        let sets = groups
-            .iter()
-            .map(|(_, symbols)| self.symbol_set(symbols))
-            .collect::<Vec<_>>();
-        let words = 1
-            + groups.len() * 3
-            + sets
-                .iter()
-                .filter(|set| !symbol_sets.contains_key(*set))
-                .map(Vec::len)
-                .sum::<usize>();
-        if words >= unshared_words {
-            return Ok(None);
-        }
-        if *next_table_index + words >= SMALL_STATE_DESCRIPTOR_FLAG {
-            return Err(RenderError::SparseTable(*next_table_index + words));
-        }
-        let mut rows = Vec::new();
-        let mut offsets = Vec::with_capacity(sets.len());
-        for set in sets {
-            let offset = *symbol_sets.entry(set.clone()).or_insert_with(|| {
-                let offset = *next_table_index;
-                rows.push(SmallParseRow {
-                    index: offset,
-                    values: set.clone(),
-                });
-                *next_table_index += set.len();
-                offset
-            });
-            offsets.push(offset);
-        }
-        let offset = *next_table_index;
-        let mut values = vec![groups.len() as u16];
-        for (((value, _), _), set_offset) in groups.iter().zip(offsets) {
-            values.extend([
-                *value as u16,
-                (set_offset & 0xffff) as u16,
-                (set_offset >> 16) as u16,
-            ]);
-        }
-        *next_table_index += values.len();
-        rows.push(SmallParseRow {
-            index: offset,
-            values,
-        });
-        Ok(Some(SharedParseRows {
-            offset: offset | SMALL_STATE_SET_FLAG,
-            rows,
-        }))
-    }
-
-    fn symbol_set(&self, symbols: &[Symbol]) -> Vec<u16> {
-        let first = self.symbol_order[&symbols[0]] / 16;
-        let last = self.symbol_order[symbols.last().unwrap()] / 16;
-        let mut set = vec![0u16; 2 + last - first + 1];
-        set[0] = first as u16;
-        set[1] = (last - first + 1) as u16;
-        for symbol in symbols {
-            let id = self.symbol_order[symbol];
-            set[2 + id / 16 - first] |= 1 << (id % 16);
-        }
-        set
-    }
-
-    fn small_state_encoding(
-        &self,
-        group_sizes: impl Iterator<Item = usize>,
-        minimize: bool,
-        is_goto: bool,
-    ) -> (usize, usize) {
-        let mut entry_count = 0;
-        let mut group_count = 0;
-        let mut lookup_steps = 0;
-        for size in group_sizes {
-            entry_count += size;
-            group_count += 1;
-            // Match ts_language_lookup_small_compact's linear/binary search split.
-            lookup_steps += if size < 16 {
-                size
-            } else {
-                size.ilog2() as usize + 1
-            };
-        }
-        let grouped = (0, 1 + 2 * group_count + entry_count);
-        let bitmap = (
-            SMALL_STATE_BITMAP_FLAG,
-            2 * self.small_row_symbols(is_goto).1.div_ceil(16) + entry_count,
-        );
-        let pairs = (SMALL_STATE_PAIR_FLAG, 1 + 2 * entry_count);
-        if minimize {
-            [bitmap, pairs, grouped]
-                .into_iter()
-                .min_by_key(|&(_, words)| words)
-                .unwrap()
-        } else if entry_count >= BITMAP_STATE_MIN_ENTRIES
-            && (group_count >= 8
-                || lookup_steps > MAX_GROUPED_LOOKUP_STEPS
-                || bitmap.1 <= grouped.1)
-        {
-            bitmap
-        } else if group_count >= 8 || entry_count <= 2 * group_count {
-            pairs
-        } else {
-            grouped
-        }
-    }
-
     fn small_goto_value(&self, action: GotoAction, state_id: usize) -> u32 {
         let destination = match action {
             GotoAction::Goto(id) => id,
@@ -3104,10 +2286,13 @@ impl Generator {
         parse_table_entries: Vec<(u32, ActionListId)>,
         reduce_records_start: u32,
     ) -> RenderResult<()> {
+        if reduce_records_start as usize > MAX_ACTION_LIST_OFFSET {
+            return Err(RenderError::ParseTable(reduce_records_start as usize));
+        }
         let reduce_records = self.reduce_records(&parse_table_entries, reduce_records_start);
         let word_count = reduce_records_start as usize + 2 * reduce_records.len();
         if word_count > usize::from(u16::MAX) {
-            Err(RenderError::ParseTable(word_count))?;
+            return Err(RenderError::ParseTable(word_count));
         }
 
         add_line!(self, "static const uint32_t ts_parse_actions[] = {{");
@@ -3115,7 +2300,7 @@ impl Generator {
         for (i, id) in parse_table_entries {
             let actions = self.parse_table.action_lists.get(id);
             if actions.len() > MAX_ACTION_LIST_LENGTH {
-                Err(RenderError::ActionListLength(actions.len()))?;
+                return Err(RenderError::ActionListLength(actions.len()));
             }
             let actions = actions
                 .iter()
@@ -3123,9 +2308,8 @@ impl Generator {
                 .collect::<Vec<_>>();
             add_line!(
                 self,
-                "[{i}] = ACTION_LIST({}, {}){}{},",
+                "[{i}] = ACTION_LIST({}){}{},",
                 actions.len(),
-                id.reusable(),
                 if actions.is_empty() { "" } else { " | " },
                 actions.join(", ")
             );
@@ -3175,11 +2359,7 @@ impl Generator {
             ParseAction::Accept => "ACCEPT_INPUT()".to_string(),
             ParseAction::Recover => "RECOVER()".to_string(),
             ParseAction::ShiftExtra => "SHIFT_EXTRA()".to_string(),
-            ParseAction::Shift {
-                state,
-                is_repetition: true,
-            } => format!("SHIFT_REPEAT({state})"),
-            ParseAction::Shift { state, .. } => format!("SHIFT({state})"),
+            ParseAction::Shift { state } => format!("SHIFT({state})"),
             ParseAction::Reduce {
                 symbol,
                 child_count,
@@ -3203,43 +2383,8 @@ impl Generator {
         add_line!(self, r#"extern "C" {{"#);
         add_line!(self, "#endif");
 
-        if !self.syntax_grammar.external_tokens.is_empty() {
-            add_line!(self, "void *{external_scanner_name}_create(void);");
-            add_line!(self, "void {external_scanner_name}_destroy(void *);");
-            add_line!(
-                self,
-                "bool {external_scanner_name}_scan(void *, TSLexer *, const bool *);",
-            );
-            add_line!(
-                self,
-                "unsigned {external_scanner_name}_serialize(void *, char *);",
-            );
-            add_line!(
-                self,
-                "void {external_scanner_name}_deserialize(void *, const char *, unsigned);",
-            );
-            add_line!(self, "");
-        }
+        self.add_external_scanner_declarations(&external_scanner_name);
 
-        if self.external_state_stride > 0 {
-            add_line!(
-                self,
-                "static bool ts_external_scanner_scan(void *payload, TSLexer *lexer, const bool *states) {{"
-            );
-            indent!(self);
-            add_line!(self, "const uint8_t *bits = (const uint8_t *)states;");
-            add_line!(self, "bool valid[EXTERNAL_TOKEN_COUNT];");
-            add_line!(
-                self,
-                "for (unsigned i = 0; i < EXTERNAL_TOKEN_COUNT; i++) valid[i] = (bits[i / 8] >> (i % 8)) & 1;"
-            );
-            add_line!(
-                self,
-                "return {external_scanner_name}_scan(payload, lexer, valid);"
-            );
-            dedent!(self);
-            add_line!(self, "}}");
-        }
         add_line!(self, "#ifdef TREE_SITTER_HIDE_SYMBOLS");
         add_line!(self, "#define TS_PUBLIC");
         add_line!(self, "#elif defined(_WIN32)");
@@ -3259,9 +2404,52 @@ impl Generator {
         indent!(self);
         add_line!(self, "static const TSLanguage language = {{");
         indent!(self);
-        add_line!(self, ".abi_version = LANGUAGE_VERSION,");
+        self.add_language_table_fields();
+        self.add_language_lex_and_scanner_fields(&external_scanner_name);
+        dedent!(self);
+        add_line!(self, "}};");
+        add_line!(self, "return &language;");
+        dedent!(self);
+        add_line!(self, "}}");
+        add_line!(self, "#ifdef __cplusplus");
+        add_line!(self, "}}");
+        add_line!(self, "#endif");
+    }
 
-        // Quantities
+    fn add_external_scanner_declarations(&mut self, name: &str) {
+        if !self.syntax_grammar.external_tokens.is_empty() {
+            for decl in [
+                format!("void *{name}_create(void);"),
+                format!("void {name}_destroy(void *);"),
+                format!("bool {name}_scan(void *, TSLexer *, const bool *);"),
+                format!("unsigned {name}_serialize(void *, char *);"),
+                format!("void {name}_deserialize(void *, const char *, unsigned);"),
+            ] {
+                add_line!(self, "{decl}");
+            }
+            add_line!(self, "");
+        }
+        if self.external_state_stride > 0 {
+            add_line!(
+                self,
+                "static bool ts_external_scanner_scan(void *payload, TSLexer *lexer, const bool *states) {{"
+            );
+            indent!(self);
+            for stmt in [
+                "const uint8_t *bits = (const uint8_t *)states;".to_string(),
+                "bool valid[EXTERNAL_TOKEN_COUNT];".to_string(),
+                "for (unsigned i = 0; i < EXTERNAL_TOKEN_COUNT; i++) valid[i] = (bits[i / 8] >> (i % 8)) & 1;".to_string(),
+                format!("return {name}_scan(payload, lexer, valid);"),
+            ] {
+                add_line!(self, "{stmt}");
+            }
+            dedent!(self);
+            add_line!(self, "}}");
+        }
+    }
+
+    fn add_language_table_fields(&mut self) {
+        add_line!(self, ".abi_version = LANGUAGE_VERSION,");
         add_line!(self, ".symbol_count = SYMBOL_COUNT,");
         add_line!(self, ".alias_count = ALIAS_COUNT,");
         add_line!(self, ".token_count = TOKEN_COUNT,");
@@ -3275,19 +2463,25 @@ impl Generator {
             self,
             ".max_alias_sequence_length = MAX_ALIAS_SEQUENCE_LENGTH,"
         );
-
-        // Parse table
-        add_line!(self, ".parse_table = &ts_parse_table[0][0],");
-        if self.large_state_count < self.parse_table.states.len() {
+        if self.large_state_count > 0 && self.token_count > 0 {
+            add_line!(self, ".parse_table = &ts_parse_table[0][0],");
+        }
+        if self.has_small_parse_table() {
             add_line!(self, ".small_parse_table = ts_small_parse_table,");
+        }
+        if self.large_state_count < self.parse_table.states.len() {
             add_line!(self, ".small_parse_table_map = ts_small_parse_table_map,");
         }
         add_line!(self, ".parse_actions = ts_parse_actions,");
+        self.add_language_metadata_fields();
+    }
 
-        // Metadata
-        add_line!(self, ".symbol_names = ts_symbol_names,");
+    fn add_language_metadata_fields(&mut self) {
+        add_line!(self, ".string_data = (const char *)ts_string_data,");
+        add_line!(self, ".string_data_size = {},", self.string_data_size);
+        add_line!(self, ".symbol_name_offsets = ts_symbol_name_offsets,");
         if !self.field_names.is_empty() {
-            add_line!(self, ".field_names = ts_field_names,");
+            add_line!(self, ".field_name_offsets = ts_field_name_offsets,");
             add_line!(self, ".field_map_slices = ts_field_map_slices,");
             add_line!(self, ".field_map_entries = ts_field_map_entries,");
         }
@@ -3307,26 +2501,27 @@ impl Generator {
                 self.alias_sequence_count
             );
         }
+    }
 
-        // Lexing
-        add_line!(self, ".lex_modes = (const void*)ts_lex_modes,");
+    fn add_language_lex_and_scanner_fields(&mut self, external_scanner_name: &str) {
+        add_line!(self, ".lex_modes = (const void *)ts_lex_modes,");
         if self.lex_mode_count > 0 {
             add_line!(self, ".lex_mode_ids = ts_lex_mode_ids,");
             add_line!(self, ".lex_mode_count = {},", self.lex_mode_count);
         }
-        add_line!(self, ".lex_fn = ts_lex,");
+        add_line!(self, ".lex_table = ts_lex_table,");
         if let Some(keyword_capture_token) = self.syntax_grammar.word_token {
-            add_line!(self, ".keyword_lex_fn = ts_lex_keywords,");
-            if self.uses_keyword_table {
-                add_line!(self, ".keyword_lookup_fn = ts_keyword_lookup,");
-            }
+            add_line!(self, ".keyword_lex_table = ts_keyword_lex_table,");
             add_line!(
                 self,
                 ".keyword_capture_token = {},",
                 self.symbol_ids[&keyword_capture_token]
             );
         }
+        self.add_language_external_and_reserved_fields(external_scanner_name);
+    }
 
+    fn add_language_external_and_reserved_fields(&mut self, external_scanner_name: &str) {
         if !self.syntax_grammar.external_tokens.is_empty() {
             add_line!(self, ".external_scanner = {{");
             indent!(self);
@@ -3344,7 +2539,6 @@ impl Generator {
             dedent!(self);
             add_line!(self, "}},");
         }
-
         if self.external_state_stride > 0 {
             add_line!(
                 self,
@@ -3352,9 +2546,11 @@ impl Generator {
                 self.external_state_stride
             );
         }
+        self.add_language_reserved_and_metadata_fields();
+    }
 
+    fn add_language_reserved_and_metadata_fields(&mut self) {
         add_line!(self, ".name = \"{}\",", self.language_name);
-
         if self.reserved_word_sets.len() > 1 {
             if self.uses_reserved_word_slices {
                 add_line!(self, ".reserved_words = ts_reserved_words,");
@@ -3363,19 +2559,11 @@ impl Generator {
                 add_line!(self, ".reserved_words = &ts_reserved_words[0][0],");
             }
         }
-
         add_line!(
             self,
-            ".max_reserved_word_set_size = {},",
-            self.reserved_word_sets
-                .iter()
-                .map(TokenSet::len)
-                .max()
-                .unwrap()
+            ".max_reserved_word_set_size = MAX_RESERVED_WORD_SET_SIZE,"
         );
-
         let metadata = self.metadata.unwrap_or_default();
-
         add_line!(self, ".metadata = {{");
         indent!(self);
         add_line!(self, ".major_version = {},", metadata.major);
@@ -3383,15 +2571,11 @@ impl Generator {
         add_line!(self, ".patch_version = {},", metadata.patch);
         dedent!(self);
         add_line!(self, "}},");
+    }
 
-        dedent!(self);
-        add_line!(self, "}};");
-        add_line!(self, "return &language;");
-        dedent!(self);
-        add_line!(self, "}}");
-        add_line!(self, "#ifdef __cplusplus");
-        add_line!(self, "}}");
-        add_line!(self, "#endif");
+    const fn has_small_parse_table(&self) -> bool {
+        self.parse_table.symbols.len() > self.token_count
+            || self.large_state_count < self.parse_table.states.len()
     }
 
     fn get_parse_action_list_id(
@@ -3400,13 +2584,20 @@ impl Generator {
         parse_action_list_offsets: &mut FxHashMap<ActionListId, u32>,
         next_parse_action_list_index: &mut u32,
     ) -> u32 {
-        if let Some(&index) = parse_action_list_offsets.get(&id) {
+        let key = ActionListId::new(id.index() as u32, false);
+        let actions = pool.get(key);
+        let offset = if let Some(&index) = parse_action_list_offsets.get(&key) {
             index
         } else {
             let result = *next_parse_action_list_index;
-            parse_action_list_offsets.insert(id, result);
-            *next_parse_action_list_index += pool.get(id).len().max(1) as u32;
+            parse_action_list_offsets.insert(key, result);
+            *next_parse_action_list_index += actions.len().max(1) as u32;
             result
+        };
+        if id.reusable() && !actions.is_empty() {
+            offset | PARSE_TABLE_REUSABLE_FLAG
+        } else {
+            offset
         }
     }
 
@@ -3583,73 +2774,14 @@ impl Generator {
         }
         result
     }
-
-    fn sanitize_string(&self, name: StrId) -> String {
-        let name = self.str_pool.resolve(name);
-        let mut result = String::with_capacity(name.len());
-        for c in name.chars() {
-            match c {
-                '\"' => result += "\\\"",
-                '?' => result += "\\?",
-                '\\' => result += "\\\\",
-                '\u{0007}' => result += "\\a",
-                '\u{0008}' => result += "\\b",
-                '\u{000b}' => result += "\\v",
-                '\u{000c}' => result += "\\f",
-                '\n' => result += "\\n",
-                '\r' => result += "\\r",
-                '\t' => result += "\\t",
-                '\0' => result += "\\0",
-                '\u{0001}'..='\u{001f}' => write!(result, "\\x{:02x}", c as u32).unwrap(),
-                '\u{007F}'..='\u{FFFF}' => write!(result, "\\u{:04x}", c as u32).unwrap(),
-                '\u{10000}'..='\u{10FFFF}' => write!(result, "\\U{:08x}", c as u32).unwrap(),
-                _ => result.push(c),
-            }
-        }
-        result
-    }
-
-    fn add_character(&mut self, c: char) {
-        match c {
-            '\'' => add!(self, "'\\''"),
-            '\\' => add!(self, "'\\\\'"),
-            '\u{000c}' => add!(self, "'\\f'"),
-            '\n' => add!(self, "'\\n'"),
-            '\t' => add!(self, "'\\t'"),
-            '\r' => add!(self, "'\\r'"),
-            _ => {
-                if c == '\0' {
-                    add!(self, "0");
-                } else if c == ' ' || c.is_ascii_graphic() {
-                    add!(self, "'{c}'");
-                } else {
-                    add!(self, "0x{:02x}", c as u32);
-                }
-            }
-        }
-    }
 }
 
 /// Returns a String of C code for the given components of a parser.
-///
-/// # Arguments
-///
-/// * `name` - A string slice containing the name of the language
-/// * `parse_table` - The generated parse table for the language
-/// * `main_lex_table` - The generated lexing table for the language
-/// * `keyword_lex_table` - The generated keyword lexing table for the language
-/// * `keyword_capture_token` - A symbol indicating which token is used for keyword capture, if any.
-/// * `syntax_grammar` - The syntax grammar extracted from the language's grammar
-/// * `lexical_grammar` - The lexical grammar extracted from the language's grammar
-/// * `default_aliases` - A map describing the global rename rules that should apply. the keys are
-///   symbols that are *always* aliased in the same way, and the values are the aliases that are
-///   applied to those symbols.
-/// * `str_pool` - A backing pool for `StrId`-identified strings within `syntax_grammar`,
-///   `lexical_grammar`, and `default_aliases`.
 #[expect(
     clippy::too_many_arguments,
     reason = "all parameters are required for code generation"
 )]
+// code-gauge-allow functionParameterCount 9 -- public generator entry point takes pre-built grammar components
 pub fn render_c_code(
     name: StrId,
     tables: Tables,
@@ -3667,8 +2799,6 @@ pub fn render_c_code(
         parse_table: tables.parse_table,
         main_lex_table: tables.main_lex_table,
         keyword_lex_table: tables.keyword_lex_table,
-        large_character_sets: tables.large_character_sets,
-        large_character_set_info: Vec::new(),
         syntax_grammar,
         lexical_grammar,
         default_aliases,

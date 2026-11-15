@@ -252,8 +252,8 @@ impl<'min, 'a> ConflictPass<'min, 'a> {
                     key.0.hash(&mut hasher);
                     for action in minimizer.parse_table.action_lists.get(id) {
                         match *action {
-                            ParseAction::Shift { is_repetition, .. } => {
-                                is_repetition.hash(&mut hasher);
+                            ParseAction::Shift { .. } => {
+                                0u8.hash(&mut hasher);
                             }
                             action => action.hash(&mut hasher),
                         }
@@ -1068,20 +1068,12 @@ impl Minimizer<'_> {
 
         for (action1, action2) in actions1.iter().zip(actions2.iter()) {
             // Two shift actions are equivalent if their destinations are in the same group.
-            if let (
-                ParseAction::Shift {
-                    state: s1,
-                    is_repetition: is_repetition1,
-                },
-                ParseAction::Shift {
-                    state: s2,
-                    is_repetition: is_repetition2,
-                },
-            ) = (action1, action2)
+            if let (ParseAction::Shift { state: s1 }, ParseAction::Shift { state: s2 }) =
+                (action1, action2)
             {
                 let group1 = group_ids_by_state_id[*s1 as usize];
                 let group2 = group_ids_by_state_id[*s2 as usize];
-                if group1 == group2 && is_repetition1 == is_repetition2 {
+                if group1 == group2 {
                     continue;
                 }
                 return Some(Conflict::SplitSuccessors(*s1, *s2));

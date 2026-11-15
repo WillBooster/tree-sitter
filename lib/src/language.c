@@ -28,11 +28,8 @@ static inline TSUnparseableLanguage *ts_language__unparseable(const TSLanguage *
 }
 
 static inline bool ts_language__is_unparseable(const TSLanguage *self) {
-  return (
-    self &&
-    !self->lex_fn &&
-    self->external_scanner.states == (const bool *)self
-  );
+  return self && ts_language_has_supported_abi(self) &&
+    (self->flags & TS_LANGUAGE_FLAG_UNPARSEABLE) != 0;
 }
 
 uint32_t ts_language_current_context_id(void) {
@@ -83,7 +80,9 @@ void ts_language_delete(const TSLanguage *self) {
 }
 
 bool ts_language_is_parseable(const TSLanguage *self) {
-  return self && self->lex_fn;
+  return self && ts_language_has_supported_abi(self) &&
+    self->lex_table != NULL &&
+    !(self->flags & TS_LANGUAGE_FLAG_UNPARSEABLE);
 }
 
 const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
@@ -91,10 +90,11 @@ const TSLanguage *ts_language_copy_without_callbacks(const TSLanguage *self) {
   if (self && ts_language_is_parseable(self)) {
     TSUnparseableLanguage *result = ts_calloc(1, sizeof(TSUnparseableLanguage));
     memcpy(&result->language, self, sizeof(TSLanguage));
-    result->language.lex_fn = NULL;
-    result->language.keyword_lex_fn = NULL;
-    result->language.keyword_lookup_fn = NULL;
-    result->language.external_scanner.states = (const bool *)&result->language;
+    result->language.lex_table = NULL;
+    result->language.keyword_lex_table = NULL;
+    result->language.flags =
+      (uint8_t)((self->flags & ~TS_LANGUAGE_FLAG_WASM) | TS_LANGUAGE_FLAG_UNPARSEABLE);
+    result->language.external_scanner.states = NULL;
     result->language.external_scanner.create = NULL;
     result->language.external_scanner.destroy = NULL;
     result->language.external_scanner.scan = NULL;
@@ -167,45 +167,46 @@ void ts_language_table_entry(
   TSSymbol symbol,
   TableEntry *result
 ) {
-  if (symbol == ts_builtin_sym_error || symbol == ts_builtin_sym_error_repeat) {
+  if (symbol >= self->token_count) {
     result->action_count = 0;
     result->is_reusable = false;
     result->actions = NULL;
-  } else {
-    ts_assert(symbol < self->token_count);
-    uint32_t action_index = ts_language_lookup(self, state, symbol);
-    const uint32_t *actions = &self->parse_actions[action_index];
-    uint32_t action_count = *actions >> TS_PARSE_ACTION_COUNT_SHIFT;
-    while (
-      action_count > 1 &&
-      (actions[action_count - 1] & (TS_PARSE_ACTION_TYPE_MASK | TS_PARSE_ACTION_REPETITION)) ==
-        (TSParseActionTypeShift | TS_PARSE_ACTION_REPETITION)
-    ) {
-      action_count--;
-    }
-    result->action_count = action_count;
-    result->is_reusable = *actions & TS_PARSE_ACTION_REUSABLE;
-    result->actions = actions;
+    return;
   }
+  uint16_t cell = ts_language_lookup(self, state, symbol);
+  const uint32_t *actions = &self->parse_actions[cell & TS_PARSE_TABLE_ACTION_MASK];
+  result->action_count = *actions >> TS_PARSE_ACTION_COUNT_SHIFT;
+  result->is_reusable = (cell & TS_PARSE_TABLE_REUSABLE_FLAG) != 0;
+  result->actions = actions;
 }
 
-static uint16_t ts_language_lookup_shared_set(const TSLanguage *self, uint32_t index, TSSymbol symbol);
+static uint16_t ts_language_lookup_shared_set(
+  const TSLanguage *self,
+  uint32_t offset,
+  TSSymbol symbol
+);
 static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol);
-static uint16_t ts_language_lookup_bitmap(const TSLanguage *self, const uint16_t *data, TSSymbol symbol);
+static uint16_t ts_language_lookup_bitmap(
+  const TSLanguage *self,
+  const uint16_t *data,
+  TSSymbol symbol
+);
 
 uint16_t ts_language_lookup_small_compact(
   const TSLanguage *self,
   uint32_t index,
   TSSymbol symbol
 ) {
-  if ((index & SMALL_STATE_SET_FLAG) == SMALL_STATE_SET_FLAG) {
-    return ts_language_lookup_shared_set(self, index, symbol);
+  uint32_t encoding = index & SMALL_STATE_ENCODING_MASK;
+  uint32_t offset = index & SMALL_STATE_OFFSET_MASK;
+  if (encoding == SMALL_STATE_SET_FLAG) {
+    return ts_language_lookup_shared_set(self, offset, symbol);
   }
-  if (index & SMALL_STATE_BITMAP_FLAG) {
-    return ts_language_lookup_bitmap(self, &self->small_parse_table[index & ~SMALL_STATE_BITMAP_FLAG], symbol);
+  if (encoding == SMALL_STATE_BITMAP_FLAG) {
+    return ts_language_lookup_bitmap(self, &self->small_parse_table[offset], symbol);
   }
-  if (index & SMALL_STATE_PAIR_FLAG) {
-    const uint16_t *pairs = &self->small_parse_table[index & ~SMALL_STATE_PAIR_FLAG];
+  if (encoding == SMALL_STATE_PAIR_FLAG) {
+    const uint16_t *pairs = &self->small_parse_table[offset];
     uint32_t low = 0, high = *(pairs++);
     while (low < high) {
       uint32_t mid = low + (high - low) / 2;
@@ -216,21 +217,24 @@ uint16_t ts_language_lookup_small_compact(
     }
     return 0;
   }
-  return ts_language_lookup_grouped(&self->small_parse_table[index], symbol);
+  return ts_language_lookup_grouped(&self->small_parse_table[offset], symbol);
 }
 
-// A bitmap row covers the symbols of its terminal or goto half, starting from that half's first symbol.
-static uint16_t ts_language_lookup_bitmap(const TSLanguage *self, const uint16_t *data, TSSymbol symbol) {
-  if (symbol >= self->symbol_count) return 0;
-  bool is_goto_row = symbol >= self->token_count;
-  uint32_t row_symbol = is_goto_row ? symbol - self->token_count : symbol;
-  uint32_t row_symbol_count = is_goto_row ? self->symbol_count - self->token_count : self->token_count;
-  uint32_t block = row_symbol / 16;
-  uint32_t bit = 1u << (row_symbol % 16);
-  uint32_t bits = data[block * 2];
-  if (!(bits & bit)) return 0;
-  uint32_t rank = data[block * 2 + 1] + ts_language__count_ones(bits & (bit - 1));
-  return data[2 * ((row_symbol_count + 15) / 16) + rank];
+static uint16_t ts_language_lookup_bitmap(
+  const TSLanguage *self,
+  const uint16_t *data,
+  TSSymbol symbol
+) {
+  const uint16_t *hdr = &self->small_parse_table[ts_language__small_offset(data)];
+  uint32_t block = symbol / 64u - hdr[0];
+  if (block >= hdr[1]) return 0;
+  const uint16_t *blk = &hdr[2u + block * 5u];
+  uint64_t bits = (uint64_t)blk[0] | ((uint64_t)blk[1] << 16) |
+    ((uint64_t)blk[2] << 32) | ((uint64_t)blk[3] << 48);
+  uint64_t mask = (uint64_t)1 << (symbol % 64u);
+  if (!(bits & mask)) return 0;
+  uint32_t rank = blk[4] + ts_language__count_ones64(bits & (mask - 1u));
+  return data[2u + rank];
 }
 
 static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol) {
@@ -265,14 +269,18 @@ static uint16_t ts_language_lookup_grouped(const uint16_t *data, TSSymbol symbol
   return 0;
 }
 
-static uint16_t ts_language_lookup_shared_set(const TSLanguage *self, uint32_t index, TSSymbol symbol) {
-  const uint16_t *data = &self->small_parse_table[index & ~SMALL_STATE_SET_FLAG];
+static uint16_t ts_language_lookup_shared_set(
+  const TSLanguage *self,
+  uint32_t offset,
+  TSSymbol symbol
+) {
+  const uint16_t *data = &self->small_parse_table[offset];
   uint32_t count = *(data++);
   uint32_t block = symbol / 16;
   uint32_t bit = 1u << (symbol % 16);
   for (uint32_t i = 0; i < count; i++, data += 3) {
-    uint32_t offset = data[1] | ((uint32_t)data[2] << 16);
-    const uint16_t *set = &self->small_parse_table[offset];
+    uint32_t set_offset = data[1] | ((uint32_t)data[2] << 16);
+    const uint16_t *set = &self->small_parse_table[set_offset];
     uint32_t word = block - set[0];
     if (word < set[1] && (set[word + 2] & bit)) return data[0];
   }
@@ -280,8 +288,8 @@ static uint16_t ts_language_lookup_shared_set(const TSLanguage *self, uint32_t i
 }
 
 TSLexerMode ts_language_lex_mode_for_state(
-   const TSLanguage *self,
-   TSStateId state
+  const TSLanguage *self,
+  TSStateId state
 ) {
   if (self->lex_mode_ids) state = ts_language_lex_mode_id(self, state);
   return self->lex_modes[state];
@@ -313,13 +321,19 @@ TSSymbolMetadata ts_language_symbol_metadata(
   const TSLanguage *self,
   TSSymbol symbol
 ) {
-  if (symbol == ts_builtin_sym_error)  {
-    return (TSSymbolMetadata) {.visible = true, .named = true};
-  } else if (symbol == ts_builtin_sym_error_repeat) {
-    return (TSSymbolMetadata) {.visible = false, .named = false};
-  } else {
-    return self->symbol_metadata[symbol];
+  if (symbol == ts_builtin_sym_error) {
+    return (TSSymbolMetadata){.visible = true, .named = true};
   }
+  if (symbol == ts_builtin_sym_error_repeat) {
+    return (TSSymbolMetadata){.visible = false, .named = false};
+  }
+  uint8_t flags = self->symbol_metadata[symbol];
+  return (TSSymbolMetadata){
+    .visible = (flags & TS_SYMBOL_METADATA_VISIBLE) != 0,
+    .named = (flags & TS_SYMBOL_METADATA_NAMED) != 0,
+    .supertype = (flags & TS_SYMBOL_METADATA_SUPERTYPE) != 0,
+    .immediate = (flags & TS_SYMBOL_METADATA_IMMEDIATE) != 0,
+  };
 }
 
 TSSymbol ts_language_public_symbol(
@@ -342,7 +356,8 @@ TSStateId ts_language_next_state(
     state >= self->state_count
   ) {
     return 0;
-  } else if (symbol < self->token_count) {
+  }
+  if (symbol < self->token_count) {
     uint32_t count;
     const uint32_t *actions = ts_language_actions(self, state, symbol, &count);
     if (count > 0) {
@@ -352,24 +367,20 @@ TSStateId ts_language_next_state(
       }
     }
     return 0;
-  } else {
-    return ts_language_lookup(self, state, symbol);
   }
+  return ts_language_lookup_goto(self, state, symbol);
 }
 
 const char *ts_language_symbol_name(
   const TSLanguage *self,
   TSSymbol symbol
 ) {
-  if (symbol == ts_builtin_sym_error) {
-    return "ERROR";
-  } else if (symbol == ts_builtin_sym_error_repeat) {
-    return "_ERROR";
-  } else if (symbol < ts_language_symbol_count(self)) {
-    return self->symbol_names[symbol];
-  } else {
-    return NULL;
+  if (symbol == ts_builtin_sym_error) return "ERROR";
+  if (symbol == ts_builtin_sym_error_repeat) return "_ERROR";
+  if (symbol < ts_language_symbol_count(self)) {
+    return self->string_data + self->symbol_name_offsets[symbol];
   }
+  return NULL;
 }
 
 TSSymbol ts_language_symbol_for_name(
@@ -383,7 +394,7 @@ TSSymbol ts_language_symbol_for_name(
   for (TSSymbol i = 0; i < count; i++) {
     TSSymbolMetadata metadata = ts_language_symbol_metadata(self, i);
     if ((!metadata.visible && !metadata.supertype) || metadata.named != is_named) continue;
-    const char *symbol_name = self->symbol_names[i];
+    const char *symbol_name = self->string_data + self->symbol_name_offsets[i];
     if (!strncmp(symbol_name, string, length) && !symbol_name[length]) {
       return self->public_symbol_map[i];
     }
@@ -396,15 +407,10 @@ TSSymbolType ts_language_symbol_type(
   TSSymbol symbol
 ) {
   TSSymbolMetadata metadata = ts_language_symbol_metadata(self, symbol);
-  if (metadata.named && metadata.visible) {
-    return TSSymbolTypeRegular;
-  } else if (metadata.visible) {
-    return TSSymbolTypeAnonymous;
-  } else if (metadata.supertype) {
-    return TSSymbolTypeSupertype;
-  } else {
-    return TSSymbolTypeAuxiliary;
-  }
+  if (metadata.named && metadata.visible) return TSSymbolTypeRegular;
+  if (metadata.visible) return TSSymbolTypeAnonymous;
+  if (metadata.supertype) return TSSymbolTypeSupertype;
+  return TSSymbolTypeAuxiliary;
 }
 
 const char *ts_language_field_name_for_id(
@@ -412,29 +418,50 @@ const char *ts_language_field_name_for_id(
   TSFieldId id
 ) {
   uint32_t count = ts_language_field_count(self);
-  if (count && id <= count) {
-    return self->field_names[id];
-  } else {
-    return NULL;
+  if (id > 0 && id <= count) {
+    return self->string_data + self->field_name_offsets[id - 1u];
   }
+  return NULL;
 }
+
+static int ts_language__compare_field_name(
+  const char *candidate,
+  const char *name,
+  uint32_t name_length
+);
 
 TSFieldId ts_language_field_id_for_name(
   const TSLanguage *self,
   const char *name,
   uint32_t name_length
 ) {
-  uint16_t count = (uint16_t)ts_language_field_count(self);
-  for (TSSymbol i = 1; i < count + 1; i++) {
-    switch (strncmp(name, self->field_names[i], name_length)) {
-      case 0:
-        if (self->field_names[i][name_length] == 0) return i;
-        break;
-      case -1:
-        return 0;
-      default:
-        break;
+  uint32_t low = 0;
+  uint32_t high = ts_language_field_count(self);
+  while (low < high) {
+    uint32_t mid = low + (high - low) / 2u;
+    const char *candidate = self->string_data + self->field_name_offsets[mid];
+    int cmp = ts_language__compare_field_name(candidate, name, name_length);
+    if (cmp < 0) {
+      low = mid + 1u;
+    } else if (cmp > 0) {
+      high = mid;
+    } else {
+      return (TSFieldId)(mid + 1u);
     }
   }
   return 0;
+}
+
+static int ts_language__compare_field_name(
+  const char *candidate,
+  const char *name,
+  uint32_t name_length
+) {
+  for (uint32_t i = 0; i < name_length; i++) {
+    uint8_t a = (uint8_t)candidate[i];
+    uint8_t b = (uint8_t)name[i];
+    if (a != b) return a < b ? -1 : 1;
+    if (a == 0) return -1;
+  }
+  return candidate[name_length] == '\0' ? 0 : 1;
 }

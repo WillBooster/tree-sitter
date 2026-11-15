@@ -8,7 +8,6 @@ mod token_conflicts;
 
 use std::collections::BTreeSet;
 
-pub use build_lex_table::LARGE_CHARACTER_RANGE_COUNT;
 use build_parse_table::BuildTableResult;
 pub use build_parse_table::ParseTableBuilderError;
 use log::{debug, info};
@@ -28,7 +27,6 @@ use self::{
 use crate::{
     Diagnostic, OptLevel,
     grammars::{InlinedProductionMap, LexicalGrammar, SyntaxGrammar},
-    nfa::CharacterSet,
     node_types::VariableInfo,
     rules::{AliasMap, Symbol, SymbolType, TokenSet},
     strpool::StrPool,
@@ -41,7 +39,6 @@ pub struct Tables {
     pub parse_table: ParseTable,
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
-    pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -102,6 +99,7 @@ impl SymbolIndexer {
     clippy::too_many_arguments,
     reason = "all parameters are required for table building"
 )]
+// code-gauge-allow functionParameterCount 9 -- table builder entry point takes separated grammar components
 pub fn build_tables(
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
@@ -203,7 +201,6 @@ pub fn build_tables(
         parse_table,
         main_lex_table: lex_tables.main_lex_table,
         keyword_lex_table: lex_tables.keyword_lex_table,
-        large_character_sets: lex_tables.large_character_sets,
     })
 }
 
@@ -230,6 +227,7 @@ pub fn surviving_productions(
     Ok(state_info.surviving_productions)
 }
 
+// code-gauge-allow functionCognitiveComplexity 21 -- accumulates adjacent production token pairs and extra-token transitions in one pass
 fn get_following_tokens(
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
@@ -268,6 +266,7 @@ fn get_following_tokens(
     result
 }
 
+// code-gauge-allow functionParameterCount 7 -- error-state recovery builder takes grammar tables and precomputed conflict maps
 fn populate_error_state(
     parse_table: &mut ParseTable,
     syntax_grammar: &SyntaxGrammar,
@@ -345,6 +344,7 @@ fn populate_error_state(
     state.terminal_entries.insert(Symbol::end(), recover_entry);
 }
 
+// code-gauge-allow functionCognitiveComplexity 24 -- collects terminal, external, and non-terminal usage flags and assigns ordered symbol indices
 fn populate_used_symbols(
     parse_table: &mut ParseTable,
     syntax_grammar: &SyntaxGrammar,
@@ -452,6 +452,8 @@ fn populate_external_lex_states(
     }
 }
 
+// code-gauge-allow functionCognitiveComplexity 29 -- classifies candidate, immediate, shadowed, and conflict-deferred keywords together
+// code-gauge-allow functionNcss 44 -- classifies candidate, immediate, shadowed, and conflict-deferred keywords together
 fn identify_keywords(
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,
@@ -601,6 +603,7 @@ fn remove_shadowed_keywords(
         .collect::<TokenSet>()
 }
 
+// code-gauge-allow functionCognitiveComplexity 20 -- checks pairwise overlap among terminal lookaheads in each parse state
 fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenConflictMap) {
     let mut valid_terminal_indices = Vec::new();
     for state in &mut parse_table.states {
@@ -623,6 +626,8 @@ fn mark_fragile_tokens(parse_table: &mut ParseTable, token_conflict_map: &TokenC
     }
 }
 
+// code-gauge-allow functionCognitiveComplexity 16 -- aggregates state indices per symbol and logs diagnostic item sets
+// code-gauge-allow functionNcss 33 -- aggregates state indices per symbol and logs diagnostic item sets
 fn report_state_info<'a>(
     syntax_grammar: &SyntaxGrammar,
     lexical_grammar: &LexicalGrammar,

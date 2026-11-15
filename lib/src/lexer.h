@@ -26,6 +26,28 @@ typedef struct {
 } ColumnCheckpoint;
 
 typedef struct {
+  const uint16_t *table;
+  uint32_t total_words;
+  uint16_t state_count;
+  uint16_t template_count;
+  uint16_t class_count;
+  uint16_t unicode_range_count;
+  uint16_t tag_count;
+  bool wide_base;
+  bool direct_keyword_lookup;
+  uint32_t comb_len;
+  uint32_t ext_transitions_len;
+  uint32_t ext_accepts_len;
+  const uint16_t *ascii_class;
+  const uint16_t *unicode_ends;
+  const uint16_t *unicode_classes;
+  const uint16_t *state_meta;
+  const uint16_t *comb;
+  const uint16_t *ext_transitions;
+  const uint16_t *ext_accepts;
+} TSLexTableView;
+
+typedef struct {
   TSLexer data;
   Length current_position;
   Length token_start_position;
@@ -55,7 +77,10 @@ typedef struct {
   ColumnCheckpoint end_column_checkpoint;
   ColumnCheckpoint query_column_checkpoint;
   ColumnCheckpoint query_display_column_checkpoint;
+  TSLexTableView main_lex_cache;
+  TSLexTableView kw_lex_cache;
   bool track_columns;
+  bool has_operation_limit;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;
@@ -72,6 +97,8 @@ void ts_lexer_set_progress_callback(
 void ts_lexer_reset(Lexer *self, Length position);
 void ts_lexer_start(Lexer *self);
 void ts_lexer_finish(Lexer *self);
+void ts_lexer_get_lookahead(Lexer *self);
+bool ts_lexer_flush_operations(Lexer *self);
 void ts_lexer_mark_end(Lexer *self);
 bool ts_lexer_set_included_ranges(Lexer *self, const TSRange *ranges, uint32_t count);
 const TSRange *ts_lexer_included_ranges(const Lexer *self, uint32_t *count);
