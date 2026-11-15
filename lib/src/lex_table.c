@@ -44,9 +44,6 @@ static inline void ts_lex_commit_fast_cursor(
 static inline LexFastPos ts_lex_utf8_advance_run(
   const TSLexTableView *v, const uint16_t *sm, uint16_t state, uint16_t act, LexFastPos cur, const uint8_t *ptr_limit
 );
-static inline LexFastPos ts_lex_utf8_advance_masked(
-  const TSLexTableView *v, const uint16_t *sm, uint16_t act, LexFastPos cur, const uint8_t *ptr_limit
-);
 static inline LexFastPos ts_lex_step_ascii(LexFastPos cur, uint8_t byte);
 static inline void ts_lex_apply_accept(Lexer *self, const TSLexTableView *v, uint16_t acc, LexRunState *run);
 static void ts_lex_apply_ext_accept(Lexer *self, const uint16_t *p, LexRunState *run);
@@ -252,37 +249,13 @@ static inline LexFastPos ts_lex_utf8_advance_run(
   const uint16_t *comb_row = &v->comb[(uint32_t)sm[0] * 2u];
   uint16_t tmpl = sm[1];
   uint16_t def = sm[2];
-  const uint8_t *mask_trigger = cur.ptr + 32;
-  while (cur.ptr < ptr_limit && cur.ptr < mask_trigger) {
-    uint8_t b = *cur.ptr;
-    if (b >= 0x80u) return cur;
-    const uint16_t *ce = &comb_row[(uint32_t)v->ascii_class[b] * 2u];
-    if ((ce[0] == tmpl ? ce[1] : def) != act) return cur;
-    cur = ts_lex_step_ascii(cur, *cur.ptr++);
-  }
-  if (cur.ptr < ptr_limit) return ts_lex_utf8_advance_masked(v, sm, act, cur, ptr_limit);
-  return cur;
-}
-
-static inline LexFastPos ts_lex_utf8_advance_masked(
-  const TSLexTableView *v,
-  const uint16_t *sm,
-  uint16_t act,
-  LexFastPos cur,
-  const uint8_t *ptr_limit
-) {
-  const uint16_t *comb_row = &v->comb[(uint32_t)sm[0] * 2u];
-  uint16_t tmpl = sm[1];
-  uint16_t def = sm[2];
-  uint64_t mask[2] = {0, 0};
-  for (uint32_t c = 0; c < 128; c++) {
-    const uint16_t *ce = &comb_row[(uint32_t)v->ascii_class[c] * 2u];
-    if ((ce[0] == tmpl ? ce[1] : def) == act) mask[c >> 6] |= 1ull << (c & 63u);
-  }
   while (cur.ptr < ptr_limit) {
     uint8_t b = *cur.ptr;
-    if (b >= 0x80u || !((mask[b >> 6] >> (b & 63u)) & 1ull)) break;
-    cur = ts_lex_step_ascii(cur, *cur.ptr++);
+    if (b >= 0x80u) break;
+    const uint16_t *ce = &comb_row[(uint32_t)v->ascii_class[b] * 2u];
+    if ((ce[0] == tmpl ? ce[1] : def) != act) break;
+    cur = ts_lex_step_ascii(cur, b);
+    cur.ptr++;
   }
   return cur;
 }
@@ -502,7 +475,7 @@ static inline uint16_t ts_lex_char_class(const TSLexTableView *v, int32_t lookah
   uint32_t cp = (uint32_t)lookahead;
   if (cp < 0x80u) return v->ascii_class[cp];
   if (cp < 0x110000u) return ts_lex_unicode_class(v, cp);
-  return 1;
+  return UINT16_MAX;
 }
 
 static inline uint16_t ts_lex_unicode_class(const TSLexTableView *v, uint32_t cp) {
@@ -524,7 +497,7 @@ static inline uint16_t ts_lex_lookup_action(
   TSLexStateMeta sm,
   uint16_t cls
 ) {
-  if (sm.tmpl == 0) return 0;
+  if (sm.tmpl == 0 || cls == UINT16_MAX) return 0;
   const uint16_t *ce = &v->comb[(sm.base + cls) * 2u];
   return ce[0] == sm.tmpl ? ce[1] : sm.def;
 }

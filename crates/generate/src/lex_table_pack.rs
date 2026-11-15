@@ -319,7 +319,7 @@ fn build_char_classes(states: &[LexState], ext_trans: &mut DedupPool) -> RenderR
     let mut state_rows = vec![Vec::new(); states.len()];
     let sigs = collect_interval_sigs(states, &boundaries, ext_trans, &mut state_rows)?;
     let mut sig_to_class = FxHashMap::<Vec<(u16, u16)>, u16>::default();
-    let mut next_class = 2u16;
+    let mut next_class = 1u16;
     let mut interval_classes = Vec::with_capacity(sigs.len());
     for sig in sigs {
         let cls = if let Some(&existing) = sig_to_class.get(&sig) {
@@ -327,7 +327,7 @@ fn build_char_classes(states: &[LexState], ext_trans: &mut DedupPool) -> RenderR
         } else {
             let assigned = next_class;
             next_class = next_class.checked_add(1).ok_or_else(|| {
-                RenderError::LexTable("character class count exceeds 65535".into())
+                RenderError::LexTable("character class count exceeds 65534".into())
             })?;
             for &(state_idx, act) in &sig {
                 state_rows[usize::from(state_idx)].push((assigned, act));
@@ -340,7 +340,7 @@ fn build_char_classes(states: &[LexState], ext_trans: &mut DedupPool) -> RenderR
     let (ascii_class, unicode_ends, unicode_classes) =
         fill_class_tables(&boundaries, &interval_classes);
     Ok(CharClasses {
-        class_count: next_class,
+        class_count: next_class.max(2),
         ascii_class,
         unicode_ends,
         unicode_classes,
@@ -377,9 +377,6 @@ fn collect_interval_sigs(
         }
         for (chars, action) in &state.advance_actions {
             let act = encode_action(action, ext_trans)?;
-            if chars.contains(char::MAX) {
-                state_rows[state_idx].push((1, act));
-            }
             for range in chars.codepoint_ranges() {
                 let start_ix = boundaries.binary_search(&range.start).unwrap();
                 let end_ix = boundaries.binary_search(&range.end).unwrap();

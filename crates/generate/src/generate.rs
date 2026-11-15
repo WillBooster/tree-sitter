@@ -789,7 +789,7 @@ pub fn write_file(path: &Path, body: impl AsRef<[u8]>) -> GenerateResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LANGUAGE_VERSION, PARSER_HEADER};
+    use super::{LANGUAGE_VERSION, OptLevel, PARSER_HEADER, generate_parser_for_grammar};
     #[test]
     fn test_language_versions_are_in_sync() {
         let api_h = include_str!("../../../lib/include/tree_sitter/api.h");
@@ -810,6 +810,68 @@ mod tests {
         assert!(
             parser_h == PARSER_HEADER,
             "parser.h.inc is out of sync with lib/src/parser.h. Run: cp lib/src/parser.h crates/generate/src/parser.h.inc"
+        );
+    }
+
+    fn build_aliased_conflict_grammar(branch_count: usize, token_count: usize) -> String {
+        let branch_names = (0..branch_count)
+            .map(|j| format!("b{j}"))
+            .collect::<Vec<_>>();
+        let mut rules = serde_json::Map::new();
+        rules.insert(
+            "source_file".into(),
+            serde_json::json!({
+                "type": "CHOICE",
+                "members": branch_names.iter().map(|name| serde_json::json!({"type": "SYMBOL", "name": name})).collect::<Vec<_>>(),
+            }),
+        );
+        for (j, name) in branch_names.iter().enumerate() {
+            let members = (0..token_count)
+                .map(|k| {
+                    let ch = char::from_u32(0x10000 + k as u32).unwrap().to_string();
+                    serde_json::json!({
+                        "type": "ALIAS",
+                        "content": {"type": "STRING", "value": ch},
+                        "named": true,
+                        "value": format!("a_{k}_{j}"),
+                    })
+                })
+                .collect::<Vec<_>>();
+            rules.insert(
+                name.clone(),
+                serde_json::json!({"type": "CHOICE", "members": members}),
+            );
+        }
+        serde_json::json!({
+            "name": "offset_limits",
+            "extras": [],
+            "conflicts": [branch_names],
+            "rules": rules,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn test_parse_action_list_and_reduce_record_offset_limits() {
+        let action_overflow = build_aliased_conflict_grammar(85, 390);
+        let err =
+            generate_parser_for_grammar(&action_overflow, None, OptLevel::empty(), &mut Vec::new())
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains("Parse action list offset")
+                && err.contains("exceeds maximum value of 32767"),
+            "unexpected error: {err}"
+        );
+
+        let reduce_overflow = build_aliased_conflict_grammar(85, 260);
+        let err =
+            generate_parser_for_grammar(&reduce_overflow, None, OptLevel::empty(), &mut Vec::new())
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains("Reduce record offset") && err.contains("exceeds maximum value of 65535"),
+            "unexpected error: {err}"
         );
     }
 }

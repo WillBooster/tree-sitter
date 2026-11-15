@@ -133,7 +133,7 @@ pub struct ActionListId(u32);
 
 impl ActionListId {
     /// [`ActionListPool`] holds one entry per unique action list. In practice, there
-    /// are only a few thousand of these, and `render` caps the table count at `u16::MAX`.
+    /// are only a few thousand of these, and `render` caps action-list offsets at `0x7fff`.
     /// These ids never come close to 2^31, so the top bit is free to indicate `reusable`.
     const REUSABLE_BIT: u32 = 1 << 31;
 

@@ -28,7 +28,10 @@ use super::{
 const BITMAP_STATE_MIN_ENTRIES: usize = 16;
 /// The largest count that fits in the 7 bits of a packed action list header.
 const MAX_ACTION_LIST_LENGTH: usize = 127;
-const MAX_ACTION_LIST_OFFSET: usize = 0x8000;
+/// The largest action-list start offset that fits in the 15 bits of a terminal parse-table cell.
+const MAX_ACTION_LIST_OFFSET: usize = 0x7fff;
+/// The largest reduce-record start offset that fits in the 16 bits of a packed `REDUCE(record)` word.
+const MAX_REDUCE_RECORD_OFFSET: usize = u16::MAX as usize;
 const MAX_GROUPED_LOOKUP_STEPS: usize = 16;
 const PARSE_TABLE_REUSABLE_FLAG: u32 = 0x8000;
 /// Marks a map entry that refers to a descriptor, which `add_descriptor` lays out.
@@ -75,9 +78,11 @@ pub enum RenderError {
     SparseTable(usize),
     #[error("Invalid generation profile: {0}")]
     Profile(String),
-    #[error("Parse action table size of {0} words exceeds maximum value of {max}", max=u16::MAX)]
-    ParseTable(usize),
-    #[error("Parse action list length {0} exceeds maximum value of {max}", max=MAX_ACTION_LIST_LENGTH)]
+    #[error("Parse action list offset {0} exceeds maximum value of {MAX_ACTION_LIST_OFFSET}")]
+    ActionListOffset(usize),
+    #[error("Reduce record offset {0} exceeds maximum value of {MAX_REDUCE_RECORD_OFFSET}")]
+    ReduceRecordOffset(usize),
+    #[error("Parse action list length {0} exceeds maximum value of {MAX_ACTION_LIST_LENGTH}")]
     ActionListLength(usize),
     #[error("Lexer table error: {0}")]
     LexTable(String),
@@ -2286,13 +2291,16 @@ impl Generator {
         parse_table_entries: Vec<(u32, ActionListId)>,
         reduce_records_start: u32,
     ) -> RenderResult<()> {
-        if reduce_records_start as usize > MAX_ACTION_LIST_OFFSET {
-            return Err(RenderError::ParseTable(reduce_records_start as usize));
+        if let Some(&(max_list_offset, _)) = parse_table_entries.last()
+            && max_list_offset as usize > MAX_ACTION_LIST_OFFSET
+        {
+            return Err(RenderError::ActionListOffset(max_list_offset as usize));
         }
         let reduce_records = self.reduce_records(&parse_table_entries, reduce_records_start);
-        let word_count = reduce_records_start as usize + 2 * reduce_records.len();
-        if word_count > usize::from(u16::MAX) {
-            return Err(RenderError::ParseTable(word_count));
+        if let Some((_, &max_record_offset)) = reduce_records.last()
+            && max_record_offset as usize > MAX_REDUCE_RECORD_OFFSET
+        {
+            return Err(RenderError::ReduceRecordOffset(max_record_offset as usize));
         }
 
         add_line!(self, "static const uint32_t ts_parse_actions[] = {{");

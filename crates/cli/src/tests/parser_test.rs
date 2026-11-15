@@ -2131,6 +2131,75 @@ fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
 }
 
 #[test]
+fn test_generated_lexer_rejects_malformed_encodings_across_max_codepoint_classes() {
+    for (suffix, pattern, valid_sample) in [
+        ("non_ascii", "[^\\x00-\\x7f]+", "é\u{10ffff}"),
+        ("astral", "[\\U00010000-\\U0010ffff]+", "😀\u{10ffff}"),
+        ("non_newline", "[^\\n]+", "ok\u{10ffff}"),
+    ] {
+        let grammar = serde_json::json!({
+            "name": format!("decode_error_{suffix}"),
+            "extras": [],
+            "rules": {
+                "document": {"type": "PATTERN", "value": pattern}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language =
+            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        let valid = parser.parse(valid_sample).unwrap();
+        assert!(!valid.root_node().has_error(), "{suffix}");
+        assert_eq!(valid.root_node().to_sexp(), "(document)", "{suffix}");
+        assert_eq!(valid.root_node().end_byte(), valid_sample.len());
+
+        let mut valid_then_bad = valid_sample.as_bytes().to_vec();
+        valid_then_bad.push(0xff);
+        for malformed in [
+            b"\xff".as_slice(),
+            b"\xc3",
+            b"\xc0\xaf",
+            valid_then_bad.as_slice(),
+        ] {
+            let tree = parser.parse(malformed).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{suffix} accepted {malformed:?}"
+            );
+            assert_eq!(tree.root_node().end_byte(), malformed.len());
+        }
+
+        struct ErrorDecoder;
+        impl tree_sitter::Decode for ErrorDecoder {
+            fn decode(bytes: &[u8]) -> (i32, u32) {
+                if bytes.is_empty() {
+                    (0, 0)
+                } else if bytes[0] == 0xff {
+                    (-1, 1)
+                } else {
+                    (0x11_0000, 1)
+                }
+            }
+        }
+        for raw in [[0xffu8].as_slice(), [0xfeu8].as_slice()] {
+            let tree = parser
+                .parse_custom_encoding::<ErrorDecoder, _, _>(
+                    &mut |offset, _| raw.get(offset..).unwrap_or(&[]),
+                    None,
+                )
+                .unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{suffix} accepted custom {raw:?}"
+            );
+            assert_eq!(tree.root_node().end_byte(), raw.len());
+        }
+    }
+}
+
+#[test]
 fn test_generated_lexer_character_boundaries() {
     let ascii_literals = [
         "z9", "a0", "t8", "b1", "r7", "d2", "p6", "f3", "n5", "h4", "c5", "e6", "g7", "i8", "j9",
