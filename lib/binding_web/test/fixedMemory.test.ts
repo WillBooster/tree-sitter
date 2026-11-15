@@ -15,7 +15,9 @@ beforeAll(async () => {
     wasmModule: load('@willbooster/web-tree-sitter/web-tree-sitter.wasm'),
     wasmMemory: memory,
   });
-  typescript = Language.loadSync(load('@willbooster/tree-sitter-typescript/tree-sitter-typescript.wasm'));
+  typescript = Language.loadSync(
+    new WebAssembly.Module(readFileSync(new URL('../../../target/release/tree-sitter-typescript.wasm', import.meta.url))),
+  );
 });
 
 beforeEach(() => {

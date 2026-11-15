@@ -9,6 +9,7 @@
 #include "./language.h"
 #include "./length.h"
 #include "./lexer.h"
+#include "./lex_table.h"
 #include "./reduce_action.h"
 #include "./stack.h"
 #include "./subtree.h"
@@ -359,22 +360,6 @@ static bool ts_parser__better_version_exists(
   return false;
 }
 
-static bool ts_parser__call_main_lex_fn(TSParser *self, TSLexerMode lex_mode) {
-  if (ts_language_is_wasm(self->language)) {
-    return ts_wasm_store_call_lex_main(self->wasm_store, lex_mode.lex_state);
-  } else {
-    return self->language->lex_fn(&self->lexer.data, lex_mode.lex_state);
-  }
-}
-
-static bool ts_parser__call_keyword_lex_fn(TSParser *self) {
-  if (ts_language_is_wasm(self->language)) {
-    return ts_wasm_store_call_lex_keyword(self->wasm_store, 0);
-  } else {
-    return self->language->keyword_lex_fn(&self->lexer.data, 0);
-  }
-}
-
 static void ts_parser__external_scanner_create(
   TSParser *self
 ) {
@@ -657,7 +642,7 @@ static LookaheadToken ts_parser__lex(
         current_position.extent.column
       );
       ts_lexer_start(&self->lexer);
-      found_token = ts_parser__call_main_lex_fn(self, lex_mode);
+      found_token = ts_lexer_lex_table(&self->lexer, self->language->lex_table, lex_mode.lex_state);
       if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
       ts_lexer_finish(&self->lexer);
     }
@@ -747,7 +732,7 @@ static LookaheadToken ts_parser__lex(
         ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
         ts_lexer_start(&self->lexer);
 
-        is_keyword = ts_parser__call_keyword_lex_fn(self);
+        is_keyword = ts_lexer_lex_table(&self->lexer, self->language->keyword_lex_table, 0);
         if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
         self->lexer.end_column_checkpoint = end_column_checkpoint;
 
@@ -1024,8 +1009,11 @@ static uint64_t scanner_state_hash(uint64_t seed, const char *data, uint32_t len
 #undef SIP_ROUND
 #undef SIP_ROTL64
 
-static bool ts_parser__token_in_single_included_range(const Lexer *, uint32_t, uint32_t);
-static bool ts_parser__extract_utf16_ascii(const uint8_t *, uint32_t *, TSInputEncoding, char (*)[128]);
+static bool ts_parser__token_in_single_included_range(
+  const Lexer *lexer,
+  uint32_t start_byte,
+  uint32_t end_byte
+);
 
 static bool ts_parser__lookup_keyword(
   TSParser *self,
@@ -1034,39 +1022,28 @@ static bool ts_parser__lookup_keyword(
 ) {
   uint32_t start_byte = self->lexer.token_start_position.bytes;
   uint32_t end_byte = self->lexer.token_end_position.bytes;
-  TSInputEncoding encoding = self->lexer.input.encoding;
   if (
-    !self->language->keyword_lookup_fn ||
-    (encoding != TSInputEncodingUTF8 &&
-     encoding != TSInputEncodingUTF16LE &&
-     encoding != TSInputEncodingUTF16BE) ||
+    !self->language->keyword_lex_table ||
+    self->lexer.logger.log ||
+    !self->lexer.chunk ||
     start_byte < self->lexer.chunk_start ||
     end_byte < start_byte ||
     end_byte - self->lexer.chunk_start > self->lexer.chunk_size ||
     !ts_parser__token_in_single_included_range(&self->lexer, start_byte, end_byte)
   ) return false;
 
-  const char *text = self->lexer.chunk + (start_byte - self->lexer.chunk_start);
-  uint32_t length = end_byte - start_byte;
-  char ascii[128];
-  if (encoding != TSInputEncodingUTF8) {
-    if (
-      self->lexer.logger.log ||
-      !ts_parser__extract_utf16_ascii((const uint8_t *)text, &length, encoding, &ascii)
-    ) return false;
-    text = ascii;
-  }
-
-  uint32_t keyword;
-  if (ts_language_is_wasm(self->language)) {
-    if (!ts_wasm_store_call_keyword_lookup(self->wasm_store, text, length, &keyword)) {
-      return false;
-    }
-  } else {
-    keyword = self->language->keyword_lookup_fn(text, length);
-  }
-  *is_keyword = (keyword & TS_KEYWORD_PREFIX) != 0;
-  *candidate = (TSSymbol)keyword;
+  const uint8_t *bytes =
+    (const uint8_t *)self->lexer.chunk + (start_byte - self->lexer.chunk_start);
+  TSLexKeywordResult kw = ts_lexer_lookup_keyword(
+    &self->lexer,
+    self->language->keyword_lex_table,
+    bytes,
+    end_byte - start_byte,
+    self->lexer.input.encoding
+  );
+  if (!kw.handled) return false;
+  *is_keyword = kw.is_keyword;
+  *candidate = kw.candidate;
   return true;
 }
 
@@ -1086,41 +1063,6 @@ static bool ts_parser__token_in_single_included_range(
     else high = mid;
   }
   return low < lexer->included_range_count && start_byte >= lexer->included_ranges[low].start_byte;
-}
-
-static bool ts_parser__extract_utf16_ascii(
-  const uint8_t *bytes,
-  uint32_t *byte_length,
-  TSInputEncoding encoding,
-  char (*ascii)[128]
-) {
-  uint32_t raw_length = *byte_length;
-  if ((raw_length & 1) || raw_length / 2 > sizeof(*ascii)) return false;
-  uint32_t length = raw_length / 2;
-  unsigned low_byte = encoding == TSInputEncodingUTF16LE ? 0 : 1;
-  static const uint8_t LE_MASK[8] = {0x80, 0xff, 0x80, 0xff, 0x80, 0xff, 0x80, 0xff};
-  static const uint8_t BE_MASK[8] = {0xff, 0x80, 0xff, 0x80, 0xff, 0x80, 0xff, 0x80};
-  uint64_t mask;
-  memcpy(&mask, low_byte == 0 ? LE_MASK : BE_MASK, sizeof(mask));
-
-  uint32_t i = 0;
-  for (; i + 4 <= length; i += 4) {
-    uint64_t word;
-    memcpy(&word, bytes + 2 * i, sizeof(word));
-    if (word & mask) return false;
-    (*ascii)[i] = (char)bytes[2 * i + low_byte];
-    (*ascii)[i + 1] = (char)bytes[2 * i + 2 + low_byte];
-    (*ascii)[i + 2] = (char)bytes[2 * i + 4 + low_byte];
-    (*ascii)[i + 3] = (char)bytes[2 * i + 6 + low_byte];
-  }
-  for (; i < length; i++) {
-    if (bytes[2 * i + low_byte] >= 0x80 || bytes[2 * i + (1 - low_byte)] != 0) {
-      return false;
-    }
-    (*ascii)[i] = (char)bytes[2 * i + low_byte];
-  }
-  *byte_length = length;
-  return true;
 }
 
 static TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra) {
@@ -1578,7 +1520,7 @@ static bool ts_parser__process_candidate_recovery_actions(
     switch (action.type) {
       case TSParseActionTypeShift:
       case TSParseActionTypeRecover:
-        if (!action.shift.extra && !action.shift.repetition) has_shift_action = true;
+        if (!action.shift.extra) has_shift_action = true;
         break;
       case TSParseActionTypeReduce:
       case TSParseActionTypeReduceExtra:
@@ -2238,7 +2180,6 @@ static bool ts_parser__advance(
           ts_stack_version_count(self->stack) == 1 &&
           table_entry.action_count == 1 &&
           (table_entry.actions[0] & TS_PARSE_ACTION_TYPE_MASK) == TSParseActionTypeShift &&
-          !(table_entry.actions[0] & TS_PARSE_ACTION_REPETITION) &&
           ts_subtree_total_bytes(lookahead.subtree) > 0;
         if (!deterministic_shift) {
           ts_parser__set_cached_token(
@@ -2262,7 +2203,6 @@ static bool ts_parser__advance(
 
       switch (action.type) {
         case TSParseActionTypeShift: {
-          if (action.shift.repetition) break;
           TSStateId next_state;
           if (action.shift.extra) {
             next_state = state;
@@ -2664,7 +2604,7 @@ void ts_parser_set_max_operations(TSParser *self, uint64_t max_operations) {
 }
 
 uint64_t ts_parser_last_parse_operations(const TSParser *self) {
-  return self ? self->total_operation_count : 0;
+  return self ? self->total_operation_count + self->lexer.advance_count / 64u : 0;
 }
 
 const TSLanguage *ts_parser_language(const TSParser *self) {
@@ -2675,6 +2615,8 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   ts_parser_reset(self);
   ts_language_delete(self->language);
   self->language = NULL;
+  self->lexer.main_lex_cache.table = NULL;
+  self->lexer.kw_lex_cache.table = NULL;
 
   if (language) {
     if (!ts_language_has_supported_abi(language)) return false;
@@ -2760,6 +2702,7 @@ void ts_parser_reset(TSParser *self) {
   self->canceled_balancing = false;
   self->exceeded_max_operations = false;
   self->max_operations = 0;
+  self->lexer.advance_count = 0;
   self->parse_options = (TSParseOptions) {0};
   self->parse_state = (TSParseState) {0};
 }
@@ -2772,6 +2715,7 @@ TSTree *ts_parser_parse(
   self->total_operation_count = 0;
   self->exceeded_max_operations = false;
   self->lexer.advance_count = 0;
+  self->lexer.has_operation_limit = self->max_operations != 0;
   if (!self->language || !input.read) {
     self->max_operations = 0;
     return NULL;
@@ -2890,6 +2834,7 @@ balance:
   self->finished_tree = NULL_SUBTREE;
 
 exit:
+  ts_lexer_flush_operations(&self->lexer);
   ts_parser_reset(self);
   return result;
 }

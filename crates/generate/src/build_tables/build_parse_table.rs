@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 744 -- cohesive LR(1)/GLR parse table builder and conflict resolver
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -481,6 +482,8 @@ pub struct AmbiguousExtraError {
 }
 
 impl std::fmt::Display for ConflictError {
+    // code-gauge-allow functionCognitiveComplexity 20 -- formats conflict lookaheads, aligned interpretations, repetition origins, and resolutions
+    // code-gauge-allow functionNcss 40 -- formats conflict lookaheads, aligned interpretations, repetition origins, and resolutions
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         for symbol in &self.symbol_sequence {
             write!(f, "  {symbol}")?;
@@ -659,6 +662,7 @@ impl<'a> ParseTableBuilder<'a> {
         }
     }
 
+    // code-gauge-allow functionNcss 31 -- seeds initial and extra states, drains the LR state queue, and finalizes auxiliary symbols
     fn build(
         mut self,
         diagnostics: &mut Vec<Diagnostic>,
@@ -1020,7 +1024,6 @@ impl<'a> ParseTableBuilder<'a> {
 
             entry.actions.push(ParseAction::Shift {
                 state: next_state_id,
-                is_repetition: false,
             });
         }
 
@@ -1136,10 +1139,7 @@ impl<'a> ParseTableBuilder<'a> {
                 let entry = self
                     .terminal_entries
                     .get_or_insert_with(*terminal, ParseTableEntry::new);
-                let action = reduction.unwrap_or(ParseAction::Shift {
-                    state: *state_id,
-                    is_repetition: false,
-                });
+                let action = reduction.unwrap_or(ParseAction::Shift { state: *state_id });
                 if !entry.actions.contains(&action) {
                     entry.actions.push(action);
                     entry.actions.rotate_right(1);
@@ -1269,12 +1269,10 @@ impl<'a> ParseTableBuilder<'a> {
             }
         }
 
-        if let ParseAction::Shift { is_repetition, .. } = entry.actions.last_mut().unwrap() {
+        if matches!(entry.actions.last(), Some(ParseAction::Shift { .. })) {
             // If all of the items in the conflict have the same parent symbol,
-            // and that parent symbols is auxiliary, then this is just the intentional
-            // ambiguity associated with a repeat rule. Resolve that class of ambiguity
-            // by leaving it in the parse table, but marking the SHIFT action with
-            // an `is_repetition` flag.
+            // and that parent symbol is auxiliary, then this is the intentional
+            // shift-reduce ambiguity of a binary repeat rule; resolve it to reduce.
             let conflicting_variable_index =
                 conflicting_items.iter().next().unwrap().variable_index;
             if self.syntax_grammar.variables[conflicting_variable_index as usize].is_auxiliary()
@@ -1282,7 +1280,7 @@ impl<'a> ParseTableBuilder<'a> {
                     .iter()
                     .all(|item| item.variable_index == conflicting_variable_index)
             {
-                *is_repetition = true;
+                entry.actions.pop();
                 return Ok(());
             }
 

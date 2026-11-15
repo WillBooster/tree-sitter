@@ -7,6 +7,7 @@ let C: Language;
 let JavaScript: Language;
 let JSON: Language;
 let EmbeddedTemplate: Language;
+let ErrorTypes: Language;
 let Python: Language;
 
 const JSON_EXAMPLE = `
@@ -44,7 +45,7 @@ describe('Node', () => {
   let tree: Tree | null;
 
   beforeAll(async () => {
-    ({ C, EmbeddedTemplate, JavaScript, JSON, Python } = await helper);
+    ({ C, EmbeddedTemplate, ErrorTypes, JavaScript, JSON, Python } = await helper);
   });
 
   beforeEach(() => {
@@ -475,6 +476,28 @@ describe('Node', () => {
       )!;
       const descendants = tree.rootNode.descendantsOfType(['ERROR', 'comment']);
       expect(descendants.map((node) => node.type)).toEqual(['ERROR', 'comment']);
+    });
+
+    it('preserves ordinary anonymous and named ERROR symbols alongside syntax errors', () => {
+      parser.setLanguage(ErrorTypes);
+      tree = parser.parse('ok ERROR NAMED_ERROR end ok')!;
+      const byString = tree.rootNode.descendantsOfType('ERROR');
+      expect(byString.map((node) => ({ text: node.text, isNamed: node.isNamed, isError: node.isError }))).toEqual([
+        { text: 'ERROR', isNamed: false, isError: false },
+        { text: 'NAMED_ERROR', isNamed: true, isError: false },
+        { text: 'ok', isNamed: true, isError: true },
+      ]);
+      expect(tree.rootNode.descendantsOfType(['ERROR']).map((node) => node.text)).toEqual([
+        'ERROR',
+        'NAMED_ERROR',
+        'ok',
+      ]);
+      expect(tree.rootNode.descendantsOfType(['ERROR', 'end']).map((node) => node.text)).toEqual([
+        'ERROR',
+        'NAMED_ERROR',
+        'end',
+        'ok',
+      ]);
     });
   });
 

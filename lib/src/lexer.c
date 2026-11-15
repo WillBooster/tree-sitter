@@ -44,9 +44,7 @@ static void ts_lexer__set_column_data(Lexer *self, uint32_t val) {
 }
 
 static void ts_lexer__increment_column_data(Lexer *self) {
-  if (self->column_data.valid) {
-    self->column_data.value++;
-  }
+  if (self->column_data.valid) self->column_data.value++;
 }
 
 static void ts_lexer__invalidate_column_data(Lexer *self) {
@@ -135,14 +133,14 @@ static inline void ts_lexer__update_ascii_limit(Lexer *self) {
     : UINT32_MAX;
   if (chunk_end < limit) limit = chunk_end;
 
-  uint32_t remaining_advances = self->advance_count < LEXER_ADVANCES_PER_OPERATION
-    ? LEXER_ADVANCES_PER_OPERATION - self->advance_count
-    : 1;
-  uint32_t budget_bytes = remaining_advances * stride;
-  uint32_t budget_end = budget_bytes <= UINT32_MAX - self->current_position.bytes
-    ? self->current_position.bytes + budget_bytes
-    : UINT32_MAX;
-  if (budget_end < limit) limit = budget_end;
+  if (self->has_operation_limit) {
+    uint32_t budget = self->advance_count < LEXER_ADVANCES_PER_OPERATION
+      ? (LEXER_ADVANCES_PER_OPERATION - self->advance_count) * stride
+      : stride;
+    if (limit > self->current_position.bytes && budget < limit - self->current_position.bytes) {
+      limit = self->current_position.bytes + budget;
+    }
+  }
 
   self->ascii_limit = limit < 2 * stride ? 0 : limit - 2 * stride + 1;
 }
@@ -240,7 +238,7 @@ static void ts_lexer__decode_split_lookahead(
   );
 }
 
-static void ts_lexer__get_lookahead(Lexer *self) {
+void ts_lexer_get_lookahead(Lexer *self) {
   uint32_t position_in_chunk = self->current_position.bytes - self->chunk_start;
   uint32_t size = self->chunk_size - position_in_chunk;
 
@@ -429,24 +427,10 @@ static void ts_lexer__advance_position(Lexer *self) {
   self->current_position.bytes += self->lookahead_size;
 }
 
-static bool ts_lexer__charge_advance(Lexer *self) {
-  self->advance_count++;
-  if (self->advance_count < LEXER_ADVANCES_PER_OPERATION) return true;
-  unsigned operations = self->advance_count / LEXER_ADVANCES_PER_OPERATION;
-  self->advance_count %= LEXER_ADVANCES_PER_OPERATION;
-  if (!self->check_progress || self->check_progress(self->progress_payload, operations)) {
-    return true;
-  }
-  self->current_included_range_index = self->included_range_count;
-  ts_lexer__clear_chunk(self);
-  self->data.lookahead = '\0';
-  self->lookahead_size = 1;
-  return false;
-}
-
 static void ts_lexer__do_advance(Lexer *self, bool skip) {
   ts_lexer__advance_position(self);
-  if (!ts_lexer__charge_advance(self)) return;
+  self->advance_count++;
+  if (!ts_lexer_flush_operations(self)) return;
 
   const TSRange *current_range = &self->included_ranges[self->current_included_range_index];
   while (
@@ -474,7 +458,7 @@ static void ts_lexer__do_advance(Lexer *self, bool skip) {
     ) {
       ts_lexer__get_chunk(self);
     }
-    ts_lexer__get_lookahead(self);
+    ts_lexer_get_lookahead(self);
   } else {
     ts_lexer__clear_chunk(self);
     self->data.lookahead = '\0';
@@ -512,7 +496,7 @@ static inline void ts_lexer__advance_fast(
   uint32_t stride = encoding == TSInputEncodingUTF8 ? 1 : 2;
   uint32_t position = self->current_position.bytes;
   int32_t lookahead = self->data.lookahead;
-  if (position >= self->ascii_limit || (uint32_t)lookahead >= 0x80 || lookahead == '\n') {
+  if (position >= self->ascii_limit || (uint32_t)lookahead >= 0x80) {
     ts_lexer__advance_slow(self, skip);
     return;
   }
@@ -523,9 +507,15 @@ static inline void ts_lexer__advance_fast(
     return;
   }
   if (self->display_column_data.valid) ts_lexer__advance_display_column(self);
-  if (self->column_data.valid) self->column_data.value++;
+  if (lookahead == '\n') {
+    self->current_position.extent.row++;
+    self->current_position.extent.column = 0;
+    ts_lexer__set_column_data(self, 0);
+  } else {
+    if (self->column_data.valid) self->column_data.value++;
+    self->current_position.extent.column += stride;
+  }
   self->current_position.bytes = position + stride;
-  self->current_position.extent.column += stride;
   if (skip) self->token_start_position = self->current_position;
   self->data.lookahead = (int32_t)character;
   self->advance_count++;
@@ -558,64 +548,39 @@ static void ts_lexer__select_advance(Lexer *self) {
 
 static void ts_lexer__get_position(const TSLexer *_self, TSLexerPosition *position) {
   const Lexer *self = (const Lexer *)_self;
-  *position = (TSLexerPosition) {
-    self->current_position.bytes,
-    self->current_position.extent.row,
-    self->current_position.extent.column,
-  };
+  *position = (TSLexerPosition) {self->current_position.bytes, self->current_position.extent.row, self->current_position.extent.column};
 }
 
 static void ts_lexer__get_checkpoint(const TSLexer *_self, TSLexerCheckpoint *checkpoint) {
-  const Lexer *self = (const Lexer *)_self;
-  *checkpoint = (TSLexerCheckpoint) {{
-    self->current_position.bytes,
-    self->current_position.extent.row,
-    self->current_position.extent.column,
-  }};
+  *checkpoint = (TSLexerCheckpoint) {{((const Lexer *)_self)->current_position.bytes, ((const Lexer *)_self)->current_position.extent.row, ((const Lexer *)_self)->current_position.extent.column}};
 }
 
 static void ts_lexer__mark_start(TSLexer *_self, const TSLexerCheckpoint *checkpoint) {
-  Lexer *self = (Lexer *)_self;
-  self->marked_start_position = (Length) {checkpoint->_opaque[0], {checkpoint->_opaque[1], checkpoint->_opaque[2]}};
-  self->token_start_position = self->marked_start_position;
+  ((Lexer *)_self)->token_start_position = ((Lexer *)_self)->marked_start_position =
+    (Length) {checkpoint->_opaque[0], {checkpoint->_opaque[1], checkpoint->_opaque[2]}};
 }
 
 static void ts_lexer__mark_end_at(TSLexer *_self, const TSLexerCheckpoint *checkpoint) {
-  Lexer *self = (Lexer *)_self;
-  self->token_end_position = (Length) {checkpoint->_opaque[0], {checkpoint->_opaque[1], checkpoint->_opaque[2]}};
-  if (self->track_columns) ts_lexer__checkpoint_columns(self);
+  ((Lexer *)_self)->token_end_position =
+    (Length) {checkpoint->_opaque[0], {checkpoint->_opaque[1], checkpoint->_opaque[2]}};
+  if (((Lexer *)_self)->track_columns) ts_lexer__checkpoint_columns((Lexer *)_self);
 }
 
 static void ts_lexer__get_mark_end(const TSLexer *_self, TSLexerPosition *position) {
-  const Lexer *self = (const Lexer *)_self;
-  *position = (TSLexerPosition) {
-    self->token_end_position.bytes,
-    self->token_end_position.extent.row,
-    self->token_end_position.extent.column,
-  };
+  *position = (TSLexerPosition) {((const Lexer *)_self)->token_end_position.bytes, ((const Lexer *)_self)->token_end_position.extent.row, ((const Lexer *)_self)->token_end_position.extent.column};
 }
 
 static void ts_lexer__get_mark_end_checkpoint(const TSLexer *_self, TSLexerCheckpoint *checkpoint) {
-  const Lexer *self = (const Lexer *)_self;
-  *checkpoint = (TSLexerCheckpoint) {{
-    self->token_end_position.bytes,
-    self->token_end_position.extent.row,
-    self->token_end_position.extent.column,
-  }};
+  *checkpoint = (TSLexerCheckpoint) {{((const Lexer *)_self)->token_end_position.bytes, ((const Lexer *)_self)->token_end_position.extent.row, ((const Lexer *)_self)->token_end_position.extent.column}};
 }
 
 static void ts_lexer__mark_end(TSLexer *_self) {
   Lexer *self = (Lexer *)_self;
   if (self->current_included_range_index > 0 && !ts_lexer__eof(&self->data)) {
-    const TSRange *current_included_range = &self->included_ranges[
-      self->current_included_range_index
-    ];
+    const TSRange *current_included_range = &self->included_ranges[self->current_included_range_index];
     if (self->current_position.bytes == current_included_range->start_byte) {
-      const TSRange *previous_included_range = current_included_range - 1;
-      self->token_end_position = (Length) {
-        previous_included_range->end_byte,
-        previous_included_range->end_point,
-      };
+      const TSRange *prev = current_included_range - 1;
+      self->token_end_position = (Length) {prev->end_byte, prev->end_point};
       return;
     }
   }
@@ -654,22 +619,15 @@ static bool ts_lexer__restore_query_checkpoint(Lexer *self, bool display) {
 
 static void ts_lexer__replay_columns(Lexer *self, bool display) {
   uint32_t goal_byte = self->current_position.bytes;
-  Length start = {
-    goal_byte - self->current_position.extent.column,
-    {self->current_position.extent.row, 0},
-  };
+  Length start = {goal_byte - self->current_position.extent.column, {self->current_position.extent.row, 0}};
   if (!ts_lexer__restore_query_checkpoint(self, display)) {
     ts_lexer_goto(self, start);
     ts_lexer__set_column_data(self, 0);
-    self->display_column_data = (ColumnData) {
-      .value = 0,
-      .valid = self->display_tab_width != 0,
-      .valid_for_replay = true,
-    };
+    self->display_column_data = (ColumnData) {0, self->display_tab_width != 0, true};
   }
   if (!self->chunk) ts_lexer__get_chunk(self);
   if (!ts_lexer__eof(&self->data)) {
-    ts_lexer__get_lookahead(self);
+    ts_lexer_get_lookahead(self);
     while (self->current_position.bytes < goal_byte && !ts_lexer__eof(&self->data) && self->chunk) {
       ts_lexer__do_advance(self, false);
     }
@@ -753,9 +711,7 @@ void ts_lexer_init(Lexer *self) {
 }
 
 void ts_lexer_delete(Lexer *self) {
-  if (self->included_ranges != &TS_DEFAULT_RANGE) {
-    ts_free((void *)self->included_ranges);
-  }
+  if (self->included_ranges != &TS_DEFAULT_RANGE) ts_free((void *)self->included_ranges);
 }
 
 void ts_lexer_set_input(Lexer *self, TSInput input) {
@@ -797,7 +753,7 @@ void ts_lexer_start(Lexer *self) {
   self->data.result_symbol = 0;
   if (!ts_lexer__eof(&self->data)) {
     if (!self->chunk_size) ts_lexer__get_chunk(self);
-    if (!self->lookahead_size) ts_lexer__get_lookahead(self);
+    if (!self->lookahead_size) ts_lexer_get_lookahead(self);
     if (self->current_position.bytes == 0) {
       if (self->data.lookahead == BYTE_ORDER_MARK) {
         ts_lexer__advance_slow(self, true);
@@ -812,19 +768,28 @@ void ts_lexer_start(Lexer *self) {
 }
 
 void ts_lexer_finish(Lexer *self) {
+  if (!self->has_operation_limit) ts_lexer_flush_operations(self);
   if (!length_is_undefined(self->marked_start_position)) {
     self->token_start_position = self->marked_start_position;
   }
-  if (length_is_undefined(self->token_end_position)) {
-    ts_lexer__mark_end(&self->data);
-  }
-
-  // If the token ended at an included range boundary, then its end position
-  // will have been reset to the end of the preceding range. Reset the start
-  // position to match.
+  if (length_is_undefined(self->token_end_position)) ts_lexer__mark_end(&self->data);
   if (self->token_end_position.bytes < self->token_start_position.bytes) {
     self->token_start_position = self->token_end_position;
   }
+}
+
+bool ts_lexer_flush_operations(Lexer *self) {
+  if (self->advance_count < LEXER_ADVANCES_PER_OPERATION) return true;
+  unsigned operations = self->advance_count / LEXER_ADVANCES_PER_OPERATION;
+  self->advance_count %= LEXER_ADVANCES_PER_OPERATION;
+  if (!self->check_progress || self->check_progress(self->progress_payload, operations)) {
+    return true;
+  }
+  self->current_included_range_index = self->included_range_count;
+  ts_lexer__clear_chunk(self);
+  self->data.lookahead = '\0';
+  self->lookahead_size = 1;
+  return false;
 }
 
 void ts_lexer_mark_end(Lexer *self) {

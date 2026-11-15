@@ -18,7 +18,6 @@ pub enum ParseAction {
     Accept,
     Shift {
         state: ParseStateId,
-        is_repetition: bool,
     },
     ShiftExtra,
     Recover,
@@ -134,7 +133,7 @@ pub struct ActionListId(u32);
 
 impl ActionListId {
     /// [`ActionListPool`] holds one entry per unique action list. In practice, there
-    /// are only a few thousand of these, and `render` caps the table count at `u16::MAX`.
+    /// are only a few thousand of these, and `render` caps action-list offsets at `0x7fff`.
     /// These ids never come close to 2^31, so the top bit is free to indicate `reusable`.
     const REUSABLE_BIT: u32 = 1 << 31;
 
@@ -260,6 +259,11 @@ impl<V> ParseStateEntries<V> {
     #[must_use]
     pub const fn len(&self) -> usize {
         self.0.len()
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&Symbol, &V)> {
@@ -498,16 +502,10 @@ mod tests {
         let mut table = ParseTable::default();
         table
             .action_lists
-            .push(&ActionList::One(ParseAction::Shift {
-                state: 0,
-                is_repetition: false,
-            }));
+            .push(&ActionList::One(ParseAction::Shift { state: 0 }));
         table
             .action_lists
-            .push(&ActionList::One(ParseAction::Shift {
-                state: 1,
-                is_repetition: false,
-            }));
+            .push(&ActionList::One(ParseAction::Shift { state: 1 }));
         let mut state = ParseState::default();
         state
             .terminal_entries

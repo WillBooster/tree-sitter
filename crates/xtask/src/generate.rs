@@ -55,22 +55,76 @@ pub fn run_fixtures(args: &GenerateFixtures) -> Result<()> {
         )?;
 
         if args.wasm {
-            let mut cmd = Command::new(&tree_sitter_binary);
-            let cmd = cmd.args([
-                "build",
-                "--wasm",
-                "-o",
+            build_wasm_grammar(
+                &tree_sitter_binary,
+                grammar_dir,
                 &format!("target/release/tree-sitter-{grammar_name}.wasm"),
-                grammar_dir.to_str().unwrap(),
-            ]);
-            bail_on_err(
-                &cmd.spawn()?.wait_with_output()?,
-                &format!("Failed to build {grammar_name} parser to wasm"),
+                grammar_name,
             )?;
         }
     }
 
+    if args.wasm {
+        build_error_types_wasm(&tree_sitter_binary)?;
+    }
+
     Ok(())
+}
+
+fn build_error_types_wasm(tree_sitter_binary: &Path) -> Result<()> {
+    let grammar_dir = std::env::current_dir()?.join("target/tmp-error-types-grammar");
+    let _ = fs::remove_dir_all(&grammar_dir);
+    fs::create_dir_all(&grammar_dir)?;
+    fs::write(
+        grammar_dir.join("grammar.js"),
+        concat!(
+            "module.exports = grammar({\n",
+            "  name: 'error_types',\n",
+            "  rules: {\n",
+            "    document: $ => seq(repeat(choice('ok', 'ERROR', $.ERROR)), 'end'),\n",
+            "    ERROR: () => 'NAMED_ERROR',\n",
+            "  },\n",
+            "});\n",
+        ),
+    )?;
+    let result = (|| -> Result<()> {
+        let output = Command::new(tree_sitter_binary)
+            .arg("generate")
+            .current_dir(&grammar_dir)
+            .spawn()?
+            .wait_with_output()?;
+        bail_on_err(&output, "Failed to generate error_types parser")?;
+        build_wasm_grammar(
+            tree_sitter_binary,
+            &grammar_dir,
+            "target/release/tree-sitter-error-types.wasm",
+            "error_types",
+        )
+    })();
+    let _ = fs::remove_dir_all(&grammar_dir);
+    result
+}
+
+fn build_wasm_grammar(
+    tree_sitter_binary: &Path,
+    grammar_dir: &Path,
+    output_path: &str,
+    grammar_name: &str,
+) -> Result<()> {
+    let output = Command::new(tree_sitter_binary)
+        .args([
+            "build",
+            "--wasm",
+            "-o",
+            output_path,
+            grammar_dir.to_str().unwrap(),
+        ])
+        .spawn()?
+        .wait_with_output()?;
+    bail_on_err(
+        &output,
+        &format!("Failed to build {grammar_name} parser to wasm"),
+    )
 }
 
 fn adapt_typescript_class_conflict(path: &Path) -> Result<()> {

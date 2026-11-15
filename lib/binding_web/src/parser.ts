@@ -94,8 +94,7 @@ export let LANGUAGE_VERSION: number;
 
 /**
  * The earliest ABI version that is supported by the current version of the
- * library. Its parse tables are a subset of those of {@link LANGUAGE_VERSION},
- * so the library loads both.
+ * library.
  */
 export let MIN_COMPATIBLE_VERSION: number;
 

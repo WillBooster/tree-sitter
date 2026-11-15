@@ -586,7 +586,7 @@ const char *ts_tree_cursor_current_field_name(const TSTreeCursor *_self) {
   TSFieldId id = ts_tree_cursor_current_field_id(_self);
   if (id) {
     const TreeCursor *self = (const TreeCursor *)_self;
-    return self->tree->language->field_names[id];
+    return ts_language_field_name_for_id(self->tree->language, id);
   } else {
     return NULL;
   }

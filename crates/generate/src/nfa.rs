@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 423 -- cohesive NFA state machine, character-set algebra, and unit tests
 use rustc_hash::FxHashSet;
 use std::{
     cmp::{Ordering, max},
@@ -51,7 +52,6 @@ pub struct NfaTransition {
 }
 
 const END: u32 = char::MAX as u32 + 1;
-const SURROGATES: Range<u32> = 0xD800..0xE000;
 
 /// Rewrites a set's ranges as they're read in order: once finished, the ranges that were read
 /// are replaced by the ones that were kept.
@@ -265,6 +265,7 @@ impl CharacterSet {
     /// and the other set. Remove those common characters from both
     /// of the operands.
     #[allow(clippy::return_self_not_must_use)]
+    // code-gauge-allow functionNcss 35 -- two-pointer sorted-interval sweep splits overlapping character ranges in place
     pub fn remove_intersection(&mut self, other: &mut Self) -> Self {
         // The ranges before the first overlap stay where they are.
         let Some((left_start, right_start)) = self.first_overlap(other) else {
@@ -358,8 +359,8 @@ impl CharacterSet {
     }
 
     #[must_use]
-    pub const fn range_count(&self) -> usize {
-        self.ranges.len()
+    pub fn codepoint_ranges(&self) -> &[Range<u32>] {
+        &self.ranges
     }
 
     pub fn ranges(&self) -> impl Iterator<Item = RangeInclusive<char>> + '_ {
@@ -373,45 +374,6 @@ impl CharacterSet {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.ranges.is_empty()
-    }
-
-    /// Get a reduced list of character ranges, assuming that a given
-    /// set of characters can be safely ignored.
-    #[must_use]
-    pub fn simplify_ignoring(&self, ruled_out_characters: &Self) -> Self {
-        let mut prev_range: Option<Range<u32>> = None;
-        Self {
-            ranges: self
-                .ranges
-                .iter()
-                .map(|range| Some(range.clone()))
-                .chain([None])
-                .filter_map(move |range| {
-                    if let Some(range) = &range {
-                        if ruled_out_characters.contains_codepoint_range(range.clone()) {
-                            return None;
-                        }
-
-                        if let Some(prev_range) = &mut prev_range
-                            && ruled_out_characters
-                                .contains_codepoint_range(prev_range.end..range.start)
-                        {
-                            prev_range.end = range.end;
-                            return None;
-                        }
-                    }
-
-                    let result = prev_range.clone();
-                    prev_range = range;
-                    // Rendered conditions omit surrogate code points, so a range of only
-                    // surrogates would render as an empty condition. Such a range still
-                    // joins its neighbors above when the gaps around it are ruled out.
-                    result.filter(|range| {
-                        !(SURROGATES.start <= range.start && range.end <= SURROGATES.end)
-                    })
-                })
-                .collect(),
-        }
     }
 
     #[must_use]
@@ -646,6 +608,8 @@ impl<'a> NfaCursor<'a> {
         result
     }
 
+    // code-gauge-allow functionCognitiveComplexity 28 -- partitions overlapping character sets while merging precedences and separator flags
+    // code-gauge-allow functionNcss 36 -- partitions overlapping character sets while merging precedences and separator flags
     fn partition_transitions<'b>(
         iter: impl Iterator<Item = (&'b CharacterSet, bool, i32, u32)>,
     ) -> Vec<NfaTransition> {
@@ -1191,102 +1155,5 @@ mod tests {
         );
         assert!(a.does_intersect(&b));
         assert!(b.does_intersect(&a));
-    }
-
-    #[test]
-    #[expect(
-        clippy::single_range_in_vec_init,
-        reason = "test data intentionally uses single-element ranges"
-    )]
-    fn test_character_set_simplify_ignoring() {
-        struct Row {
-            chars: Vec<char>,
-            ruled_out_chars: Vec<char>,
-            expected_ranges: Vec<Range<char>>,
-        }
-
-        let table = [
-            Row {
-                chars: vec!['a'],
-                ruled_out_chars: vec![],
-                expected_ranges: vec!['a'..'a'],
-            },
-            Row {
-                chars: vec!['a', 'b', 'c', 'e', 'z'],
-                ruled_out_chars: vec![],
-                expected_ranges: vec!['a'..'c', 'e'..'e', 'z'..'z'],
-            },
-            Row {
-                chars: vec!['a', 'b', 'c', 'e', 'h', 'z'],
-                ruled_out_chars: vec!['d', 'f', 'g'],
-                expected_ranges: vec!['a'..'h', 'z'..'z'],
-            },
-            Row {
-                chars: vec!['a', 'b', 'c', 'g', 'h', 'i'],
-                ruled_out_chars: vec!['d', 'j'],
-                expected_ranges: vec!['a'..'c', 'g'..'i'],
-            },
-            Row {
-                chars: vec!['c', 'd', 'e', 'g', 'h'],
-                ruled_out_chars: vec!['a', 'b', 'c', 'd', 'e', 'f'],
-                expected_ranges: vec!['g'..'h'],
-            },
-            Row {
-                chars: vec!['I', 'N'],
-                ruled_out_chars: vec!['A', 'I', 'N', 'Z'],
-                expected_ranges: vec![],
-            },
-        ];
-
-        for Row {
-            chars,
-            ruled_out_chars,
-            expected_ranges,
-        } in &table
-        {
-            let ruled_out_chars = ruled_out_chars
-                .iter()
-                .fold(CharacterSet::empty(), |set, c| set.add_char(*c));
-            let mut set = CharacterSet::empty();
-            for c in chars {
-                set = set.add_char(*c);
-            }
-            let actual = set.simplify_ignoring(&ruled_out_chars);
-            let expected = expected_ranges
-                .iter()
-                .fold(CharacterSet::empty(), |set, range| {
-                    set.add_range(range.start, range.end)
-                });
-            assert_eq!(
-                actual, expected,
-                "chars: {chars:?}, ruled out chars: {ruled_out_chars:?}"
-            );
-        }
-
-        let surrogates = CharacterSet::empty()
-            .add_range('\u{3000}', '\u{f8ff}')
-            .difference(
-                CharacterSet::empty()
-                    .add_range('\u{3000}', '\u{d7ff}')
-                    .add_range('\u{e000}', '\u{f8ff}'),
-            );
-        assert!(!surrogates.is_empty());
-        assert!(
-            surrogates
-                .simplify_ignoring(&CharacterSet::empty())
-                .is_empty()
-        );
-
-        let ruled_out_chars = CharacterSet::empty()
-            .add_range('\u{3100}', '\u{d7ff}')
-            .add_range('\u{e000}', '\u{e0ff}');
-        let bridged = CharacterSet::empty()
-            .add_range('\u{3000}', '\u{e1ff}')
-            .difference(ruled_out_chars.clone());
-        assert_eq!(bridged.range_count(), 3);
-        assert_eq!(
-            bridged.simplify_ignoring(&ruled_out_chars),
-            CharacterSet::empty().add_range('\u{3000}', '\u{e1ff}')
-        );
     }
 }

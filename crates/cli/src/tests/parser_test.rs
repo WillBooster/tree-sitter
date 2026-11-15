@@ -1403,14 +1403,20 @@ fn test_profiled_generation_preserves_trees_and_rejects_stale_profiles() {
                     {"type": "STRING", "value": "if"}, {"type": "SYMBOL", "name": "identifier"}, {"type": "SYMBOL", "name": "block"}
                 ]},
                 {"type": "SEQ", "members": [
-                    {"type": "CHOICE", "members": (0..128).map(|i| serde_json::json!({
-                        "type": "STRING", "value": format!("command_{i:02}")
+                    {"type": "STRING", "value": "dispatch"},
+                    {"type": "STRING", "value": "case_0"},
+                    {"type": "STRING", "value": "value_0"},
+                    {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
+                ]},
+                {"type": "SEQ", "members": [
+                    {"type": "CHOICE", "members": (0..192).map(|i| serde_json::json!({
+                        "type": "STRING", "value": format!("command_{i:03}")
                     })).collect::<Vec<_>>()},
                     {"type": "SYMBOL", "name": "identifier"}, {"type": "STRING", "value": ";"}
                 ]},
                 {"type": "SEQ", "members": [
                     {"type": "STRING", "value": "dispatch"},
-                    {"type": "CHOICE", "members": (0..16).map(|i| serde_json::json!({
+                    {"type": "CHOICE", "members": (1..16).map(|i| serde_json::json!({
                         "type": "SEQ", "members": [
                             {"type": "STRING", "value": format!("case_{i}")},
                             {"type": "STRING", "value": format!("value_{i}")}
@@ -1756,7 +1762,7 @@ fn test_generated_keywords_preserve_streaming_utf16_and_included_ranges() {
         });
         let (name, code) = generate_parser(&grammar.to_string()).unwrap();
         assert!(
-            code.contains(".keyword_lookup_fn = ts_keyword_lookup"),
+            code.contains(".keyword_lex_table = ts_keyword_lex_table"),
             "{suffix}"
         );
         let languages = [
@@ -1951,14 +1957,17 @@ fn test_large_generated_lexers_preserve_keywords_and_identifier_boundaries() {
                 .insert("word".into(), serde_json::json!("identifier"));
         }
         let (name, code) = generate_parser(&grammar.to_string()).unwrap();
-        for function in code.split("\nstatic ").filter(|definition| {
-            definition.starts_with("bool ts_lex(") || definition.starts_with("uint8_t ts_lex_")
-        }) {
-            assert!(
-                function.len() <= 512 * 1024,
-                "generated lexer function is too large: {} bytes",
-                function.len()
-            );
+        assert!(code.contains("static const uint16_t ts_lex_table[]"));
+        for section in code.split("\nstatic const uint16_t ").skip(1) {
+            if section.starts_with("ts_lex_table[") || section.starts_with("ts_keyword_lex_table[")
+            {
+                let body = section.split_once("};").unwrap().0;
+                assert!(
+                    body.len() <= 512 * 1024,
+                    "generated lexer table is too large: {} bytes",
+                    body.len()
+                );
+            }
         }
         let languages = [
             get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER),
@@ -2118,6 +2127,75 @@ fn test_generated_unicode_identifiers_with_utf8_and_utf16() {
     }
     for source in [b"\0".as_slice(), b"\xff", "😀".as_bytes(), b"~"] {
         assert!(parser.parse(source).unwrap().root_node().has_error());
+    }
+}
+
+#[test]
+fn test_generated_lexer_rejects_malformed_encodings_across_max_codepoint_classes() {
+    for (suffix, pattern, valid_sample) in [
+        ("non_ascii", "[^\\x00-\\x7f]+", "é\u{10ffff}"),
+        ("astral", "[\\U00010000-\\U0010ffff]+", "😀\u{10ffff}"),
+        ("non_newline", "[^\\n]+", "ok\u{10ffff}"),
+    ] {
+        let grammar = serde_json::json!({
+            "name": format!("decode_error_{suffix}"),
+            "extras": [],
+            "rules": {
+                "document": {"type": "PATTERN", "value": pattern}
+            }
+        });
+        let (name, code) = generate_parser(&grammar.to_string()).unwrap();
+        let language =
+            get_test_language_with_header(&name, &code, tree_sitter_generate::PARSER_HEADER);
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+
+        let valid = parser.parse(valid_sample).unwrap();
+        assert!(!valid.root_node().has_error(), "{suffix}");
+        assert_eq!(valid.root_node().to_sexp(), "(document)", "{suffix}");
+        assert_eq!(valid.root_node().end_byte(), valid_sample.len());
+
+        let mut valid_then_bad = valid_sample.as_bytes().to_vec();
+        valid_then_bad.push(0xff);
+        for malformed in [
+            b"\xff".as_slice(),
+            b"\xc3",
+            b"\xc0\xaf",
+            valid_then_bad.as_slice(),
+        ] {
+            let tree = parser.parse(malformed).unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{suffix} accepted {malformed:?}"
+            );
+            assert_eq!(tree.root_node().end_byte(), malformed.len());
+        }
+
+        struct ErrorDecoder;
+        impl tree_sitter::Decode for ErrorDecoder {
+            fn decode(bytes: &[u8]) -> (i32, u32) {
+                if bytes.is_empty() {
+                    (0, 0)
+                } else if bytes[0] == 0xff {
+                    (-1, 1)
+                } else {
+                    (0x11_0000, 1)
+                }
+            }
+        }
+        for raw in [[0xffu8].as_slice(), [0xfeu8].as_slice()] {
+            let tree = parser
+                .parse_custom_encoding::<ErrorDecoder, _, _>(
+                    &mut |offset, _| raw.get(offset..).unwrap_or(&[]),
+                    None,
+                )
+                .unwrap();
+            assert!(
+                tree.root_node().has_error(),
+                "{suffix} accepted custom {raw:?}"
+            );
+            assert_eq!(tree.root_node().end_byte(), raw.len());
+        }
     }
 }
 

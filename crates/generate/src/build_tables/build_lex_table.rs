@@ -1,3 +1,4 @@
+// code-gauge-allow-file fileNcss 460 -- cohesive lexical NFA-to-DFA table builder and minimizer
 use std::{
     collections::{VecDeque, hash_map::Entry},
     mem,
@@ -21,12 +22,9 @@ use crate::{
     },
 };
 
-pub const LARGE_CHARACTER_RANGE_COUNT: usize = 8;
-
 pub struct LexTables {
     pub main_lex_table: LexTable,
     pub keyword_lex_table: LexTable,
-    pub large_character_sets: Vec<(Option<Symbol>, CharacterSet)>,
 }
 
 struct LexStateGroup {
@@ -373,43 +371,14 @@ pub fn build_lex_table(
     }
     sort_states(&mut main_lex_table, parse_table);
 
-    let mut large_character_sets = Vec::new();
-    for (variable_ix, _variable) in lexical_grammar.variables.iter().enumerate() {
-        let symbol = Symbol::terminal(variable_ix);
-        builder.reset();
-        builder.add_state_for_tokens(&TokenSet::from_iter([symbol]));
-        for state in &builder.table.states {
-            let mut characters = CharacterSet::empty();
-            for (chars, action) in &state.advance_actions {
-                if action.in_main_token {
-                    characters = characters.add(chars);
-                    continue;
-                }
-
-                if chars.range_count() > LARGE_CHARACTER_RANGE_COUNT
-                    && !large_character_sets.iter().any(|(_, set)| set == chars)
-                {
-                    large_character_sets.push((None, chars.clone()));
-                }
-            }
-
-            if characters.range_count() > LARGE_CHARACTER_RANGE_COUNT
-                && !large_character_sets
-                    .iter()
-                    .any(|(_, set)| *set == characters)
-            {
-                large_character_sets.push((Some(symbol), characters));
-            }
-        }
-    }
-
     LexTables {
         main_lex_table,
         keyword_lex_table,
-        large_character_sets,
     }
 }
 
+// code-gauge-allow functionCognitiveComplexity 17 -- BFS over paired word and keyword NFA states collects post-keyword continuation characters
+// code-gauge-allow functionNcss 31 -- BFS over paired word and keyword NFA states collects post-keyword continuation characters
 fn word_continuation_chars(
     grammar: &LexicalGrammar,
     word_index: usize,
@@ -524,13 +493,6 @@ impl<'a> LexTableBuilder<'a> {
             state_queue: VecDeque::new(),
             state_ids_by_nfa_state_set: FxHashMap::default(),
         }
-    }
-
-    fn reset(&mut self) {
-        self.table = LexTable::default();
-        self.eof_state = None;
-        self.state_queue.clear();
-        self.state_ids_by_nfa_state_set.clear();
     }
 
     fn add_state_for_tokens(&mut self, tokens: &TokenSet) -> LexStateId {
@@ -653,6 +615,8 @@ impl<'a> LexTableBuilder<'a> {
         }
     }
 
+    // code-gauge-allow functionCognitiveComplexity 30 -- resolves completions, word guards, NUL/EOF transitions, and advance actions per DFA state
+    // code-gauge-allow functionNcss 53 -- resolves completions, word guards, NUL/EOF transitions, and advance actions per DFA state
     fn populate_state(
         &mut self,
         state_id: LexStateId,
@@ -862,6 +826,7 @@ impl<'a> LexTableBuilder<'a> {
         });
     }
 
+    // code-gauge-allow functionCognitiveComplexity 16 -- selects highest-precedence completion subject to word-guard and fallback rules
     fn select_completion(
         &self,
         nfa_states: &[TaggedState],
