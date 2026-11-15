@@ -79,7 +79,7 @@ describe('Parse memory limit', () => {
   });
 
   it('stays within the limit and leaves the parser usable after repeated cancellations', () => {
-    const maxMemoryBytes = 48 * 2 ** 20;
+    const maxMemoryBytes = memory.buffer.byteLength + 4 * 2 ** 20;
     const source = 'f<'.repeat(50_000);
     for (let i = 0; i < 2; i++) {
       expect(parser.parse(source, { maxMemoryBytes })).toBeNull();

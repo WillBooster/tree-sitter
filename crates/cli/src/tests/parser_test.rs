@@ -1592,7 +1592,7 @@ fn test_languages_with_other_abi_versions_are_rejected() {
 }
 
 #[test]
-fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
+fn test_compact_parsers_preserve_extra_comments() {
     use std::fmt::Write;
 
     let keywords = (0..24)
@@ -8225,4 +8225,100 @@ fn test_low_precedence_word_keywords_ignore_initial_character_class() {
             "(document (string (other)) (string (other)))"
         );
     }
+}
+
+#[test]
+fn test_external_scanner_state_interning_and_reset_scaling() {
+    const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let fnv_step = |h: u32, b: u8| (h ^ u32::from(b)).wrapping_mul(16_777_619);
+
+    let mut colliding_heredocs = Vec::with_capacity(10_000);
+    let mut index = 0u32;
+    while colliding_heredocs.len() < 10_000 {
+        let prefix = format!("X{index:08}");
+        index += 1;
+        let header = [0u8, 0, 0, 1, 0, 0, 0, 13, 0, 0, 0];
+        let mut h = 2_166_136_261u32;
+        for &b in header.iter().chain(prefix.as_bytes()) {
+            h = fnv_step(h, b);
+        }
+        'search: for &a in ALPHA {
+            for &b in ALPHA {
+                let x = fnv_step(fnv_step(h, a), b);
+                let z = x & 0xffff;
+                if z < 128 && (z as u8).is_ascii_alphanumeric() {
+                    let label = format!("{prefix}{}{}{}", a as char, b as char, z as u8 as char);
+                    colliding_heredocs.push(format!("cat <<{label}\nhello\n{label}\n"));
+                    break 'search;
+                }
+            }
+        }
+    }
+
+    let language = get_language("bash");
+    let mut parser = Parser::new();
+    parser.set_language(&language).unwrap();
+
+    let measure_malformed = |parser: &mut Parser, count: usize| {
+        let mut source = colliding_heredocs[..count].concat();
+        source.push_str("\"\n");
+        let mut fastest = Duration::MAX;
+        for _ in 0..3 {
+            let started = cpu_time::ThreadTime::now();
+            let mut samples = 0;
+            let elapsed = loop {
+                let tree = parser.parse(&source).unwrap();
+                samples += 1;
+                let root = tree.root_node();
+                assert!(root.has_error());
+                assert_eq!(root.end_byte(), source.len());
+                let elapsed = started.elapsed();
+                if elapsed >= Duration::from_millis(50) {
+                    break elapsed;
+                }
+            };
+            fastest = fastest.min(elapsed / samples);
+        }
+        fastest
+    };
+
+    let small_colliding = measure_malformed(&mut parser, 1_000);
+    let large_colliding = measure_malformed(&mut parser, 10_000);
+    assert!(
+        large_colliding < small_colliding * 25,
+        "small: {small_colliding:?}, large: {large_colliding:?}"
+    );
+
+    let measure_small_heredocs = |parser: &mut Parser| {
+        let mut fastest = Duration::MAX;
+        for _ in 0..3 {
+            let started = cpu_time::ThreadTime::now();
+            for _ in 0..1_000 {
+                for snippet in ["cat <<EOF\nhi\nEOF\n", "cat <<END\nx\nEND\n"] {
+                    let tree = parser.parse(snippet).unwrap();
+                    let root = tree.root_node();
+                    assert!(!root.has_error());
+                    assert_eq!(root.end_byte(), snippet.len());
+                }
+            }
+            fastest = fastest.min(started.elapsed());
+        }
+        fastest
+    };
+
+    let mut cold_parser = Parser::new();
+    cold_parser.set_language(&language).unwrap();
+    let cold = measure_small_heredocs(&mut cold_parser);
+
+    let mut warm_parser = Parser::new();
+    warm_parser.set_language(&language).unwrap();
+    let mut large_valid = String::with_capacity(50_000 * 28);
+    for i in 0..50_000 {
+        use std::fmt::Write as _;
+        let _ = writeln!(large_valid, "cat <<EOF_{i}\nhello\nEOF_{i}");
+    }
+    let warm_tree = warm_parser.parse(&large_valid).unwrap();
+    assert!(!warm_tree.root_node().has_error());
+    let warm = measure_small_heredocs(&mut warm_parser);
+    assert!(warm < cold * 4, "cold: {cold:?}, warm: {warm:?}");
 }

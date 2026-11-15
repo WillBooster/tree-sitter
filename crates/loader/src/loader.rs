@@ -581,6 +581,9 @@ pub enum OptimizationLevel {
 }
 
 impl OptimizationLevel {
+    pub const DEFAULT_NATIVE: Self = Self::O2;
+    pub const DEFAULT_WASM: Self = Self::MinimumSize;
+
     #[must_use]
     pub const fn level(self) -> &'static str {
         match self {
@@ -1337,7 +1340,7 @@ impl Loader {
         let temp_output_str = temp_output.to_str().unwrap();
         let opt_flag = self
             .optimization_level
-            .unwrap_or(OptimizationLevel::MinimumSize)
+            .unwrap_or(OptimizationLevel::DEFAULT_WASM)
             .flag();
 
         let mut compile_command = Command::new(&clang_exe);

@@ -102,15 +102,19 @@ static const unsigned MAX_PROVISIONAL_RECOVERY_NODE_COUNT = 300;
 static const unsigned OP_COUNT_PER_PARSER_CALLBACK_CHECK = 100;
 
 typedef struct {
+  uint64_t hash;
   uint32_t offset;
   uint32_t length;
-  uint32_t hash;
+  uint32_t left;
+  uint32_t right;
+  uint32_t level;
 } ScannerStateEntry;
 
 typedef struct {
   Array(char) bytes;
   Array(ScannerStateEntry) entries;
   Array(uint32_t) buckets;
+  uint64_t seed;
 } ScannerStateTable;
 
 typedef struct {
@@ -805,7 +809,30 @@ static LookaheadToken ts_parser__lex(
 }
 
 static void scanner_state_table_grow(ScannerStateTable *self);
-static uint32_t scanner_state_hash(const char *data, uint32_t length);
+static uint32_t scanner_state_bucket_find(
+  const ScannerStateTable *self,
+  uint32_t slot,
+  uint64_t hash,
+  const char *data,
+  uint32_t length
+);
+static void scanner_state_bucket_insert(
+  ScannerStateTable *self,
+  uint32_t slot,
+  uint32_t new_id
+);
+static int scanner_state_compare_key(
+  const ScannerStateTable *self,
+  uint32_t entry_id,
+  uint64_t hash,
+  const char *data,
+  uint32_t length
+);
+static uint32_t scanner_state_aa_skew(ScannerStateEntry *entries, uint32_t node);
+static uint32_t scanner_state_aa_split(ScannerStateEntry *entries, uint32_t node);
+static uint64_t scanner_state_hash(uint64_t seed, const char *data, uint32_t length);
+static uint64_t scanner_state_mix64(uint64_t x);
+static inline uint64_t scanner_state_load_le64(const uint8_t *p);
 
 static uint32_t scanner_state_table_intern(
   ScannerStateTable *self,
@@ -813,50 +840,189 @@ static uint32_t scanner_state_table_intern(
   uint32_t length
 ) {
   if (length == 0) return 0;
-  if ((self->entries.size + 1) * 2 > self->buckets.size) {
+  if (self->entries.size >= self->buckets.size) {
     scanner_state_table_grow(self);
   }
-  uint32_t hash = scanner_state_hash(data, length);
-  uint32_t mask = self->buckets.size - 1;
-  uint32_t slot = hash & mask;
-  while (self->buckets.contents[slot]) {
-    uint32_t id = self->buckets.contents[slot];
-    ScannerStateEntry entry = self->entries.contents[id - 1];
-    if (
-      entry.hash == hash &&
-      entry.length == length &&
-      memcmp(self->bytes.contents + entry.offset, data, length) == 0
-    ) {
-      return id;
-    }
-    slot = (slot + 1) & mask;
-  }
+  uint64_t hash = scanner_state_hash(self->seed, data, length);
+  uint32_t slot = (uint32_t)hash & (self->buckets.size - 1);
+  uint32_t existing = scanner_state_bucket_find(self, slot, hash, data, length);
+  if (existing) return existing;
+
   uint32_t offset = self->bytes.size;
-  array_grow_by(&self->bytes, length);
-  memcpy(self->bytes.contents + offset, data, length);
-  array_push(&self->entries, ((ScannerStateEntry) {offset, length, hash}));
-  self->buckets.contents[slot] = self->entries.size;
-  return self->entries.size;
+  array_extend(&self->bytes, length, data);
+  array_push(&self->entries, ((ScannerStateEntry) {
+    .hash = hash,
+    .offset = offset,
+    .length = length,
+    .left = 0,
+    .right = 0,
+    .level = 1,
+  }));
+  uint32_t new_id = self->entries.size;
+  scanner_state_bucket_insert(self, slot, new_id);
+  return new_id;
 }
 
 static void scanner_state_table_grow(ScannerStateTable *self) {
-  uint32_t capacity = self->buckets.size ? self->buckets.size * 2 : 32;
-  array_grow_by(&self->buckets, capacity - self->buckets.size);
-  memset(self->buckets.contents, 0, capacity * sizeof(uint32_t));
+  if (self->buckets.size >= (1u << 30)) return;
+  uint32_t old_size = self->buckets.size;
+  uint32_t capacity = old_size ? old_size * 2 : 32;
+  if (old_size > 0) {
+    memset(self->buckets.contents, 0, old_size * sizeof(uint32_t));
+  }
+  array_grow_by(&self->buckets, capacity - old_size);
+  uint32_t mask = capacity - 1;
   for (uint32_t i = 0; i < self->entries.size; i++) {
-    uint32_t slot = self->entries.contents[i].hash & (capacity - 1);
-    while (self->buckets.contents[slot]) slot = (slot + 1) & (capacity - 1);
-    self->buckets.contents[slot] = i + 1;
+    ScannerStateEntry *entry = &self->entries.contents[i];
+    entry->left = 0;
+    entry->right = 0;
+    entry->level = 1;
+    scanner_state_bucket_insert(self, (uint32_t)entry->hash & mask, i + 1);
   }
 }
 
-static uint32_t scanner_state_hash(const char *data, uint32_t length) {
-  uint32_t hash = 2166136261u;
-  for (uint32_t i = 0; i < length; i++) {
-    hash = (hash ^ (uint8_t)data[i]) * 16777619u;
+static uint32_t scanner_state_bucket_find(
+  const ScannerStateTable *self,
+  uint32_t slot,
+  uint64_t hash,
+  const char *data,
+  uint32_t length
+) {
+  uint32_t cur = self->buckets.contents[slot];
+  while (cur) {
+    int cmp = scanner_state_compare_key(self, cur, hash, data, length);
+    if (cmp == 0) return cur;
+    const ScannerStateEntry *entry = &self->entries.contents[cur - 1];
+    cur = cmp < 0 ? entry->left : entry->right;
   }
-  return hash;
+  return 0;
 }
+
+static void scanner_state_bucket_insert(
+  ScannerStateTable *self,
+  uint32_t slot,
+  uint32_t new_id
+) {
+  uint32_t root = self->buckets.contents[slot];
+  if (!root) {
+    self->buckets.contents[slot] = new_id;
+    return;
+  }
+  ScannerStateEntry *entries = self->entries.contents;
+  const ScannerStateEntry *target = &entries[new_id - 1];
+  const char *target_data = self->bytes.contents + target->offset;
+  uint32_t path[64];
+  uint8_t go_right[64];
+  uint32_t depth = 0;
+  uint32_t cur = root;
+  while (cur) {
+    ts_assert(depth < 64);
+    path[depth] = cur;
+    bool right = scanner_state_compare_key(
+      self, cur, target->hash, target_data, target->length
+    ) > 0;
+    go_right[depth] = (uint8_t)right;
+    depth++;
+    cur = right ? entries[cur - 1].right : entries[cur - 1].left;
+  }
+  uint32_t child = new_id;
+  while (depth > 0) {
+    uint32_t node = path[--depth];
+    if (go_right[depth]) entries[node - 1].right = child;
+    else entries[node - 1].left = child;
+    child = scanner_state_aa_split(entries, scanner_state_aa_skew(entries, node));
+  }
+  self->buckets.contents[slot] = child;
+}
+
+static int scanner_state_compare_key(
+  const ScannerStateTable *self,
+  uint32_t entry_id,
+  uint64_t hash,
+  const char *data,
+  uint32_t length
+) {
+  const ScannerStateEntry *entry = &self->entries.contents[entry_id - 1];
+  if (hash != entry->hash) return hash < entry->hash ? -1 : 1;
+  if (length != entry->length) return length < entry->length ? -1 : 1;
+  return memcmp(data, self->bytes.contents + entry->offset, length);
+}
+
+static uint32_t scanner_state_aa_skew(ScannerStateEntry *entries, uint32_t node) {
+  uint32_t left = entries[node - 1].left;
+  if (left && entries[left - 1].level == entries[node - 1].level) {
+    entries[node - 1].left = entries[left - 1].right;
+    entries[left - 1].right = node;
+    return left;
+  }
+  return node;
+}
+
+static uint32_t scanner_state_aa_split(ScannerStateEntry *entries, uint32_t node) {
+  uint32_t right = entries[node - 1].right;
+  if (right) {
+    uint32_t right_right = entries[right - 1].right;
+    if (right_right && entries[right_right - 1].level == entries[node - 1].level) {
+      entries[node - 1].right = entries[right - 1].left;
+      entries[right - 1].left = node;
+      entries[right - 1].level++;
+      return right;
+    }
+  }
+  return node;
+}
+
+#define SIP_ROTL64(x, b) (((x) << (b)) | ((x) >> (64 - (b))))
+
+#define SIP_ROUND(v0, v1, v2, v3) \
+  do {                            \
+    (v0) += (v1);                 \
+    (v1) = SIP_ROTL64((v1), 13);  \
+    (v1) ^= (v0);                 \
+    (v0) = SIP_ROTL64((v0), 32);  \
+    (v2) += (v3);                 \
+    (v3) = SIP_ROTL64((v3), 16);  \
+    (v3) ^= (v2);                 \
+    (v0) += (v3);                 \
+    (v3) = SIP_ROTL64((v3), 21);  \
+    (v3) ^= (v0);                 \
+    (v2) += (v1);                 \
+    (v1) = SIP_ROTL64((v1), 17);  \
+    (v1) ^= (v2);                 \
+    (v2) = SIP_ROTL64((v2), 32);  \
+  } while (0)
+
+static uint64_t scanner_state_hash(uint64_t seed, const char *data, uint32_t length) {
+  uint64_t k0 = seed;
+  uint64_t k1 = scanner_state_mix64(seed ^ UINT64_C(0x646f72616e646f6d));
+  uint64_t v0 = k0 ^ UINT64_C(0x736f6d6570736575);
+  uint64_t v1 = k1 ^ UINT64_C(0x646f72616e646f6d);
+  uint64_t v2 = k0 ^ UINT64_C(0x6c7967656e657261);
+  uint64_t v3 = k1 ^ UINT64_C(0x7465646279746573);
+  const uint8_t *bytes = (const uint8_t *)data;
+  uint32_t full_len = length & ~7u;
+  for (uint32_t i = 0; i < full_len; i += 8) {
+    uint64_t m = scanner_state_load_le64(bytes + i);
+    v3 ^= m;
+    SIP_ROUND(v0, v1, v2, v3);
+    v0 ^= m;
+  }
+  uint64_t tail = (uint64_t)length << 56;
+  for (uint32_t i = full_len; i < length; i++) {
+    tail |= (uint64_t)bytes[i] << ((i - full_len) * 8);
+  }
+  v3 ^= tail;
+  SIP_ROUND(v0, v1, v2, v3);
+  v0 ^= tail;
+  v2 ^= 0xff;
+  SIP_ROUND(v0, v1, v2, v3);
+  SIP_ROUND(v0, v1, v2, v3);
+  SIP_ROUND(v0, v1, v2, v3);
+  return v0 ^ v1 ^ v2 ^ v3;
+}
+
+#undef SIP_ROUND
+#undef SIP_ROTL64
 
 static bool ts_parser__token_in_single_included_range(const Lexer *, uint32_t, uint32_t);
 static bool ts_parser__extract_utf16_ascii(const uint8_t *, uint32_t *, TSInputEncoding, char (*)[128]);
@@ -2440,6 +2606,8 @@ static bool ts_parser_has_outstanding_parse(TSParser *self) {
 
 // Parser - Public
 
+static void scanner_state_table_reset(ScannerStateTable *self);
+
 TSParser *ts_parser_new(void) {
   TSParser *self = ts_calloc(1, sizeof(TSParser));
   ts_lexer_init(&self->lexer);
@@ -2448,6 +2616,9 @@ TSParser *ts_parser_new(void) {
   array_reserve(&self->reduce_actions, 4);
   self->tree_pool = ts_subtree_pool_new(32);
   self->stack = ts_stack_new(&self->tree_pool);
+  self->scanner_states.seed = scanner_state_mix64(
+    (uint64_t)(uintptr_t)self ^ UINT64_C(0x736f6d6570736575)
+  );
   self->finished_tree = NULL_SUBTREE;
   self->dot_graph_file = NULL;
   self->language = NULL;
@@ -2579,15 +2750,7 @@ void ts_parser_reset(TSParser *self) {
     self->finished_tree = NULL_SUBTREE;
   }
   ts_subtree_pool_clear(&self->tree_pool);
-  if (self->scanner_states.entries.size > 0) {
-    array_clear(&self->scanner_states.bytes);
-    array_clear(&self->scanner_states.entries);
-    memset(
-      self->scanner_states.buckets.contents,
-      0,
-      self->scanner_states.buckets.size * sizeof(uint32_t)
-    );
-  }
+  scanner_state_table_reset(&self->scanner_states);
   self->accept_count = 0;
   self->accept_version = STACK_VERSION_NONE;
   self->accept_slices = (StackSliceArray) array_new();
@@ -2787,6 +2950,37 @@ TSWasmStore *ts_parser_take_wasm_store(TSParser *self) {
   TSWasmStore *result = self->wasm_store;
   self->wasm_store = NULL;
   return result;
+}
+
+static void scanner_state_table_reset(ScannerStateTable *self) {
+  if (self->entries.size == 0 && self->buckets.size == 0) return;
+  if (self->buckets.capacity > 2048 || self->bytes.capacity > 65536) {
+    array_delete(&self->bytes);
+    array_delete(&self->entries);
+    array_delete(&self->buckets);
+  } else {
+    array_clear(&self->bytes);
+    array_clear(&self->entries);
+    array_clear(&self->buckets);
+  }
+  self->seed = scanner_state_mix64(self->seed + UINT64_C(0x9e3779b97f4a7c15));
+}
+
+static uint64_t scanner_state_mix64(uint64_t x) {
+  x = (x ^ (x >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+  x = (x ^ (x >> 27)) * UINT64_C(0x94d049bb133111eb);
+  return x ^ (x >> 31);
+}
+
+static inline uint64_t scanner_state_load_le64(const uint8_t *p) {
+  return (uint64_t)p[0] |
+    ((uint64_t)p[1] << 8) |
+    ((uint64_t)p[2] << 16) |
+    ((uint64_t)p[3] << 24) |
+    ((uint64_t)p[4] << 32) |
+    ((uint64_t)p[5] << 40) |
+    ((uint64_t)p[6] << 48) |
+    ((uint64_t)p[7] << 56);
 }
 
 #undef LOG

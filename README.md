@@ -91,7 +91,7 @@ cargo run --release -p tree-sitter-cli --features wasm --example parser_study --
 
 Add `--profile <output.json>` before `native` or `wasm` to record frequencies from these inputs. Recording requires an unprofiled parser. Native recording reads `<src-directory>/parser.c`; Wasm recording reads `src/parser.c` in the module's directory, which must contain the exact unprofiled source used to build that module.
 
-`build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `s`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
+`build --optimization` selects `2`, `3`, `s`, or `z` for native or Wasm builds. The defaults are native `2` and Wasm `z`. Compare build time, artifact size, and parsing time for the target compiler and runtime.
 
 ## Ambiguous parse limits
 
