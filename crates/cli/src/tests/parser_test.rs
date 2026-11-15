@@ -8629,3 +8629,87 @@ fn test_utf8_unicode_fast_path_across_chunks_and_line_separators() {
             .has_error()
     );
 }
+
+#[test]
+fn test_unterminated_tainted_delimited_tokens_linear_recovery() {
+    let measure_fastest = |parser: &mut Parser, input: &[u8]| {
+        let mut fastest = std::time::Duration::MAX;
+        for _ in 0..5 {
+            let started = std::time::Instant::now();
+            let tree = parser.parse(input).unwrap();
+            let root = tree.root_node();
+            assert!(root.has_error());
+            assert_eq!(root.end_byte(), input.len());
+            fastest = fastest.min(started.elapsed());
+        }
+        fastest
+    };
+
+    for (lang, unit) in [
+        ("c", &b"/*\xff "[..]),
+        ("c", &b"/*\xff\nint x;\n"[..]),
+        ("javascript", &b"/*\xff\nconst x = 1;\n"[..]),
+    ] {
+        let mut parser = Parser::new();
+        parser.set_language(&get_language(lang)).unwrap();
+
+        let small = unit.repeat(400);
+        let large = unit.repeat(3200);
+        let _ = parser.parse(&small).unwrap();
+        let t_small = measure_fastest(&mut parser, &small);
+        let t_large = measure_fastest(&mut parser, &large);
+        assert!(
+            t_large < t_small.max(std::time::Duration::from_millis(1)) * 18,
+            "{lang} ({unit:?}): small={t_small:?}, large={t_large:?}"
+        );
+
+        let sample = unit.repeat(16);
+        let sample_tree = parser.parse(&sample).unwrap();
+        assert_tree_navigation_consistent(sample_tree.root_node());
+    }
+
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    let unterminated = b"/*\xff ".repeat(200);
+    assert!(parser.parse(&unterminated).unwrap().root_node().has_error());
+
+    // Reusing the same parser on a closed comment with the same prefix must not reuse stale dead-ends.
+    let mut closed = unterminated.clone();
+    closed.extend_from_slice(b"*/\nint after = 1;\n");
+    let closed_tree = parser.parse(&closed).unwrap();
+    let closed_root = closed_tree.root_node();
+    assert!(closed_root.has_error());
+    let mut cursor = closed_root.walk();
+    let decl = closed_root
+        .named_children(&mut cursor)
+        .find(|n| n.kind() == "declaration")
+        .unwrap_or_else(|| panic!("missing declaration in {}", closed_root.to_sexp()));
+    assert!(!decl.has_error(), "{}", decl.to_sexp());
+
+    let clean = format!("/*{}*/\nint clean_ok = 2;\n", "a".repeat(1024));
+    let clean_tree = parser.parse(&clean).unwrap();
+    assert!(!clean_tree.root_node().has_error());
+
+    // Also exercise included_ranges (column tracking) with repeated unterminated tainted comments.
+    let ranged = b"/*\xff\nint y;\n".repeat(120);
+    parser
+        .set_included_ranges(&[
+            Range {
+                start_byte: 0,
+                end_byte: 440,
+                start_point: Point::new(0, 0),
+                end_point: Point::new(80, 0),
+            },
+            Range {
+                start_byte: 550,
+                end_byte: ranged.len(),
+                start_point: Point::new(100, 0),
+                end_point: Point::new(240, 0),
+            },
+        ])
+        .unwrap();
+    let ranged_tree = parser.parse(&ranged).unwrap();
+    assert!(ranged_tree.root_node().has_error());
+    assert_eq!(ranged_tree.root_node().end_byte(), ranged.len());
+    assert_tree_navigation_consistent(ranged_tree.root_node());
+}

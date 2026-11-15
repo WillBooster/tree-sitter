@@ -1,6 +1,7 @@
 #include "./alloc.c"
 #include "./language.c"
 #include "./lexer.c"
+#include "./lex_dead_end.c"
 #include "./lex_table.c"
 #include "./lex_keyword.c"
 #include "./lex_table_validate.c"

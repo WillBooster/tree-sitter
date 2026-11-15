@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 523 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
+// code-gauge-allow-file fileNcss 532 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
 #include "./length.h"
 #include "./lexer.h"
 #include "./unicode.h"
@@ -364,12 +364,6 @@ static void ts_lexer_goto(Lexer *self, Length position) {
   if (self->track_columns) ts_lexer__restore_columns(self);
 }
 
-#if defined _WIN32 && !defined __GNUC__
-#define TS_NOINLINE __declspec(noinline)
-#else
-#define TS_NOINLINE __attribute__((noinline))
-#endif
-
 static TS_NOINLINE void ts_lexer__advance_display_column(Lexer *self) {
   if (!self->display_column_data.valid) return;
   uint32_t column = self->display_column_data.value;
@@ -720,9 +714,11 @@ void ts_lexer_clear_cache(Lexer *self) {
   if (self->kw_lex_cache.unicode_exc) ts_free(self->kw_lex_cache.unicode_exc);
   self->main_lex_cache = (TSLexTableView){0};
   self->kw_lex_cache = (TSLexTableView){0};
+  ts_lexer_clear_dead_ends(self);
 }
 
 void ts_lexer_set_input(Lexer *self, TSInput input) {
+  ts_lexer_clear_dead_ends(self);
   self->input = input;
   self->ascii_stride =
     input.encoding == TSInputEncodingUTF8 ? 1 :
@@ -754,14 +750,22 @@ void ts_lexer_reset(Lexer *self, Length position) {
   }
 }
 
+void ts_lexer_goto_dead_end(Lexer *self, Length position) {
+  ts_lexer_reset(self, position);
+  if (!ts_lexer__eof(&self->data)) {
+    if (!self->chunk_size) ts_lexer__get_chunk(self);
+    if (!self->lookahead_size) ts_lexer_get_lookahead(self);
+  }
+}
+
 void ts_lexer_start(Lexer *self) {
   self->token_start_position = self->current_position;
   self->token_end_position = LENGTH_UNDEFINED;
   self->marked_start_position = LENGTH_UNDEFINED;
   self->data.result_symbol = 0;
+  self->aborted = false;
   self->has_decode_error = false;
   self->token_has_decode_error = false;
-  self->first_decode_error_byte = 0;
   if (!ts_lexer__eof(&self->data)) {
     if (!self->chunk_size) ts_lexer__get_chunk(self);
     if (!self->lookahead_size) ts_lexer_get_lookahead(self);
@@ -796,6 +800,7 @@ bool ts_lexer_flush_operations(Lexer *self) {
   if (!self->check_progress || self->check_progress(self->progress_payload, operations)) {
     return true;
   }
+  self->aborted = true;
   self->current_included_range_index = self->included_range_count;
   ts_lexer__clear_chunk(self);
   self->data.lookahead = '\0';
@@ -845,6 +850,7 @@ bool ts_lexer_set_included_ranges(
   }
   self->included_range_count = count;
   self->track_columns = self->included_ranges != &TS_DEFAULT_RANGE;
+  ts_lexer_clear_dead_ends(self);
   ts_lexer__clear_column_checkpoints(self);
   ts_lexer_goto(self, self->current_position);
   return true;

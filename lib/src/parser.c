@@ -547,13 +547,13 @@ typedef struct {
 
 static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
 static bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
-static int ts_parser__try_lex_external(TSParser *, StackVersion, TSStateId, LexLoopState *);
-static bool ts_parser__lex_internal_attempt(TSParser *, LexLoopState *);
+static inline int ts_parser__try_lex_external(TSParser *, StackVersion, TSStateId, LexLoopState *);
+static inline bool ts_parser__lex_internal_attempt(TSParser *, LexLoopState *);
 static inline bool ts_parser__can_accept_internal_token(const TSParser *, TSStateId, bool, bool);
-static void ts_parser__enter_lex_error_mode(TSParser *, StackVersion, bool, LexLoopState *);
-static void ts_parser__defer_failed_internal(TSParser *, LexLoopState *);
-static bool ts_parser__advance_skipped_error(TSParser *, LexLoopState *);
-static LookaheadToken ts_parser__finish_lexed_token(
+static inline void ts_parser__enter_lex_error_mode(TSParser *, StackVersion, bool, LexLoopState *);
+static inline void ts_parser__defer_failed_internal(TSParser *, LexLoopState *);
+static inline bool ts_parser__advance_skipped_error(TSParser *, LexLoopState *);
+static inline LookaheadToken ts_parser__finish_lexed_token(
   TSParser *, StackVersion, TSStateId, const LexLoopState *
 );
 static bool ts_parser__resolve_keyword(
@@ -634,7 +634,7 @@ static LookaheadToken ts_parser__lex(
   return ts_parser__finish_lexed_token(self, version, parse_state, &st);
 }
 
-static int ts_parser__try_lex_external(
+static inline int ts_parser__try_lex_external(
   TSParser *self,
   StackVersion version,
   TSStateId parse_state,
@@ -680,7 +680,7 @@ static int ts_parser__try_lex_external(
   return 0;
 }
 
-static bool ts_parser__lex_internal_attempt(TSParser *self, LexLoopState *st) {
+static inline bool ts_parser__lex_internal_attempt(TSParser *self, LexLoopState *st) {
   if (st->internal_already_failed) {
     ts_lexer_reset(&self->lexer, st->failed_internal_position);
     ts_lexer_start(&self->lexer);
@@ -712,7 +712,7 @@ static inline bool ts_parser__can_accept_internal_token(
   return ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end);
 }
 
-static void ts_parser__enter_lex_error_mode(
+static inline void ts_parser__enter_lex_error_mode(
   TSParser *self,
   StackVersion version,
   bool found_token,
@@ -736,7 +736,7 @@ static void ts_parser__enter_lex_error_mode(
   }
 }
 
-static void ts_parser__defer_failed_internal(TSParser *self, LexLoopState *st) {
+static inline void ts_parser__defer_failed_internal(TSParser *self, LexLoopState *st) {
   st->internal_already_failed = true;
   st->failed_internal_position = self->lexer.current_position;
   st->failed_internal_token_start = self->lexer.token_start_position;
@@ -744,7 +744,7 @@ static void ts_parser__defer_failed_internal(TSParser *self, LexLoopState *st) {
   ts_lexer_reset(&self->lexer, st->start_position);
 }
 
-static bool ts_parser__advance_skipped_error(TSParser *self, LexLoopState *st) {
+static inline bool ts_parser__advance_skipped_error(TSParser *self, LexLoopState *st) {
   if (!st->skipped_error) {
     LOG("skip_unrecognized_character");
     st->skipped_error = true;
@@ -764,7 +764,7 @@ static bool ts_parser__advance_skipped_error(TSParser *self, LexLoopState *st) {
   return false;
 }
 
-static LookaheadToken ts_parser__finish_lexed_token(
+static inline LookaheadToken ts_parser__finish_lexed_token(
   TSParser *self,
   StackVersion version,
   TSStateId parse_state,

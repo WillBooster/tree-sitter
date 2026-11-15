@@ -10,6 +10,26 @@ extern "C" {
 #include "tree_sitter/api.h"
 #include "./parser.h"
 
+#ifndef TS_NOINLINE
+#if defined _WIN32 && !defined __GNUC__
+#define TS_NOINLINE __declspec(noinline)
+#else
+#define TS_NOINLINE __attribute__((noinline))
+#endif
+#endif
+
+#ifndef TS_LIKELY
+#if defined(__GNUC__) || defined(__clang__)
+#define TS_LIKELY(x) __builtin_expect(!!(x), 1)
+#define TS_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define TS_LIKELY(x) (x)
+#define TS_UNLIKELY(x) (x)
+#endif
+#endif
+
+typedef struct TSLexDeadEndCache TSLexDeadEndCache;
+
 extern const TSRange TS_DEFAULT_RANGE;
 
 typedef struct {
@@ -74,6 +94,12 @@ typedef struct {
   uint32_t ascii_stride;
   uint32_t ascii_limit;
   uint32_t advance_count;
+  uint32_t first_decode_error_byte;
+  bool track_columns;
+  bool has_operation_limit;
+  bool aborted;
+  bool has_decode_error;
+  bool token_has_decode_error;
   bool (*check_progress)(void *payload, unsigned operations);
   void *progress_payload;
   char lookahead_buffer[4];
@@ -84,13 +110,9 @@ typedef struct {
   ColumnCheckpoint end_column_checkpoint;
   ColumnCheckpoint query_column_checkpoint;
   ColumnCheckpoint query_display_column_checkpoint;
+  TSLexDeadEndCache *dead_ends;
   TSLexTableView main_lex_cache;
   TSLexTableView kw_lex_cache;
-  uint32_t first_decode_error_byte;
-  bool track_columns;
-  bool has_operation_limit;
-  bool has_decode_error;
-  bool token_has_decode_error;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;
@@ -98,6 +120,8 @@ typedef struct {
 void ts_lexer_init(Lexer *self);
 void ts_lexer_delete(Lexer *self);
 void ts_lexer_clear_cache(Lexer *self);
+void ts_lexer_clear_dead_ends(Lexer *self);
+void ts_lexer_goto_dead_end(Lexer *self, Length position);
 void ts_lexer_set_input(Lexer *self, TSInput input);
 void ts_lexer_set_logger(Lexer *self, TSLogger logger);
 void ts_lexer_set_progress_callback(

@@ -125,16 +125,43 @@ static inline uint16_t ts_lex_lookup_action(
   return ce[0] == sm.tmpl ? ce[1] : sm.def;
 }
 
+static inline bool ts_lex_action_is_skip(const TSLexTableView *v, uint16_t act) {
+  if (act == 0) return false;
+  if (act < TS_LEX_EXTENDED_FLAG) return (act & TS_LEX_SIMPLE_SKIP_FLAG) != 0;
+  return (v->ext_transitions[(act & 0x7fffu) + 1u] & TS_LEX_EXTENDED_FLAG) != 0;
+}
+
+static inline uint16_t ts_lex_action_next_state(const TSLexTableView *v, uint16_t act) {
+  if (act < TS_LEX_EXTENDED_FLAG) return (uint16_t)((act & TS_LEX_SIMPLE_STATE_MASK) - 1u);
+  return v->ext_transitions[act & 0x7fffu];
+}
+
+typedef struct {
+  Length pos;
+  ColumnData col;
+  ColumnData disp;
+} TSLexDeadEndTarget;
+
+bool ts_lex_lookup_dead_end(
+  const TSLexDeadEndCache *cache,
+  const uint16_t *table,
+  uint16_t state,
+  uint32_t byte,
+  TSLexDeadEndTarget *target
+);
+
+void ts_lex_record_dead_ends(
+  Lexer *self,
+  const TSLexTableView *v,
+  uint16_t start_state,
+  Length start_pos
+);
+
+TSLexTableView *ts_lex_select_view_cold(Lexer *self, const uint16_t *table);
+
 static inline TSLexTableView *ts_lex_select_view(Lexer *self, const uint16_t *table) {
-  if (self->main_lex_cache.table == table) return &self->main_lex_cache;
-  if (self->kw_lex_cache.table == table) return &self->kw_lex_cache;
-  TSLexTableView *slot = !self->main_lex_cache.table ? &self->main_lex_cache : &self->kw_lex_cache;
-  if (slot->unicode_exc) ts_free(slot->unicode_exc);
-  *slot = ts_lex_unpack_view(table);
-  slot->replacement_class = slot->unicode_range_count > 0
-    ? ts_lex_unicode_class(slot, 0xfffdu)
-    : UINT16_MAX;
-  return slot;
+  if (TS_LIKELY(self->main_lex_cache.table == table)) return &self->main_lex_cache;
+  return ts_lex_select_view_cold(self, table);
 }
 
 bool ts_lexer_lex_table(Lexer *self, const uint16_t *table, TSStateId start_state);
