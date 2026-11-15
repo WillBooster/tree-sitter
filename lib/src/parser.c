@@ -476,7 +476,7 @@ static bool ts_parser__external_scanner_scan(
   }
 }
 
-static TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra);
+static inline TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra);
 
 static bool ts_parser__can_reuse_cached_token(
   TSParser *self,
@@ -546,8 +546,17 @@ typedef struct {
 } LexLoopState;
 
 static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
-static bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
+static inline LexLoopState ts_parser__init_lex_loop(
+  TSParser *, StackVersion, TSStateId, TSLexerMode
+);
+static inline bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
 static inline int ts_parser__try_lex_external(TSParser *, StackVersion, TSStateId, LexLoopState *);
+static inline bool ts_parser__reuse_ext_scan_cache(TSParser *, uint32_t, LexLoopState *, bool *);
+static inline int ts_parser__run_ext_scan(TSParser *, Length, LexLoopState *, bool *);
+static inline bool ts_parser__accept_empty_ext_token(
+  TSParser *, StackVersion, TSStateId, const LexLoopState *
+);
+static inline bool ts_parser__can_cache_ext_scan(const TSParser *);
 static inline bool ts_parser__lex_internal_attempt(TSParser *, LexLoopState *);
 static inline bool ts_parser__can_accept_internal_token(const TSParser *, TSStateId, bool, bool);
 static inline void ts_parser__enter_lex_error_mode(TSParser *, StackVersion, bool, LexLoopState *);
@@ -556,7 +565,7 @@ static inline bool ts_parser__advance_skipped_error(TSParser *, LexLoopState *);
 static inline LookaheadToken ts_parser__finish_lexed_token(
   TSParser *, StackVersion, TSStateId, const LexLoopState *
 );
-static bool ts_parser__resolve_keyword(
+static inline bool ts_parser__resolve_keyword(
   TSParser *, StackVersion, TSStateId, TSSymbol *, bool *, bool *
 );
 static bool ts_parser__recovery_accepts_keyword(
@@ -589,15 +598,8 @@ static LookaheadToken ts_parser__lex(
     return NULL_LOOKAHEAD;
   }
 
-  LexLoopState st = {
-    .lex_mode = ts_parser__lex_mode_for_extra_context(
-      lex_mode, ts_stack_after_extra(self->stack, version)
-    ),
-    .start_position = ts_stack_position(self->stack, version),
-    .external_scanner_state_id = ts_stack_external_scanner_state_id(self->stack, version),
-    .error_mode = parse_state == ERROR_STATE,
-  };
-  ts_lexer_reset(&self->lexer, st.start_position);
+  LexLoopState st = ts_parser__init_lex_loop(self, version, parse_state, lex_mode);
+  ts_lexer_reset_fast(&self->lexer, st.start_position);
 
   for (bool did_iterate = false;; did_iterate = true) {
     if (did_iterate && !ts_parser__check_lexer_progress(self, 1)) return NULL_LOOKAHEAD;
@@ -634,6 +636,29 @@ static LookaheadToken ts_parser__lex(
   return ts_parser__finish_lexed_token(self, version, parse_state, &st);
 }
 
+static inline LexLoopState ts_parser__init_lex_loop(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  TSLexerMode lex_mode
+) {
+  LexLoopState st;
+  st.lex_mode = ts_parser__lex_mode_for_extra_context(
+    lex_mode, ts_stack_after_extra(self->stack, version)
+  );
+  st.start_position = ts_stack_position(self->stack, version);
+  st.external_scanner_state_id = ts_stack_external_scanner_state_id(self->stack, version);
+  st.new_scanner_state_id = 0;
+  st.found_external_token = false;
+  st.external_scanner_state_changed = false;
+  st.error_mode = parse_state == ERROR_STATE;
+  st.skipped_error = false;
+  st.retry_internal = false;
+  st.internal_eof = false;
+  st.internal_already_failed = false;
+  return st;
+}
+
 static inline int ts_parser__try_lex_external(
   TSParser *self,
   StackVersion version,
@@ -642,42 +667,122 @@ static inline int ts_parser__try_lex_external(
 ) {
   Length current_position = self->lexer.current_position;
   ColumnData column_data = self->lexer.column_data;
+  bool found_token = false;
+  if (!ts_parser__reuse_ext_scan_cache(self, current_position.bytes, st, &found_token)) {
+    if (ts_parser__run_ext_scan(self, current_position, st, &found_token) < 0) return -1;
+  }
+  if (
+    found_token &&
+    self->lexer.token_end_position.bytes <= current_position.bytes &&
+    !ts_parser__accept_empty_ext_token(self, version, parse_state, st)
+  ) {
+    found_token = false;
+  }
+  if (found_token) {
+    st->found_external_token = true;
+    return 1;
+  }
+  ts_lexer_reset_fast(&self->lexer, current_position);
+  self->lexer.column_data = column_data;
+  return 0;
+}
+
+static inline bool ts_parser__reuse_ext_scan_cache(
+  TSParser *self,
+  uint32_t start_byte,
+  LexLoopState *st,
+  bool *found_token
+) {
+  if (!ts_parser__can_cache_ext_scan(self)) return false;
+  for (unsigned i = 0; i < 2u; i++) {
+    const TSLexExtScanCache *c = &self->lexer.ext_scan_cache[i];
+    if (
+      !c->valid ||
+      c->start_byte != start_byte ||
+      c->external_lex_state != st->lex_mode.external_lex_state ||
+      c->scanner_state_id != st->external_scanner_state_id
+    ) continue;
+    *found_token = c->found_token;
+    if (!c->found_token) return true;
+    self->lexer.token_start_position = c->token_start;
+    self->lexer.token_end_position = c->token_end;
+    self->lexer.data.result_symbol = c->result_symbol;
+    self->lexer.token_has_decode_error = false;
+    st->new_scanner_state_id = c->new_scanner_state_id;
+    st->external_scanner_state_changed = c->new_scanner_state_id != st->external_scanner_state_id;
+    return true;
+  }
+  return false;
+}
+
+static inline int ts_parser__run_ext_scan(
+  TSParser *self,
+  Length current_position,
+  LexLoopState *st,
+  bool *found_token
+) {
   LOG(
     "lex_external state:%d, row:%u, column:%u",
     st->lex_mode.external_lex_state,
     current_position.extent.row,
     current_position.extent.column
   );
+  bool can_cache = ts_parser__can_cache_ext_scan(self);
   ts_lexer_start(&self->lexer);
   ts_parser__external_scanner_deserialize(self, st->external_scanner_state_id);
-  bool found_token = ts_parser__external_scanner_scan(self, st->lex_mode.external_lex_state);
+  ts_lexer_begin_external_scan(&self->lexer);
+  bool found = ts_parser__external_scanner_scan(self, st->lex_mode.external_lex_state);
+  ts_lexer_end_external_scan(&self->lexer, current_position, found);
   if (self->has_scanner_error || self->exceeded_max_operations) return -1;
   ts_lexer_finish(&self->lexer);
-
-  if (found_token) {
+  if (found) {
     uint32_t state_len = ts_parser__external_scanner_serialize(self);
+    if (self->has_scanner_error) return -1;
     st->new_scanner_state_id = scanner_state_table_intern(
       &self->scanner_states, self->lexer.debug_buffer, state_len
     );
     st->external_scanner_state_changed = st->new_scanner_state_id != st->external_scanner_state_id;
-    if (self->lexer.token_end_position.bytes <= current_position.bytes) {
-      TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
-      bool unusable_eof = st->internal_eof && !ts_parser__eof_token_is_usable(self, version, symbol);
-      bool is_extra = ts_language_next_state(self->language, parse_state, symbol) == parse_state;
-      if ((!st->external_scanner_state_changed || unusable_eof) &&
-          (st->error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || is_extra)) {
-        LOG("ignore_empty_external_token symbol:%s", SYM_NAME(symbol));
-        found_token = false;
-      }
-    }
   }
-  if (found_token) {
-    st->found_external_token = true;
-    return 1;
+  if (can_cache && ts_parser__can_cache_ext_scan(self)) {
+    self->lexer.ext_scan_cache[1] = self->lexer.ext_scan_cache[0];
+    self->lexer.ext_scan_cache[0] = (TSLexExtScanCache){
+      .token_start = self->lexer.token_start_position,
+      .token_end = self->lexer.token_end_position,
+      .start_byte = current_position.bytes,
+      .scanner_state_id = st->external_scanner_state_id,
+      .new_scanner_state_id = found ? st->new_scanner_state_id : 0,
+      .external_lex_state = st->lex_mode.external_lex_state,
+      .result_symbol = self->lexer.data.result_symbol,
+      .found_token = found,
+      .valid = true,
+    };
   }
-  ts_lexer_reset(&self->lexer, current_position);
-  self->lexer.column_data = column_data;
+  *found_token = found;
   return 0;
+}
+
+static inline bool ts_parser__accept_empty_ext_token(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  const LexLoopState *st
+) {
+  TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
+  bool unusable_eof = st->internal_eof && !ts_parser__eof_token_is_usable(self, version, symbol);
+  bool is_extra = ts_language_next_state(self->language, parse_state, symbol) == parse_state;
+  if ((!st->external_scanner_state_changed || unusable_eof) &&
+      (st->error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || is_extra)) {
+    LOG("ignore_empty_external_token symbol:%s", SYM_NAME(symbol));
+    return false;
+  }
+  return true;
+}
+
+static inline bool ts_parser__can_cache_ext_scan(const TSParser *self) {
+  return !self->lexer.logger.log &&
+    !self->dot_graph_file &&
+    !self->lexer.track_columns &&
+    !self->lexer.has_operation_limit;
 }
 
 static inline bool ts_parser__lex_internal_attempt(TSParser *self, LexLoopState *st) {
@@ -695,9 +800,9 @@ static inline bool ts_parser__lex_internal_attempt(TSParser *self, LexLoopState 
     self->lexer.current_position.extent.row,
     self->lexer.current_position.extent.column
   );
-  ts_lexer_start(&self->lexer);
+  ts_lexer_start_fast(&self->lexer);
   bool found = ts_lexer_lex_table(&self->lexer, self->language->lex_table, st->lex_mode.lex_state);
-  if (!self->exceeded_max_operations) ts_lexer_finish(&self->lexer);
+  if (!self->exceeded_max_operations) ts_lexer_finish_fast(&self->lexer);
   return found;
 }
 
@@ -831,7 +936,7 @@ static inline LookaheadToken ts_parser__finish_lexed_token(
   return result;
 }
 
-static bool ts_parser__resolve_keyword(
+static inline bool ts_parser__resolve_keyword(
   TSParser *self,
   StackVersion version,
   TSStateId parse_state,
@@ -1127,13 +1232,13 @@ static uint64_t scanner_state_hash(uint64_t seed, const char *data, uint32_t len
 #undef SIP_ROUND
 #undef SIP_ROTL64
 
-static bool ts_parser__token_in_single_included_range(
+static inline bool ts_parser__token_in_single_included_range(
   const Lexer *lexer,
   uint32_t start_byte,
   uint32_t end_byte
 );
 
-static bool ts_parser__lookup_keyword(
+static inline bool ts_parser__lookup_keyword(
   TSParser *self,
   bool *is_keyword,
   TSSymbol *candidate
@@ -1165,7 +1270,7 @@ static bool ts_parser__lookup_keyword(
   return true;
 }
 
-static bool ts_parser__token_in_single_included_range(
+static inline bool ts_parser__token_in_single_included_range(
   const Lexer *lexer,
   uint32_t start_byte,
   uint32_t end_byte
@@ -1183,7 +1288,7 @@ static bool ts_parser__token_in_single_included_range(
   return low < lexer->included_range_count && start_byte >= lexer->included_ranges[low].start_byte;
 }
 
-static TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra) {
+static inline TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra) {
   if (after_extra) {
     mode.lex_state = mode.lex_state_after_extra;
     mode.external_lex_state = mode.external_lex_state_after_extra;

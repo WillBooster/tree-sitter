@@ -8648,7 +8648,14 @@ fn test_unterminated_tainted_delimited_tokens_linear_recovery() {
     for (lang, unit) in [
         ("c", &b"/*\xff "[..]),
         ("c", &b"/*\xff\nint x;\n"[..]),
-        ("javascript", &b"/*\xff\nconst x = 1;\n"[..]),
+        ("javascript", &b"/*\xff "[..]),
+        (
+            "javascript",
+            &b"/*\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e\xf0\x9f\x98\x80 \xff "[..],
+        ),
+        ("javascript", &b"a /*\xff "[..]),
+        ("javascript", &b"const x = 1\n/*\xff\n"[..]),
+        ("javascript", &b"const x = 1\n/*a \n"[..]),
     ] {
         let mut parser = Parser::new();
         parser.set_language(&get_language(lang)).unwrap();
@@ -8689,6 +8696,24 @@ fn test_unterminated_tainted_delimited_tokens_linear_recovery() {
     let clean = format!("/*{}*/\nint clean_ok = 2;\n", "a".repeat(1024));
     let clean_tree = parser.parse(&clean).unwrap();
     assert!(!clean_tree.root_node().has_error());
+
+    let mut js_parser = Parser::new();
+    js_parser.set_language(&get_language("javascript")).unwrap();
+    let js_unterminated = b"/*\xff ".repeat(200);
+    assert!(
+        js_parser
+            .parse(&js_unterminated)
+            .unwrap()
+            .root_node()
+            .has_error()
+    );
+    let js_closed = format!("const a = 1\n/*{}\n*/ const b = 2;\n", "x".repeat(512));
+    let js_closed_tree = js_parser.parse(&js_closed).unwrap();
+    assert!(
+        !js_closed_tree.root_node().has_error(),
+        "{}",
+        js_closed_tree.root_node().to_sexp()
+    );
 
     // Also exercise included_ranges (column tracking) with repeated unterminated tainted comments.
     let ranged = b"/*\xff\nint y;\n".repeat(120);

@@ -33,6 +33,7 @@ struct TSLexDeadEndCache {
   uint16_t end_cap;
 };
 
+static void ts_lex_free_dead_cache(Lexer *self);
 static TSLexDeadEndTarget ts_lex_collect_dead_samples(
   Lexer *self, const TSLexTableView *v, uint16_t state, LexDeadSampleList *list
 );
@@ -52,7 +53,21 @@ static void ts_lex_insert_dead_slot(
 static void ts_lex_grow_dead_slots(TSLexDeadEndCache *cache);
 static inline uint32_t ts_lex_dead_hash(uint16_t state, uint32_t byte);
 
+void ts_lexer_clear_cache(Lexer *self) {
+  if (self->main_lex_cache.unicode_exc) ts_free(self->main_lex_cache.unicode_exc);
+  if (self->kw_lex_cache.unicode_exc) ts_free(self->kw_lex_cache.unicode_exc);
+  self->main_lex_cache = (TSLexTableView){0};
+  self->kw_lex_cache = (TSLexTableView){0};
+  ts_lexer_clear_dead_ends(self);
+}
+
 void ts_lexer_clear_dead_ends(Lexer *self) {
+  ts_lex_free_dead_cache(self);
+  self->ext_eof_guard = (TSLexExtEofGuard){0};
+  memset(self->ext_scan_cache, 0, sizeof(self->ext_scan_cache));
+}
+
+static void ts_lex_free_dead_cache(Lexer *self) {
   if (!self->dead_ends) return;
   ts_free(self->dead_ends->slots);
   ts_free(self->dead_ends->ends);
@@ -187,7 +202,7 @@ static void ts_lex_push_dead_sample(LexDeadSampleList *list, uint32_t byte, uint
 }
 
 static TSLexDeadEndCache *ts_lex_ensure_dead_cache(Lexer *self, const uint16_t *table) {
-  if (self->dead_ends && self->dead_ends->table != table) ts_lexer_clear_dead_ends(self);
+  if (self->dead_ends && self->dead_ends->table != table) ts_lex_free_dead_cache(self);
   if (!self->dead_ends) {
     TSLexDeadEndCache *c = ts_calloc(1, sizeof(TSLexDeadEndCache));
     c->table = table;
@@ -196,6 +211,7 @@ static TSLexDeadEndCache *ts_lex_ensure_dead_cache(Lexer *self, const uint16_t *
     c->slot_mask = TS_LEX_DEAD_END_INIT_SLOTS - 1u;
     c->end_cap = TS_LEX_DEAD_END_INIT_ENDS;
     self->dead_ends = c;
+    self->utf8_fast_limit = 0;
   }
   return self->dead_ends;
 }

@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 633 -- keeps DFA execution, Unicode exception bounds, and accept guards together
+// code-gauge-allow-file fileNcss 642 -- keeps DFA execution, Unicode exception bounds, and accept guards together
 #include "./lex_table.h"
 #include "./unicode.h"
 
@@ -59,8 +59,8 @@ typedef struct {
 } LexUnicodeExcScratch;
 
 static inline bool ts_lex_can_run_utf8_ascii(const Lexer *self, const TSLexTableView *v);
-static inline uint32_t ts_lex_utf8_ascii_fast(
-  Lexer *self, const TSLexTableView *v, TSLexerCheckpoint *tag0, uint16_t *state_ptr
+static inline bool ts_lex_utf8_ascii_fast(
+  Lexer *self, const TSLexTableView *v, TSLexerCheckpoint *tag0, uint16_t *state_ptr, bool *result
 );
 static inline uint16_t ts_lex_ascii_next(
   const TSLexTableView *v, const uint16_t *sm, const uint8_t *ptr, const uint8_t *ptr_limit
@@ -85,6 +85,9 @@ static inline uint16_t ts_lex_next_action(
   Lexer *self, const TSLexTableView *v, TSLexStateMeta sm, bool eof
 );
 static inline bool ts_lex_can_run_unicode_fast(const Lexer *self, const TSLexTableView *v);
+static inline int ts_lex_step_unicode_chunk(
+  Lexer *self, TSLexTableView *v, uint16_t *state, LexRunState *run
+);
 static TS_NOINLINE bool ts_lex_unicode_fast(
   Lexer *self, TSLexTableView *v, uint16_t *state_ptr, TSLexerCheckpoint *tags, bool *result
 );
@@ -167,68 +170,64 @@ bool ts_lexer_lex_table(Lexer *self, const uint16_t *table, TSStateId start_stat
   TSLexTableView *v = ts_lex_select_view(self, table);
   if (TS_UNLIKELY(start_state >= v->state_count)) return false;
 
-  Length initial_pos = self->current_position;
   TSLexerCheckpoint tag0 = {{0, 0, 0}};
   uint16_t state = start_state;
+  bool result = false;
   if (TS_LIKELY(ts_lex_can_run_utf8_ascii(self, v))) {
-    uint32_t flags = ts_lex_utf8_ascii_fast(self, v, &tag0, &state);
-    bool result = (flags & 2u) != 0;
-    if (TS_LIKELY(flags & 1u)) {
-      if (TS_UNLIKELY(flags & 4u)) {
-        ts_lex_maybe_record_dead_ends(self, v, start_state, initial_pos, result);
-      }
-      return result;
-    }
+    Length initial_pos = self->current_position;
+    if (TS_LIKELY(ts_lex_utf8_ascii_fast(self, v, &tag0, &state, &result))) return result;
     LexSlowStart init = {initial_pos, tag0, start_state, state, result};
     return ts_lex_run_fallback(self, v, init);
   }
-  LexSlowStart init = {initial_pos, tag0, start_state, state, false};
+  LexSlowStart init = {self->current_position, tag0, start_state, state, false};
   return ts_lex_run_fallback(self, v, init);
 }
 
 static inline bool ts_lex_can_run_utf8_ascii(const Lexer *self, const TSLexTableView *v) {
-  return !v->wide_base &&
-    !self->dead_ends &&
-    !self->track_columns &&
+  return self->current_position.bytes < self->utf8_fast_limit &&
+    !v->wide_base &&
     !self->has_decode_error &&
-    self->input.encoding == TSInputEncodingUTF8 &&
-    !self->logger.log &&
-    self->current_position.bytes < self->ascii_limit &&
     (uint32_t)self->data.lookahead < 0x80u;
 }
 
-static inline uint32_t ts_lex_utf8_ascii_fast(
+static inline bool ts_lex_utf8_ascii_fast(
   Lexer *self,
   const TSLexTableView *v,
   TSLexerCheckpoint *tag0,
-  uint16_t *state_ptr
+  uint16_t *state_ptr,
+  bool *result
 ) {
   uint16_t state = *state_ptr;
   uint32_t start_bytes = self->current_position.bytes;
   const uint8_t *ptr_start = (const uint8_t *)self->chunk + (start_bytes - self->chunk_start);
-  const uint8_t *ptr_limit = (const uint8_t *)self->chunk + (self->ascii_limit - self->chunk_start);
+  const uint8_t *ptr_limit = (const uint8_t *)self->chunk + (self->utf8_fast_limit - self->chunk_start);
   LexFastPos cur = {ptr_start, self->current_position.extent.row, self->current_position.extent.column};
-  uint32_t flags = 0;
   for (;;) {
     const uint16_t *sm = &v->state_meta[(uint32_t)state * 4u];
     uint16_t acc = sm[3];
     uint16_t act = ts_lex_ascii_next(v, sm, cur.ptr, ptr_limit);
+    if ((acc | act) >= TS_LEX_EXTENDED_FLAG) break;
     Length pos = {start_bytes + (uint32_t)(cur.ptr - ptr_start), {cur.row, cur.col}};
-    if (!ts_lex_step_simple_meta(self, acc, act, pos, tag0, &flags)) break;
+    if (acc != 0) {
+      ts_lex_record_simple_accept(self, acc, pos, tag0);
+      *result = true;
+    }
+    if (act == 0) {
+      ts_lex_commit_ascii_cursor(self, pos, cur.ptr, (uint32_t)(cur.ptr - ptr_start));
+      return true;
+    }
+    if (act & TS_LEX_SIMPLE_TAG0_FLAG) *tag0 = (TSLexerCheckpoint){{pos.bytes, cur.row, cur.col}};
     cur = ts_lex_step_ascii(cur, cur.ptr[0], 1u);
     if ((uint16_t)(act & ~TS_LEX_SIMPLE_SKIP_FLAG) == (uint16_t)(state + 1u)) {
       cur = ts_lex_ascii_self_loop(v, sm, act, cur, ptr_limit);
     }
     state = ts_lex_finish_fast_step(self, act, start_bytes, ptr_start, cur);
   }
+  *state_ptr = state;
   uint32_t byte_delta = (uint32_t)(cur.ptr - ptr_start);
-  if (flags != 0 || byte_delta != 0) *state_ptr = state;
-  if (byte_delta != 0) {
-    if (TS_UNLIKELY(byte_delta > 256u)) flags |= 4u;
-    Length pos = {start_bytes + byte_delta, {cur.row, cur.col}};
-    ts_lex_commit_ascii_cursor(self, pos, cur.ptr, byte_delta);
-  }
-  return flags;
+  Length pos = {start_bytes + byte_delta, {cur.row, cur.col}};
+  ts_lex_commit_ascii_cursor(self, pos, cur.ptr, byte_delta);
+  return false;
 }
 
 static inline uint16_t ts_lex_ascii_next(
@@ -303,11 +302,7 @@ static bool ts_lex_run_loop(
   LexSlowStart init,
   TSLexerCheckpoint *tags
 ) {
-  LexRunState run;
-  run.fb.valid = false;
-  run.fb.has_decode_error = false;
-  run.tags = tags;
-  run.result = init.result;
+  LexRunState run = {{0}, tags, init.result};
   uint16_t state = init.state;
   uint32_t eof_steps = 0;
   uint32_t last_block = UINT32_MAX;
@@ -316,10 +311,9 @@ static bool ts_lex_run_loop(
         ts_lex_check_dead_end_hit(self, v, state, &last_block, run.result)) {
       return run.result;
     }
-    if (ts_lex_can_run_unicode_fast(self, v) &&
-        ts_lex_unicode_fast(self, v, &state, tags, &run.result)) {
-      break;
-    }
+    int fast = ts_lex_step_unicode_chunk(self, v, &state, &run);
+    if (fast > 0) break;
+    if (fast < 0) continue;
     TSLexStateMeta sm = ts_lex_state_meta(v, state);
     ts_lex_apply_accept(self, v, sm.acc, &run);
     bool eof = self->data.lookahead == 0 && self->data.eof(&self->data);
@@ -329,6 +323,19 @@ static bool ts_lex_run_loop(
   }
   ts_lex_maybe_record_dead_ends(self, v, init.initial_state, init.initial_pos, run.result);
   return run.result;
+}
+
+static inline int ts_lex_step_unicode_chunk(
+  Lexer *self,
+  TSLexTableView *v,
+  uint16_t *state,
+  LexRunState *run
+) {
+  if (!ts_lex_can_run_unicode_fast(self, v)) return 0;
+  uint32_t before_bytes = self->current_position.bytes;
+  if (ts_lex_unicode_fast(self, v, state, run->tags, &run->result)) return 1;
+  return (TS_UNLIKELY(self->dead_ends != NULL) && self->current_position.bytes != before_bytes)
+    ? -1 : 0;
 }
 
 static inline void ts_lex_maybe_record_dead_ends(
@@ -538,6 +545,7 @@ static inline void ts_lex_commit_ascii_cursor(
   const uint8_t *ptr,
   uint32_t byte_delta
 ) {
+  if (byte_delta == 0) return;
   self->current_position = pos;
   self->advance_count += byte_delta;
   if (TS_UNLIKELY(self->advance_count >= 64u) && !ts_lexer_flush_operations(self)) return;
