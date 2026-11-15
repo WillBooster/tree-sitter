@@ -476,7 +476,7 @@ static bool ts_parser__external_scanner_scan(
   }
 }
 
-static TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra);
+static inline TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra);
 
 static bool ts_parser__can_reuse_cached_token(
   TSParser *self,
@@ -525,8 +525,55 @@ static bool ts_parser__can_reuse_cached_token(
   return current_lex_mode.external_lex_state == 0 && table_entry->is_reusable;
 }
 
+typedef struct {
+  TSLexerMode lex_mode;
+  Length start_position;
+  uint32_t external_scanner_state_id;
+  uint32_t new_scanner_state_id;
+  bool found_external_token;
+  bool external_scanner_state_changed;
+  bool error_mode;
+  bool skipped_error;
+  bool retry_internal;
+  bool internal_eof;
+  bool internal_already_failed;
+  Length failed_internal_position;
+  Length failed_internal_token_start;
+  ColumnData failed_internal_column_data;
+  int32_t first_error_character;
+  Length error_start_position;
+  Length error_end_position;
+} LexLoopState;
+
 static bool ts_parser__eof_token_is_usable(TSParser *, StackVersion, TSSymbol);
-static bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
+static inline LexLoopState ts_parser__init_lex_loop(
+  TSParser *, StackVersion, TSStateId, TSLexerMode
+);
+static inline bool ts_parser__lookup_keyword(TSParser *, bool *, TSSymbol *);
+static inline int ts_parser__try_lex_external(TSParser *, StackVersion, TSStateId, LexLoopState *);
+static inline bool ts_parser__reuse_ext_scan_cache(TSParser *, uint32_t, LexLoopState *, bool *);
+static inline int ts_parser__run_ext_scan(TSParser *, Length, LexLoopState *, bool *);
+static inline bool ts_parser__accept_empty_ext_token(
+  TSParser *, StackVersion, TSStateId, const LexLoopState *
+);
+static inline bool ts_parser__can_cache_ext_scan(const TSParser *);
+static inline bool ts_parser__lex_internal_attempt(TSParser *, LexLoopState *);
+static inline bool ts_parser__can_accept_internal_token(const TSParser *, TSStateId, bool, bool);
+static inline void ts_parser__enter_lex_error_mode(TSParser *, StackVersion, bool, LexLoopState *);
+static inline void ts_parser__defer_failed_internal(TSParser *, LexLoopState *);
+static inline bool ts_parser__advance_skipped_error(TSParser *, LexLoopState *);
+static inline LookaheadToken ts_parser__finish_lexed_token(
+  TSParser *, StackVersion, TSStateId, const LexLoopState *
+);
+static inline bool ts_parser__resolve_keyword(
+  TSParser *, StackVersion, TSStateId, TSSymbol *, bool *, bool *
+);
+static bool ts_parser__recovery_accepts_keyword(
+  TSParser *, StackVersion, TSStateId, TSSymbol
+);
+static Subtree ts_parser__new_decode_error_token(
+  SubtreePool *, TSSymbol, Length, Length, const TSLanguage *
+);
 
 static bool ts_parser__check_lexer_progress(void *payload, unsigned operations) {
   TSParser *self = payload;
@@ -538,6 +585,8 @@ static bool ts_parser__check_lexer_progress(void *payload, unsigned operations) 
   return true;
 }
 
+// code-gauge-allow functionCognitiveComplexity 29 -- coordinates external scanner, internal lexer, error mode, and skipped-error loop
+// code-gauge-allow functionNcss 38 -- coordinates external scanner, internal lexer, error mode, and skipped-error loop
 static LookaheadToken ts_parser__lex(
   TSParser *self,
   StackVersion version,
@@ -549,248 +598,422 @@ static LookaheadToken ts_parser__lex(
     return NULL_LOOKAHEAD;
   }
 
-  lex_mode = ts_parser__lex_mode_for_extra_context(lex_mode, ts_stack_after_extra(self->stack, version));
+  LexLoopState st = ts_parser__init_lex_loop(self, version, parse_state, lex_mode);
+  ts_lexer_reset_fast(&self->lexer, st.start_position);
 
-  const Length start_position = ts_stack_position(self->stack, version);
-  const uint32_t external_scanner_state_id = ts_stack_external_scanner_state_id(self->stack, version);
-
-  bool found_external_token = false;
-  bool error_mode = parse_state == ERROR_STATE;
-  bool skipped_error = false;
-  bool retry_internal = false;
-  bool internal_eof = false;
-  bool internal_already_failed = false;
-  Length failed_internal_position = length_zero();
-  Length failed_internal_token_start = length_zero();
-  ColumnData failed_internal_column_data = {0};
-  int32_t first_error_character = 0;
-  Length error_start_position = length_zero();
-  Length error_end_position = length_zero();
-  uint32_t new_scanner_state_id = 0;
-  bool external_scanner_state_changed = false;
-  bool did_iterate = false;
-  ts_lexer_reset(&self->lexer, start_position);
-
-  for (;;) {
+  for (bool did_iterate = false;; did_iterate = true) {
     if (did_iterate && !ts_parser__check_lexer_progress(self, 1)) return NULL_LOOKAHEAD;
-    did_iterate = true;
-    bool found_token = false;
-    bool internal_only = retry_internal;
-    retry_internal = false;
-    Length current_position = self->lexer.current_position;
-    ColumnData column_data = self->lexer.column_data;
+    bool internal_only = st.retry_internal;
+    st.retry_internal = false;
 
-    if (lex_mode.external_lex_state != 0 && !internal_only) {
-      LOG(
-        "lex_external state:%d, row:%u, column:%u",
-        lex_mode.external_lex_state,
-        current_position.extent.row,
-        current_position.extent.column
-      );
-      ts_lexer_start(&self->lexer);
-      ts_parser__external_scanner_deserialize(self, external_scanner_state_id);
-      found_token = ts_parser__external_scanner_scan(self, lex_mode.external_lex_state);
-      if (self->has_scanner_error || self->exceeded_max_operations) return NULL_LOOKAHEAD;
-      ts_lexer_finish(&self->lexer);
-
-      if (found_token) {
-        uint32_t external_scanner_state_len = ts_parser__external_scanner_serialize(self);
-        new_scanner_state_id = scanner_state_table_intern(
-          &self->scanner_states,
-          self->lexer.debug_buffer,
-          external_scanner_state_len
-        );
-        external_scanner_state_changed = new_scanner_state_id != external_scanner_state_id;
-
-        if (self->lexer.token_end_position.bytes <= current_position.bytes) {
-          TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
-          bool unusable_eof_token = internal_eof &&
-            !ts_parser__eof_token_is_usable(self, version, symbol);
-          TSStateId next_parse_state = ts_language_next_state(self->language, parse_state, symbol);
-          bool token_is_extra = (next_parse_state == parse_state);
-          if ((!external_scanner_state_changed || unusable_eof_token) &&
-              (error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || token_is_extra)) {
-            LOG(
-              "ignore_empty_external_token symbol:%s",
-              SYM_NAME(self->language->external_scanner.symbol_map[self->lexer.data.result_symbol])
-            );
-            found_token = false;
-          }
-        }
-      }
-
-      if (found_token) {
-        found_external_token = true;
-        break;
-      }
-
-      ts_lexer_reset(&self->lexer, current_position);
-      self->lexer.column_data = column_data;
+    if (st.lex_mode.external_lex_state != 0 && !internal_only) {
+      int ext = ts_parser__try_lex_external(self, version, parse_state, &st);
+      if (ext < 0) return NULL_LOOKAHEAD;
+      if (ext > 0) break;
     }
 
-    if (internal_already_failed) {
-      ts_lexer_reset(&self->lexer, failed_internal_position);
-      ts_lexer_start(&self->lexer);
-      self->lexer.token_start_position = failed_internal_token_start;
-      self->lexer.column_data = failed_internal_column_data;
-      internal_already_failed = false;
-    } else {
-      LOG(
-        "lex_internal state:%d, row:%u, column:%u",
-        lex_mode.lex_state,
-        current_position.extent.row,
-        current_position.extent.column
-      );
-      ts_lexer_start(&self->lexer);
-      found_token = ts_lexer_lex_table(&self->lexer, self->language->lex_table, lex_mode.lex_state);
-      if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
-      ts_lexer_finish(&self->lexer);
-    }
+    bool found_token = ts_parser__lex_internal_attempt(self, &st);
+    if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
     if (internal_only && found_token && self->lexer.data.result_symbol == ts_builtin_sym_end) {
-      internal_eof = true;
-      ts_lexer_reset(&self->lexer, start_position);
+      st.internal_eof = true;
+      ts_lexer_reset(&self->lexer, st.start_position);
       continue;
     }
-    if (found_token && (
-      error_mode || self->lexer.data.result_symbol != ts_builtin_sym_end ||
-      ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end)
-    )) break;
+    if (ts_parser__can_accept_internal_token(self, parse_state, st.error_mode, found_token)) break;
 
-    if (!error_mode) {
-      internal_eof = found_token && self->lexer.data.result_symbol == ts_builtin_sym_end;
-      error_mode = true;
-      lex_mode = ts_language_lex_mode_for_state(self->language, ERROR_STATE);
-      lex_mode = ts_parser__lex_mode_for_extra_context(lex_mode, ts_stack_after_extra(self->stack, version));
-      ts_lexer_reset(&self->lexer, start_position);
-      retry_internal = lex_mode.external_lex_state != 0 &&
-        !self->lexer.data.eof(&self->lexer.data);
-      if (retry_internal && self->language->keyword_capture_token != 0) {
-        for (unsigned i = 0; i < self->language->external_token_count; i++) {
-          if (self->language->external_scanner.symbol_map[i] == self->language->keyword_capture_token) {
-            retry_internal = false;
-            break;
-          }
-        }
-      }
+    if (!st.error_mode) {
+      ts_parser__enter_lex_error_mode(self, version, found_token, &st);
       continue;
     }
-
     if (internal_only) {
-      internal_already_failed = true;
-      failed_internal_position = self->lexer.current_position;
-      failed_internal_token_start = self->lexer.token_start_position;
-      failed_internal_column_data = self->lexer.column_data;
-      ts_lexer_reset(&self->lexer, start_position);
+      ts_parser__defer_failed_internal(self, &st);
       continue;
     }
-
-    if (!skipped_error) {
-      LOG("skip_unrecognized_character");
-      skipped_error = true;
-      error_start_position = self->lexer.token_start_position;
-      error_end_position = self->lexer.token_start_position;
-      first_error_character = self->lexer.data.lookahead;
-    }
-
-    if (self->lexer.current_position.bytes == error_end_position.bytes) {
-      if (self->lexer.data.eof(&self->lexer.data)) {
-        self->lexer.data.result_symbol = ts_builtin_sym_error;
-        break;
-      }
-      self->lexer.data.advance(&self->lexer.data, false);
-      if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
-    }
-
-    error_end_position = self->lexer.current_position;
+    if (ts_parser__advance_skipped_error(self, &st)) break;
+    if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
   }
 
+  return ts_parser__finish_lexed_token(self, version, parse_state, &st);
+}
+
+static inline LexLoopState ts_parser__init_lex_loop(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  TSLexerMode lex_mode
+) {
+  LexLoopState st;
+  st.lex_mode = ts_parser__lex_mode_for_extra_context(
+    lex_mode, ts_stack_after_extra(self->stack, version)
+  );
+  st.start_position = ts_stack_position(self->stack, version);
+  st.external_scanner_state_id = ts_stack_external_scanner_state_id(self->stack, version);
+  st.new_scanner_state_id = 0;
+  st.found_external_token = false;
+  st.external_scanner_state_changed = false;
+  st.error_mode = parse_state == ERROR_STATE;
+  st.skipped_error = false;
+  st.retry_internal = false;
+  st.internal_eof = false;
+  st.internal_already_failed = false;
+  return st;
+}
+
+static inline int ts_parser__try_lex_external(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  LexLoopState *st
+) {
+  Length current_position = self->lexer.current_position;
+  ColumnData column_data = self->lexer.column_data;
+  bool found_token = false;
+  if (!ts_parser__reuse_ext_scan_cache(self, current_position.bytes, st, &found_token)) {
+    if (ts_parser__run_ext_scan(self, current_position, st, &found_token) < 0) return -1;
+  }
+  if (
+    found_token &&
+    self->lexer.token_end_position.bytes <= current_position.bytes &&
+    !ts_parser__accept_empty_ext_token(self, version, parse_state, st)
+  ) {
+    found_token = false;
+  }
+  if (found_token) {
+    st->found_external_token = true;
+    return 1;
+  }
+  ts_lexer_reset_fast(&self->lexer, current_position);
+  self->lexer.column_data = column_data;
+  return 0;
+}
+
+static inline bool ts_parser__reuse_ext_scan_cache(
+  TSParser *self,
+  uint32_t start_byte,
+  LexLoopState *st,
+  bool *found_token
+) {
+  if (!ts_parser__can_cache_ext_scan(self)) return false;
+  for (unsigned i = 0; i < 2u; i++) {
+    const TSLexExtScanCache *c = &self->lexer.ext_scan_cache[i];
+    if (
+      !c->valid ||
+      c->start_byte != start_byte ||
+      c->external_lex_state != st->lex_mode.external_lex_state ||
+      c->scanner_state_id != st->external_scanner_state_id
+    ) continue;
+    *found_token = c->found_token;
+    if (!c->found_token) return true;
+    self->lexer.token_start_position = c->token_start;
+    self->lexer.token_end_position = c->token_end;
+    self->lexer.data.result_symbol = c->result_symbol;
+    self->lexer.token_has_decode_error = false;
+    st->new_scanner_state_id = c->new_scanner_state_id;
+    st->external_scanner_state_changed = c->new_scanner_state_id != st->external_scanner_state_id;
+    return true;
+  }
+  return false;
+}
+
+static inline int ts_parser__run_ext_scan(
+  TSParser *self,
+  Length current_position,
+  LexLoopState *st,
+  bool *found_token
+) {
+  LOG(
+    "lex_external state:%d, row:%u, column:%u",
+    st->lex_mode.external_lex_state,
+    current_position.extent.row,
+    current_position.extent.column
+  );
+  bool can_cache = ts_parser__can_cache_ext_scan(self);
+  ts_lexer_start(&self->lexer);
+  ts_parser__external_scanner_deserialize(self, st->external_scanner_state_id);
+  ts_lexer_begin_external_scan(&self->lexer);
+  bool found = ts_parser__external_scanner_scan(self, st->lex_mode.external_lex_state);
+  ts_lexer_end_external_scan(&self->lexer, current_position, found);
+  if (self->has_scanner_error || self->exceeded_max_operations) return -1;
+  ts_lexer_finish(&self->lexer);
+  if (found) {
+    uint32_t state_len = ts_parser__external_scanner_serialize(self);
+    if (self->has_scanner_error) return -1;
+    st->new_scanner_state_id = scanner_state_table_intern(
+      &self->scanner_states, self->lexer.debug_buffer, state_len
+    );
+    st->external_scanner_state_changed = st->new_scanner_state_id != st->external_scanner_state_id;
+  }
+  if (can_cache && ts_parser__can_cache_ext_scan(self)) {
+    self->lexer.ext_scan_cache[1] = self->lexer.ext_scan_cache[0];
+    self->lexer.ext_scan_cache[0] = (TSLexExtScanCache){
+      .token_start = self->lexer.token_start_position,
+      .token_end = self->lexer.token_end_position,
+      .start_byte = current_position.bytes,
+      .scanner_state_id = st->external_scanner_state_id,
+      .new_scanner_state_id = found ? st->new_scanner_state_id : 0,
+      .external_lex_state = st->lex_mode.external_lex_state,
+      .result_symbol = self->lexer.data.result_symbol,
+      .found_token = found,
+      .valid = true,
+    };
+  }
+  *found_token = found;
+  return 0;
+}
+
+static inline bool ts_parser__accept_empty_ext_token(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  const LexLoopState *st
+) {
+  TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
+  bool unusable_eof = st->internal_eof && !ts_parser__eof_token_is_usable(self, version, symbol);
+  bool is_extra = ts_language_next_state(self->language, parse_state, symbol) == parse_state;
+  if ((!st->external_scanner_state_changed || unusable_eof) &&
+      (st->error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || is_extra)) {
+    LOG("ignore_empty_external_token symbol:%s", SYM_NAME(symbol));
+    return false;
+  }
+  return true;
+}
+
+static inline bool ts_parser__can_cache_ext_scan(const TSParser *self) {
+  return !self->lexer.logger.log &&
+    !self->dot_graph_file &&
+    !self->lexer.track_columns &&
+    !self->lexer.has_operation_limit;
+}
+
+static inline bool ts_parser__lex_internal_attempt(TSParser *self, LexLoopState *st) {
+  if (st->internal_already_failed) {
+    ts_lexer_reset(&self->lexer, st->failed_internal_position);
+    ts_lexer_start(&self->lexer);
+    self->lexer.token_start_position = st->failed_internal_token_start;
+    self->lexer.column_data = st->failed_internal_column_data;
+    st->internal_already_failed = false;
+    return false;
+  }
+  LOG(
+    "lex_internal state:%d, row:%u, column:%u",
+    st->lex_mode.lex_state,
+    self->lexer.current_position.extent.row,
+    self->lexer.current_position.extent.column
+  );
+  ts_lexer_start_fast(&self->lexer);
+  bool found = ts_lexer_lex_table(&self->lexer, self->language->lex_table, st->lex_mode.lex_state);
+  if (!self->exceeded_max_operations) ts_lexer_finish_fast(&self->lexer);
+  return found;
+}
+
+static inline bool ts_parser__can_accept_internal_token(
+  const TSParser *self,
+  TSStateId parse_state,
+  bool error_mode,
+  bool found_token
+) {
+  if (!found_token) return false;
+  if (error_mode || self->lexer.data.result_symbol != ts_builtin_sym_end) return true;
+  return ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end);
+}
+
+static inline void ts_parser__enter_lex_error_mode(
+  TSParser *self,
+  StackVersion version,
+  bool found_token,
+  LexLoopState *st
+) {
+  st->internal_eof = found_token && self->lexer.data.result_symbol == ts_builtin_sym_end;
+  st->error_mode = true;
+  st->lex_mode = ts_parser__lex_mode_for_extra_context(
+    ts_language_lex_mode_for_state(self->language, ERROR_STATE),
+    ts_stack_after_extra(self->stack, version)
+  );
+  ts_lexer_reset(&self->lexer, st->start_position);
+  st->retry_internal = st->lex_mode.external_lex_state != 0 &&
+    !self->lexer.data.eof(&self->lexer.data);
+  if (!st->retry_internal || self->language->keyword_capture_token == 0) return;
+  for (unsigned i = 0; i < self->language->external_token_count; i++) {
+    if (self->language->external_scanner.symbol_map[i] == self->language->keyword_capture_token) {
+      st->retry_internal = false;
+      break;
+    }
+  }
+}
+
+static inline void ts_parser__defer_failed_internal(TSParser *self, LexLoopState *st) {
+  st->internal_already_failed = true;
+  st->failed_internal_position = self->lexer.current_position;
+  st->failed_internal_token_start = self->lexer.token_start_position;
+  st->failed_internal_column_data = self->lexer.column_data;
+  ts_lexer_reset(&self->lexer, st->start_position);
+}
+
+static inline bool ts_parser__advance_skipped_error(TSParser *self, LexLoopState *st) {
+  if (!st->skipped_error) {
+    LOG("skip_unrecognized_character");
+    st->skipped_error = true;
+    st->error_start_position = self->lexer.token_start_position;
+    st->error_end_position = self->lexer.token_start_position;
+    st->first_error_character = self->lexer.data.lookahead;
+  }
+  if (self->lexer.current_position.bytes == st->error_end_position.bytes) {
+    if (self->lexer.data.eof(&self->lexer.data)) {
+      self->lexer.data.result_symbol = ts_builtin_sym_error;
+      return true;
+    }
+    self->lexer.data.advance(&self->lexer.data, false);
+    if (self->exceeded_max_operations) return false;
+  }
+  st->error_end_position = self->lexer.current_position;
+  return false;
+}
+
+static inline LookaheadToken ts_parser__finish_lexed_token(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  const LexLoopState *st
+) {
   LookaheadToken result = {.parse_state = parse_state};
-  if (skipped_error) {
-    Length padding = length_sub(error_start_position, start_position);
-    Length size = length_sub(error_end_position, error_start_position);
+  if (st->skipped_error) {
+    Length padding = length_sub(st->error_start_position, st->start_position);
+    Length size = length_sub(st->error_end_position, st->error_start_position);
     result.subtree = ts_subtree_new_error(
-      &self->tree_pool,
-      first_error_character,
-      padding,
-      size,
-      self->language
+      &self->tree_pool, st->first_error_character, padding, size, self->language
     );
-  } else {
-    bool is_keyword = false;
-    bool is_keyword_exact = false;
-    TSSymbol symbol = self->lexer.data.result_symbol;
-    Length padding = length_sub(self->lexer.token_start_position, start_position);
-    Length size = length_sub(self->lexer.token_end_position, self->lexer.token_start_position);
-
-    if (found_external_token) {
-      symbol = self->language->external_scanner.symbol_map[symbol];
-    } else if (symbol == self->language->keyword_capture_token && symbol != 0) {
-      uint32_t end_byte = self->lexer.token_end_position.bytes;
-      TSSymbol candidate = 0;
-      if (!ts_parser__lookup_keyword(self, &is_keyword, &candidate)) {
-        ColumnCheckpoint end_column_checkpoint = self->lexer.end_column_checkpoint;
-        ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
-        ts_lexer_start(&self->lexer);
-
-        is_keyword = ts_lexer_lex_table(&self->lexer, self->language->keyword_lex_table, 0);
-        if (self->exceeded_max_operations) return NULL_LOOKAHEAD;
-        self->lexer.end_column_checkpoint = end_column_checkpoint;
-
-        if (is_keyword && self->lexer.token_end_position.bytes == end_byte) {
-          candidate = self->lexer.data.result_symbol;
-        }
-      }
-
-      if (candidate && ts_stack_after_extra(self->stack, version) && ts_language_symbol_metadata(self->language, candidate).immediate) {
-        candidate = 0;
-      }
-      is_keyword_exact = candidate != 0;
-      if (candidate) {
-        bool keyword_is_valid =
-          ts_language_has_actions(self->language, parse_state, candidate) ||
-          ts_language_is_reserved_word(self->language, parse_state, candidate);
-        bool recovery_accepts_keyword = false;
-        if (!keyword_is_valid && !ts_language_has_actions(self->language, parse_state, symbol)) {
-          if (parse_state != ERROR_STATE) {
-            ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
-          }
-          StackSummary *summary = ts_stack_get_summary(self->stack, version);
-          if (summary) {
-            for (unsigned i = 0; i < summary->size; i++) {
-              TSStateId state = array_get(summary, i)->state;
-              if (state != ERROR_STATE && ts_language_has_actions(self->language, state, candidate)) {
-                recovery_accepts_keyword = true;
-                break;
-              }
-            }
-          }
-        }
-        if (keyword_is_valid || recovery_accepts_keyword) {
-          is_keyword = keyword_is_valid;
-          symbol = candidate;
-        }
-      }
-    }
-
-    result.subtree = ts_subtree_new_leaf(
-      &self->tree_pool,
-      symbol,
-      padding,
-      size,
-      found_external_token,
-      found_external_token ? new_scanner_state_id : 0,
-      self->language
+    LOG_LOOKAHEAD(
+      SYM_NAME(ts_subtree_symbol(result.subtree)),
+      ts_subtree_total_size(result.subtree).bytes
     );
-    result.is_keyword = is_keyword;
-    result.is_keyword_exact = is_keyword_exact;
-    result.has_external_scanner_state_change = found_external_token && external_scanner_state_changed;
+    return result;
   }
+
+  bool is_keyword = false;
+  bool is_keyword_exact = false;
+  TSSymbol result_symbol = self->lexer.data.result_symbol;
+  bool has_decode_error =
+    !st->found_external_token &&
+    self->lexer.token_has_decode_error &&
+    result_symbol != ts_builtin_sym_end;
+  Length padding = length_sub(self->lexer.token_start_position, st->start_position);
+  Length size = length_sub(self->lexer.token_end_position, self->lexer.token_start_position);
+
+  if (st->found_external_token) {
+    result_symbol = self->language->external_scanner.symbol_map[result_symbol];
+  } else if (
+    !has_decode_error &&
+    result_symbol == self->language->keyword_capture_token &&
+    result_symbol != 0
+  ) {
+    if (!ts_parser__resolve_keyword(
+      self, version, parse_state, &result_symbol, &is_keyword, &is_keyword_exact
+    )) {
+      return NULL_LOOKAHEAD;
+    }
+  }
+
+  result.subtree = has_decode_error
+    ? ts_parser__new_decode_error_token(&self->tree_pool, result_symbol, padding, size, self->language)
+    : ts_subtree_new_leaf(
+        &self->tree_pool,
+        result_symbol,
+        padding,
+        size,
+        st->found_external_token,
+        st->found_external_token ? st->new_scanner_state_id : 0,
+        self->language
+      );
+  result.is_keyword = is_keyword;
+  result.is_keyword_exact = is_keyword_exact;
+  result.has_external_scanner_state_change =
+    st->found_external_token && st->external_scanner_state_changed;
 
   LOG_LOOKAHEAD(
     SYM_NAME(ts_subtree_symbol(result.subtree)),
     ts_subtree_total_size(result.subtree).bytes
   );
   return result;
+}
+
+static inline bool ts_parser__resolve_keyword(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  TSSymbol *symbol,
+  bool *is_keyword,
+  bool *is_keyword_exact
+) {
+  uint32_t end_byte = self->lexer.token_end_position.bytes;
+  TSSymbol candidate = 0;
+  if (!ts_parser__lookup_keyword(self, is_keyword, &candidate)) {
+    ColumnCheckpoint end_column_checkpoint = self->lexer.end_column_checkpoint;
+    ts_lexer_reset(&self->lexer, self->lexer.token_start_position);
+    ts_lexer_start(&self->lexer);
+    *is_keyword = ts_lexer_lex_table(&self->lexer, self->language->keyword_lex_table, 0);
+    if (self->exceeded_max_operations) return false;
+    self->lexer.end_column_checkpoint = end_column_checkpoint;
+    if (*is_keyword && self->lexer.token_end_position.bytes == end_byte) {
+      candidate = self->lexer.data.result_symbol;
+    }
+  }
+  if (candidate && ts_stack_after_extra(self->stack, version) &&
+      ts_language_symbol_metadata(self->language, candidate).immediate) {
+    candidate = 0;
+  }
+  *is_keyword_exact = candidate != 0;
+  if (!candidate) return true;
+  bool keyword_is_valid =
+    ts_language_has_actions(self->language, parse_state, candidate) ||
+    ts_language_is_reserved_word(self->language, parse_state, candidate);
+  if (keyword_is_valid ||
+      (!ts_language_has_actions(self->language, parse_state, *symbol) &&
+       ts_parser__recovery_accepts_keyword(self, version, parse_state, candidate))) {
+    *is_keyword = keyword_is_valid;
+    *symbol = candidate;
+  }
+  return true;
+}
+
+static bool ts_parser__recovery_accepts_keyword(
+  TSParser *self,
+  StackVersion version,
+  TSStateId parse_state,
+  TSSymbol candidate
+) {
+  if (parse_state != ERROR_STATE) {
+    ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
+  }
+  StackSummary *summary = ts_stack_get_summary(self->stack, version);
+  if (!summary) return false;
+  for (unsigned i = 0; i < summary->size; i++) {
+    TSStateId state = array_get(summary, i)->state;
+    if (state != ERROR_STATE && ts_language_has_actions(self->language, state, candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static Subtree ts_parser__new_decode_error_token(
+  SubtreePool *pool,
+  TSSymbol symbol,
+  Length padding,
+  Length size,
+  const TSLanguage *language
+) {
+  Subtree unexpected = ts_subtree_new_error(pool, TS_DECODE_ERROR, padding, size, language);
+  SubtreeHeapData *error_data = ts_subtree_pool_alloc_node(pool, 1);
+  ((Subtree *)error_data)[-1] = unexpected;
+  MutableSubtree error_node = ts_subtree_finish_node(
+    error_data, ts_builtin_sym_error, 1, 0, language
+  );
+  SubtreeHeapData *token_data = ts_subtree_pool_alloc_node(pool, 1);
+  ((Subtree *)token_data)[-1] = ts_subtree_from_mut(error_node);
+  MutableSubtree token_node = ts_subtree_finish_node(
+    token_data, symbol, 1, 0, language
+  );
+  return ts_subtree_from_mut(token_node);
 }
 
 static void scanner_state_table_grow(ScannerStateTable *self);
@@ -1009,13 +1232,13 @@ static uint64_t scanner_state_hash(uint64_t seed, const char *data, uint32_t len
 #undef SIP_ROUND
 #undef SIP_ROTL64
 
-static bool ts_parser__token_in_single_included_range(
+static inline bool ts_parser__token_in_single_included_range(
   const Lexer *lexer,
   uint32_t start_byte,
   uint32_t end_byte
 );
 
-static bool ts_parser__lookup_keyword(
+static inline bool ts_parser__lookup_keyword(
   TSParser *self,
   bool *is_keyword,
   TSSymbol *candidate
@@ -1047,7 +1270,7 @@ static bool ts_parser__lookup_keyword(
   return true;
 }
 
-static bool ts_parser__token_in_single_included_range(
+static inline bool ts_parser__token_in_single_included_range(
   const Lexer *lexer,
   uint32_t start_byte,
   uint32_t end_byte
@@ -1065,7 +1288,7 @@ static bool ts_parser__token_in_single_included_range(
   return low < lexer->included_range_count && start_byte >= lexer->included_ranges[low].start_byte;
 }
 
-static TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra) {
+static inline TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode, bool after_extra) {
   if (after_extra) {
     mode.lex_state = mode.lex_state_after_extra;
     mode.external_lex_state = mode.external_lex_state_after_extra;
@@ -1230,7 +1453,11 @@ static void ts_parser__shift(
   Subtree lookahead,
   bool extra
 ) {
-  ts_assert(ts_subtree_child_count(lookahead) == 0);
+  ts_assert(
+    ts_subtree_child_count(lookahead) == 0 ||
+    (ts_subtree_child_count(lookahead) == 1 &&
+     ts_subtree_is_error(ts_subtree_children(lookahead)[0]))
+  );
   Subtree subtree_to_push = lookahead;
   if (extra != ts_subtree_extra(lookahead)) {
     MutableSubtree result = ts_subtree_make_mut(&self->tree_pool, lookahead);
@@ -2615,8 +2842,7 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   ts_parser_reset(self);
   ts_language_delete(self->language);
   self->language = NULL;
-  self->lexer.main_lex_cache.table = NULL;
-  self->lexer.kw_lex_cache.table = NULL;
+  ts_lexer_clear_cache(&self->lexer);
 
   if (language) {
     if (!ts_language_has_supported_abi(language)) return false;

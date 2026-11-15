@@ -134,6 +134,9 @@ static inline uint32_t ts_node__relevant_child_count(
   TSNode self,
   bool include_anonymous
 ) {
+  if (!include_anonymous && ts_node__is_relevant(self, true)) {
+    return 0;
+  }
   Subtree tree = ts_node__subtree(self);
   if (ts_subtree_child_count(tree) > 0) {
     if (include_anonymous) {
