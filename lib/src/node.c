@@ -185,16 +185,17 @@ static inline TSNode ts_node__child(
 
 static bool ts_subtree_has_trailing_empty_descendant(
   Subtree self,
-  Subtree other
+  const void *other_id
 ) {
   Array(Subtree) stack = array_new();
   Subtree subtree = self;
 
   while (true) {
     for (unsigned i = ts_subtree_child_count(subtree); i > 0; i--) {
-      Subtree child = ts_subtree_children(subtree)[i - 1];
+      const Subtree *child_slot = &ts_subtree_children(subtree)[i - 1];
+      Subtree child = *child_slot;
       if (ts_subtree_total_bytes(child) > 0) break;
-      if (child.ptr == other.ptr) {
+      if ((const void *)child_slot == other_id) {
         array_delete(&stack);
         return true;
       }
@@ -209,6 +210,8 @@ static bool ts_subtree_has_trailing_empty_descendant(
   return false;
 }
 
+// code-gauge-allow functionCognitiveComplexity 27 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
+// code-gauge-allow functionNcss 48 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
 static inline TSNode ts_node__prev_sibling(TSNode self, bool include_anonymous) {
   Subtree self_subtree = ts_node__subtree(self);
   bool self_is_empty = ts_subtree_total_bytes(self_subtree) == 0;
@@ -234,7 +237,7 @@ static inline TSNode ts_node__prev_sibling(TSNode self, bool include_anonymous) 
 
       if (iterator.position.bytes == target_end_byte &&
           (!self_is_empty ||
-           ts_subtree_has_trailing_empty_descendant(ts_node__subtree(child), self_subtree))) {
+           ts_subtree_has_trailing_empty_descendant(ts_node__subtree(child), self.id))) {
         found_child_containing_target = true;
         break;
       }
@@ -270,6 +273,8 @@ static inline TSNode ts_node__prev_sibling(TSNode self, bool include_anonymous) 
   return ts_node__null();
 }
 
+// code-gauge-allow functionCognitiveComplexity 27 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
+// code-gauge-allow functionNcss 48 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
 static inline TSNode ts_node__next_sibling(TSNode self, bool include_anonymous) {
   uint32_t target_end_byte = ts_node_end_byte(self);
 
@@ -295,7 +300,7 @@ static inline TSNode ts_node__next_sibling(TSNode self, bool include_anonymous) 
         child_start_byte <= start_byte;
 
       if (contains_target) {
-        if (ts_node__subtree(child).ptr != ts_node__subtree(self).ptr) {
+        if (child.id != self.id) {
           child_containing_target = child;
         }
       } else if (ts_node__is_relevant(child, include_anonymous)) {
@@ -597,20 +602,6 @@ bool ts_node_is_error(TSNode self) {
 
 uint32_t ts_node_descendant_count(TSNode self) {
   return ts_subtree_visible_descendant_count(ts_node__subtree(self)) + 1;
-}
-
-TSStateId ts_node_parse_state(TSNode self) {
-  return ts_subtree_parse_state(ts_node__subtree(self));
-}
-
-TSStateId ts_node_next_parse_state(TSNode self) {
-  const TSLanguage *language = self.tree->language;
-  uint16_t state = ts_node_parse_state(self);
-  if (state == TS_TREE_STATE_NONE) {
-    return TS_TREE_STATE_NONE;
-  }
-  uint16_t symbol = ts_node_grammar_symbol(self);
-  return ts_language_next_state(language, state, symbol);
 }
 
 TSNode ts_node_parent(TSNode self) {

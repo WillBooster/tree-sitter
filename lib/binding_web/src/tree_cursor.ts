@@ -100,11 +100,6 @@ export class TreeCursor {
     return this._nodeTypeId;
   }
 
-  /** Get the state id of the cursor's current node. */
-  get nodeStateId(): number {
-    return C._ts_tree_cursor_current_node_state_id_wasm(this[0]);
-  }
-
   /** Get the id of the cursor's current node. */
   get nodeId(): number {
     return C._ts_tree_cursor_current_node_id_wasm(this[0]);

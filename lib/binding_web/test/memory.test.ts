@@ -23,13 +23,11 @@ describe('Memory Management', () => {
         const copyTree = tree.copy();
         const cursor = tree.walk();
         const copyCursor = cursor.copy();
-        const lookaheadIterator = JavaScript.lookaheadIterator(cursor.currentNode.nextParseState)!;
         parser.delete();
         tree.delete();
         copyTree.delete();
         cursor.delete();
         copyCursor.delete();
-        lookaheadIterator.delete();
       })();
       // wait for gc
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -47,7 +45,7 @@ describe('Memory Management', () => {
       let done = 0;
       const promise = new Promise((resolve) => {
         event.on('gc', () => {
-          if (++done === 6) {
+          if (++done === 5) {
             resolve(undefined);
             clearInterval(timer);
           }
@@ -63,7 +61,6 @@ describe('Memory Management', () => {
         tree.copy(); // 3
         const cursor = tree.walk(); // 4
         cursor.copy(); // 5
-        JavaScript.lookaheadIterator(cursor.currentNode.nextParseState)!; // 6
       })();
       await promise;
     });

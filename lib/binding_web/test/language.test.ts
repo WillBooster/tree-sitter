@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import helper, { type LanguageName } from './helper';
-import { LookaheadIterator, Language } from '../src';
+import { Language } from '../src';
 import { Parser, LANGUAGE_VERSION } from '../src';
 import { C } from '../src/constants';
 import { readFile } from 'fs/promises';
@@ -307,89 +307,5 @@ describe('Language', () => {
         }
       }
     });
-  });
-});
-
-describe('Lookahead iterator', () => {
-  let lookahead: LookaheadIterator;
-  let state: number;
-
-  beforeAll(async () => {
-    ({ JavaScript } = await helper);
-    const parser = new Parser();
-    parser.setLanguage(JavaScript);
-    const tree = parser.parse('function fn() {}')!;
-    parser.delete();
-    const cursor = tree.walk();
-    expect(cursor.gotoFirstChild()).toBe(true);
-    expect(cursor.gotoFirstChild()).toBe(true);
-    state = cursor.currentNode.nextParseState;
-    lookahead = JavaScript.lookaheadIterator(state)!;
-    expect(lookahead).toBeDefined();
-  });
-
-  afterAll(() => { lookahead.delete() });
-
-  const expected = ['(', 'identifier', '*', 'formal_parameters', 'html_comment', 'comment'];
-
-  it('should iterate over valid symbols in the state', () => {
-    const symbols = Array.from(lookahead);
-    expect(symbols).toEqual(expect.arrayContaining(expected));
-    expect(symbols).toHaveLength(expected.length);
-  });
-
-  it('should reset to the initial state', () => {
-    expect(lookahead.resetState(state)).toBe(true);
-    const symbols = Array.from(lookahead);
-    expect(symbols).toEqual(expect.arrayContaining(expected));
-    expect(symbols).toHaveLength(expected.length);
-  });
-
-  it('should stay exhausted until reset', () => {
-    expect(lookahead.resetState(state)).toBe(true);
-    expect(Array.from(lookahead)).toHaveLength(expected.length);
-    expect(Array.from(lookahead)).toHaveLength(0);
-    expect(lookahead.currentType).toBeNull();
-    expect(lookahead.currentTypeId).toBeNull();
-  });
-
-  it('should not be positioned before the first step', () => {
-    const fresh = JavaScript.lookaheadIterator(state);
-    expect(fresh).not.toBeNull();
-    expect(fresh?.currentType).toBeNull();
-    expect(fresh?.currentTypeId).toBeNull();
-    fresh?.delete();
-  });
-
-  it('should reset', () => {
-    expect(lookahead.reset(JavaScript, state)).toBe(true);
-    const symbols = Array.from(lookahead);
-    expect(symbols).toEqual(expect.arrayContaining(expected));
-    expect(symbols).toHaveLength(expected.length);
-  });
-});
-
-describe('Lookahead iterator symbol names', () => {
-  let Json: Language;
-  let state: number;
-
-  beforeAll(async () => {
-    ({ JSON: Json } = await helper);
-    const parser = new Parser();
-    parser.setLanguage(Json);
-    const tree = parser.parse('{"a": 1}')!;
-    parser.delete();
-    const cursor = tree.walk();
-    expect(cursor.gotoFirstChild()).toBe(true); // object
-    state = cursor.currentNode.nextParseState;
-  });
-
-  it('hould name symbols missing from Language.types', () => {
-    const lookahead = Json.lookaheadIterator(state)!;
-    const names = Array.from(lookahead);
-    expect(names).toContain('end');
-    expect(names).not.toContain('ERROR');
-    expect(names).toHaveLength(12);
-    lookahead.delete();
   });
 });

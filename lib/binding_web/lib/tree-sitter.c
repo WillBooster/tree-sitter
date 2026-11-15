@@ -6,15 +6,11 @@
 #include <tree_sitter/api.h>
 #include "memory_limit.h"
 
-static const uint32_t INPUT_BUFFER_SIZE = 10 * 1024;
+static const uint32_t INPUT_BUFFER_SIZE = 64 * 1024;
 
-const void *TRANSFER_BUFFER[12] = {
-  NULL, NULL, NULL, NULL,
-  NULL, NULL, NULL, NULL,
-  NULL, NULL, NULL, NULL,
-};
+const void *TRANSFER_BUFFER[20] = { NULL };
 
-static const int SIZE_OF_NODE = 5;
+static const int SIZE_OF_NODE = 9;
 static const int SIZE_OF_POINT = 2;
 
 __attribute__((noreturn)) void abort(void) {
@@ -38,10 +34,23 @@ static uint32_t byte_to_code_unit(uint32_t byte) {
 
 static inline void marshal_node(const void **buffer, TSNode node) {
   buffer[0] = node.id;
-  buffer[1] = (const void *)byte_to_code_unit(node.context[0]);
-  buffer[2] = (const void *)node.context[1];
-  buffer[3] = (const void *)byte_to_code_unit(node.context[2]);
-  buffer[4] = (const void *)node.context[3];
+  if (!node.id) return;
+  buffer[1] = (const void *)(uintptr_t)byte_to_code_unit(node.context[0]);
+  buffer[2] = (const void *)(uintptr_t)node.context[1];
+  buffer[3] = (const void *)(uintptr_t)byte_to_code_unit(node.context[2]);
+  buffer[4] = (const void *)(uintptr_t)node.context[3];
+  TSPoint end_point = ts_node_end_point(node);
+  buffer[5] = (const void *)(uintptr_t)byte_to_code_unit(ts_node_end_byte(node));
+  buffer[6] = (const void *)(uintptr_t)end_point.row;
+  buffer[7] = (const void *)(uintptr_t)byte_to_code_unit(end_point.column);
+  uint32_t flags =
+    (uint32_t)ts_node_symbol(node) |
+    ((uint32_t)(ts_node_is_named(node) ? 1u : 0u) << 16) |
+    ((uint32_t)(ts_node_is_extra(node) ? 1u : 0u) << 17) |
+    ((uint32_t)(ts_node_is_missing(node) ? 1u : 0u) << 18) |
+    ((uint32_t)(ts_node_has_error(node) ? 1u : 0u) << 19) |
+    ((uint32_t)(ts_node_is_error(node) ? 1u : 0u) << 20);
+  buffer[8] = (const void *)(uintptr_t)flags;
 }
 
 static inline TSNode unmarshal_node_at(const TSTree *tree, uint32_t index) {
@@ -496,10 +505,6 @@ bool ts_tree_cursor_goto_parent_wasm(TSTreeCursor *cursor) {
   return result;
 }
 
-uint16_t ts_tree_cursor_current_node_state_id_wasm(const TSTreeCursor *cursor) {
-  return ts_node_parse_state(ts_tree_cursor_current_node(cursor));
-}
-
 uint32_t ts_tree_cursor_current_node_id_wasm(const TSTreeCursor *cursor) {
   return (uint32_t)ts_tree_cursor_current_node(cursor).id;
 }
@@ -517,11 +522,6 @@ void ts_tree_cursor_current_node_wasm(const TSTreeCursor *cursor) {
 }
 
 static TSTreeCursor scratch_cursor = {0};
-
-uint16_t ts_node_symbol_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_symbol(node);
-}
 
 const char *ts_node_field_name_for_child_wasm(const TSTree *tree, uint32_t index) {
   TSNode node = unmarshal_node(tree);
@@ -680,16 +680,6 @@ void ts_node_named_descendant_for_position_wasm(const TSTree *tree) {
   marshal_node(TRANSFER_BUFFER, ts_node_named_descendant_for_point_range(node, start, end));
 }
 
-void ts_node_end_point_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  marshal_point(ts_node_end_point(node));
-}
-
-uint32_t ts_node_end_index_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return byte_to_code_unit(ts_node_end_byte(node));
-}
-
 char *ts_node_to_string_wasm(const TSTree *tree) {
   TSNode node = unmarshal_node(tree);
   return ts_node_string(node);
@@ -779,39 +769,4 @@ void ts_node_descendants_of_type_wasm(
 
   TRANSFER_BUFFER[0] = (const void *)(result.size / SIZE_OF_NODE);
   TRANSFER_BUFFER[1] = (const void *)result.contents;
-}
-
-int ts_node_is_named_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_is_named(node);
-}
-
-int ts_node_has_error_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_has_error(node);
-}
-
-int ts_node_is_error_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_is_error(node);
-}
-
-int ts_node_is_missing_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_is_missing(node);
-}
-
-int ts_node_is_extra_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_is_extra(node);
-}
-
-uint16_t ts_node_parse_state_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_parse_state(node);
-}
-
-uint16_t ts_node_next_parse_state_wasm(const TSTree *tree) {
-  TSNode node = unmarshal_node(tree);
-  return ts_node_next_parse_state(node);
 }

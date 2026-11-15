@@ -1630,10 +1630,6 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
         #[cfg(feature = "wasm")]
         super::helpers::fixtures::get_test_language_wasm(&name, &code),
     ];
-    let mut expected_lookaheads = keywords.clone();
-    expected_lookaheads
-        .extend(["/*", "comment", "end", "command", "source_file_repeat1"].map(String::from));
-    expected_lookaheads.sort_unstable();
     for language in &languages {
         let mut parser = Parser::new();
         #[cfg(feature = "wasm")]
@@ -1658,16 +1654,6 @@ fn test_compact_parsers_preserve_extra_comments_and_lookahead() {
         assert_eq!(root.byte_range(), 0..source.len());
         assert!(!root.has_error());
         assert_eq!(root.child_count() as usize, keywords.len());
-        for i in 0..root.child_count() {
-            let mut names = language
-                .lookahead_iterator(root.child(i).unwrap().next_parse_state())
-                .unwrap()
-                .iter_names()
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            names.sort_unstable();
-            assert_eq!(names, expected_lookaheads);
-        }
 
         let source = source.replace("value", "");
         let tree = parser.parse(&source).unwrap();
@@ -4752,7 +4738,7 @@ fn test_parsing_with_timeout_during_balancing() {
         let mut parser = Parser::new();
         parser.set_language(&get_language("javascript")).unwrap();
 
-        let function_count: u32 = 100;
+        let function_count: u32 = 4000;
 
         let code = "function() {}\n".repeat(function_count as usize);
         let mut current_byte_offset = 0;

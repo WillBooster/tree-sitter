@@ -12,12 +12,10 @@ describe('FinalizationRegistry is unsupported', () => {
     const copyTree = tree.copy();
     const cursor = tree.walk();
     const copyCursor = cursor.copy();
-    const lookaheadIterator = JavaScript.lookaheadIterator(cursor.currentNode.nextParseState)!;
     parser.delete();
     tree.delete();
     copyTree.delete();
     cursor.delete();
     copyCursor.delete();
-    lookaheadIterator.delete();
   });
 });

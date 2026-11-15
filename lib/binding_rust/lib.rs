@@ -4,10 +4,8 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 pub mod ffi;
-mod lookahead;
 mod sexp;
 
-pub use lookahead::LookaheadIterator;
 #[doc(hidden)]
 pub use sexp::format_sexp;
 
@@ -412,46 +410,6 @@ impl Language {
             )
         };
         FieldId::new(id)
-    }
-
-    /// Get the next parse state. Combine this with
-    /// [`lookahead_iterator`](Language::lookahead_iterator) to
-    /// generate completion suggestions or valid symbols in error nodes.
-    ///
-    /// Example:
-    /// ```ignore
-    /// let state = language.next_state(node.parse_state(), node.grammar_id());
-    /// ```
-    #[doc(alias = "ts_language_next_state")]
-    #[must_use]
-    pub fn next_state(&self, state: u16, id: u16) -> u16 {
-        unsafe { ffi::ts_language_next_state(self.0, state, id) }
-    }
-
-    /// Create a new lookahead iterator for this language and parse state.
-    ///
-    /// This returns `None` if state is invalid for this language.
-    ///
-    /// Iterating [`LookaheadIterator`] will yield valid symbols in the given
-    /// parse state. A newly created iterator is not positioned on a symbol, so
-    /// [`LookaheadIterator::current_symbol`] returns `None` until the first
-    /// [`Iterator::next`] call.
-    ///
-    /// The iterator retains the language, so the language may be dropped while
-    /// the iterator is still in use.
-    ///
-    /// Lookahead iterators can be useful to generate suggestions and improve
-    /// syntax error diagnostics. To get symbols valid in an `ERROR` node, use the
-    /// lookahead iterator on its first leaf node state. For a missing node, use
-    /// the node's [`parse_state`](Node::parse_state). Keep in mind that lookahead
-    /// symbols are valid in that parse state, but are not necessarily valid
-    /// continuations in the context of the actual following token or guaranteed
-    /// to be considered during error recovery.
-    #[doc(alias = "ts_lookahead_iterator_new")]
-    #[must_use]
-    pub fn lookahead_iterator(&self, state: u16) -> Option<LookaheadIterator> {
-        let ptr = unsafe { ffi::ts_lookahead_iterator_new(self.0, state) };
-        (!ptr.is_null()).then(|| unsafe { LookaheadIterator::from_raw(ptr) })
     }
 }
 
@@ -1193,27 +1151,6 @@ impl<'tree> Node<'tree> {
         unsafe { ffi::ts_node_is_error(self.0) }
     }
 
-    /// Get the parse state immediately before this node.
-    ///
-    /// For a missing node, this is the state from the recovery path that was
-    /// selected by the parser. It can be used with
-    /// [`Language::lookahead_iterator`] to inspect the symbols that are valid in
-    /// that state. This does not necessarily include every symbol that could be
-    /// recovered by inserting a missing node, because the recovery process can
-    /// consider multiple stack versions.
-    #[doc(alias = "ts_node_parse_state")]
-    #[must_use]
-    pub fn parse_state(&self) -> u16 {
-        unsafe { ffi::ts_node_parse_state(self.0) }
-    }
-
-    /// Get the parse state after this node.
-    #[doc(alias = "ts_node_next_parse_state")]
-    #[must_use]
-    pub fn next_parse_state(&self) -> u16 {
-        unsafe { ffi::ts_node_next_parse_state(self.0) }
-    }
-
     /// Check if this node is *missing*.
     ///
     /// Missing nodes are inserted by the parser in order to recover from
@@ -1226,9 +1163,10 @@ impl<'tree> Node<'tree> {
 
     /// Get the byte offset where this node starts.
     #[doc(alias = "ts_node_start_byte")]
+    #[inline]
     #[must_use]
-    pub fn start_byte(&self) -> usize {
-        unsafe { ffi::ts_node_start_byte(self.0) as usize }
+    pub const fn start_byte(&self) -> usize {
+        self.0.context[0] as usize
     }
 
     /// Get the byte offset where this node ends.
@@ -1239,6 +1177,7 @@ impl<'tree> Node<'tree> {
     }
 
     /// Get the byte range of source code that this node represents.
+    #[inline]
     #[must_use]
     pub fn byte_range(&self) -> core::ops::Range<usize> {
         self.start_byte()..self.end_byte()
@@ -1258,10 +1197,13 @@ impl<'tree> Node<'tree> {
 
     /// Get this node's start position in terms of rows and columns.
     #[doc(alias = "ts_node_start_point")]
+    #[inline]
     #[must_use]
-    pub fn start_position(&self) -> Point {
-        let result = unsafe { ffi::ts_node_start_point(self.0) };
-        result.into()
+    pub const fn start_position(&self) -> Point {
+        Point {
+            row: self.0.context[1] as usize,
+            column: self.0.context[2] as usize,
+        }
     }
 
     /// Get this node's end position in terms of rows and columns.

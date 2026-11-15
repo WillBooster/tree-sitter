@@ -16,7 +16,7 @@ use notify_debouncer_full::new_debouncer;
 
 use crate::{CheckWasmExports, bail_on_err, watch_wasm};
 
-const EXCLUDES: [&str; 20] = [
+const EXCLUDES: [&str; 18] = [
     // Unneeded because the JS side has its own way of implementing it
     "ts_node_child_by_field_name",
     // Precomputed and stored in the JS side
@@ -25,7 +25,6 @@ const EXCLUDES: [&str; 20] = [
     "ts_node_grammar_type",
     "ts_node_eq",
     "ts_tree_cursor_current_field_name",
-    "ts_lookahead_iterator_current_symbol_name",
     // Not used in Wasm
     "ts_init",
     "ts_set_allocator",
@@ -36,7 +35,6 @@ const EXCLUDES: [&str; 20] = [
     "ts_parser_language",
     "ts_node_language",
     "ts_tree_language",
-    "ts_lookahead_iterator_language",
     "ts_parser_logger",
     "ts_parser_parse_string",
     "ts_parser_parse_string_encoding",

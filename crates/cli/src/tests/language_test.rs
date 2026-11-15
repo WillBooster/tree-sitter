@@ -5,15 +5,15 @@ use super::helpers::fixtures::{get_language, get_test_fixture_language};
 use crate::tests::generate_parser;
 
 #[test]
-fn test_lookaheads_after_identifier_with_many_following_keywords() {
+fn test_identifier_with_many_following_keywords() {
     let language = get_test_fixture_language("shared_lookahead_sets");
     let mut parser = Parser::new();
-    assert_keyword_lookaheads(&mut parser, &language);
+    assert_following_keywords(&mut parser, &language);
 }
 
 #[cfg(feature = "wasm")]
 #[test]
-fn test_wasm_lookaheads_after_identifier_with_many_following_keywords() {
+fn test_wasm_identifier_with_many_following_keywords() {
     use tree_sitter::WasmStore;
 
     use super::helpers::fixtures::{ENGINE, get_test_fixture_language_wasm};
@@ -23,10 +23,10 @@ fn test_wasm_lookaheads_after_identifier_with_many_following_keywords() {
     parser
         .set_wasm_store(WasmStore::new(&ENGINE).unwrap())
         .unwrap();
-    assert_keyword_lookaheads(&mut parser, &language);
+    assert_following_keywords(&mut parser, &language);
 }
 
-fn assert_keyword_lookaheads(parser: &mut Parser, language: &tree_sitter::Language) {
+fn assert_following_keywords(parser: &mut Parser, language: &tree_sitter::Language) {
     parser.set_language(language).unwrap();
     for keyword in 0..80 {
         let source = format!("name k{keyword};");
@@ -39,22 +39,11 @@ fn assert_keyword_lookaheads(parser: &mut Parser, language: &tree_sitter::Langua
             .named_child(0)
             .unwrap();
         assert_eq!(identifier.kind(), "identifier");
-        let state = identifier.next_parse_state();
-        let mut lookahead = language.lookahead_iterator(state).unwrap();
-        let mut symbols = lookahead.iter_names().collect::<Vec<_>>();
-        symbols.sort_unstable();
-        let mut expected = (0..80).map(|i| format!("k{i}")).collect::<Vec<_>>();
-        expected.sort_unstable();
-        assert_eq!(symbols, expected);
-        assert_eq!(lookahead.current_symbol(), None);
-        assert!(lookahead.next().is_none());
-        assert!(lookahead.reset_state(state));
-        assert_eq!(lookahead.count(), 80);
     }
 }
 
 #[test]
-fn test_lookahead_iterator() {
+fn test_aliased_node_grammar_name() {
     let mut parser = Parser::new();
     let language = get_language("rust");
     parser.set_language(&language).unwrap();
@@ -65,119 +54,9 @@ fn test_lookahead_iterator() {
 
     assert!(cursor.goto_first_child()); // struct
     assert!(cursor.goto_first_child()); // struct keyword
-
-    let next_state = cursor.node().next_parse_state();
-    assert_ne!(next_state, 0);
-    assert_eq!(
-        next_state,
-        language.next_state(cursor.node().parse_state(), cursor.node().grammar_id())
-    );
-    assert!((next_state as usize) < language.parse_state_count());
     assert!(cursor.goto_next_sibling()); // type_identifier
-    assert_eq!(next_state, cursor.node().parse_state());
     assert_eq!(cursor.node().grammar_name(), "identifier");
     assert_ne!(cursor.node().grammar_id(), cursor.node().kind_id());
-
-    let mut expected_symbols = ["//", "/*", "identifier", "line_comment", "block_comment"];
-    let mut lookahead = language.lookahead_iterator(next_state).unwrap();
-    assert_eq!(*lookahead.language(), language);
-    let symbols = lookahead
-        .iter_names()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
-    let mut sorted_symbols = symbols.clone();
-    sorted_symbols.sort_unstable();
-    expected_symbols.sort_unstable();
-    assert_eq!(sorted_symbols, expected_symbols);
-    assert_eq!(lookahead.iter_names().count(), 0);
-
-    assert!(lookahead.reset_state(next_state));
-    assert!(
-        lookahead
-            .iter_names()
-            .eq(symbols.iter().map(String::as_str))
-    );
-
-    assert!(lookahead.reset(&language, next_state));
-    assert!(
-        lookahead
-            .map(|s| language.node_kind_for_id(s).unwrap())
-            .eq(symbols.iter().map(String::as_str))
-    );
-}
-
-#[test]
-fn test_lookahead_iterator_modifiable_only_by_mut() {
-    let mut parser = Parser::new();
-    let language = get_language("rust");
-    parser.set_language(&language).unwrap();
-
-    let tree = parser.parse("struct Stuff {}").unwrap();
-
-    let mut cursor = tree.walk();
-
-    assert!(cursor.goto_first_child()); // struct
-    assert!(cursor.goto_first_child()); // struct keyword
-
-    let next_state = cursor.node().next_parse_state();
-    assert_ne!(next_state, 0);
-
-    let mut lookahead = language.lookahead_iterator(next_state).unwrap();
-    let _ = lookahead.next();
-
-    let mut names = lookahead.iter_names();
-    let _ = names.next();
-}
-
-#[test]
-fn test_lookahead_iterator_exhaustion() {
-    let language = get_language("json");
-
-    for state in 0..language.parse_state_count() {
-        let state = u16::try_from(state).unwrap();
-        let mut lookahead = language.lookahead_iterator(state).unwrap();
-
-        // A fresh iterator is not positioned on a symbol.
-        assert_eq!(lookahead.current_symbol(), None);
-        assert_eq!(lookahead.current_symbol_name(), None);
-
-        let count = lookahead.by_ref().count();
-
-        // An exhausted iterator is not positioned on a symbol, and stays exhausted.
-        assert_eq!(lookahead.current_symbol(), None);
-        assert_eq!(lookahead.current_symbol_name(), None);
-        assert_eq!(lookahead.by_ref().count(), 0);
-        assert_eq!(lookahead.iter_names().count(), 0);
-
-        // Resetting restores it exactly.
-        assert!(lookahead.reset_state(state));
-        assert_eq!(lookahead.current_symbol(), None);
-        assert_eq!(lookahead.by_ref().count(), count);
-    }
-}
-
-#[test]
-fn test_lookahead_iterator_visits_every_symbol_with_a_successor() {
-    for name in ["c", "javascript", "json", "ruby"] {
-        let language = get_language(name);
-        for state in 0..language.parse_state_count() {
-            let state = u16::try_from(state).unwrap();
-            let mut visited = vec![false; language.node_kind_count()];
-            for symbol in language.lookahead_iterator(state).unwrap() {
-                visited[usize::from(symbol)] = true;
-            }
-            for symbol in 0..language.node_kind_count() {
-                let symbol = u16::try_from(symbol).unwrap();
-                if language.next_state(state, symbol) != 0 {
-                    assert!(
-                        visited[usize::from(symbol)],
-                        "{name}: state {state} has a successor for {} that the iterator skips",
-                        language.node_kind_for_id(symbol).unwrap()
-                    );
-                }
-            }
-        }
-    }
 }
 
 #[test]

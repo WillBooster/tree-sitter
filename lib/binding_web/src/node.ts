@@ -1,16 +1,29 @@
 import { INTERNAL, Internal, assertInternal, SIZE_OF_INT, SIZE_OF_NODE, SIZE_OF_POINT, ZERO_POINT, isPoint, C, Point } from './constants';
 import { getCallbackText, Tree } from './tree';
 import { TreeCursor } from './tree_cursor';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { Language } from './language';
-import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodeArray, unmarshalPoint } from './marshal';
+import { marshalNode, marshalPoint, unmarshalNode, unmarshalNodeArray } from './marshal';
 import { TRANSFER_BUFFER } from './parser';
+
+const singleTypeSymbolsCache = new WeakMap<Language, Map<string, Uint32Array>>();
 
 /** A single node within a syntax {@link Tree}. */
 export class Node {
   /** @internal */
   // @ts-expect-error: never read
   private [0] = 0; // Internal handle for Wasm
+
+  /** @internal */
+  private _endIndex: number;
+
+  /** @internal */
+  private _endRow: number;
+
+  /** @internal */
+  private _endColumn: number;
+
+  /** @internal */
+  private _flags: number;
 
   /** @internal */
   private _children?: Node[];
@@ -27,12 +40,20 @@ export class Node {
       startIndex,
       startPosition,
       other,
+      endIndex,
+      endRow,
+      endColumn,
+      flags,
     }: {
       id: number;
       tree: Tree;
       startIndex: number;
       startPosition: Point;
       other: number;
+      endIndex: number;
+      endRow: number;
+      endColumn: number;
+      flags: number;
     }
   ) {
     assertInternal(internal);
@@ -41,6 +62,10 @@ export class Node {
     this.tree = tree;
     this.startIndex = startIndex;
     this.startPosition = startPosition;
+    this._endIndex = endIndex;
+    this._endRow = endRow;
+    this._endColumn = endColumn;
+    this._flags = flags;
   }
 
   /**
@@ -61,8 +86,7 @@ export class Node {
 
   /** Get this node's type as a numerical id. */
   get typeId(): number {
-    marshalNode(this);
-    return C._ts_node_symbol_wasm(this.tree[0]);
+    return this._flags & 0xffff;
   }
 
   /**
@@ -76,7 +100,7 @@ export class Node {
 
   /** Get this node's type as a string. */
   get type(): string {
-    return this.tree.language.types[this.typeId] || 'ERROR';
+    return this.tree.language.types[this._flags & 0xffff] || 'ERROR';
   }
 
   /**
@@ -94,8 +118,7 @@ export class Node {
    * *anonymous* nodes correspond to string literals in the grammar.
    */
   get isNamed(): boolean {
-    marshalNode(this);
-    return C._ts_node_is_named_wasm(this.tree[0]) === 1;
+    return (this._flags & 0x10000) !== 0;
   }
 
   /**
@@ -105,8 +128,7 @@ export class Node {
    * by the grammar, but can appear anywhere.
    */
   get isExtra(): boolean {
-    marshalNode(this);
-    return C._ts_node_is_extra_wasm(this.tree[0]) === 1;
+    return (this._flags & 0x20000) !== 0;
   }
 
   /**
@@ -116,8 +138,7 @@ export class Node {
    * into a valid syntax tree.
    */
   get isError(): boolean {
-    marshalNode(this);
-    return C._ts_node_is_error_wasm(this.tree[0]) === 1;
+    return (this._flags & 0x100000) !== 0;
   }
 
   /**
@@ -127,8 +148,7 @@ export class Node {
    * certain kinds of syntax errors.
    */
   get isMissing(): boolean {
-    marshalNode(this);
-    return C._ts_node_is_missing_wasm(this.tree[0]) === 1;
+    return (this._flags & 0x40000) !== 0;
   }
 
   /**
@@ -136,41 +156,25 @@ export class Node {
    * errors anywhere within it.
    */
   get hasError(): boolean {
-    marshalNode(this);
-    return C._ts_node_has_error_wasm(this.tree[0]) === 1;
+    return (this._flags & 0x80000) !== 0;
   }
 
   /** Get the byte index where this node ends. */
   get endIndex(): number {
-    marshalNode(this);
-    return C._ts_node_end_index_wasm(this.tree[0]);
+    return this._endIndex;
   }
 
   /** Get the position where this node ends. */
   get endPosition(): Point {
-    marshalNode(this);
-    C._ts_node_end_point_wasm(this.tree[0]);
-    return unmarshalPoint(TRANSFER_BUFFER);
+    return { row: this._endRow, column: this._endColumn };
   }
 
   /** Get the string content of this node. */
   get text(): string {
     const { textSource } = this.tree;
     return typeof textSource === 'string'
-      ? textSource.slice(this.startIndex, this.endIndex)
-      : getCallbackText(textSource, this.startIndex, this.endIndex, this.startPosition);
-  }
-
-  /** Get this node's parse state. */
-  get parseState(): number {
-    marshalNode(this);
-    return C._ts_node_parse_state_wasm(this.tree[0]);
-  }
-
-  /** Get the parse state after this node. */
-  get nextParseState(): number {
-    marshalNode(this);
-    return C._ts_node_next_parse_state_wasm(this.tree[0]);
+      ? textSource.slice(this.startIndex, this._endIndex)
+      : getCallbackText(textSource, this.startIndex, this._endIndex, this.startPosition);
   }
 
   /** Check if this node is equal to another node. */
@@ -370,31 +374,12 @@ export class Node {
     startPosition: Point = ZERO_POINT,
     endPosition: Point = ZERO_POINT
   ): Node[] {
-    if (!Array.isArray(types)) types = [types];
+    const symbols = symbolsForTypes(this.tree.language, types);
+    if (symbols.length === 0) return [];
 
-    // Convert the type strings to numeric type symbols
-    const symbols: number[] = [];
-    const typesBySymbol = this.tree.language.types;
-    for (let i = 0, n = typesBySymbol.length; i < n; i++) {
-      if (types.includes(typesBySymbol[i])) {
-        symbols.push(i);
-      }
-    }
-    // `symbols_contain` in tree-sitter.c expects ascending symbols, and
-    // ts_builtin_sym_error is -1, which is UINT16_MAX, so it goes last.
-    if (types.includes('ERROR')) {
-      symbols.push(65535);
-    }
-
-    // Copy the array of symbols to the Wasm heap
     const symbolsAddress = C._malloc(SIZE_OF_INT * symbols.length);
-    const symbolsHeap = C.HEAPU32;
-    const symbolsBase = symbolsAddress >>> 2;
-    for (let i = 0, n = symbols.length; i < n; i++) {
-      symbolsHeap[symbolsBase + i] = symbols[i];
-    }
+    C.HEAPU32.set(symbols, symbolsAddress >>> 2);
 
-    // Call the C API to compute the descendants
     marshalNode(this);
     const pointAddress = TRANSFER_BUFFER + SIZE_OF_NODE;
     marshalPoint(pointAddress, startPosition);
@@ -553,4 +538,44 @@ export class Node {
     C._ts_free_wasm(address);
     return result;
   }
+}
+
+function symbolsForTypes(language: Language, types: string | string[]): Uint32Array {
+  if (typeof types === 'string') {
+    return symbolsForSingleType(language, types);
+  }
+  if (types.length === 1) {
+    return symbolsForSingleType(language, types[0]);
+  }
+  return collectSymbolsForTypes(language, types);
+}
+
+function symbolsForSingleType(language: Language, type: string): Uint32Array {
+  let byType = singleTypeSymbolsCache.get(language);
+  if (!byType) {
+    byType = new Map();
+    singleTypeSymbolsCache.set(language, byType);
+  }
+  let cached = byType.get(type);
+  if (!cached) {
+    cached = collectSymbolsForTypes(language, [type]);
+    byType.set(type, cached);
+  }
+  return cached;
+}
+
+function collectSymbolsForTypes(language: Language, types: string[]): Uint32Array {
+  const symbols: number[] = [];
+  const typesBySymbol = language.types;
+  for (let i = 0, n = typesBySymbol.length; i < n; i++) {
+    if (types.includes(typesBySymbol[i])) {
+      symbols.push(i);
+    }
+  }
+  // `symbols_contain` in tree-sitter.c expects ascending symbols, and
+  // ts_builtin_sym_error is -1, which is UINT16_MAX, so it goes last.
+  if (types.includes('ERROR')) {
+    symbols.push(65535);
+  }
+  return Uint32Array.from(symbols);
 }

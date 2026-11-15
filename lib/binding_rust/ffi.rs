@@ -27,7 +27,7 @@ unsafe extern "C" {
 
 use core::{marker::PhantomData, mem::ManuallyDrop, ptr::NonNull};
 
-use crate::{Language, LookaheadIterator, Node, ParseState, Parser, Tree, TreeCursor};
+use crate::{Language, Node, ParseState, Parser, Tree, TreeCursor};
 
 impl Language {
     /// Reconstructs a [`Language`] from a raw pointer.
@@ -140,23 +140,5 @@ impl TreeCursor<'_> {
     #[must_use]
     pub fn into_raw(self) -> TSTreeCursor {
         ManuallyDrop::new(self).0
-    }
-}
-
-impl LookaheadIterator {
-    /// Reconstructs a [`LookaheadIterator`] from a raw pointer.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must be non-null.
-    #[must_use]
-    pub const unsafe fn from_raw(ptr: *mut TSLookaheadIterator) -> Self {
-        Self(unsafe { NonNull::new_unchecked(ptr) })
-    }
-
-    /// Consumes the [`LookaheadIterator`], returning a raw pointer to the underlying C structure.
-    #[must_use]
-    pub fn into_raw(self) -> *mut TSLookaheadIterator {
-        ManuallyDrop::new(self).0.as_ptr()
     }
 }
