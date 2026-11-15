@@ -26,13 +26,20 @@ typedef struct {
 } ColumnCheckpoint;
 
 typedef struct {
+  uint32_t lo;
+  uint32_t span;
+} TSLexUnicodeExc;
+
+typedef struct {
   const uint16_t *table;
+  TSLexUnicodeExc *unicode_exc;
   uint32_t total_words;
   uint16_t state_count;
   uint16_t template_count;
   uint16_t class_count;
   uint16_t unicode_range_count;
   uint16_t tag_count;
+  uint16_t replacement_class;
   bool wide_base;
   bool direct_keyword_lookup;
   uint32_t comb_len;
@@ -79,14 +86,18 @@ typedef struct {
   ColumnCheckpoint query_display_column_checkpoint;
   TSLexTableView main_lex_cache;
   TSLexTableView kw_lex_cache;
+  uint32_t first_decode_error_byte;
   bool track_columns;
   bool has_operation_limit;
+  bool has_decode_error;
+  bool token_has_decode_error;
 
   char debug_buffer[TREE_SITTER_SERIALIZATION_BUFFER_SIZE];
 } Lexer;
 
 void ts_lexer_init(Lexer *self);
 void ts_lexer_delete(Lexer *self);
+void ts_lexer_clear_cache(Lexer *self);
 void ts_lexer_set_input(Lexer *self, TSInput input);
 void ts_lexer_set_logger(Lexer *self, TSLogger logger);
 void ts_lexer_set_progress_callback(

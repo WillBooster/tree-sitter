@@ -2,6 +2,7 @@
 #include "./language.c"
 #include "./lexer.c"
 #include "./lex_table.c"
+#include "./lex_keyword.c"
 #include "./lex_table_validate.c"
 #include "./node.c"
 #include "./parser.c"

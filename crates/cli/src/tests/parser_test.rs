@@ -8400,3 +8400,229 @@ fn test_external_scanner_state_interning_and_reset_scaling() {
     let warm = measure_small_heredocs(&mut warm_parser);
     assert!(warm < cold * 4, "cold: {cold:?}, warm: {warm:?}");
 }
+
+fn assert_tree_navigation_consistent(root: tree_sitter::Node<'_>) {
+    let mut stack = vec![root];
+    while let Some(node) = stack.pop() {
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        assert_eq!(children.len() as u32, node.child_count());
+        let named_from_children: Vec<_> =
+            children.iter().copied().filter(|c| c.is_named()).collect();
+        assert_eq!(named_from_children.len(), node.named_child_count());
+        for (i, &expected) in named_from_children.iter().enumerate() {
+            let actual = node.named_child(i as u32).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual.parent(), Some(node));
+            assert_eq!(
+                actual.prev_named_sibling(),
+                i.checked_sub(1).map(|p| named_from_children[p])
+            );
+            assert_eq!(
+                actual.next_named_sibling(),
+                named_from_children.get(i + 1).copied()
+            );
+        }
+        for &child in &children {
+            assert_eq!(child.parent(), Some(node));
+            stack.push(child);
+        }
+    }
+}
+
+#[test]
+fn test_delimited_tokens_contain_utf8_decode_errors() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("c")).unwrap();
+    for (first_line, tail) in [
+        (
+            &b"char *s = \"caf\xe9 /*\";\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\n/* end */\n"[..],
+        ),
+        (
+            &b"char *s = \"caf\xe9 http://x\";\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\n"[..],
+        ),
+        (
+            &b"char *s = \"\xe9 /*\";\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\n/* end */\n"[..],
+        ),
+        (
+            &b"char c = 'a\xe9z';\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\n/* end */\n"[..],
+        ),
+        (
+            &b"char c = '\xe9';\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\n"[..],
+        ),
+        (
+            &b"/* caf\xe9 \"unclosed */\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\nchar *end_str = \"ok\";\n"[..],
+        ),
+        (
+            &b"// caf\xe9 /*\n"[..],
+            &b"#define VALUE 1\nint following = VALUE;\n/* end */\n"[..],
+        ),
+    ] {
+        let source = [first_line, tail].concat();
+        let tree = parser.parse(&source).unwrap();
+        let root = tree.root_node();
+        assert!(root.has_error(), "{}", root.to_sexp());
+        assert!(
+            root.to_sexp().contains("(ERROR (UNEXPECTED INVALID))"),
+            "{}",
+            root.to_sexp()
+        );
+        assert_tree_navigation_consistent(root);
+
+        let mut cursor = root.walk();
+        let named: Vec<_> = root.named_children(&mut cursor).collect();
+        let preproc = named
+            .iter()
+            .find(|n| n.kind() == "preproc_def")
+            .unwrap_or_else(|| panic!("missing preproc_def in {}", root.to_sexp()));
+        assert!(!preproc.has_error(), "{}", preproc.to_sexp());
+        assert_eq!(preproc.start_byte(), first_line.len());
+        let following = named
+            .iter()
+            .find(|n| n.kind() == "declaration" && n.start_byte() >= preproc.end_byte())
+            .unwrap_or_else(|| panic!("missing following declaration in {}", root.to_sexp()));
+        assert!(!following.has_error(), "{}", following.to_sexp());
+    }
+
+    let grammar = serde_json::json!({
+        "name": "decode_error_wrappers",
+        "extras": [
+            {"type": "PATTERN", "value": "[ \\t\\n]+"},
+            {"type": "TOKEN", "content": {"type": "PATTERN", "value": "--[^-\\n]*"}}
+        ],
+        "rules": {
+            "source": {"type": "REPEAT1", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "quoted"},
+                {"type": "SYMBOL", "name": "anon_wrapped"},
+                {"type": "SYMBOL", "name": "triple_dash"}
+            ]}},
+            "quoted": {"type": "SEQ", "members": [
+                {"type": "STRING", "value": "\""},
+                {"type": "ALIAS", "named": true, "value": "body", "content": {
+                    "type": "IMMEDIATE_TOKEN", "content": {"type": "PATTERN", "value": "[^\"\\n]+"}
+                }},
+                {"type": "STRING", "value": "\""}
+            ]},
+            "anon_wrapped": {"type": "SEQ", "members": [
+                {"type": "ALIAS", "named": false, "value": "~tok~", "content": {
+                    "type": "TOKEN", "content": {"type": "PATTERN", "value": "~[^~\\n]+~"}
+                }},
+                {"type": "SYMBOL", "name": "triple_dash"}
+            ]},
+            "triple_dash": {"type": "TOKEN", "content": {"type": "PATTERN", "value": "---[a-z]+"}}
+        }
+    });
+    for mut test_parser in parsers_for_grammar(&grammar.to_string()) {
+        for input in [
+            &b"\"a\xe9\" ---ok"[..],
+            &b"~a\xe9~ ---first ---ok"[..],
+            &b"--\xe9\n---ok"[..],
+        ] {
+            let tree = test_parser.parse(input).unwrap();
+            let root = tree.root_node();
+            assert!(root.has_error(), "{}", root.to_sexp());
+            assert!(
+                root.to_sexp().contains("(ERROR (UNEXPECTED INVALID))"),
+                "{}",
+                root.to_sexp()
+            );
+            assert_tree_navigation_consistent(root);
+            let last = root
+                .named_child((root.named_child_count() - 1) as u32)
+                .unwrap();
+            assert_eq!(last.kind(), "triple_dash");
+            assert!(!last.has_error(), "{}", root.to_sexp());
+        }
+    }
+}
+
+#[test]
+fn test_utf8_unicode_fast_path_across_chunks_and_line_separators() {
+    let mut parser = Parser::new();
+    parser.set_language(&get_language("javascript")).unwrap();
+    let source = concat!(
+        "const 日本語_αβγ = \"😀🚀カフェαβγ\";\n",
+        "// コメント日本語αβγ😀\u{2028}const afterLs = \"ok\";\n",
+        "// 段落区切り\u{2029}const afterPs = 'αβγ😀';\n",
+        "/* ブロックコメント 日本語 😀 /* nested text */ const kept = 42;\n",
+    );
+    let full_tree = parser.parse(source).unwrap();
+    let full_root = full_tree.root_node();
+    assert!(!full_root.has_error(), "{}", full_root.to_sexp());
+    let expected_sexp = full_root.to_sexp();
+    let mut cursor = full_root.walk();
+    let decl_count = full_root
+        .named_children(&mut cursor)
+        .filter(|n| n.kind() == "lexical_declaration")
+        .count();
+    assert_eq!(decl_count, 4, "{expected_sexp}");
+
+    let bytes = source.as_bytes();
+    for chunk_size in [1usize, 2, 3, 4, 5, 7, 13] {
+        let chunked_tree = parser
+            .parse_with_options(
+                &mut |offset, _| {
+                    if offset >= bytes.len() {
+                        &[]
+                    } else {
+                        &bytes[offset..(offset + chunk_size).min(bytes.len())]
+                    }
+                },
+                None,
+            )
+            .unwrap();
+        let root = chunked_tree.root_node();
+        assert_eq!(root.to_sexp(), expected_sexp, "chunk_size={chunk_size}");
+        assert_eq!(
+            root.end_position(),
+            full_root.end_position(),
+            "chunk_size={chunk_size}"
+        );
+    }
+
+    let utf16_units: Vec<u16> = source.encode_utf16().map(u16::to_le).collect();
+    let full_utf16 = parser.parse_utf16_le(&utf16_units).unwrap();
+    assert_eq!(full_utf16.root_node().to_sexp(), expected_sexp);
+    for chunk_units in [1usize, 2, 3, 4, 5, 7, 13] {
+        let chunked_utf16 = parser
+            .parse_utf16_le_with_options(
+                &mut |offset, _| {
+                    if offset >= utf16_units.len() {
+                        Vec::new()
+                    } else {
+                        utf16_units[offset..(offset + chunk_units).min(utf16_units.len())].to_vec()
+                    }
+                },
+                None,
+            )
+            .unwrap();
+        let root = chunked_utf16.root_node();
+        assert_eq!(root.to_sexp(), expected_sexp, "chunk_units={chunk_units}");
+        assert_eq!(
+            root.end_position(),
+            full_utf16.root_node().end_position(),
+            "chunk_units={chunk_units}"
+        );
+    }
+
+    let large_unicode = "const s = \"日本語αβγ😀\";\n".repeat(100);
+    let canceled = parser.parse_with_options(
+        &mut |offset, _| large_unicode.as_bytes().get(offset..).unwrap_or_default(),
+        Some(ParseOptions::new().progress_callback(&mut |_| ControlFlow::Break(()))),
+    );
+    assert!(canceled.is_none());
+    parser.reset();
+    assert!(
+        !parser
+            .parse(&large_unicode)
+            .unwrap()
+            .root_node()
+            .has_error()
+    );
+}
