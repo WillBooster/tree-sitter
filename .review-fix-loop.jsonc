@@ -1,4 +1,5 @@
 {
+  "exploreReviewers": 0,
   "rflAgent": {
     "custom": {
       "baseUrl": "https://llm.willbooster.com/v1",
