@@ -147,7 +147,7 @@ extern bool tree_sitter_progress_callback(
 
 extern void ts_parser_abandon_after_alloc_failure(TSParser *parser);
 extern void ts_parser_swap_table_cache(TSParser *self, TSParser *other);
-extern void ts_parser_reserve_table_cache(TSParser *self);
+extern void *ts_parser_reserve_table_cache(TSParser *self);
 extern void ts_parser_set_max_operations(TSParser *parser, uint64_t max_operations);
 extern uint64_t ts_parser_last_parse_operations(const TSParser *parser);
 
@@ -337,8 +337,11 @@ TSTree *ts_parser_parse_limited_wasm(
     return NULL;
   }
 
-  ts_parser_reserve_table_cache(self);
   current_parse_budget = budget;
+  // The memory limit already applies here, so the caller's cache is allocated under the budget, where a failure
+  // returns NULL instead of aborting, and is then detached from it so that a failed parse does not free it.
+  void *reserved_cache = ts_parser_reserve_table_cache(self);
+  if (reserved_cache) web_budget_remove(budget, reserved_cache);
   TSParser *limited_parser = create_limited_parser(self, budget, &parsed);
   TSTree *tree = parse_with_callback(limited_parser, input_buffer, parsed.has_progress_callback);
   uint64_t operations = ts_parser_last_parse_operations(limited_parser);

@@ -2862,13 +2862,14 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   return true;
 }
 
-// Allocate the table cache now if the parser has a language and no cache yet. `ts_parser_parse` does this itself;
-// the Wasm binding calls it before a memory-limited parse so that the cache it lends is not allocated under the
-// parse's budget, which frees what it allocated when the parse fails.
-void ts_parser_reserve_table_cache(TSParser *self) {
-  if (self->table_cache || !self->language) return;
+// Allocate the table cache now if the parser has a language and no cache yet, and return the newly allocated
+// cache, or NULL if none was allocated. `ts_parser_parse` does this itself; the Wasm binding calls it at the start
+// of a memory-limited parse to detach the new cache from that parse's budget before lending it.
+void *ts_parser_reserve_table_cache(TSParser *self) {
+  if (self->table_cache || !self->language) return NULL;
   self->table_cache = ts_calloc(1, sizeof(TableCache));
   ts_table_cache_invalidate(self->table_cache);
+  return self->table_cache;
 }
 
 // Exchange the table caches of two parsers, so that a parser created for one parse can use another parser's
