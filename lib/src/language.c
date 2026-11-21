@@ -344,33 +344,6 @@ TSSymbol ts_language_public_symbol(
   return self->public_symbol_map[symbol];
 }
 
-TSStateId ts_language_next_state(
-  const TSLanguage *self,
-  TSStateId state,
-  TSSymbol symbol
-) {
-  if (
-    symbol == ts_builtin_sym_error ||
-    symbol == ts_builtin_sym_error_repeat ||
-    symbol >= self->symbol_count ||
-    state >= self->state_count
-  ) {
-    return 0;
-  }
-  if (symbol < self->token_count) {
-    uint32_t count;
-    const uint32_t *actions = ts_language_actions(self, state, symbol, &count);
-    if (count > 0) {
-      TSParseAction action = ts_language_parse_action(self, actions[count - 1]);
-      if (action.type == TSParseActionTypeShift) {
-        return action.shift.extra ? state : action.shift.state;
-      }
-    }
-    return 0;
-  }
-  return ts_language_lookup_goto(self, state, symbol);
-}
-
 const char *ts_language_symbol_name(
   const TSLanguage *self,
   TSSymbol symbol

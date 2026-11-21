@@ -146,6 +146,7 @@ extern bool tree_sitter_progress_callback(
 );
 
 extern void ts_parser_abandon_after_alloc_failure(TSParser *parser);
+extern void ts_parser_swap_table_cache(TSParser *self, TSParser *other);
 extern void ts_parser_set_max_operations(TSParser *parser, uint64_t max_operations);
 extern uint64_t ts_parser_last_parse_operations(const TSParser *parser);
 
@@ -289,14 +290,24 @@ TSTree *ts_parser_parse_wasm(
   return tree;
 }
 
+static void return_table_cache(WebParseBudget *budget) {
+  if (!budget->lender) return;
+  ts_parser_swap_table_cache(budget->parser, budget->lender);
+  budget->lender = NULL;
+}
+
 static TSParser *create_limited_parser(
-  const TSParser *self,
+  TSParser *self,
   WebParseBudget *budget,
   const WasmParseInputs *parsed
 ) {
   // An allocation failure can leave a stack half-updated, so the caller's parser is not used for a limited parse.
   TSParser *limited_parser = ts_parser_new();
   budget->parser = limited_parser;
+  // Only one of the two parsers parses at a time, and the caller's cache lies outside the budget, which
+  // frees only allocations made under it.
+  ts_parser_swap_table_cache(limited_parser, self);
+  budget->lender = self;
   ts_parser_set_language(limited_parser, ts_parser_language(self));
   ts_parser_set_logger(limited_parser, ts_parser_logger(self));
   apply_included_ranges(limited_parser, (TSRange **)&budget->ranges, parsed->range_count);
@@ -318,6 +329,7 @@ TSTree *ts_parser_parse_limited_wasm(
   if (setjmp(budget->jump)) {
     current_parse_budget = NULL;
     uint64_t operations = budget->parser ? ts_parser_last_parse_operations(budget->parser) : 0;
+    return_table_cache(budget);
     if (budget->parser) ts_parser_abandon_after_alloc_failure(budget->parser);
     web_budget_discard(budget);
     marshal_u64(operations);
@@ -333,6 +345,7 @@ TSTree *ts_parser_parse_limited_wasm(
     const TSRange *included_ranges = ts_parser_included_ranges(limited_parser, &included_range_count);
     ts_parser_set_included_ranges(self, included_ranges, included_range_count);
   }
+  return_table_cache(budget);
   ts_parser_delete(limited_parser);
   budget->parser = NULL;
   web_budget_finish(budget);
@@ -349,6 +362,7 @@ void ts_parser_abort_limited_wasm(void) {
   if (current_parse_budget) {
     WebParseBudget *budget = current_parse_budget;
     current_parse_budget = NULL;
+    return_table_cache(budget);
     if (budget->parser) {
       operations = ts_parser_last_parse_operations(budget->parser);
       ts_parser_abandon_after_alloc_failure(budget->parser);

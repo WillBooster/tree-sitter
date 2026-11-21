@@ -13,6 +13,7 @@
 #include "./reduce_action.h"
 #include "./stack.h"
 #include "./subtree.h"
+#include "./table_cache.h"
 #include "./tree.h"
 #include "./ts_assert.h"
 #include "./wasm_store.h"
@@ -156,6 +157,8 @@ struct TSParser {
   bool canceled_balancing;
   bool exceeded_max_operations;
   bool has_error;
+  // Allocated by the first `ts_parser_set_language` with a language; `ts_parser_swap_table_cache` lends it.
+  TableCache *table_cache;
 };
 
 typedef struct {
@@ -558,7 +561,7 @@ static inline bool ts_parser__accept_empty_ext_token(
 );
 static inline bool ts_parser__can_cache_ext_scan(const TSParser *);
 static inline bool ts_parser__lex_internal_attempt(TSParser *, LexLoopState *);
-static inline bool ts_parser__can_accept_internal_token(const TSParser *, TSStateId, bool, bool);
+static inline bool ts_parser__can_accept_internal_token(TSParser *, TSStateId, bool, bool);
 static inline void ts_parser__enter_lex_error_mode(TSParser *, StackVersion, bool, LexLoopState *);
 static inline void ts_parser__defer_failed_internal(TSParser *, LexLoopState *);
 static inline bool ts_parser__advance_skipped_error(TSParser *, LexLoopState *);
@@ -769,7 +772,7 @@ static inline bool ts_parser__accept_empty_ext_token(
 ) {
   TSSymbol symbol = self->language->external_scanner.symbol_map[self->lexer.data.result_symbol];
   bool unusable_eof = st->internal_eof && !ts_parser__eof_token_is_usable(self, version, symbol);
-  bool is_extra = ts_language_next_state(self->language, parse_state, symbol) == parse_state;
+  bool is_extra = ts_table_cache_next_state(self->table_cache, self->language, parse_state, symbol) == parse_state;
   if ((!st->external_scanner_state_changed || unusable_eof) &&
       (st->error_mode || !ts_stack_has_advanced_since_error(self->stack, version) || is_extra)) {
     LOG("ignore_empty_external_token symbol:%s", SYM_NAME(symbol));
@@ -807,14 +810,14 @@ static inline bool ts_parser__lex_internal_attempt(TSParser *self, LexLoopState 
 }
 
 static inline bool ts_parser__can_accept_internal_token(
-  const TSParser *self,
+  TSParser *self,
   TSStateId parse_state,
   bool error_mode,
   bool found_token
 ) {
   if (!found_token) return false;
   if (error_mode || self->lexer.data.result_symbol != ts_builtin_sym_end) return true;
-  return ts_language_has_actions(self->language, parse_state, ts_builtin_sym_end);
+  return ts_table_cache_has_actions(self->table_cache, self->language, parse_state, ts_builtin_sym_end);
 }
 
 static inline void ts_parser__enter_lex_error_mode(
@@ -964,10 +967,10 @@ static inline bool ts_parser__resolve_keyword(
   *is_keyword_exact = candidate != 0;
   if (!candidate) return true;
   bool keyword_is_valid =
-    ts_language_has_actions(self->language, parse_state, candidate) ||
+    ts_table_cache_has_actions(self->table_cache, self->language, parse_state, candidate) ||
     ts_language_is_reserved_word(self->language, parse_state, candidate);
   if (keyword_is_valid ||
-      (!ts_language_has_actions(self->language, parse_state, *symbol) &&
+      (!ts_table_cache_has_actions(self->table_cache, self->language, parse_state, *symbol) &&
        ts_parser__recovery_accepts_keyword(self, version, parse_state, candidate))) {
     *is_keyword = keyword_is_valid;
     *symbol = candidate;
@@ -988,7 +991,7 @@ static bool ts_parser__recovery_accepts_keyword(
   if (!summary) return false;
   for (unsigned i = 0; i < summary->size; i++) {
     TSStateId state = array_get(summary, i)->state;
-    if (state != ERROR_STATE && ts_language_has_actions(self->language, state, candidate)) {
+    if (state != ERROR_STATE && ts_table_cache_has_actions(self->table_cache, self->language, state, candidate)) {
       return true;
     }
   }
@@ -1296,31 +1299,39 @@ static inline TSLexerMode ts_parser__lex_mode_for_extra_context(TSLexerMode mode
   return mode;
 }
 
+static bool ts_parser__token_shift_reduces_on(TSParser *self, TSStateId state, TSSymbol lookahead);
+
 static bool ts_parser__eof_token_is_usable(
   TSParser *self,
   StackVersion version,
   TSSymbol lookahead
 ) {
   TSStateId current_state = ts_stack_state(self->stack, version);
-  if (ts_language_has_actions(self->language, current_state, lookahead)) return true;
+  if (ts_table_cache_has_actions(self->table_cache, self->language, current_state, lookahead)) return true;
   ts_stack_record_summary(self->stack, version, MAX_SUMMARY_DEPTH);
   StackSummary *summary = ts_stack_get_summary(self->stack, version);
   for (unsigned i = 0; i < summary->size; i++) {
     TSStateId state = array_get(summary, i)->state;
     if (state == ERROR_STATE) continue;
-    TSStateId marker_state = ts_language_next_state(self->language, state, lookahead);
+    TSStateId marker_state = ts_table_cache_next_state(self->table_cache, self->language, state, lookahead);
     if (marker_state != 0 && marker_state != state &&
-        ts_language_has_actions(self->language, marker_state, ts_builtin_sym_end)) {
+        ts_table_cache_has_actions(self->table_cache, self->language, marker_state, ts_builtin_sym_end)) {
       return true;
     }
-    LookaheadIterator iterator = ts_language_lookaheads(self->language, state);
-    while (ts_lookahead_iterator__next(&iterator)) {
-      if (iterator.symbol == 0 || iterator.symbol >= self->language->token_count) continue;
-      TSStateId next_state = ts_language_next_state(self->language, state, iterator.symbol);
-      if (next_state != 0 && next_state != state &&
-          ts_language_has_reduce_action(self->language, next_state, lookahead)) {
-        return true;
-      }
+    if (ts_parser__token_shift_reduces_on(self, state, lookahead)) return true;
+  }
+  return false;
+}
+
+// Whether shifting some token from `state` reaches a state that reduces on `lookahead`.
+static bool ts_parser__token_shift_reduces_on(TSParser *self, TSStateId state, TSSymbol lookahead) {
+  LookaheadIterator iterator = ts_language_lookaheads(self->language, state);
+  while (ts_lookahead_iterator__next(&iterator)) {
+    if (iterator.symbol == 0 || iterator.symbol >= self->language->token_count) continue;
+    TSStateId next_state = ts_table_cache_next_state(self->table_cache, self->language, state, iterator.symbol);
+    if (next_state != 0 && next_state != state &&
+        ts_language_has_reduce_action(self->language, next_state, lookahead)) {
+      return true;
     }
   }
   return false;
@@ -1340,7 +1351,7 @@ static LookaheadToken ts_parser__get_cached_token(
     cache->token.subtree.ptr &&
     cache->scanner_state_id == scanner_state_id
   ) {
-    ts_language_table_entry(self->language, state, ts_subtree_symbol(cache->token.subtree), table_entry);
+    ts_table_cache_entry(self->table_cache, self->language, state, ts_subtree_symbol(cache->token.subtree), table_entry);
     if (ts_parser__can_reuse_cached_token(self, version, state, cache->token, cache->after_extra, table_entry)) {
       ts_subtree_retain(cache->token.subtree);
       return cache->token;
@@ -1630,7 +1641,7 @@ static void ts_parser__push_reduced_node(
   bool is_extra
 ) {
   TSStateId state = ts_stack_state(self->stack, slice_version);
-  TSStateId next_state = ts_language_next_state(self->language, state, symbol);
+  TSStateId next_state = ts_table_cache_next_state(self->table_cache, self->language, state, symbol);
   if (is_extra) {
     next_state = state;
     ts_subtree_heap_set_flag(parent.ptr, SUBTREE_FLAG_EXTRA, true);
@@ -1799,7 +1810,7 @@ static bool ts_parser__do_all_potential_reductions(
 
     if (lookahead_symbol != 0) {
       TableEntry entry;
-      ts_language_table_entry(self->language, state, lookahead_symbol, &entry);
+      ts_table_cache_entry(self->table_cache, self->language, state, lookahead_symbol, &entry);
       has_shift_action = ts_parser__process_candidate_recovery_actions(self, entry.actions, entry.action_count);
     } else {
       LookaheadIterator iter = ts_language_lookaheads(self->language, state);
@@ -2013,9 +2024,9 @@ static void ts_parser__recover(
         if (ts_parser__better_version_exists(self, version, false, new_cost)) break;
 
         if (
-          ts_language_has_actions(self->language, entry.state, recovery_symbol) &&
+          ts_table_cache_has_actions(self->table_cache, self->language, entry.state, recovery_symbol) &&
           (recovery_pass == 0 || (
-            !ts_language_has_actions(self->language, entry.state, symbol) &&
+            !ts_table_cache_has_actions(self->table_cache, self->language, entry.state, symbol) &&
             !ts_language_is_reserved_word(self->language, entry.state, symbol)
           ))
         ) {
@@ -2156,14 +2167,14 @@ static void ts_parser__recover(
 
 static bool ts_parser__state_finishes_root(TSParser *self, TSStateId state) {
   TableEntry entry;
-  ts_language_table_entry(self->language, state, ts_builtin_sym_end, &entry);
+  ts_table_cache_entry(self->table_cache, self->language, state, ts_builtin_sym_end, &entry);
   for (unsigned i = 0; i < entry.action_count; i++) {
     TSParseAction action = ts_language_parse_action(self->language, entry.actions[i]);
     if (action.type == TSParseActionTypeAccept) return true;
     if (action.type != TSParseActionTypeReduce || action.reduce.child_count != 1) continue;
-    TSStateId next_state = ts_language_next_state(self->language, 1, action.reduce.symbol);
+    TSStateId next_state = ts_table_cache_next_state(self->table_cache, self->language, 1, action.reduce.symbol);
     TableEntry next_entry;
-    ts_language_table_entry(self->language, next_state, ts_builtin_sym_end, &next_entry);
+    ts_table_cache_entry(self->table_cache, self->language, next_state, ts_builtin_sym_end, &next_entry);
     for (unsigned j = 0; j < next_entry.action_count; j++) {
       if ((next_entry.actions[j] & TS_PARSE_ACTION_TYPE_MASK) == TSParseActionTypeAccept) return true;
     }
@@ -2280,17 +2291,13 @@ static bool ts_parser__insert_missing_token(
   if (first_symbol == 0) return false;
   uint32_t symbol_limit = require_reduction ? self->language->token_count : first_symbol + 1;
   for (TSSymbol missing_symbol = first_symbol; missing_symbol < symbol_limit; missing_symbol++) {
-    TSStateId state_after_missing_symbol = ts_language_next_state(
-      self->language, state, missing_symbol
-    );
+    TSStateId state_after_missing_symbol = ts_table_cache_next_state(self->table_cache, self->language, state, missing_symbol);
     if (state_after_missing_symbol == 0 || state_after_missing_symbol == state) {
       continue;
     }
 
     TableEntry entry;
-    ts_language_table_entry(
-      self->language, state_after_missing_symbol, ts_subtree_symbol(lookahead), &entry
-    );
+    ts_table_cache_entry(self->table_cache, self->language, state_after_missing_symbol, ts_subtree_symbol(lookahead), &entry);
     if (entry.action_count == 0) continue;
     bool has_reduce = ts_table_entry_has_reduce_action(&entry);
     if (has_reduce != require_reduction) continue;
@@ -2338,7 +2345,7 @@ static TSSymbol ts_parser__sole_missing_token(TSParser *self, TSStateId state) {
   LookaheadIterator iter = ts_language_lookaheads(self->language, state);
   while (ts_lookahead_iterator__next(&iter)) {
     if (iter.symbol == 0 || iter.symbol >= self->language->token_count) continue;
-    TSStateId next_state = ts_language_next_state(self->language, state, iter.symbol);
+    TSStateId next_state = ts_table_cache_next_state(self->table_cache, self->language, state, iter.symbol);
     if (next_state == 0 || next_state == state) continue;
     if (result != 0) return 0;
     result = iter.symbol;
@@ -2402,7 +2409,7 @@ static bool ts_parser__advance(
       if (self->has_scanner_error || self->exceeded_max_operations) return false;
 
       if (lookahead.subtree.ptr) {
-        ts_language_table_entry(self->language, state, ts_subtree_symbol(lookahead.subtree), &table_entry);
+        ts_table_cache_entry(self->table_cache, self->language, state, ts_subtree_symbol(lookahead.subtree), &table_entry);
         bool deterministic_shift =
           ts_stack_version_count(self->stack) == 1 &&
           table_entry.action_count == 1 &&
@@ -2415,7 +2422,7 @@ static bool ts_parser__advance(
         }
       } else {
         // At the end of a non-terminal extra, the reduction is stored in the EOF table entry.
-        ts_language_table_entry(self->language, state, ts_builtin_sym_end, &table_entry);
+        ts_table_cache_entry(self->table_cache, self->language, state, ts_builtin_sym_end, &table_entry);
       }
     }
 
@@ -2492,12 +2499,7 @@ static bool ts_parser__advance(
       if (!lookahead.subtree.ptr) {
         needs_lex = true;
       } else {
-        ts_language_table_entry(
-          self->language,
-          state,
-          ts_subtree_symbol(lookahead.subtree),
-          &table_entry
-        );
+        ts_table_cache_entry(self->table_cache, self->language, state, ts_subtree_symbol(lookahead.subtree), &table_entry);
       }
 
       continue;
@@ -2516,12 +2518,7 @@ static bool ts_parser__advance(
       ts_subtree_symbol(lookahead.subtree) != self->language->keyword_capture_token &&
       !ts_language_is_reserved_word(self->language, state, ts_subtree_symbol(lookahead.subtree))
     ) {
-      ts_language_table_entry(
-        self->language,
-        state,
-        self->language->keyword_capture_token,
-        &table_entry
-      );
+      ts_table_cache_entry(self->table_cache, self->language, state, self->language->keyword_capture_token, &table_entry);
       if (table_entry.action_count > 0) {
         LOG(
           "switch from_keyword:%s, to_word_token:%s",
@@ -2817,6 +2814,7 @@ void ts_parser_delete(TSParser *self) {
   array_delete(&self->trailing_extras);
   array_delete(&self->trailing_extras2);
   array_delete(&self->scratch_trees);
+  ts_free(self->table_cache);
   ts_free(self);
 }
 
@@ -2842,6 +2840,7 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   ts_parser_reset(self);
   ts_language_delete(self->language);
   self->language = NULL;
+  if (self->table_cache) ts_table_cache_invalidate(self->table_cache);
   ts_lexer_clear_cache(&self->lexer);
 
   if (language) {
@@ -2855,10 +2854,26 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
         !ts_wasm_store_start(self->wasm_store, &self->lexer.data, language)
       ) return false;
     }
+
+    if (!self->table_cache) {
+      self->table_cache = ts_calloc(1, sizeof(TableCache));
+      ts_table_cache_invalidate(self->table_cache);
+    }
   }
 
   self->language = ts_language_copy(language);
   return true;
+}
+
+// Exchange the table caches of two parsers, so that a parser created for one parse can use another parser's
+// cache instead of allocating its own. Either parser's language may change while it holds the other's cache,
+// so both caches are invalidated.
+void ts_parser_swap_table_cache(TSParser *self, TSParser *other) {
+  TableCache *table_cache = self->table_cache;
+  self->table_cache = other->table_cache;
+  other->table_cache = table_cache;
+  if (self->table_cache) ts_table_cache_invalidate(self->table_cache);
+  if (other->table_cache) ts_table_cache_invalidate(other->table_cache);
 }
 
 TSLogger ts_parser_logger(const TSParser *self) {

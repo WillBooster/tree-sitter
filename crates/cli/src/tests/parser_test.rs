@@ -18,7 +18,7 @@ use tree_sitter_proc_macro::retry;
 
 use super::helpers::{
     allocations,
-    fixtures::{get_language, get_test_language, get_test_language_with_header},
+    fixtures::{GRAMMARS_DIR, get_language, get_test_language, get_test_language_with_header},
 };
 use crate::tests::{
     generate_parser,
@@ -1061,6 +1061,32 @@ fn test_recovery_after_malformed_declarator() {
             let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().has_error(), has_error, "{source}");
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_parsing_after_many_language_switches() {
+    // C++ extends the C grammar, so their parse-table lookups share many (state, symbol) pairs whose
+    // values differ, and a lookup answered for the wrong language changes the tree.
+    let source = std::fs::read(GRAMMARS_DIR.join("c").join("examples").join("malloc.c")).unwrap();
+    let languages = [get_language("c"), get_language("cpp")];
+    let expected = languages.each_ref().map(|language| {
+        let mut parser = Parser::new();
+        parser.set_language(language).unwrap();
+        parser.parse(&source).unwrap().root_node().to_sexp()
+    });
+
+    // The parser's 16-bit table-cache epoch advances on every language change and returns to the
+    // first parse's epoch after `u16::MAX` changes. Parsing nothing in between leaves that parse's
+    // entries in the cache, where a missed invalidation would serve them to the other language.
+    let wrap = u16::MAX as usize;
+    let mut parser = Parser::new();
+    for i in 0..=wrap + 2 {
+        parser.set_language(&languages[i % 2]).unwrap();
+        if i == 0 || i >= wrap {
+            let sexp = parser.parse(&source).unwrap().root_node().to_sexp();
+            assert_eq!(sexp, expected[i % 2], "after {i} language switches");
         }
     }
 }
@@ -2995,31 +3021,19 @@ fn test_recovery_through_many_nonterminal_extras() {
     let line = "#pragma warning disable x #:x\n";
     let measure = |parser: &mut Parser, count: usize, blocks: usize| {
         let source = format!("{}x;", line.repeat(count)).repeat(blocks);
-        let mut fastest = Duration::MAX;
-        for _ in 0..3 {
-            let started = cpu_time::ThreadTime::now();
-            let mut samples = 0;
-            let elapsed = loop {
-                let tree = parser.parse(&source).unwrap();
-                samples += 1;
-                let root = tree.root_node();
-                assert!(root.has_error());
-                assert_eq!(root.named_child_count(), (count + 1) * blocks);
-                assert_eq!(
-                    root.named_child(((count + 1) * blocks - 1) as u32)
-                        .unwrap()
-                        .kind(),
-                    "statement"
-                );
-                assert_eq!(root.end_byte(), source.len());
-                let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(100) {
-                    break elapsed;
-                }
-            };
-            fastest = fastest.min(elapsed / samples);
-        }
-        fastest
+        fastest_thread_time_per_run(Duration::from_millis(100), || {
+            let tree = parser.parse(&source).unwrap();
+            let root = tree.root_node();
+            assert!(root.has_error());
+            assert_eq!(root.named_child_count(), (count + 1) * blocks);
+            assert_eq!(
+                root.named_child(((count + 1) * blocks - 1) as u32)
+                    .unwrap()
+                    .kind(),
+                "statement"
+            );
+            assert_eq!(root.end_byte(), source.len());
+        })
     };
     for blocks in [1, 2, 3] {
         measure(&mut parser, 1000, blocks);
@@ -3031,6 +3045,27 @@ fn test_recovery_through_many_nonterminal_extras() {
             "blocks: {blocks}, small: {small:?}, large: {large:?}"
         );
     }
+}
+
+/// The fastest of three per-run averages of the thread CPU time `run` takes. Each average repeats `run`
+/// until `window` elapses, so that it spans many ticks of a coarse thread clock (15.625 ms on Windows),
+/// and thread CPU time excludes the time a loaded machine leaves the thread descheduled.
+fn fastest_thread_time_per_run(window: Duration, mut run: impl FnMut()) -> Duration {
+    let mut fastest = Duration::MAX;
+    for _ in 0..3 {
+        let started = cpu_time::ThreadTime::now();
+        let mut samples = 0;
+        let elapsed = loop {
+            run();
+            samples += 1;
+            let elapsed = started.elapsed();
+            if elapsed >= window {
+                break elapsed;
+            }
+        };
+        fastest = fastest.min(elapsed / samples);
+    }
+    fastest
 }
 
 #[test]
@@ -7850,35 +7885,23 @@ fn test_adjacent_required_and_extra_comments_scale_quadratically() {
                 if has_error {
                     source.insert_str(error_offset, "x ");
                 }
-                let mut fastest = Duration::MAX;
-                for _ in 0..3 {
-                    let started = cpu_time::ThreadTime::now();
-                    let mut samples = 0;
-                    let elapsed = loop {
-                        let tree = parser.parse(&source).unwrap();
-                        let root = tree.root_node();
-                        assert_eq!(root.has_error(), has_error);
-                        assert_eq!(root.end_byte(), source.len());
-                        let mut cursor = root.walk();
-                        let comments = root
-                            .named_children(&mut cursor)
-                            .filter(|node| node.kind() == "comment")
-                            .collect::<Vec<_>>();
-                        assert_eq!(comments.len(), count);
-                        for (index, comment) in comments.into_iter().enumerate() {
-                            let start =
-                                index * 4 + usize::from(has_error && index * 4 >= error_offset) * 2;
-                            assert_eq!(comment.byte_range(), start..start + 3);
-                        }
-                        samples += 1;
-                        let elapsed = started.elapsed();
-                        if elapsed >= Duration::from_millis(100) {
-                            break elapsed;
-                        }
-                    };
-                    fastest = fastest.min(elapsed / samples);
-                }
-                fastest
+                fastest_thread_time_per_run(Duration::from_millis(100), || {
+                    let tree = parser.parse(&source).unwrap();
+                    let root = tree.root_node();
+                    assert_eq!(root.has_error(), has_error);
+                    assert_eq!(root.end_byte(), source.len());
+                    let mut cursor = root.walk();
+                    let comments = root
+                        .named_children(&mut cursor)
+                        .filter(|node| node.kind() == "comment")
+                        .collect::<Vec<_>>();
+                    assert_eq!(comments.len(), count);
+                    for (index, comment) in comments.into_iter().enumerate() {
+                        let start =
+                            index * 4 + usize::from(has_error && index * 4 >= error_offset) * 2;
+                        assert_eq!(comment.byte_range(), start..start + 3);
+                    }
+                })
             };
             measure(&mut parser, 40);
             let small = measure(&mut parser, 40);
@@ -8340,24 +8363,12 @@ fn test_external_scanner_state_interning_and_reset_scaling() {
     let measure_malformed = |parser: &mut Parser, count: usize| {
         let mut source = colliding_heredocs[..count].concat();
         source.push_str("\"\n");
-        let mut fastest = Duration::MAX;
-        for _ in 0..3 {
-            let started = cpu_time::ThreadTime::now();
-            let mut samples = 0;
-            let elapsed = loop {
-                let tree = parser.parse(&source).unwrap();
-                samples += 1;
-                let root = tree.root_node();
-                assert!(root.has_error());
-                assert_eq!(root.end_byte(), source.len());
-                let elapsed = started.elapsed();
-                if elapsed >= Duration::from_millis(50) {
-                    break elapsed;
-                }
-            };
-            fastest = fastest.min(elapsed / samples);
-        }
-        fastest
+        fastest_thread_time_per_run(Duration::from_millis(50), || {
+            let tree = parser.parse(&source).unwrap();
+            let root = tree.root_node();
+            assert!(root.has_error());
+            assert_eq!(root.end_byte(), source.len());
+        })
     };
 
     let small_colliding = measure_malformed(&mut parser, 1_000);
@@ -8368,20 +8379,14 @@ fn test_external_scanner_state_interning_and_reset_scaling() {
     );
 
     let measure_small_heredocs = |parser: &mut Parser| {
-        let mut fastest = Duration::MAX;
-        for _ in 0..3 {
-            let started = cpu_time::ThreadTime::now();
-            for _ in 0..1_000 {
-                for snippet in ["cat <<EOF\nhi\nEOF\n", "cat <<END\nx\nEND\n"] {
-                    let tree = parser.parse(snippet).unwrap();
-                    let root = tree.root_node();
-                    assert!(!root.has_error());
-                    assert_eq!(root.end_byte(), snippet.len());
-                }
+        fastest_thread_time_per_run(Duration::from_millis(100), || {
+            for snippet in ["cat <<EOF\nhi\nEOF\n", "cat <<END\nx\nEND\n"] {
+                let tree = parser.parse(snippet).unwrap();
+                let root = tree.root_node();
+                assert!(!root.has_error());
+                assert_eq!(root.end_byte(), snippet.len());
             }
-            fastest = fastest.min(started.elapsed());
-        }
-        fastest
+        })
     };
 
     let mut cold_parser = Parser::new();
@@ -8633,16 +8638,12 @@ fn test_utf8_unicode_fast_path_across_chunks_and_line_separators() {
 #[test]
 fn test_unterminated_tainted_delimited_tokens_linear_recovery() {
     let measure_fastest = |parser: &mut Parser, input: &[u8]| {
-        let mut fastest = std::time::Duration::MAX;
-        for _ in 0..5 {
-            let started = std::time::Instant::now();
+        fastest_thread_time_per_run(Duration::from_millis(50), || {
             let tree = parser.parse(input).unwrap();
             let root = tree.root_node();
             assert!(root.has_error());
             assert_eq!(root.end_byte(), input.len());
-            fastest = fastest.min(started.elapsed());
-        }
-        fastest
+        })
     };
 
     for (lang, unit) in [
@@ -8666,7 +8667,7 @@ fn test_unterminated_tainted_delimited_tokens_linear_recovery() {
         let t_small = measure_fastest(&mut parser, &small);
         let t_large = measure_fastest(&mut parser, &large);
         assert!(
-            t_large < t_small.max(std::time::Duration::from_millis(1)) * 18,
+            t_large < t_small * 18,
             "{lang} ({unit:?}): small={t_small:?}, large={t_large:?}"
         );
 
