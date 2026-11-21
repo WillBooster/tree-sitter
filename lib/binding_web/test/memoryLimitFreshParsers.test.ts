@@ -25,5 +25,7 @@ it('returns null instead of trapping when a fresh parser cannot reserve its cach
   } finally {
     for (const parser of parsers) parser.delete();
   }
+  // A parse succeeded before the heap filled up, and a fresh parser then reached the limit without trapping.
   expect(outcomes).toContain('tree');
+  expect(outcomes).toContain('null');
 }, 120_000);
