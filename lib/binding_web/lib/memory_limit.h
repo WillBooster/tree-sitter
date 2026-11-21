@@ -15,6 +15,8 @@ typedef struct {
   size_t count;
   size_t capacity;
   TSParser *parser;
+  // The parser that lent `parser` its table cache, which must get it back before `parser` is freed.
+  TSParser *lender;
   void *ranges;
 } WebParseBudget;
 
