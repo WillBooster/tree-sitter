@@ -14,10 +14,13 @@
 #include "./error_costs.h"
 #include "./ts_assert.h"
 
-#define TREE_ARENA_WORDS_INITIAL 512u
-#define TREE_ARENA_WORDS_MEDIUM 2048u
-#define TREE_ARENA_WORDS_MAX 8192u
-#define TREE_ARENA_LARGE_WORDS 512u
+// Each slab, header included, is exactly one 4 KiB malloc request. On macOS, freed blocks of
+// 8 KiB or more stay resident, so with 16-64 KiB slabs the peak footprint of a caller that
+// parses, walks, and drops trees in a loop grew with every cycle; freeing many blocks of at most
+// 4 KiB lets the allocator return the memory. A request just above a size class (e.g.,
+// 4096 + 32 bytes) would also be rounded up to the next class.
+#define TREE_ARENA_SLAB_BYTES 4096u
+#define TREE_ARENA_SLAB_WORDS ((TREE_ARENA_SLAB_BYTES - sizeof(TreeArenaSlab)) / sizeof(uint64_t))
 #define SUBTREE_HEADER_WORDS (sizeof(SubtreeHeapData) / sizeof(uint64_t))
 
 _Static_assert(sizeof(Subtree) == 8, "an inline subtree must fit in 8 bytes");
@@ -94,22 +97,14 @@ void ts_tree_arena_slab_free_all(TreeArenaSlab *head) {
   }
 }
 
-static void ts_tree_arena_push_slab(TreeArena *arena, uint32_t min_words) {
-  uint32_t capacity =
-    arena->slab_count == 0 ? TREE_ARENA_WORDS_INITIAL :
-    arena->slab_count == 1 ? TREE_ARENA_WORDS_MEDIUM :
-    TREE_ARENA_WORDS_MAX;
-  if (capacity < min_words) capacity = min_words;
-
-  TreeArenaSlab *slab = ts_malloc(sizeof(TreeArenaSlab) + (size_t)capacity * sizeof(uint64_t));
+static void ts_tree_arena_push_slab(TreeArena *arena) {
+  TreeArenaSlab *slab = ts_malloc(TREE_ARENA_SLAB_BYTES);
   slab->next = arena->head;
   slab->large_blocks = arena->head ? arena->head->large_blocks : NULL;
   if (arena->head) arena->head->large_blocks = NULL;
   slab->ref_count = 1;
   slab->used = 0;
-  slab->capacity = capacity;
   arena->head = slab;
-  arena->slab_count++;
 }
 
 SubtreePool ts_subtree_pool_new(uint32_t capacity) {
@@ -145,8 +140,8 @@ SubtreeHeapData *ts_subtree_pool_alloc_node(SubtreePool *self, uint32_t child_co
   if (child_count < TREE_ARENA_BIN_COUNT && arena->free_bins[child_count]) {
     slot = arena->free_bins[child_count];
     arena->free_bins[child_count] = *(void **)slot;
-  } else if (words > TREE_ARENA_LARGE_WORDS) {
-    if (!arena->head) ts_tree_arena_push_slab(arena, TREE_ARENA_WORDS_INITIAL);
+  } else if (words > TREE_ARENA_SLAB_WORDS) {
+    if (!arena->head) ts_tree_arena_push_slab(arena);
     TreeArenaLargeBlock *block = ts_malloc(sizeof(TreeArenaLargeBlock) + words * sizeof(uint64_t));
     block->prev = NULL;
     block->next = arena->head->large_blocks;
@@ -154,8 +149,8 @@ SubtreeHeapData *ts_subtree_pool_alloc_node(SubtreePool *self, uint32_t child_co
     arena->head->large_blocks = block;
     slot = block->data;
   } else {
-    if (!arena->head || arena->head->used + words > arena->head->capacity) {
-      ts_tree_arena_push_slab(arena, (uint32_t)words);
+    if (!arena->head || arena->head->used + words > TREE_ARENA_SLAB_WORDS) {
+      ts_tree_arena_push_slab(arena);
     }
     slot = arena->head->data + arena->head->used;
     arena->head->used += (uint32_t)words;
@@ -169,7 +164,7 @@ SubtreeHeapData *ts_subtree_pool_alloc_node(SubtreePool *self, uint32_t child_co
 static void ts_subtree_pool_free_node(SubtreePool *self, SubtreeHeapData *data) {
   uint32_t child_count = data->child_count;
   void *start = (Subtree *)data - child_count;
-  if ((size_t)child_count + SUBTREE_HEADER_WORDS > TREE_ARENA_LARGE_WORDS) {
+  if ((size_t)child_count + SUBTREE_HEADER_WORDS > TREE_ARENA_SLAB_WORDS) {
     TreeArenaLargeBlock *block = (TreeArenaLargeBlock *)((char *)start - offsetof(TreeArenaLargeBlock, data));
     if (block->prev) {
       block->prev->next = block->next;
