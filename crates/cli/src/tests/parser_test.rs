@@ -1066,6 +1066,23 @@ fn test_recovery_after_malformed_declarator() {
 }
 
 #[test]
+fn test_parser_that_never_parses_allocates_no_table_cache() {
+    let language = get_language("c");
+    let ((), without_language) = allocations::record_allocated_bytes(|| {
+        drop(Parser::new());
+    });
+    let ((), with_language) = allocations::record_allocated_bytes(|| {
+        let mut parser = Parser::new();
+        parser.set_language(&language).unwrap();
+    });
+    // The parse-table cache alone is 16 KiB; a parser that only holds a language must not allocate it.
+    assert!(
+        with_language < without_language + 16 * 1024,
+        "without language: {without_language} bytes, with language: {with_language} bytes"
+    );
+}
+
+#[test]
 fn test_parsing_after_many_language_switches() {
     // C++ extends the C grammar, so their parse-table lookups share many (state, symbol) pairs whose
     // values differ, and a lookup answered for the wrong language changes the tree.

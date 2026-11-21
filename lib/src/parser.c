@@ -157,7 +157,8 @@ struct TSParser {
   bool canceled_balancing;
   bool exceeded_max_operations;
   bool has_error;
-  // Allocated by the first `ts_parser_set_language` with a language; `ts_parser_swap_table_cache` lends it.
+  // Allocated by the first parse, so that a parser that never parses costs no cache;
+  // `ts_parser_swap_table_cache` lends it.
   TableCache *table_cache;
 };
 
@@ -2855,14 +2856,20 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
       ) return false;
     }
 
-    if (!self->table_cache) {
-      self->table_cache = ts_calloc(1, sizeof(TableCache));
-      ts_table_cache_invalidate(self->table_cache);
-    }
   }
 
   self->language = ts_language_copy(language);
   return true;
+}
+
+// Allocate the table cache now if the parser has a language and no cache yet, and return the newly allocated
+// cache, or NULL if none was allocated. `ts_parser_parse` does this itself; the Wasm binding calls it at the start
+// of a memory-limited parse to detach the new cache from that parse's budget before lending it.
+void *ts_parser_reserve_table_cache(TSParser *self) {
+  if (self->table_cache || !self->language) return NULL;
+  self->table_cache = ts_calloc(1, sizeof(TableCache));
+  ts_table_cache_invalidate(self->table_cache);
+  return self->table_cache;
 }
 
 // Exchange the table caches of two parsers, so that a parser created for one parse can use another parser's
@@ -2961,6 +2968,7 @@ TSTree *ts_parser_parse(
     self->max_operations = 0;
     return NULL;
   }
+  ts_parser_reserve_table_cache(self);
 
   if (ts_language_is_wasm(self->language)) {
     if (!self->wasm_store) {
