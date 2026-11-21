@@ -18,7 +18,7 @@ use tree_sitter_proc_macro::retry;
 
 use super::helpers::{
     allocations,
-    fixtures::{get_language, get_test_language, get_test_language_with_header},
+    fixtures::{GRAMMARS_DIR, get_language, get_test_language, get_test_language_with_header},
 };
 use crate::tests::{
     generate_parser,
@@ -1061,6 +1061,32 @@ fn test_recovery_after_malformed_declarator() {
             let tree = parser.parse(source).unwrap();
             assert_eq!(tree.root_node().has_error(), has_error, "{source}");
             crate::fuzz::corpus_test::check_consistent_sizes(&tree, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn test_parsing_after_many_language_switches() {
+    // C++ extends the C grammar, so their parse-table lookups share many (state, symbol) pairs whose
+    // values differ, and a lookup answered for the wrong language changes the tree.
+    let source = std::fs::read(GRAMMARS_DIR.join("c").join("examples").join("malloc.c")).unwrap();
+    let languages = [get_language("c"), get_language("cpp")];
+    let expected = languages.each_ref().map(|language| {
+        let mut parser = Parser::new();
+        parser.set_language(language).unwrap();
+        parser.parse(&source).unwrap().root_node().to_sexp()
+    });
+
+    // The parser's 16-bit table-cache epoch advances on every language change and returns to the
+    // first parse's epoch after `u16::MAX` changes. Parsing nothing in between leaves that parse's
+    // entries in the cache, where a missed invalidation would serve them to the other language.
+    let wrap = u16::MAX as usize;
+    let mut parser = Parser::new();
+    for i in 0..=wrap + 2 {
+        parser.set_language(&languages[i % 2]).unwrap();
+        if i == 0 || i >= wrap {
+            let sexp = parser.parse(&source).unwrap().root_node().to_sexp();
+            assert_eq!(sexp, expected[i % 2], "after {i} language switches");
         }
     }
 }

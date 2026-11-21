@@ -2838,7 +2838,7 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   ts_parser_reset(self);
   ts_language_delete(self->language);
   self->language = NULL;
-  ts_table_cache_clear(&self->table_cache);
+  ts_table_cache_invalidate(&self->table_cache);
   ts_lexer_clear_cache(&self->lexer);
 
   if (language) {

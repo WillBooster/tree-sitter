@@ -10,16 +10,21 @@ extern "C" {
 #include "./language.h"
 
 #define TABLE_CACHE_BITS 11
-#define TABLE_CACHE_VALID ((uint64_t)1 << 48)
 
-// A direct-mapped memo of compact parse-table lookups for one language. Each slot holds
-// `TABLE_CACHE_VALID | state << 32 | symbol << 16 | value`, so an all-zero cache is empty.
+// A direct-mapped memo of compact parse-table lookups. Each slot holds
+// `epoch << 48 | state << 32 | symbol << 16 | value` and matches only while `epoch` is current, so a
+// zero-initialized cache is empty and invalidating it rewrites no slot until the epoch wraps.
 typedef struct {
   uint64_t slots[1u << TABLE_CACHE_BITS];
+  uint16_t epoch;
 } TableCache;
 
-static inline void ts_table_cache_clear(TableCache *self) {
-  memset(self->slots, 0, sizeof(self->slots));
+// Called whenever the language changes, so that no slot stored for another language matches.
+static inline void ts_table_cache_invalidate(TableCache *self) {
+  if (++self->epoch == 0) {
+    memset(self->slots, 0, sizeof(self->slots));
+    self->epoch = 1;
+  }
 }
 
 // Terminal cells and nonterminal gotos share slots because terminal and nonterminal symbols are disjoint.
@@ -35,7 +40,7 @@ static inline uint16_t ts_table_cache_lookup(
   }
   uint32_t key = (uint32_t)state << 16 | symbol;
   uint64_t *slot = &self->slots[(key * 0x9E3779B1u) >> (32 - TABLE_CACHE_BITS)];
-  uint64_t tagged = TABLE_CACHE_VALID | (uint64_t)key << 16;
+  uint64_t tagged = (uint64_t)self->epoch << 48 | (uint64_t)key << 16;
   if ((*slot ^ tagged) <= UINT16_MAX) return (uint16_t)*slot;
   uint16_t value = is_goto
     ? ts_language_lookup_goto(language, state, symbol)
