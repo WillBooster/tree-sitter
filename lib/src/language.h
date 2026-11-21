@@ -75,7 +75,6 @@ static inline uint32_t ts_language__count_ones64(uint64_t bits);
 static inline uint32_t ts_language__trailing_zeros64(uint64_t bits);
 
 uint16_t ts_language_lookup_small_compact(const TSLanguage *self, uint32_t index, TSSymbol symbol);
-TSStateId ts_language_next_state(const TSLanguage *self, TSStateId state, TSSymbol symbol);
 
 static inline uint32_t ts_language__small_offset(const uint16_t *words) {
   return words[0] | (uint32_t)words[1] << 16;
@@ -224,14 +223,6 @@ static inline TSStateId ts_language_lookup_goto(
   uint16_t value = ts_language_lookup_small_row(self, ts_language__small_offset(goto_map), symbol);
   if (value == UINT16_MAX && self->state_count <= UINT16_MAX) return state;
   return value;
-}
-
-static inline bool ts_language_has_actions(
-  const TSLanguage *self,
-  TSStateId state,
-  TSSymbol symbol
-) {
-  return ts_language_lookup(self, state, symbol) != 0;
 }
 
 static inline void ts_lookahead_iterator__start_small_row(LookaheadIterator *self) {
