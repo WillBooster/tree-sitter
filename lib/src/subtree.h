@@ -115,7 +115,6 @@ typedef struct TreeArenaSlab {
   TreeArenaLargeBlock *large_blocks;
   volatile uint32_t ref_count;
   uint32_t used;
-  uint32_t capacity;
   uint64_t data[];
 } TreeArenaSlab;
 
@@ -123,7 +122,6 @@ typedef struct TreeArenaSlab {
 
 typedef struct {
   TreeArenaSlab *head;
-  uint32_t slab_count;
   void *free_bins[TREE_ARENA_BIN_COUNT];
 } TreeArena;
 
