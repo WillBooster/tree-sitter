@@ -2865,12 +2865,15 @@ bool ts_parser_set_language(TSParser *self, const TSLanguage *language) {
   return true;
 }
 
-// Exchange the table caches of two parsers, so that a parser created for one parse with another parser's
-// language can use and keep warm that parser's cache instead of allocating its own.
+// Exchange the table caches of two parsers, so that a parser created for one parse can use another parser's
+// cache instead of allocating its own. Either parser's language may change while it holds the other's cache,
+// so both caches are invalidated.
 void ts_parser_swap_table_cache(TSParser *self, TSParser *other) {
   TableCache *table_cache = self->table_cache;
   self->table_cache = other->table_cache;
   other->table_cache = table_cache;
+  if (self->table_cache) ts_table_cache_invalidate(self->table_cache);
+  if (other->table_cache) ts_table_cache_invalidate(other->table_cache);
 }
 
 TSLogger ts_parser_logger(const TSParser *self) {

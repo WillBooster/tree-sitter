@@ -8,6 +8,7 @@ const load = (specifier: string) => new WebAssembly.Module(readFileSync(resolve(
 
 let memory: WebAssembly.Memory;
 let typescript: Language;
+let tsx: Language;
 let html: Language;
 let parser: Parser;
 
@@ -20,6 +21,7 @@ beforeAll(async () => {
   typescript = Language.loadSync(
     new WebAssembly.Module(readFileSync(new URL('../../../target/release/tree-sitter-typescript.wasm', import.meta.url))),
   );
+  tsx = Language.loadSync(load(new URL('../../../target/release/tree-sitter-tsx.wasm', import.meta.url).pathname));
   html = Language.loadSync(load(new URL('../../../target/release/tree-sitter-html.wasm', import.meta.url).pathname));
 });
 
@@ -111,6 +113,45 @@ describe('Parse memory limit', () => {
     expect(tree?.rootNode.hasError).toBe(false);
     tree?.delete();
   });
+
+  it.each(['cancel', 'throw', 'input'] as const)(
+    'parses with the new language after a callback switches it and ends a limited parse (%s)',
+    (trigger) => {
+      const tsxSource = 'const value = <div />;\n';
+      const freshParser = new Parser();
+      freshParser.setLanguage(tsx);
+      const expectedTree = freshParser.parse(tsxSource);
+      const expected = expectedTree?.rootNode.toString();
+      expectedTree?.delete();
+      freshParser.delete();
+      expect(expected).toContain('jsx');
+
+      const source = 'const value = 1;\n'.repeat(100);
+      const failure = new Error('cancelled after switching languages');
+      let switched = false;
+      const switchLanguage = () => {
+        if (switched) return false;
+        switched = true;
+        parser.setLanguage(tsx);
+        if (trigger !== 'cancel') throw failure;
+        return true;
+      };
+      const parse = () =>
+        trigger === 'input'
+          ? parser.parse((index) => {
+              // The first read precedes any parse-table lookup, so switch on a later one.
+              if (index > 0) switchLanguage();
+              return source.slice(index, index + 64);
+            }, { maxMemoryBytes: 48 * 2 ** 20 })
+          : parser.parse(source, { maxMemoryBytes: 48 * 2 ** 20, progressCallback: switchLanguage });
+      if (trigger === 'cancel') expect(parse()).toBeNull();
+      else expect(parse).toThrow(failure);
+
+      const tree = parser.parse(tsxSource);
+      expect(tree?.rootNode.toString()).toBe(expected);
+      tree?.delete();
+    },
+  );
 
   it('reports the included ranges after a limited parse', () => {
     const source = 'const first = 1; const second = 2;';
