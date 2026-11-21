@@ -14,11 +14,12 @@
 #include "./error_costs.h"
 #include "./ts_assert.h"
 
-// Each slab, header included, is exactly one 4 KiB malloc request. On macOS, freed blocks of
-// 8 KiB or more stay resident, so with 16-64 KiB slabs the peak footprint of a caller that
-// parses, walks, and drops trees in a loop grew with every cycle; freeing many blocks of at most
-// 4 KiB lets the allocator return the memory. A request just above a size class (e.g.,
-// 4096 + 32 bytes) would also be rounded up to the next class.
+// Each slab, header included, is exactly one 4 KiB malloc request. Observed with the default
+// allocator configuration of macOS 27 on arm64 (it differs, e.g., under MallocLargeCache=0):
+// freed blocks of 8 KiB or more stayed resident, so with 16-64 KiB slabs the peak footprint of
+// a caller that parses, walks, and drops trees in a loop grew with every cycle, while freeing
+// many blocks of at most 4 KiB let the allocator return the memory. A request just above a size
+// class (e.g., 4096 + 32 bytes) would also be rounded up to the next class.
 #define TREE_ARENA_SLAB_BYTES 4096u
 #define TREE_ARENA_SLAB_WORDS ((TREE_ARENA_SLAB_BYTES - sizeof(TreeArenaSlab)) / sizeof(uint64_t))
 #define SUBTREE_HEADER_WORDS (sizeof(SubtreeHeapData) / sizeof(uint64_t))
