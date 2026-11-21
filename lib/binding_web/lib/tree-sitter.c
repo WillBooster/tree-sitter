@@ -147,6 +147,7 @@ extern bool tree_sitter_progress_callback(
 
 extern void ts_parser_abandon_after_alloc_failure(TSParser *parser);
 extern void ts_parser_swap_table_cache(TSParser *self, TSParser *other);
+extern void ts_parser_reserve_table_cache(TSParser *self);
 extern void ts_parser_set_max_operations(TSParser *parser, uint64_t max_operations);
 extern uint64_t ts_parser_last_parse_operations(const TSParser *parser);
 
@@ -336,6 +337,7 @@ TSTree *ts_parser_parse_limited_wasm(
     return NULL;
   }
 
+  ts_parser_reserve_table_cache(self);
   current_parse_budget = budget;
   TSParser *limited_parser = create_limited_parser(self, budget, &parsed);
   TSTree *tree = parse_with_callback(limited_parser, input_buffer, parsed.has_progress_callback);
