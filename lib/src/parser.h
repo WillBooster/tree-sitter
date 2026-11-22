@@ -87,7 +87,8 @@ struct TSLexer {
   /**
    * Returns the input from the lookahead on as code units of `*size` bytes (1 for UTF-8, 2 for UTF-16) in the host's
    * byte order, and sets `*count` to the number of them that `advance_units` may consume, which is 0 where the input
-   * cannot be read this way. The units stay readable until the lexer advances.
+   * cannot be read this way. The units and `count` hold until the next call of `advance`, `advance_units`,
+   * `get_column` or `get_display_column`, each of which may read the input again; peek again after one of them.
    */
   const void *(*peek_units)(const TSLexer *, uint32_t *count, uint32_t *size);
   /**

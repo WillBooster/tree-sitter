@@ -114,7 +114,9 @@ A scanner that passes over long stretches of input can read them without a call 
 `lexer->peek_units(lexer, &count, &size)` returns the input from the lookahead on as code units of `size` bytes (1 for
 UTF-8, 2 for UTF-16) in the host's byte order, and `lexer->advance_units(lexer, n, line_feeds, tail)` consumes the first
 `n` of those `count` units, each of which must be an ASCII character; `line_feeds` is the number of `\n` among them and
-`tail` the number of units after the last `\n`. The units stay readable until the lexer advances.
+`tail` the number of units after the last `\n`. The units and `count` hold until the next call of `advance`,
+`advance_units`, `get_column` or `get_display_column`, each of which may read the input again; peek again after one of
+them.
 
 `count` is 0 wherever the lexer cannot hand out units, so a scanner keeps its path that reads `lexer->lookahead` and
 calls `advance`: at the last character of a chunk or an included range, in an encoding other than UTF-8 and UTF-16 in
