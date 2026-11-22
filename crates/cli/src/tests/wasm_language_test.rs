@@ -403,7 +403,8 @@ fn test_load_wasm_rejects_other_abi_versions() {
             WasmError {
                 kind: WasmErrorKind::Instantiate,
                 message: format!(
-                    "incompatible language ABI version {version:#x}; expected {:#x}",
+                    "incompatible language ABI version {version:#x}; expected {:#x} to {:#x}",
+                    tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
                     tree_sitter::LANGUAGE_VERSION
                 ),
             }

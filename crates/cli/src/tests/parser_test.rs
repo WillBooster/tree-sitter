@@ -1651,7 +1651,9 @@ fn test_languages_with_other_abi_versions_are_rejected() {
         assert_eq!(error, LanguageError::Version(version));
         assert_eq!(
             error.to_string(),
-            format!("Incompatible language version {version:#x}. Expected {LANGUAGE_VERSION:#x}")
+            format!(
+                "Incompatible language version {version:#x}. Expected {MIN_COMPATIBLE_LANGUAGE_VERSION:#x} to {LANGUAGE_VERSION:#x}"
+            )
         );
         assert!(parser.language().is_none());
         assert_eq!(language.name(), None);

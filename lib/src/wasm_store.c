@@ -1593,8 +1593,9 @@ const TSLanguage *ts_wasm_store_load_language(
     wasm_error->kind = TSWasmErrorKindInstantiate;
     format(
       &wasm_error->message,
-      "incompatible language ABI version 0x%x; expected 0x%x",
+      "incompatible language ABI version 0x%x; expected 0x%x to 0x%x",
       abi_version,
+      TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION,
       TREE_SITTER_LANGUAGE_VERSION
     );
     goto error;

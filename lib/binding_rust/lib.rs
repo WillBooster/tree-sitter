@@ -1826,7 +1826,7 @@ impl fmt::Display for LanguageError {
             Self::Version(version) => {
                 write!(
                     f,
-                    "Incompatible language version {version:#x}. Expected {LANGUAGE_VERSION:#x}",
+                    "Incompatible language version {version:#x}. Expected {MIN_COMPATIBLE_LANGUAGE_VERSION:#x} to {LANGUAGE_VERSION:#x}",
                 )
             }
             Self::NotParseable => {
