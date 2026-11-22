@@ -7138,8 +7138,9 @@ void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char 
 static bool member(int32_t c) { return (c >= 'a' && c <= 'z') || c == ' ' || c == '\t' || c == '\n'; }
 bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
     if (!member(lexer->lookahead)) return false;
-    // The run's kind is the parity of the display column after it, which is tracked from here on.
+    // The run's kind holds the parities of the display column and of the column after it, both tracked from here on.
     lexer->get_display_column(lexer, 8);
+    lexer->get_column(lexer);
     bool read = false;
     while (member(lexer->lookahead)) {
         uint32_t count = 0, size = 0;
@@ -7164,7 +7165,7 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
         lexer->advance_units(lexer, length, line_feeds, length - line);
     }
     lexer->mark_end(lexer);
-    lexer->result_symbol = lexer->get_display_column(lexer, 8) & 1;
+    lexer->result_symbol = (lexer->get_display_column(lexer, 8) & 1) | (lexer->get_column(lexer) & 1) << 1;
     return true;
 }
 "#;
@@ -7174,11 +7175,18 @@ fn test_external_scanner_units_match_characters() {
     let grammar = serde_json::json!({
         "name": "scanner_units",
         "extras": [],
-        "externals": [{"type": "SYMBOL", "name": "even_run"}, {"type": "SYMBOL", "name": "odd_run"}],
+        "externals": [
+            {"type": "SYMBOL", "name": "run_a"},
+            {"type": "SYMBOL", "name": "run_b"},
+            {"type": "SYMBOL", "name": "run_c"},
+            {"type": "SYMBOL", "name": "run_d"}
+        ],
         "rules": {
             "program": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
-                {"type": "SYMBOL", "name": "even_run"},
-                {"type": "SYMBOL", "name": "odd_run"},
+                {"type": "SYMBOL", "name": "run_a"},
+                {"type": "SYMBOL", "name": "run_b"},
+                {"type": "SYMBOL", "name": "run_c"},
+                {"type": "SYMBOL", "name": "run_d"},
                 {"type": "SYMBOL", "name": "other"}
             ]}},
             "other": {"type": "PATTERN", "value": "[^a-z \\t\\n]+"}
