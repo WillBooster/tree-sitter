@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 785 -- grammar discovery, compilation, and loading share private Loader state
+// code-gauge-allow-file fileNcss -- grammar discovery, compilation, and loading share private Loader state
 #![cfg_attr(not(any(test, doctest)), doc = include_str!("../README.md"))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 

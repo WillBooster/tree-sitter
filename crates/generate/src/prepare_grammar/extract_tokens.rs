@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 418 -- token extraction and its tests share one module
+// code-gauge-allow-file fileNcss -- token extraction and its tests share one module
 use rustc_hash::FxHashMap;
 
 use serde::{Deserialize, Serialize};

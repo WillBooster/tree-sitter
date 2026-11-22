@@ -289,8 +289,8 @@ impl Generator {
         Ok(())
     }
 
-    // code-gauge-allow functionCognitiveComplexity 22 -- validates profile invariants and permutes parse and lex states together
-    // code-gauge-allow functionNcss 52 -- validates profile invariants and permutes parse and lex states together
+    // code-gauge-allow functionCognitiveComplexity -- validates profile invariants and permutes parse and lex states together
+    // code-gauge-allow functionNcss -- validates profile invariants and permutes parse and lex states together
     fn apply_profile(&mut self) -> RenderResult<()> {
         let Some(profile) = &mut self.profile else {
             return Ok(());
@@ -389,8 +389,8 @@ impl Generator {
         Ok(())
     }
 
-    // code-gauge-allow functionCognitiveComplexity 25 -- derives every per-symbol table the renderer reads, in dependency order
-    // code-gauge-allow functionNcss 59 -- derives every per-symbol table the renderer reads, in dependency order
+    // code-gauge-allow functionCognitiveComplexity -- derives every per-symbol table the renderer reads, in dependency order
+    // code-gauge-allow functionNcss -- derives every per-symbol table the renderer reads, in dependency order
     fn init(&mut self) {
         let mut symbol_identifiers = FxHashSet::default();
         let mut symbol_identifier_suffixes = FxHashMap::default();
@@ -514,7 +514,7 @@ impl Generator {
             .count()
     }
 
-    // code-gauge-allow functionNcss 31 -- computes canonical public symbol mappings across aliases, supertypes, and terminals
+    // code-gauge-allow functionNcss -- computes canonical public symbol mappings across aliases, supertypes, and terminals
     fn init_symbol_map(&mut self) {
         let mut first_symbol_by_metadata = FxHashMap::default();
         let mut first_unaliased_symbol_by_metadata = FxHashMap::default();
@@ -964,8 +964,8 @@ impl Generator {
         add_line!(self, "}};\n");
     }
 
-    // code-gauge-allow functionCognitiveComplexity 20 -- deduplicates field map rows and emits slices and entries together
-    // code-gauge-allow functionNcss 44 -- deduplicates field map rows and emits slices and entries together
+    // code-gauge-allow functionCognitiveComplexity -- deduplicates field map rows and emits slices and entries together
+    // code-gauge-allow functionNcss -- deduplicates field map rows and emits slices and entries together
     fn add_field_sequences(&mut self) {
         let mut flat_field_maps = IndexMap::with_hasher(FxBuildHasher);
         let mut next_flat_field_map_index = 0;
@@ -1041,7 +1041,7 @@ impl Generator {
         add_line!(self, "");
     }
 
-    // code-gauge-allow functionNcss 40 -- resolves aliased and normal subtype sets and emits supertype slices and entries
+    // code-gauge-allow functionNcss -- resolves aliased and normal subtype sets and emits supertype slices and entries
     fn add_supertype_map(&mut self) {
         add_line!(
             self,
@@ -1221,7 +1221,7 @@ impl Generator {
         add_line!(self, "}};\n");
     }
 
-    // code-gauge-allow functionNcss 35 -- chooses between flat and 2D reserved-word tables and emits the smaller representation
+    // code-gauge-allow functionNcss -- chooses between flat and 2D reserved-word tables and emits the smaller representation
     fn add_reserved_word_sets(&mut self) {
         let total = self
             .reserved_word_sets
@@ -2789,7 +2789,7 @@ impl Generator {
     clippy::too_many_arguments,
     reason = "all parameters are required for code generation"
 )]
-// code-gauge-allow functionParameterCount 9 -- public generator entry point takes pre-built grammar components
+// code-gauge-allow functionParameterCount -- public generator entry point takes pre-built grammar components
 pub fn render_c_code(
     name: StrId,
     tables: Tables,

@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 744 -- cohesive LR(1)/GLR parse table builder and conflict resolver
+// code-gauge-allow-file fileNcss -- cohesive LR(1)/GLR parse table builder and conflict resolver
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -482,8 +482,8 @@ pub struct AmbiguousExtraError {
 }
 
 impl std::fmt::Display for ConflictError {
-    // code-gauge-allow functionCognitiveComplexity 20 -- formats conflict lookaheads, aligned interpretations, repetition origins, and resolutions
-    // code-gauge-allow functionNcss 40 -- formats conflict lookaheads, aligned interpretations, repetition origins, and resolutions
+    // code-gauge-allow functionCognitiveComplexity -- formats conflict lookaheads, aligned interpretations, repetition origins, and resolutions
+    // code-gauge-allow functionNcss -- formats conflict lookaheads, aligned interpretations, repetition origins, and resolutions
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         for symbol in &self.symbol_sequence {
             write!(f, "  {symbol}")?;
@@ -662,7 +662,7 @@ impl<'a> ParseTableBuilder<'a> {
         }
     }
 
-    // code-gauge-allow functionNcss 31 -- seeds initial and extra states, drains the LR state queue, and finalizes auxiliary symbols
+    // code-gauge-allow functionNcss -- seeds initial and extra states, drains the LR state queue, and finalizes auxiliary symbols
     fn build(
         mut self,
         diagnostics: &mut Vec<Diagnostic>,

@@ -375,7 +375,7 @@ typedef enum {
   LexerCheckpointMarkEnd,
 } LexerPositionOperation;
 
-// code-gauge-allow functionNcss 37 -- bounds-checks Wasm memory and dispatches all six lexer position and checkpoint operations
+// code-gauge-allow functionNcss -- bounds-checks Wasm memory and dispatches all six lexer position and checkpoint operations
 static wasm_trap_t *callback__lexer_position(
   void *env,
   wasmtime_caller_t *caller,
@@ -753,7 +753,7 @@ static wasmtime_extern_t get_builtin_extern(
   };
 }
 
-// code-gauge-allow functionNcss 52 -- resolves dylink globals, indirect table, linear memory, and WASI/runtime builtins in one table
+// code-gauge-allow functionNcss -- resolves dylink globals, indirect table, linear memory, and WASI/runtime builtins in one table
 static bool ts_wasm_store__provide_builtin_import(
   TSWasmStore *self,
   const wasm_name_t *import_name,
@@ -1939,7 +1939,7 @@ error:
   return NULL;
 }
 
-// code-gauge-allow functionNcss 36 -- prunes deleted language instances and instantiates missing ones in one pass
+// code-gauge-allow functionNcss -- prunes deleted language instances and instantiates missing ones in one pass
 bool ts_wasm_store_add_language(
   TSWasmStore *self,
   const TSLanguage *language,

@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 988 -- GLR graph-structured stack operations share private node and iterator types
+// code-gauge-allow-file fileNcss -- GLR graph-structured stack operations share private node and iterator types
 #include "./alloc.h"
 #include "./language.h"
 #include "./subtree.h"
@@ -431,7 +431,7 @@ static void ts_stack__add_slice(
   array_push(&self->slices, slice);
 }
 
-// code-gauge-allow functionCognitiveComplexity 16 -- walks single-link extra chains while consulting and updating the bounded LRU cache
+// code-gauge-allow functionCognitiveComplexity -- walks single-link extra chains while consulting and updating the bounded LRU cache
 static StackNode *stack__skip_extra_chains(Stack *self, StackNode *node) {
   StackNode *start = node;
   uint32_t cached_index = UINT32_MAX;
@@ -465,7 +465,7 @@ static StackNode *stack__skip_extra_chains(Stack *self, StackNode *node) {
   return node;
 }
 
-// code-gauge-allow functionCognitiveComplexity 16 -- open-addressed hash table resize and candidate grouping stay inline on the hot pop path
+// code-gauge-allow functionCognitiveComplexity -- open-addressed hash table resize and candidate grouping stay inline on the hot pop path
 static void stack__record_reduction(
   ReductionChoices *groups,
   ReductionCandidates *candidates,
@@ -520,7 +520,7 @@ typedef struct {
   bool canceled;
 } StackIterationProgress;
 
-// code-gauge-allow functionParameterCount 8 -- traversal configuration and optional reduction and progress hooks
+// code-gauge-allow functionParameterCount -- traversal configuration and optional reduction and progress hooks
 static StackSliceArray stack__iter(
   Stack *self,
   StackVersion version,
@@ -728,8 +728,8 @@ static StackSliceArray stack__iter(
   return self->slices;
 }
 
-// code-gauge-allow functionCognitiveComplexity 18 -- compares reduction candidates by error cost, precedence, length, and subtree order
-// code-gauge-allow functionNcss 39 -- candidate winner selection and reversed path materialization share local path indices
+// code-gauge-allow functionCognitiveComplexity -- compares reduction candidates by error cost, precedence, length, and subtree order
+// code-gauge-allow functionNcss -- candidate winner selection and reversed path materialization share local path indices
 static SubtreeArray stack__materialize_reduction(
   Stack *self,
   const ReductionPaths *paths,

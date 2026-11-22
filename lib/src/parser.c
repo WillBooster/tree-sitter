@@ -589,8 +589,8 @@ static bool ts_parser__check_lexer_progress(void *payload, unsigned operations) 
   return true;
 }
 
-// code-gauge-allow functionCognitiveComplexity 29 -- coordinates external scanner, internal lexer, error mode, and skipped-error loop
-// code-gauge-allow functionNcss 38 -- coordinates external scanner, internal lexer, error mode, and skipped-error loop
+// code-gauge-allow functionCognitiveComplexity -- coordinates external scanner, internal lexer, error mode, and skipped-error loop
+// code-gauge-allow functionNcss -- coordinates external scanner, internal lexer, error mode, and skipped-error loop
 static LookaheadToken ts_parser__lex(
   TSParser *self,
   StackVersion version,
@@ -1521,7 +1521,7 @@ static bool ts_parser__reduce_in_place(
   return true;
 }
 
-// code-gauge-allow functionParameterCount 8 -- the parse loop passes every property of the reduction action
+// code-gauge-allow functionParameterCount -- the parse loop passes every property of the reduction action
 static StackVersion ts_parser__reduce(
   TSParser *self,
   StackVersion version,

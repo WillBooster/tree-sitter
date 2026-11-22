@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 652 -- CLI grammar scaffolding templates and config writers stay in one module
+// code-gauge-allow-file fileNcss -- CLI grammar scaffolding templates and config writers stay in one module
 pub mod rust_version;
 mod zig;
 

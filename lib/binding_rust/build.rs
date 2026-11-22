@@ -74,7 +74,7 @@ fn configure_wasm_build(config: &mut cc::Build) {
 }
 
 #[cfg(feature = "bindgen")]
-// code-gauge-allow duplicateLines 16 -- mirrors xtask bindgen configuration without cross-crate build-script coupling
+// code-gauge-allow duplicateLines -- mirrors xtask bindgen configuration without cross-crate build-script coupling
 fn generate_bindings(out_dir: &std::path::Path) {
     use std::str::FromStr;
 
