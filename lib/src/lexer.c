@@ -581,6 +581,16 @@ static void ts_lexer__advance_units(TSLexer *_self, uint32_t count, uint32_t lin
   ts_assert(self->current_position.bytes < self->ascii_limit);
   ts_assert(count <= (self->ascii_limit - self->current_position.bytes + stride - 1) / stride);
   ts_assert(!line_feeds || (tail <= count && line_feeds <= count - tail));
+  if (self->display_column_data.valid) {
+    // Tabs and line breaks among the units move the display column as they do one character at a time.
+    const char *units = self->chunk + (self->current_position.bytes - self->chunk_start);
+    for (uint32_t i = 0; i < count; i++) {
+      uint16_t unit = (uint8_t)units[i * stride];
+      if (stride == 2) memcpy(&unit, units + i * stride, sizeof(unit));
+      self->data.lookahead = unit;
+      ts_lexer__advance_display_column(self);
+    }
+  }
   if (line_feeds) {
     self->current_position.extent.row += line_feeds;
     self->current_position.extent.column = tail * stride;
@@ -590,8 +600,6 @@ static void ts_lexer__advance_units(TSLexer *_self, uint32_t count, uint32_t lin
     self->current_position.extent.column += count * stride;
   }
   self->current_position.bytes += count * stride;
-  // The units may hold tabs, so the next query replays the display column from its last checkpoint.
-  self->display_column_data.valid = false;
   self->advance_count += count;
   ts_lexer_get_lookahead(self);
 }
