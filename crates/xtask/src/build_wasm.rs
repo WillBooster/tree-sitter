@@ -11,7 +11,10 @@ use std::{
 use anyhow::{Result, anyhow, ensure};
 use etcetera::BaseStrategy as _;
 use indoc::indoc;
-use notify::{EventKind, RecursiveMode};
+use notify::{
+    EventKind, RecursiveMode,
+    event::{AccessKind, AccessMode},
+};
 use notify_debouncer_full::new_debouncer;
 use regex::Regex;
 use tree_sitter_loader::{IoError, LoaderError, WasmToolError};

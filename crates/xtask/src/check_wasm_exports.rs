@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use notify::{EventKind, RecursiveMode};
+use notify::{
+    EventKind, RecursiveMode,
+    event::{AccessKind, AccessMode},
+};
 use notify_debouncer_full::new_debouncer;
 
 use crate::{CheckWasmExports, bail_on_err, watch_wasm};
@@ -64,7 +67,7 @@ fn check_wasm_exports() -> Result<()> {
             "Name",
         ])
         .output()
-        .map_err(|error| anyhow!("Failed to run wasm-objdump: {error}"))?;
+        .expect("Failed to run wasm-objdump");
     bail_on_err(&wasm_objdump, "Failed to run wasm-objdump")?;
 
     wasm_exports.extend(
@@ -103,13 +106,6 @@ fn check_wasm_exports() -> Result<()> {
 
     let exports = export_reader
         .filter_map(|line| line.split_whitespace().nth(2).map(String::from))
-        .map(|symbol| {
-            if cfg!(target_os = "macos") {
-                symbol.strip_prefix('_').unwrap_or(&symbol).to_owned()
-            } else {
-                symbol
-            }
-        })
         .filter(|symbol| !EXCLUDES.contains(&symbol.as_str()))
         .collect::<HashSet<_>>();
 

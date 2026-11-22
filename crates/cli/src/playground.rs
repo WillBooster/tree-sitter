@@ -12,10 +12,8 @@ use tiny_http::{Header, Response, Server};
 
 use super::wasm;
 
-const WEB_JS_URL: &str =
-    "https://cdn.jsdelivr.net/npm/@willbooster/web-tree-sitter@23.0.4/web-tree-sitter.js";
-const WEB_WASM_URL: &str =
-    "https://cdn.jsdelivr.net/npm/@willbooster/web-tree-sitter@23.0.4/web-tree-sitter.wasm";
+const UPSTREAM_WEB_JS_URL: &str = "https://tree-sitter.github.io/web-tree-sitter.js";
+const UPSTREAM_WEB_WASM_URL: &str = "https://tree-sitter.github.io/web-tree-sitter.wasm";
 
 macro_rules! optional_resource {
     ($name:tt, $path:tt) => {
@@ -66,7 +64,7 @@ pub fn export(grammar_path: &Path, export_path: &Path) -> Result<()> {
     if !has_local_lib_js {
         assets.main_html = assets.main_html.replace(
             "import * as TreeSitter from './web-tree-sitter.js';",
-            &format!("import * as TreeSitter from '{WEB_JS_URL}';"),
+            "import * as TreeSitter from 'https://tree-sitter.github.io/web-tree-sitter.js';",
         );
     }
 
@@ -117,9 +115,11 @@ pub fn serve(grammar_path: &Path, open_in_browser: bool) -> Result<()> {
             "/" => response(&main_html, &html_header),
             "/tree-sitter-parser.wasm" => response(&language_wasm, &wasm_header),
             "/playground.js" => response(&assets.playground_js, &js_header),
-            "/web-tree-sitter.js" => asset_or_redirect(&assets.lib_js, &js_header, WEB_JS_URL),
+            "/web-tree-sitter.js" => {
+                asset_or_redirect(&assets.lib_js, &js_header, UPSTREAM_WEB_JS_URL)
+            }
             "/web-tree-sitter.wasm" => {
-                asset_or_redirect(&assets.lib_wasm, &wasm_header, WEB_WASM_URL)
+                asset_or_redirect(&assets.lib_wasm, &wasm_header, UPSTREAM_WEB_WASM_URL)
             }
             _ => response(b"Not found", &html_header).with_status_code(404),
         };
