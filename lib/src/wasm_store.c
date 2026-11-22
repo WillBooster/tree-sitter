@@ -188,6 +188,8 @@ typedef struct {
   int32_t get_display_column;
   int32_t get_checkpoint;
   int32_t get_mark_end_checkpoint;
+  int32_t peek_units;
+  int32_t advance_units;
 } LexerInWasmMemory;
 
 // Linear memory layout:
@@ -474,6 +476,36 @@ static wasm_trap_t *callback__lexer_get_mark_end_checkpoint(
   size_t len
 ) {
   return callback__lexer_position(env, caller, args, LexerCheckpointMarkEnd);
+}
+
+// The input lives outside Wasm memory, so a scanner in Wasm gets no units and reads characters one at a time.
+static wasm_trap_t *callback__lexer_peek_units(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  TSWasmStore *store = env;
+  wasmtime_context_t *context = wasmtime_caller_context(caller);
+  uint32_t address = args[1].i32;
+  size_t size = wasmtime_memory_data_size(context, &store->memory);
+  const uint32_t count = 0;
+  if (size < sizeof(count) || address > size - sizeof(count)) {
+    const char message[] = "Lexer unit count is outside Wasm memory";
+    return wasmtime_trap_new(message, sizeof(message) - 1);
+  }
+  memcpy(wasmtime_memory_data(context, &store->memory) + address, &count, sizeof(count));
+  args[0].i32 = 0;
+  return NULL;
+}
+
+static wasm_trap_t *callback__lexer_advance_units(
+  void *env,
+  wasmtime_caller_t *caller,
+  wasmtime_val_raw_t *args,
+  size_t len
+) {
+  return NULL;
 }
 
 static wasm_trap_t *callback__lexer_get_display_column(
@@ -888,6 +920,16 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
       &lexer.get_mark_end_checkpoint,
       callback__lexer_get_mark_end_checkpoint,
       wasm_functype_new_2_0(wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.peek_units,
+      callback__lexer_peek_units,
+      wasm_functype_new_3_1(wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32())
+    },
+    {
+      &lexer.advance_units,
+      callback__lexer_advance_units,
+      wasm_functype_new_4_0(wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32())
     },
     {
       &lexer.get_display_column,

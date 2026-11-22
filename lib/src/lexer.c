@@ -1,6 +1,7 @@
 // code-gauge-allow-file fileNcss -- the lexer keeps its position, column, and ASCII fast-path state private to this file
 #include "./length.h"
 #include "./lexer.h"
+#include "./ts_assert.h"
 #include "./unicode.h"
 
 #include "tree_sitter/api.h"
@@ -548,6 +549,53 @@ static void ts_lexer__select_advance(Lexer *self) {
     ts_lexer__advance;
 }
 
+static bool ts_lexer__encoding_is_native(TSInputEncoding encoding) {
+  const uint16_t one = 1;
+  bool little_endian = *(const uint8_t *)&one == 1;
+  return encoding == TSInputEncodingUTF8 ||
+    encoding == (little_endian ? TSInputEncodingUTF16LE : TSInputEncodingUTF16BE);
+}
+
+static const void *ts_lexer__peek_units(const TSLexer *_self, uint32_t *count, uint32_t *size) {
+  const Lexer *self = (const Lexer *)_self;
+  uint32_t position = self->current_position.bytes;
+  uint32_t stride = self->ascii_stride;
+  *size = stride;
+  *count = 0;
+  // The guarded advance and the log see characters one at a time, and the display column counts tabs.
+  if (
+    position >= self->ascii_limit ||
+    !ts_lexer__encoding_is_native(self->input.encoding) ||
+    self->saved_advance ||
+    self->logger.log ||
+    self->display_column_data.valid
+  ) return NULL;
+  // `ascii_limit` leaves the last unit of the chunk out, so the lookahead after the units is in the chunk too.
+  *count = (self->ascii_limit - position + stride - 1) / stride;
+  return self->chunk + (position - self->chunk_start);
+}
+
+static void ts_lexer__advance_units(TSLexer *_self, uint32_t count, uint32_t line_feeds, uint32_t tail) {
+  Lexer *self = (Lexer *)_self;
+  if (!count) return;
+  uint32_t stride = self->ascii_stride;
+  ts_assert(self->current_position.bytes < self->ascii_limit);
+  ts_assert(count <= (self->ascii_limit - self->current_position.bytes + stride - 1) / stride);
+  ts_assert(tail <= count && (line_feeds ? line_feeds <= count - tail : tail == count));
+  if (line_feeds) {
+    self->current_position.extent.row += line_feeds;
+    self->current_position.extent.column = tail * stride;
+    ts_lexer__set_column_data(self, tail);
+  } else {
+    if (self->column_data.valid) self->column_data.value += count;
+    self->current_position.extent.column += count * stride;
+  }
+  self->current_position.bytes += count * stride;
+  self->advance_count += count;
+  self->advanced_units = true;
+  ts_lexer_get_lookahead(self);
+}
+
 static void ts_lexer__get_position(const TSLexer *_self, TSLexerPosition *position) {
   const Lexer *self = (const Lexer *)_self;
   *position = (TSLexerPosition) {self->current_position.bytes, self->current_position.extent.row, self->current_position.extent.column};
@@ -704,6 +752,8 @@ void ts_lexer_init(Lexer *self) {
       .get_display_column = ts_lexer__get_display_column,
       .get_checkpoint = ts_lexer__get_checkpoint,
       .get_mark_end_checkpoint = ts_lexer__get_mark_end_checkpoint,
+      .peek_units = ts_lexer__peek_units,
+      .advance_units = ts_lexer__advance_units,
       .is_at_included_range_start = ts_lexer__is_at_included_range_start,
       .eof = ts_lexer__eof,
       .log = ts_lexer__log,

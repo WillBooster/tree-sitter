@@ -7105,6 +7105,152 @@ fn test_parsing_with_scanner_logging() {
     assert!(found);
 }
 
+const UNIT_SCANNER: &str = r#"
+#include "tree_sitter/parser.h"
+#include <string.h>
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+static bool member(int32_t c) { return (c >= 'a' && c <= 'z') || c == ' ' || c == '\n'; }
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+    if (!member(lexer->lookahead)) return false;
+    while (member(lexer->lookahead)) {
+        uint32_t count = 0, size = 0;
+        const char *units = READ_UNITS ? lexer->peek_units(lexer, &count, &size) : NULL;
+        if (!count) {
+            lexer->advance(lexer, false);
+            continue;
+        }
+        uint32_t length = 0, line_feeds = 0, line = 0;
+        for (; length < count; length++) {
+            uint16_t unit = (uint8_t)units[length];
+            if (size == 2) memcpy(&unit, units + 2 * length, 2);
+            if (!member(unit)) break;
+            if (unit == '\n') {
+                line_feeds++;
+                line = length + 1;
+            }
+        }
+        lexer->advance_units(lexer, length, line_feeds, length - line);
+    }
+    lexer->result_symbol = 0;
+    return true;
+}
+"#;
+
+#[test]
+fn test_external_scanner_units_match_characters() {
+    let grammar = serde_json::json!({
+        "name": "scanner_units",
+        "extras": [],
+        "externals": [{"type": "SYMBOL", "name": "run"}],
+        "rules": {
+            "program": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "run"},
+                {"type": "SYMBOL", "name": "other"}
+            ]}},
+            "other": {"type": "PATTERN", "value": "[^a-z \\n]+"}
+        }
+    });
+    let (_, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let mut parsers = ["1", "0"].map(|read_units| {
+        let name = format!("scanner_units_{read_units}");
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language_with_scanner(
+                &name,
+                &parser_code.replace("scanner_units", &name),
+                &UNIT_SCANNER.replace("READ_UNITS", read_units),
+            ))
+            .unwrap();
+        parser
+    });
+    let nodes = |tree: &Tree| {
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        std::iter::once(root)
+            .chain(root.children(&mut cursor))
+            .map(|node| (node.kind_id(), node.range()))
+            .collect::<Vec<_>>()
+    };
+
+    let long = format!(
+        "{}\n{}X\n\n{}",
+        "ab ".repeat(40),
+        "c".repeat(70),
+        "de\n".repeat(30)
+    );
+    for source in [
+        "abc",
+        "ab\ncd\n\nef",
+        "ab cd+EF gh\nij\n",
+        "ab\r\ncd λ ef\n😀gh\n",
+        "\u{feff}ab\ncd",
+        long.as_str(),
+    ] {
+        let utf16: Vec<u16> = source.encode_utf16().collect();
+        let le: Vec<u16> = utf16.iter().map(|unit| unit.to_le()).collect();
+        let be: Vec<u16> = utf16.iter().map(|unit| unit.to_be()).collect();
+        for chunk in [usize::MAX, 1, 2, 3, 7, 64] {
+            let trees = parsers.each_mut().map(|parser| {
+                let utf8 = parser
+                    .parse_with_options(
+                        &mut |offset, _| {
+                            &source.as_bytes()
+                                [offset..source.len().min(offset.saturating_add(chunk))]
+                        },
+                        None,
+                    )
+                    .unwrap();
+                let [le, be] = [(&le, true), (&be, false)].map(|(units, little_endian)| {
+                    let mut read = |offset: usize, _| {
+                        &units[offset..units.len().min(offset.saturating_add(chunk))]
+                    };
+                    if little_endian {
+                        parser.parse_utf16_le_with_options(&mut read, None)
+                    } else {
+                        parser.parse_utf16_be_with_options(&mut read, None)
+                    }
+                    .unwrap()
+                });
+                [utf8, le, be].map(|tree| nodes(&tree))
+            });
+            let characters = trees[1].clone();
+            assert_eq!(trees[0], characters, "{source:?} in chunks of {chunk}");
+            assert!(characters[0].len() > 1 && characters[0][0].1.end_byte == source.len());
+        }
+
+        let gap = source.len() / 2;
+        if source.is_char_boundary(gap) && gap > 0 {
+            let point = |offset: usize| match source[..offset].rfind('\n') {
+                Some(newline) => {
+                    Point::new(source[..offset].matches('\n').count(), offset - newline - 1)
+                }
+                None => Point::new(0, offset),
+            };
+            let range = |start_byte: usize, end_byte: usize| Range {
+                start_byte,
+                end_byte,
+                start_point: point(start_byte),
+                end_point: point(end_byte),
+            };
+            let trees = parsers.each_mut().map(|parser| {
+                parser
+                    .set_included_ranges(&[range(0, gap - gap.min(1)), range(gap, source.len())])
+                    .unwrap();
+                let tree = parser.parse(source).unwrap();
+                parser.set_included_ranges(&[]).unwrap();
+                nodes(&tree)
+            });
+            assert_eq!(
+                trees[0], trees[1],
+                "{source:?} with a gap before byte {gap}"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_external_scanner_display_columns() {
     for mut parser in display_column_parsers() {

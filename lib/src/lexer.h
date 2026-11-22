@@ -123,6 +123,7 @@ typedef struct {
   bool aborted;
   bool has_decode_error;
   bool token_has_decode_error;
+  bool advanced_units;
   bool (*check_progress)(void *payload, unsigned operations);
   void *progress_payload;
   void (*saved_advance)(TSLexer *, bool);
@@ -208,6 +209,7 @@ static inline void ts_lexer_finish_fast(Lexer *self) {
 }
 
 static inline void ts_lexer_begin_external_scan(Lexer *self) {
+  self->advanced_units = false;
   if (TS_UNLIKELY(self->ext_eof_guard.active)) {
     ts_lexer_arm_ext_eof_guard(self);
   }
@@ -219,6 +221,7 @@ static inline void ts_lexer_end_external_scan(Lexer *self, Length start_pos, boo
     self->saved_advance = NULL;
   } else if (TS_UNLIKELY(
     !self->ext_eof_guard.checked &&
+    !self->advanced_units &&
     self->current_included_range_index == self->included_range_count &&
     self->current_position.bytes > start_pos.bytes &&
     self->current_position.bytes - start_pos.bytes > 256u &&

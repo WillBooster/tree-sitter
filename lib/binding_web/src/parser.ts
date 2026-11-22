@@ -94,7 +94,8 @@ export let LANGUAGE_VERSION: number;
 
 /**
  * The earliest ABI version that is supported by the current version of the
- * library.
+ * library. Scanners of the latest version may read the input in units, which
+ * earlier libraries do not offer.
  */
 export let MIN_COMPATIBLE_VERSION: number;
 
