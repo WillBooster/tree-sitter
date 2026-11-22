@@ -103,6 +103,13 @@ fn check_wasm_exports() -> Result<()> {
 
     let exports = export_reader
         .filter_map(|line| line.split_whitespace().nth(2).map(String::from))
+        .map(|symbol| {
+            if cfg!(target_os = "macos") {
+                symbol.strip_prefix('_').unwrap_or(&symbol).to_owned()
+            } else {
+                symbol
+            }
+        })
         .filter(|symbol| !EXCLUDES.contains(&symbol.as_str()))
         .collect::<HashSet<_>>();
 
