@@ -10,8 +10,8 @@ use std::{
 };
 
 use tree_sitter::{
-    Decode, IncludedRangesError, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
-    ParseState, Parser, Point, Range, Tree,
+    Decode, IncludedRangesError, LANGUAGE_VERSION, LanguageError, LogType,
+    MIN_COMPATIBLE_LANGUAGE_VERSION, ParseOptions, ParseState, Parser, Point, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -1620,7 +1620,28 @@ fn test_languages_with_other_abi_versions_are_rejected() {
     let define = format!("#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}\n");
     assert!(code.contains(&define));
     let mut parser = Parser::new();
-    for version in [13, 15, 16, LANGUAGE_VERSION + 1] {
+    let earliest = get_test_language_with_header(
+        &name,
+        &code.replace(
+            &define,
+            &format!("#define LANGUAGE_VERSION {MIN_COMPATIBLE_LANGUAGE_VERSION}\n"),
+        ),
+        tree_sitter_generate::PARSER_HEADER,
+    );
+    let [earliest_tree, supported_tree] = [&earliest, &supported].map(|language| {
+        let mut parser = Parser::new();
+        parser.set_language(language).unwrap();
+        parser.parse("x").unwrap().root_node().to_sexp()
+    });
+    assert_eq!(earliest_tree, supported_tree);
+    assert_eq!(earliest.name(), Some("other_abi_versions"));
+    for version in [
+        13,
+        15,
+        16,
+        MIN_COMPATIBLE_LANGUAGE_VERSION - 1,
+        LANGUAGE_VERSION + 1,
+    ] {
         let language = get_test_language_with_header(
             &name,
             &code.replace(&define, &format!("#define LANGUAGE_VERSION {version}\n")),

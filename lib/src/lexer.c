@@ -593,7 +593,6 @@ static void ts_lexer__advance_units(TSLexer *_self, uint32_t count, uint32_t lin
   // The units may hold tabs, so the next query replays the display column from its last checkpoint.
   self->display_column_data.valid = false;
   self->advance_count += count;
-  self->advanced_units = true;
   ts_lexer_get_lookahead(self);
 }
 
