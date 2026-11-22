@@ -8,10 +8,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use notify::{
-    EventKind, RecursiveMode,
-    event::{AccessKind, AccessMode},
-};
+use notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::new_debouncer;
 
 use crate::{CheckWasmExports, bail_on_err, watch_wasm};
@@ -67,7 +64,7 @@ fn check_wasm_exports() -> Result<()> {
             "Name",
         ])
         .output()
-        .expect("Failed to run wasm-objdump");
+        .map_err(|error| anyhow!("Failed to run wasm-objdump: {error}"))?;
     bail_on_err(&wasm_objdump, "Failed to run wasm-objdump")?;
 
     wasm_exports.extend(
