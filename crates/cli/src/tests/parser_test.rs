@@ -7115,13 +7115,17 @@ void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char 
 static bool member(int32_t c) { return (c >= 'a' && c <= 'z') || c == ' ' || c == '\n'; }
 bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
     if (!member(lexer->lookahead)) return false;
+    bool read = false;
     while (member(lexer->lookahead)) {
         uint32_t count = 0, size = 0;
         const char *units = READ_UNITS ? lexer->peek_units(lexer, &count, &size) : NULL;
         if (!count) {
+            // With READ_UNITS 2, a run that starts without units is no token.
+            if (READ_UNITS == 2 && !read) return false;
             lexer->advance(lexer, false);
             continue;
         }
+        read = true;
         uint32_t length = 0, line_feeds = 0, line = 0;
         for (; length < count; length++) {
             uint16_t unit = (uint8_t)units[length];
@@ -7154,7 +7158,7 @@ fn test_external_scanner_units_match_characters() {
         }
     });
     let (_, parser_code) = generate_parser(&grammar.to_string()).unwrap();
-    let mut parsers = ["1", "0"].map(|read_units| {
+    let [mut required, mut parsers @ ..] = ["2", "1", "0"].map(|read_units| {
         let name = format!("scanner_units_{read_units}");
         let mut parser = Parser::new();
         parser
@@ -7166,6 +7170,25 @@ fn test_external_scanner_units_match_characters() {
             .unwrap();
         parser
     });
+    // Contiguous ASCII in UTF-8 and in UTF-16 of the host's byte order is handed out in units.
+    let ascii = "abc def\nghi";
+    let native: Vec<u16> = ascii.encode_utf16().collect();
+    for tree in [
+        required.parse(ascii),
+        if cfg!(target_endian = "little") {
+            required.parse_utf16_le(&native)
+        } else {
+            required.parse_utf16_be(&native)
+        },
+    ] {
+        let tree = tree.unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "{}",
+            tree.root_node().to_sexp()
+        );
+    }
+
     let nodes = |tree: &Tree| {
         let root = tree.root_node();
         let mut cursor = root.walk();
