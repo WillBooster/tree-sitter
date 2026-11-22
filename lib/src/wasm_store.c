@@ -499,15 +499,6 @@ static wasm_trap_t *callback__lexer_peek_units(
   return NULL;
 }
 
-static wasm_trap_t *callback__lexer_advance_units(
-  void *env,
-  wasmtime_caller_t *caller,
-  wasmtime_val_raw_t *args,
-  size_t len
-) {
-  return NULL;
-}
-
 static wasm_trap_t *callback__lexer_get_display_column(
   void *env,
   wasmtime_caller_t *caller,
@@ -928,7 +919,7 @@ TSWasmStore *ts_wasm_store_new(TSWasmEngine *engine, TSWasmError *wasm_error) {
     },
     {
       &lexer.advance_units,
-      callback__lexer_advance_units,
+      callback__noop,
       wasm_functype_new_4_0(wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32(), wasm_valtype_new_i32())
     },
     {
