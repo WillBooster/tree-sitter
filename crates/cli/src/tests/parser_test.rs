@@ -7140,9 +7140,9 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
     while (member(lexer->lookahead)) {
         uint32_t count = 0, size = 0;
         const char *units = READ_UNITS ? lexer->peek_units(lexer, &count, &size) : NULL;
+        // With READ_UNITS 2, a run is a token only when its first peek hands out all of a ten-unit run.
+        if (READ_UNITS == 2 && !read && count < 10) return false;
         if (!count) {
-            // With READ_UNITS 2, a run that starts without units is no token.
-            if (READ_UNITS == 2 && !read) return false;
             lexer->advance(lexer, false);
             continue;
         }
@@ -7191,7 +7191,7 @@ fn test_external_scanner_units_match_characters() {
             .unwrap();
         parser
     });
-    // Contiguous ASCII in UTF-8 and in UTF-16 of the host's byte order is handed out in units.
+    // Contiguous ASCII in UTF-8 and in UTF-16 of the host's byte order is handed out in units, all but the last one.
     let ascii = "abc def\nghi";
     let native: Vec<u16> = ascii.encode_utf16().collect();
     for tree in [
