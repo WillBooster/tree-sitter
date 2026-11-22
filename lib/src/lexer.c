@@ -562,13 +562,12 @@ static const void *ts_lexer__peek_units(const TSLexer *_self, uint32_t *count, u
   uint32_t stride = self->ascii_stride;
   *size = stride;
   *count = 0;
-  // The guarded advance and the log see characters one at a time, and the display column counts tabs.
+  // The guarded advance and the log see characters one at a time.
   if (
     position >= self->ascii_limit ||
     !ts_lexer__encoding_is_native(self->input.encoding) ||
     self->saved_advance ||
-    self->logger.log ||
-    self->display_column_data.valid
+    self->logger.log
   ) return NULL;
   // `ascii_limit` leaves the last unit of the chunk out, so the lookahead after the units is in the chunk too.
   *count = (self->ascii_limit - position + stride - 1) / stride;
@@ -591,6 +590,8 @@ static void ts_lexer__advance_units(TSLexer *_self, uint32_t count, uint32_t lin
     self->current_position.extent.column += count * stride;
   }
   self->current_position.bytes += count * stride;
+  // The units may hold tabs, so the next query replays the display column from its last checkpoint.
+  self->display_column_data.valid = false;
   self->advance_count += count;
   self->advanced_units = true;
   ts_lexer_get_lookahead(self);
