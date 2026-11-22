@@ -93,7 +93,8 @@ struct TSLexer {
   const void *(*peek_units)(const TSLexer *, uint32_t *count, uint32_t *size);
   /**
    * Consumes the next `count` units that `peek_units` returned, each of which must be an ASCII character.
-   * `line_feeds` is the number of `\n` among them and `tail` the number of units after the last `\n`.
+   * `line_feeds` is the number of `\n` among them and `tail` the number of units after the last `\n`, which is
+   * not read when there is none.
    */
   void (*advance_units)(TSLexer *, uint32_t count, uint32_t line_feeds, uint32_t tail);
 };

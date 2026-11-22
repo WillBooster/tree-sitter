@@ -580,7 +580,7 @@ static void ts_lexer__advance_units(TSLexer *_self, uint32_t count, uint32_t lin
   uint32_t stride = self->ascii_stride;
   ts_assert(self->current_position.bytes < self->ascii_limit);
   ts_assert(count <= (self->ascii_limit - self->current_position.bytes + stride - 1) / stride);
-  ts_assert(tail <= count && (line_feeds ? line_feeds <= count - tail : tail == count));
+  ts_assert(!line_feeds || (tail <= count && line_feeds <= count - tail));
   if (line_feeds) {
     self->current_position.extent.row += line_feeds;
     self->current_position.extent.column = tail * stride;
