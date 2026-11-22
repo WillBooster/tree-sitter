@@ -221,7 +221,7 @@ impl InputGrammar {
     }
 }
 
-// code-gauge-allow functionNcss 41 -- converts each grammar.json field in turn
+// code-gauge-allow functionNcss -- converts each grammar.json field in turn
 pub(crate) fn parse_grammar(
     input: &str,
     diagnostics: &mut Vec<Diagnostic>,

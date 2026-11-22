@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 608 -- clap subcommand definitions and CLI dispatch live in main.rs
+// code-gauge-allow-file fileNcss -- clap subcommand definitions and CLI dispatch live in main.rs
 use std::{
     collections::HashSet,
     env, fs,

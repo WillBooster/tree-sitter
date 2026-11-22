@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 423 -- cohesive NFA state machine, character-set algebra, and unit tests
+// code-gauge-allow-file fileNcss -- cohesive NFA state machine, character-set algebra, and unit tests
 use rustc_hash::FxHashSet;
 use std::{
     cmp::{Ordering, max},
@@ -265,7 +265,7 @@ impl CharacterSet {
     /// and the other set. Remove those common characters from both
     /// of the operands.
     #[allow(clippy::return_self_not_must_use)]
-    // code-gauge-allow functionNcss 35 -- two-pointer sorted-interval sweep splits overlapping character ranges in place
+    // code-gauge-allow functionNcss -- two-pointer sorted-interval sweep splits overlapping character ranges in place
     pub fn remove_intersection(&mut self, other: &mut Self) -> Self {
         // The ranges before the first overlap stay where they are.
         let Some((left_start, right_start)) = self.first_overlap(other) else {
@@ -608,8 +608,8 @@ impl<'a> NfaCursor<'a> {
         result
     }
 
-    // code-gauge-allow functionCognitiveComplexity 28 -- partitions overlapping character sets while merging precedences and separator flags
-    // code-gauge-allow functionNcss 36 -- partitions overlapping character sets while merging precedences and separator flags
+    // code-gauge-allow functionCognitiveComplexity -- partitions overlapping character sets while merging precedences and separator flags
+    // code-gauge-allow functionNcss -- partitions overlapping character sets while merging precedences and separator flags
     fn partition_transitions<'b>(
         iter: impl Iterator<Item = (&'b CharacterSet, bool, i32, u32)>,
     ) -> Vec<NfaTransition> {

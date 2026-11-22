@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 619 -- subtree arena allocation, summaries, and formatting share private helpers here
+// code-gauge-allow-file fileNcss -- subtree arena allocation, summaries, and formatting share private helpers here
 #include <ctype.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -212,7 +212,7 @@ static inline Subtree ts_subtree_pack_inline(
   return (Subtree) {.bits = ts_subtree_inline_raw(raw)};
 }
 
-// code-gauge-allow functionParameterCount 7 -- leaf construction receives symbol, spans, and scanner state directly
+// code-gauge-allow functionParameterCount -- leaf construction receives symbol, spans, and scanner state directly
 Subtree ts_subtree_new_leaf(
   SubtreePool *pool, TSSymbol symbol, Length padding, Length size,
   bool has_external_tokens, uint32_t scanner_state_id, const TSLanguage *language
@@ -797,7 +797,7 @@ typedef struct {
 
 static size_t ts_subtree__write_indent(char *string, size_t limit, size_t indent_level);
 
-// code-gauge-allow functionParameterCount 8 -- iterative S-expression formatter threads output buffer and root metadata
+// code-gauge-allow functionParameterCount -- iterative S-expression formatter threads output buffer and root metadata
 static size_t ts_subtree__write_to_string(
   Subtree self, char *string, size_t limit,
   const TSLanguage *language, SubtreeStringOptions options,

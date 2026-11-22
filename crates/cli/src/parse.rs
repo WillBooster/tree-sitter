@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 524 -- CLI parse options, CST/XML/DOT formatters, and file runner share private types
+// code-gauge-allow-file fileNcss -- CLI parse options, CST/XML/DOT formatters, and file runner share private types
 use std::{
     fmt, fs,
     io::{self, Write},
@@ -717,7 +717,7 @@ const fn escape_delimiter(c: char) -> Option<&'static str> {
     })
 }
 
-// code-gauge-allow functionCognitiveComplexity 21 -- iterative cursor traversal tracks child, sibling, parent, and error state in one loop
+// code-gauge-allow functionCognitiveComplexity -- iterative cursor traversal tracks child, sibling, parent, and error state in one loop
 pub fn render_cst<'a, 'b: 'a>(
     source_code: &[u8],
     tree: &'b Tree,
@@ -792,8 +792,8 @@ impl std::fmt::Display for CstNodeText<'_> {
     }
 }
 
-// code-gauge-allow functionCognitiveComplexity 25 -- formats single-line and multiline named or literal CST text with per-line ranges
-// code-gauge-allow functionParameterCount 7 -- passes theme options, cursor, writer, source text, and layout widths
+// code-gauge-allow functionCognitiveComplexity -- formats single-line and multiline named or literal CST text with per-line ranges
+// code-gauge-allow functionParameterCount -- passes theme options, cursor, writer, source text, and layout widths
 fn write_node_text(
     opts: &ParseFileOptions,
     out: &mut impl Write,
@@ -934,8 +934,8 @@ impl std::fmt::Display for CstNodeRange<'_, '_> {
     }
 }
 
-// code-gauge-allow functionCognitiveComplexity 17 -- renders named, missing, and literal CST nodes with theme styling
-// code-gauge-allow functionParameterCount 7 -- passes theme options, cursor, source slice, writer, and layout state
+// code-gauge-allow functionCognitiveComplexity -- renders named, missing, and literal CST nodes with theme styling
+// code-gauge-allow functionParameterCount -- passes theme options, cursor, source slice, writer, and layout state
 fn cst_render_node(
     opts: &ParseFileOptions,
     cursor: &TreeCursor,

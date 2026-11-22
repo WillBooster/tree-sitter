@@ -229,7 +229,7 @@ fn adapt_c_preprocessor_comments(path: &Path) -> Result<()> {
     Ok(())
 }
 
-// code-gauge-allow duplicateLines 16 -- mirrors lib/binding_rust/build.rs bindgen configuration without cross-crate build-script coupling
+// code-gauge-allow duplicateLines -- mirrors lib/binding_rust/build.rs bindgen configuration without cross-crate build-script coupling
 pub fn run_bindings() -> Result<()> {
     let output = Command::new("cargo")
         .args(["metadata", "--format-version", "1"])

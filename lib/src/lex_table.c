@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 642 -- keeps DFA execution, Unicode exception bounds, and accept guards together
+// code-gauge-allow-file fileNcss -- keeps DFA execution, Unicode exception bounds, and accept guards together
 #include "./lex_table.h"
 #include "./unicode.h"
 

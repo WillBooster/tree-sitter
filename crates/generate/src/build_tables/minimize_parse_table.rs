@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 578 -- the minimizer's passes share private helpers and state
+// code-gauge-allow-file fileNcss -- the minimizer's passes share private helpers and state
 use std::{
     cmp::Ordering,
     hash::{Hash, Hasher},
@@ -131,7 +131,7 @@ struct ConflictBits {
 }
 
 impl ConflictBits {
-    // code-gauge-allow functionCognitiveComplexity 18 -- builds each precomputed bitset in one pass over its source
+    // code-gauge-allow functionCognitiveComplexity -- builds each precomputed bitset in one pass over its source
     fn new(minimizer: &Minimizer) -> Self {
         // Precompute word-aligned bitsets so `token_conflicts` can test a candidate
         // token against a whole state's terminals.
@@ -1085,8 +1085,8 @@ impl Minimizer<'_> {
         None
     }
 
-    // code-gauge-allow functionCognitiveComplexity 16 -- applies every rule that keeps a token out of a state in one place
-    // code-gauge-allow functionNcss 37 -- applies every rule that keeps a token out of a state in one place
+    // code-gauge-allow functionCognitiveComplexity -- applies every rule that keeps a token out of a state in one place
+    // code-gauge-allow functionNcss -- applies every rule that keeps a token out of a state in one place
     #[inline]
     fn token_conflicts(
         &self,

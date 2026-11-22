@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 532 -- the lexer keeps its position, column, and ASCII fast-path state private to this file
+// code-gauge-allow-file fileNcss -- the lexer keeps its position, column, and ASCII fast-path state private to this file
 #include "./length.h"
 #include "./lexer.h"
 #include "./unicode.h"

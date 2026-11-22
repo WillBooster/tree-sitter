@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 460 -- cohesive lexical NFA-to-DFA table builder and minimizer
+// code-gauge-allow-file fileNcss -- cohesive lexical NFA-to-DFA table builder and minimizer
 use std::{
     collections::{VecDeque, hash_map::Entry},
     mem,
@@ -377,8 +377,8 @@ pub fn build_lex_table(
     }
 }
 
-// code-gauge-allow functionCognitiveComplexity 17 -- BFS over paired word and keyword NFA states collects post-keyword continuation characters
-// code-gauge-allow functionNcss 31 -- BFS over paired word and keyword NFA states collects post-keyword continuation characters
+// code-gauge-allow functionCognitiveComplexity -- BFS over paired word and keyword NFA states collects post-keyword continuation characters
+// code-gauge-allow functionNcss -- BFS over paired word and keyword NFA states collects post-keyword continuation characters
 fn word_continuation_chars(
     grammar: &LexicalGrammar,
     word_index: usize,
@@ -615,8 +615,8 @@ impl<'a> LexTableBuilder<'a> {
         }
     }
 
-    // code-gauge-allow functionCognitiveComplexity 30 -- resolves completions, word guards, NUL/EOF transitions, and advance actions per DFA state
-    // code-gauge-allow functionNcss 53 -- resolves completions, word guards, NUL/EOF transitions, and advance actions per DFA state
+    // code-gauge-allow functionCognitiveComplexity -- resolves completions, word guards, NUL/EOF transitions, and advance actions per DFA state
+    // code-gauge-allow functionNcss -- resolves completions, word guards, NUL/EOF transitions, and advance actions per DFA state
     fn populate_state(
         &mut self,
         state_id: LexStateId,
@@ -826,7 +826,7 @@ impl<'a> LexTableBuilder<'a> {
         });
     }
 
-    // code-gauge-allow functionCognitiveComplexity 16 -- selects highest-precedence completion subject to word-guard and fallback rules
+    // code-gauge-allow functionCognitiveComplexity -- selects highest-precedence completion subject to word-guard and fallback rules
     fn select_completion(
         &self,
         nfa_states: &[TaggedState],

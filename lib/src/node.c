@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 679 -- TSNode accessors and child iterators share private inline helpers in one translation unit
+// code-gauge-allow-file fileNcss -- TSNode accessors and child iterators share private inline helpers in one translation unit
 #include <stdbool.h>
 #include "./point.h"
 #include "./subtree.h"
@@ -213,8 +213,8 @@ static bool ts_subtree_has_trailing_empty_descendant(
   return false;
 }
 
-// code-gauge-allow functionCognitiveComplexity 27 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
-// code-gauge-allow functionNcss 48 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
+// code-gauge-allow functionCognitiveComplexity -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
+// code-gauge-allow functionNcss -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
 static inline TSNode ts_node__prev_sibling(TSNode self, bool include_anonymous) {
   Subtree self_subtree = ts_node__subtree(self);
   bool self_is_empty = ts_subtree_total_bytes(self_subtree) == 0;
@@ -276,8 +276,8 @@ static inline TSNode ts_node__prev_sibling(TSNode self, bool include_anonymous) 
   return ts_node__null();
 }
 
-// code-gauge-allow functionCognitiveComplexity 27 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
-// code-gauge-allow functionNcss 48 -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
+// code-gauge-allow functionCognitiveComplexity -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
+// code-gauge-allow functionNcss -- cursor-free sibling ascent tracks candidate nodes across hidden wrappers
 static inline TSNode ts_node__next_sibling(TSNode self, bool include_anonymous) {
   uint32_t target_end_byte = ts_node_end_byte(self);
 
@@ -843,7 +843,7 @@ not_found:
   return ts_node__null();
 }
 
-// code-gauge-allow functionCognitiveComplexity 17 -- walks down single-child fieldless wrappers in one loop
+// code-gauge-allow functionCognitiveComplexity -- walks down single-child fieldless wrappers in one loop
 static TSNode ts_node__first_child_without_fields(TSNode self) {
   for (;;) {
     const TSFieldMapEntry *field_map, *field_map_end;

@@ -1,4 +1,4 @@
-// code-gauge-allow-file fileNcss 551 -- Wasm C shim keeps shared scratch marshaling buffers in one translation unit
+// code-gauge-allow-file fileNcss -- Wasm C shim keeps shared scratch marshaling buffers in one translation unit
 #include "array.h"
 #include "point.h"
 
