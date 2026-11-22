@@ -7135,9 +7135,11 @@ void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
 void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
 unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
 void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
-static bool member(int32_t c) { return (c >= 'a' && c <= 'z') || c == ' ' || c == '\n'; }
+static bool member(int32_t c) { return (c >= 'a' && c <= 'z') || c == ' ' || c == '\t' || c == '\n'; }
 bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
     if (!member(lexer->lookahead)) return false;
+    // The run's kind is the parity of the display column after it, which is tracked from here on.
+    lexer->get_display_column(lexer, 8);
     bool read = false;
     while (member(lexer->lookahead)) {
         uint32_t count = 0, size = 0;
@@ -7161,7 +7163,8 @@ bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, co
         }
         lexer->advance_units(lexer, length, line_feeds, length - line);
     }
-    lexer->result_symbol = 0;
+    lexer->mark_end(lexer);
+    lexer->result_symbol = lexer->get_display_column(lexer, 8) & 1;
     return true;
 }
 "#;
@@ -7171,13 +7174,14 @@ fn test_external_scanner_units_match_characters() {
     let grammar = serde_json::json!({
         "name": "scanner_units",
         "extras": [],
-        "externals": [{"type": "SYMBOL", "name": "run"}],
+        "externals": [{"type": "SYMBOL", "name": "even_run"}, {"type": "SYMBOL", "name": "odd_run"}],
         "rules": {
             "program": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
-                {"type": "SYMBOL", "name": "run"},
+                {"type": "SYMBOL", "name": "even_run"},
+                {"type": "SYMBOL", "name": "odd_run"},
                 {"type": "SYMBOL", "name": "other"}
             ]}},
-            "other": {"type": "PATTERN", "value": "[^a-z \\n]+"}
+            "other": {"type": "PATTERN", "value": "[^a-z \\t\\n]+"}
         }
     });
     let (_, parser_code) = generate_parser(&grammar.to_string()).unwrap();
@@ -7231,6 +7235,7 @@ fn test_external_scanner_units_match_characters() {
         "abc",
         "ab\ncd\n\nef",
         "ab cd+EF gh\nij\n",
+        "a\tbc\t\td+e\tfgh\n\ti+\tjk",
         "ab\r\ncd λ ef\n😀gh\n",
         "\u{feff}ab\ncd",
         long.as_str(),
