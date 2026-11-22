@@ -10,8 +10,8 @@ use std::{
 };
 
 use tree_sitter::{
-    Decode, IncludedRangesError, LANGUAGE_VERSION, LanguageError, LogType, ParseOptions,
-    ParseState, Parser, Point, Range, Tree,
+    Decode, IncludedRangesError, LANGUAGE_VERSION, LanguageError, LogType,
+    MIN_COMPATIBLE_LANGUAGE_VERSION, ParseOptions, ParseState, Parser, Point, Range, Tree,
 };
 use tree_sitter_generate::load_grammar_file;
 use tree_sitter_proc_macro::retry;
@@ -1620,7 +1620,28 @@ fn test_languages_with_other_abi_versions_are_rejected() {
     let define = format!("#define LANGUAGE_VERSION {LANGUAGE_VERSION:#x}\n");
     assert!(code.contains(&define));
     let mut parser = Parser::new();
-    for version in [13, 15, 16, LANGUAGE_VERSION + 1] {
+    let earliest = get_test_language_with_header(
+        &name,
+        &code.replace(
+            &define,
+            &format!("#define LANGUAGE_VERSION {MIN_COMPATIBLE_LANGUAGE_VERSION}\n"),
+        ),
+        tree_sitter_generate::PARSER_HEADER,
+    );
+    let [earliest_tree, supported_tree] = [&earliest, &supported].map(|language| {
+        let mut parser = Parser::new();
+        parser.set_language(language).unwrap();
+        parser.parse("x").unwrap().root_node().to_sexp()
+    });
+    assert_eq!(earliest_tree, supported_tree);
+    assert_eq!(earliest.name(), Some("other_abi_versions"));
+    for version in [
+        13,
+        15,
+        16,
+        MIN_COMPATIBLE_LANGUAGE_VERSION - 1,
+        LANGUAGE_VERSION + 1,
+    ] {
         let language = get_test_language_with_header(
             &name,
             &code.replace(&define, &format!("#define LANGUAGE_VERSION {version}\n")),
@@ -1630,7 +1651,9 @@ fn test_languages_with_other_abi_versions_are_rejected() {
         assert_eq!(error, LanguageError::Version(version));
         assert_eq!(
             error.to_string(),
-            format!("Incompatible language version {version:#x}. Expected {LANGUAGE_VERSION:#x}")
+            format!(
+                "Incompatible language version {version:#x}. Expected {MIN_COMPATIBLE_LANGUAGE_VERSION:#x} to {LANGUAGE_VERSION:#x}"
+            )
         );
         assert!(parser.language().is_none());
         assert_eq!(language.name(), None);
@@ -7103,6 +7126,188 @@ fn test_parsing_with_scanner_logging() {
 
     parser.parse(source_code).unwrap();
     assert!(found);
+}
+
+const UNIT_SCANNER: &str = r#"
+#include "tree_sitter/parser.h"
+#include <string.h>
+void *tree_sitter_GRAMMAR_external_scanner_create(void) { return NULL; }
+void tree_sitter_GRAMMAR_external_scanner_destroy(void *payload) {}
+unsigned tree_sitter_GRAMMAR_external_scanner_serialize(void *payload, char *buffer) { return 0; }
+void tree_sitter_GRAMMAR_external_scanner_deserialize(void *payload, const char *buffer, unsigned length) {}
+static bool member(int32_t c) { return (c >= 'a' && c <= 'z') || c == ' ' || c == '\t' || c == '\n'; }
+bool tree_sitter_GRAMMAR_external_scanner_scan(void *payload, TSLexer *lexer, const bool *valid_symbols) {
+    if (!member(lexer->lookahead)) return false;
+    // The run's kind holds the parities of the display column and of the column after it, both tracked from here on.
+    lexer->get_display_column(lexer, 8);
+    lexer->get_column(lexer);
+    bool read = false;
+    while (member(lexer->lookahead)) {
+        uint32_t count = 0, size = 0;
+        const char *units = READ_UNITS ? lexer->peek_units(lexer, &count, &size) : NULL;
+        // With READ_UNITS 2, a run is a token only when its first peek hands out all of a ten-unit run.
+        if (READ_UNITS == 2 && !read && count < 10) return false;
+        if (!count) {
+            lexer->advance(lexer, false);
+            continue;
+        }
+        read = true;
+        uint32_t length = 0, line_feeds = 0, line = 0;
+        for (; length < count; length++) {
+            uint16_t unit = (uint8_t)units[length];
+            if (size == 2) memcpy(&unit, units + 2 * length, 2);
+            if (!member(unit)) break;
+            if (unit == '\n') {
+                line_feeds++;
+                line = length + 1;
+            }
+        }
+        lexer->advance_units(lexer, length, line_feeds, length - line);
+    }
+    lexer->mark_end(lexer);
+    lexer->result_symbol = (lexer->get_display_column(lexer, 8) & 1) | (lexer->get_column(lexer) & 1) << 1;
+    return true;
+}
+"#;
+
+#[test]
+fn test_external_scanner_units_match_characters() {
+    let grammar = serde_json::json!({
+        "name": "scanner_units",
+        "extras": [],
+        "externals": [
+            {"type": "SYMBOL", "name": "run_a"},
+            {"type": "SYMBOL", "name": "run_b"},
+            {"type": "SYMBOL", "name": "run_c"},
+            {"type": "SYMBOL", "name": "run_d"}
+        ],
+        "rules": {
+            "program": {"type": "REPEAT", "content": {"type": "CHOICE", "members": [
+                {"type": "SYMBOL", "name": "run_a"},
+                {"type": "SYMBOL", "name": "run_b"},
+                {"type": "SYMBOL", "name": "run_c"},
+                {"type": "SYMBOL", "name": "run_d"},
+                {"type": "SYMBOL", "name": "other"}
+            ]}},
+            "other": {"type": "PATTERN", "value": "[^a-z \\t\\n]+"}
+        }
+    });
+    let (_, parser_code) = generate_parser(&grammar.to_string()).unwrap();
+    let [mut required, mut parsers @ ..] = ["2", "1", "0"].map(|read_units| {
+        let name = format!("scanner_units_{read_units}");
+        let mut parser = Parser::new();
+        parser
+            .set_language(&get_test_language_with_scanner(
+                &name,
+                &parser_code.replace("scanner_units", &name),
+                &UNIT_SCANNER.replace("READ_UNITS", read_units),
+            ))
+            .unwrap();
+        parser
+    });
+    // Contiguous ASCII in UTF-8 and in UTF-16 of the host's byte order is handed out in units, all but the last one.
+    let ascii = "abc def\nghi";
+    let native: Vec<u16> = ascii.encode_utf16().collect();
+    for tree in [
+        required.parse(ascii),
+        if cfg!(target_endian = "little") {
+            required.parse_utf16_le(&native)
+        } else {
+            required.parse_utf16_be(&native)
+        },
+    ] {
+        let tree = tree.unwrap();
+        assert!(
+            !tree.root_node().has_error(),
+            "{}",
+            tree.root_node().to_sexp()
+        );
+    }
+
+    let nodes = |tree: &Tree| {
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        std::iter::once(root)
+            .chain(root.children(&mut cursor))
+            .map(|node| (node.kind_id(), node.range()))
+            .collect::<Vec<_>>()
+    };
+
+    let long = format!(
+        "{}\n{}X\n\n{}",
+        "ab ".repeat(40),
+        "c".repeat(70),
+        "de\n".repeat(30)
+    );
+    for source in [
+        "abc",
+        "ab\ncd\n\nef",
+        "ab cd+EF gh\nij\n",
+        "a\tbc\t\td+e\tfgh\n\ti+\tjk",
+        "ab\r\ncd λ ef\n😀gh\n",
+        "\u{feff}ab\ncd",
+        long.as_str(),
+    ] {
+        let utf16: Vec<u16> = source.encode_utf16().collect();
+        let le: Vec<u16> = utf16.iter().map(|unit| unit.to_le()).collect();
+        let be: Vec<u16> = utf16.iter().map(|unit| unit.to_be()).collect();
+        for chunk in [usize::MAX, 1, 2, 3, 7, 64] {
+            let trees = parsers.each_mut().map(|parser| {
+                let utf8 = parser
+                    .parse_with_options(
+                        &mut |offset, _| {
+                            &source.as_bytes()
+                                [offset..source.len().min(offset.saturating_add(chunk))]
+                        },
+                        None,
+                    )
+                    .unwrap();
+                let [le, be] = [(&le, true), (&be, false)].map(|(units, little_endian)| {
+                    let mut read = |offset: usize, _| {
+                        &units[offset..units.len().min(offset.saturating_add(chunk))]
+                    };
+                    if little_endian {
+                        parser.parse_utf16_le_with_options(&mut read, None)
+                    } else {
+                        parser.parse_utf16_be_with_options(&mut read, None)
+                    }
+                    .unwrap()
+                });
+                [utf8, le, be].map(|tree| nodes(&tree))
+            });
+            let characters = trees[1].clone();
+            assert_eq!(trees[0], characters, "{source:?} in chunks of {chunk}");
+            assert!(characters[0].len() > 1 && characters[0][0].1.end_byte == source.len());
+        }
+
+        let gap = source.len() / 2;
+        if source.is_char_boundary(gap) && gap > 0 {
+            let point = |offset: usize| match source[..offset].rfind('\n') {
+                Some(newline) => {
+                    Point::new(source[..offset].matches('\n').count(), offset - newline - 1)
+                }
+                None => Point::new(0, offset),
+            };
+            let range = |start_byte: usize, end_byte: usize| Range {
+                start_byte,
+                end_byte,
+                start_point: point(start_byte),
+                end_point: point(end_byte),
+            };
+            let trees = parsers.each_mut().map(|parser| {
+                parser
+                    .set_included_ranges(&[range(0, gap - gap.min(1)), range(gap, source.len())])
+                    .unwrap();
+                let tree = parser.parse(source).unwrap();
+                parser.set_included_ranges(&[]).unwrap();
+                nodes(&tree)
+            });
+            assert_eq!(
+                trees[0], trees[1],
+                "{source:?} with a gap before byte {gap}"
+            );
+        }
+    }
 }
 
 #[test]

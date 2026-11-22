@@ -16,7 +16,7 @@ static inline Length ts_lex_next_ext_line_break(const Lexer *self);
 static inline void ts_lex_disarm_ext_guard(Lexer *self);
 static bool ts_lex_seek_ext_block_comment(Lexer *self, Length start_pos, uint32_t *comment_byte);
 static void ts_lex_skip_ext_line_comment(Lexer *self);
-static void ts_lex_scan_ext_eof_suffix(
+static bool ts_lex_scan_ext_eof_suffix(
   Lexer *self, TSLexExtEofGuard *guard, uint32_t comment_byte
 );
 static void ts_lex_restore_ext_eof_state(Lexer *self, SavedExtEofState saved);
@@ -57,12 +57,17 @@ TS_NOINLINE void ts_lexer_maybe_record_ext_eof_guard(Lexer *self, Length start_p
 
   uint32_t comment_byte = 0;
   if (ts_lex_seek_ext_block_comment(self, start_pos, &comment_byte)) {
-    self->ext_eof_guard.checked = true;
-    ts_lex_scan_ext_eof_suffix(self, &self->ext_eof_guard, comment_byte);
-    uint32_t min_safe = self->ext_eof_guard.min_safe_byte;
-    if (!self->aborted && saved.eof_pos.bytes > min_safe && saved.eof_pos.bytes - min_safe > 256u) {
-      self->ext_eof_guard.eof_pos = saved.eof_pos;
-      self->ext_eof_guard.active = true;
+    if (ts_lex_scan_ext_eof_suffix(self, &self->ext_eof_guard, comment_byte)) {
+      self->ext_eof_guard.checked = true;
+      uint32_t min_safe = self->ext_eof_guard.min_safe_byte;
+      if (!self->aborted && saved.eof_pos.bytes > min_safe && saved.eof_pos.bytes - min_safe > 256u) {
+        self->ext_eof_guard.eof_pos = saved.eof_pos;
+        self->ext_eof_guard.active = true;
+      }
+    } else {
+      // The scan may have read on for another reason than this comment, so the probe is not spent on it.
+      self->ext_eof_guard.probes--;
+      self->ext_eof_guard.checked = false;
     }
   }
   if (!self->aborted) ts_lex_restore_ext_eof_state(self, saved);
@@ -216,12 +221,14 @@ static void ts_lex_skip_ext_line_comment(Lexer *self) {
   }
 }
 
-static void ts_lex_scan_ext_eof_suffix(
+// Reads from inside the comment at `comment_byte` to the end of the input for the line breaks that the guarded advance
+// jumps to. Returns false at the comment's end when it has one: such a comment did not hold the scanner, and the guard
+// only skips comments that never end.
+static bool ts_lex_scan_ext_eof_suffix(
   Lexer *self,
   TSLexExtEofGuard *guard,
   uint32_t comment_byte
 ) {
-  uint32_t min_safe_byte = comment_byte;
   Length last_nl = LENGTH_UNDEFINED;
   Length last_cr = LENGTH_UNDEFINED;
   int32_t prev = 0;
@@ -229,20 +236,15 @@ static void ts_lex_scan_ext_eof_suffix(
     int32_t cur = self->data.lookahead;
     Length pos = self->current_position;
     self->data.advance(&self->data, false);
-    if (prev == '*' && cur == '/') {
-      min_safe_byte = self->current_position.bytes;
-      last_nl = LENGTH_UNDEFINED;
-      last_cr = LENGTH_UNDEFINED;
-      prev = 0;
-      continue;
-    }
+    if (prev == '*' && cur == '/') return false;
     if (cur == '\n' || cur == 0x2028 || cur == 0x2029) last_nl = pos;
     else if (cur == '\r') last_cr = pos;
     prev = cur;
   }
-  guard->min_safe_byte = min_safe_byte;
+  guard->min_safe_byte = comment_byte;
   guard->last_nl = last_nl;
   guard->last_cr = last_cr;
+  return true;
 }
 
 static void ts_lex_restore_ext_eof_state(Lexer *self, SavedExtEofState saved) {

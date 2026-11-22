@@ -94,7 +94,8 @@ export let LANGUAGE_VERSION: number;
 
 /**
  * The earliest ABI version that is supported by the current version of the
- * library.
+ * library. Scanners of the latest version may read the input in units, which
+ * earlier libraries do not offer.
  */
 export let MIN_COMPATIBLE_VERSION: number;
 
@@ -108,7 +109,7 @@ export function assertSupportedLanguage(language: Language): void {
   if (version < MIN_COMPATIBLE_VERSION || version > LANGUAGE_VERSION) {
     throw new Error(
       `Incompatible language version 0x${(version >>> 0).toString(16)}. ` +
-      `Expected 0x${LANGUAGE_VERSION.toString(16)}.`
+      `Expected 0x${MIN_COMPATIBLE_VERSION.toString(16)} to 0x${LANGUAGE_VERSION.toString(16)}.`
     );
   }
 }

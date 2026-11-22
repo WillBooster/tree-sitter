@@ -58,8 +58,11 @@ mod wasm_allocator;
 pub const LANGUAGE_VERSION: usize = ffi::TREE_SITTER_LANGUAGE_VERSION as usize;
 
 /// The earliest ABI version that is supported by the current version of the
-/// library. Its parse tables are a subset of those of [`LANGUAGE_VERSION`], so
-/// the library loads both.
+/// library.
+///
+/// Its scanners lack only the `peek_units` and `advance_units` functions of
+/// `TSLexer` that those of [`LANGUAGE_VERSION`] may call, so the library loads
+/// both.
 #[doc(alias = "TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION")]
 pub const MIN_COMPATIBLE_LANGUAGE_VERSION: usize =
     ffi::TREE_SITTER_MIN_COMPATIBLE_LANGUAGE_VERSION as usize;
@@ -1823,7 +1826,7 @@ impl fmt::Display for LanguageError {
             Self::Version(version) => {
                 write!(
                     f,
-                    "Incompatible language version {version:#x}. Expected {LANGUAGE_VERSION:#x}",
+                    "Incompatible language version {version:#x}. Expected {MIN_COMPATIBLE_LANGUAGE_VERSION:#x} to {LANGUAGE_VERSION:#x}",
                 )
             }
             Self::NotParseable => {

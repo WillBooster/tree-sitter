@@ -84,6 +84,20 @@ struct TSLexer {
   uint32_t (*get_display_column)(TSLexer *, uint32_t tab_width);
   void (*get_checkpoint)(const TSLexer *, TSLexerCheckpoint *);
   void (*get_mark_end_checkpoint)(const TSLexer *, TSLexerCheckpoint *);
+  /**
+   * Returns the input from the lookahead on as code units of `*size` bytes (1 for UTF-8, 2 for UTF-16) in the host's
+   * byte order, and sets `*count` to the number of them that `advance_units` may consume, which is 0 where the input
+   * cannot be read this way. The address may be unaligned, so read a 2-byte unit with `memcpy`. The units and
+   * `count` hold until the next call of `advance`, `advance_units`, `get_column` or `get_display_column`, each of
+   * which may read the input again; peek again after one of them.
+   */
+  const void *(*peek_units)(const TSLexer *, uint32_t *count, uint32_t *size);
+  /**
+   * Consumes the next `count` units that `peek_units` returned, each of which must be an ASCII character.
+   * `line_feeds` is the number of `\n` among them and `tail` the number of units after the last `\n`, which is
+   * not read when there is none.
+   */
+  void (*advance_units)(TSLexer *, uint32_t count, uint32_t line_feeds, uint32_t tail);
 };
 
 typedef enum {
