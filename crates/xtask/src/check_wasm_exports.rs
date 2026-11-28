@@ -8,10 +8,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use notify::{
-    EventKind, RecursiveMode,
-    event::{AccessKind, AccessMode},
-};
+use notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::new_debouncer;
 
 use crate::{CheckWasmExports, bail_on_err, watch_wasm};
