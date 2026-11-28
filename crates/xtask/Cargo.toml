@@ -21,7 +21,7 @@ bindgen = { version = "0.73.0" }
 clap.workspace = true
 etcetera.workspace = true
 indoc.workspace = true
-notify = "8.2.0"
+notify = "9.0.0"
 notify-debouncer-full = "0.7.0"
 regex.workspace = true
 schemars.workspace = true
