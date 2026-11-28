@@ -8,7 +8,10 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use notify::{EventKind, RecursiveMode};
+use notify::{
+    EventKind, RecursiveMode,
+    event::{AccessKind, AccessMode},
+};
 use notify_debouncer_full::new_debouncer;
 
 use crate::{CheckWasmExports, bail_on_err, watch_wasm};
@@ -102,10 +105,7 @@ fn check_wasm_exports() -> Result<()> {
         .filter(|line| line.contains(" T "));
 
     let exports = export_reader
-        .filter_map(|line| {
-            let symbol = line.split_whitespace().nth(2)?;
-            Some(symbol.strip_prefix('_').unwrap_or(symbol).to_owned())
-        })
+        .filter_map(|line| line.split_whitespace().nth(2).map(String::from))
         .filter(|symbol| !EXCLUDES.contains(&symbol.as_str()))
         .collect::<HashSet<_>>();
 
