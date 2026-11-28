@@ -102,7 +102,10 @@ fn check_wasm_exports() -> Result<()> {
         .filter(|line| line.contains(" T "));
 
     let exports = export_reader
-        .filter_map(|line| line.split_whitespace().nth(2).map(String::from))
+        .filter_map(|line| {
+            let symbol = line.split_whitespace().nth(2)?;
+            Some(symbol.strip_prefix('_').unwrap_or(symbol).to_owned())
+        })
         .filter(|symbol| !EXCLUDES.contains(&symbol.as_str()))
         .collect::<HashSet<_>>();
 
